@@ -36,6 +36,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [bidSuggestedPrice, setBidSuggestedPrice] = useState(''); // 제시 입찰가
   const [bidPrice, setBidPrice] = useState(''); // 실제 작성 입찰가
   const [bidWinPrice, setBidWinPrice] = useState('');
+  const [bidWon, setBidWon] = useState(false); // 낙찰 여부 체크
   const [bidDeviationReason, setBidDeviationReason] = useState(''); // 5% 이상 차이 사유
 
   // 5% deviation check
@@ -86,7 +87,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     switch (activityType) {
       case '입찰':
         data = { ...data, caseNo: `${bidYear}타경${bidCaseNo}`, bidder: bidBidder, court: bidCourt,
-          suggestedPrice: bidSuggestedPrice, bidPrice, winPrice: bidWinPrice, deviationReason: bidDeviationReason };
+          suggestedPrice: bidSuggestedPrice, bidPrice,
+          winPrice: bidWon ? bidPrice : bidWinPrice,
+          bidWon, deviationReason: bidDeviationReason };
         subtype = `${bidYear}타경${bidCaseNo}`;
         break;
       case '임장':
@@ -218,9 +221,18 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                 </div>
               )}
               <div className="form-group">
-                <label>낙찰가 (원, 추후입력)</label>
-                <input type="text" value={bidWinPrice} onChange={(e) => setBidWinPrice(formatCurrency(e.target.value))} placeholder="추후 작성" />
+                <label className={`field-check-label ${bidWon ? 'checked' : ''}`} style={{ display: 'inline-flex', marginBottom: 8 }}>
+                  <input type="checkbox" checked={bidWon} onChange={(e) => { setBidWon(e.target.checked); if (e.target.checked) setBidWinPrice(''); }} />
+                  낙찰
+                </label>
+                {bidWon && <span style={{ fontSize: '0.75rem', color: '#188038', marginLeft: 8 }}>실제입찰가가 낙찰가로 자동 적용됩니다.</span>}
               </div>
+              {!bidWon && (
+                <div className="form-group">
+                  <label>낙찰가 (원, 추후입력)</label>
+                  <input type="text" value={bidWinPrice} onChange={(e) => setBidWinPrice(formatCurrency(e.target.value))} placeholder="추후 작성" />
+                </div>
+              )}
             </>
           )}
 
