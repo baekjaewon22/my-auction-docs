@@ -2153,6 +2153,97 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 /* ========================= */
+/* Statistics Page            */
+/* ========================= */
+.stats-slide-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.stats-slide-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  background: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: var(--gray-600);
+}
+
+.stats-slide-tab:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.stats-slide-tab.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.stats-content {
+  animation: journalSlideIn 0.3s ease-out;
+}
+
+.stats-section-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.stats-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--gray-800);
+  margin-bottom: 4px;
+}
+
+.stats-desc {
+  font-size: 0.8rem;
+  color: var(--gray-500);
+  margin-bottom: 12px;
+}
+
+.stats-chart-card {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.stats-chart-card h4 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--gray-700);
+  margin-bottom: 16px;
+}
+
+.stats-chart-row {
+  display: flex;
+  gap: 16px;
+}
+
+.stats-chart-half {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .stats-chart-row { flex-direction: column; }
+  .stats-slide-tabs { flex-wrap: wrap; }
+}
+
+/* ========================= */
 /* Profile Page              */
 /* ========================= */
 .profile-card {

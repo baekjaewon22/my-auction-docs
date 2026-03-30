@@ -14,6 +14,7 @@ import UserList from './pages/UserList';
 import Profile from './pages/Profile';
 import PendingUsers from './pages/PendingUsers';
 import Journal from './pages/Journal';
+import Statistics from './pages/Statistics';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore();
@@ -62,6 +63,14 @@ export default function App() {
           <Route path="documents/:id" element={<DocumentEdit />} />
           <Route path="templates" element={<TemplateList />} />
           <Route path="journal" element={<Journal />} />
+          <Route
+            path="statistics"
+            element={
+              <ApproverRoute>
+                <Statistics />
+              </ApproverRoute>
+            }
+          />
           <Route path="profile" element={<Profile />} />
           <Route
             path="pending"

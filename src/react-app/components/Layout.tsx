@@ -4,7 +4,7 @@ import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
-  Users, UserCog, Settings, LogOut, UserPlus, CalendarDays
+  Users, UserCog, Settings, LogOut, UserPlus, CalendarDays, BarChart3
 } from 'lucide-react';
 
 export default function Layout() {
@@ -51,6 +51,9 @@ export default function Layout() {
               <span className="nav-label">관리</span>
               <Link to="/review" className={`nav-item ${isActive('/review') ? 'active' : ''}`}>
                 <CheckCircle size={18} /> 문서 승인
+              </Link>
+              <Link to="/statistics" className={`nav-item ${isActive('/statistics') ? 'active' : ''}`}>
+                <BarChart3 size={18} /> 통계
               </Link>
             </>
           )}
