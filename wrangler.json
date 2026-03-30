@@ -11,5 +11,12 @@
 	"assets": {
 		"directory": "./dist/client",
 		"not_found_handling": "single-page-application"
-	}
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "auction-docs-db",
+			"database_id": "local"
+		}
+	]
 }
