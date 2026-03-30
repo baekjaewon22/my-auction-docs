@@ -109,6 +109,38 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   return c.json({ success: true });
 });
 
+// DELETE /api/users/:id - 사용자 삭제
+// 관리자: 팀장/팀원 삭제 가능
+// 대표: 관리자 이하 삭제 가능
+// 마스터: 전부 삭제 가능 (본인 제외)
+users.delete('/:id', requireRole('master', 'ceo', 'admin'), async (c) => {
+  const id = c.req.param('id');
+  const currentUser = c.get('user');
+  const db = c.env.DB;
+
+  if (id === currentUser.sub) return c.json({ error: '본인 계정은 삭제할 수 없습니다.' }, 400);
+
+  const target = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<User>();
+  if (!target) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
+
+  const hierarchy: Record<string, number> = { master: 1, ceo: 2, admin: 3, manager: 4, member: 5 };
+  const myLevel = hierarchy[currentUser.role] || 99;
+  const targetLevel = hierarchy[target.role] || 99;
+
+  if (targetLevel <= myLevel) {
+    return c.json({ error: '본인과 같거나 상위 등급은 삭제할 수 없습니다.' }, 403);
+  }
+
+  // Delete related data
+  await db.prepare('DELETE FROM journal_entries WHERE user_id = ?').bind(id).run();
+  await db.prepare('DELETE FROM signatures WHERE user_id = ?').bind(id).run();
+  await db.prepare('DELETE FROM document_logs WHERE user_id = ?').bind(id).run();
+  await db.prepare('DELETE FROM documents WHERE author_id = ?').bind(id).run();
+  await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
+
+  return c.json({ success: true });
+});
+
 // PUT /api/users/:id - 프로필 수정 (본인: phone/branch/dept/password, 상위: 모든 필드)
 users.put('/:id', async (c) => {
   const id = c.req.param('id');

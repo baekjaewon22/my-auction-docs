@@ -4,6 +4,7 @@ import { useAuthStore } from '../store';
 import type { User } from '../types';
 import { ROLE_LABELS, BRANCHES, DEPARTMENTS } from '../types';
 import Select, { toOptions } from '../components/Select';
+import { Trash2 } from 'lucide-react';
 
 const BRANCH_OPTS = toOptions(BRANCHES);
 const DEPT_OPTS = toOptions(DEPARTMENTS);
@@ -28,6 +29,19 @@ export default function UserList() {
       alert(err.message);
     }
   };
+
+  const handleDelete = async (userId: string, userName: string) => {
+    if (!confirm(`"${userName}" 계정을 삭제하시겠습니까?\n관련된 문서, 일지, 서명이 모두 삭제됩니다.`)) return;
+    try {
+      await api.users.delete(userId);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const hierarchy: Record<string, number> = { master: 1, ceo: 2, admin: 3, manager: 4, member: 5 };
+  const myLevel = hierarchy[currentUser?.role || ''] || 99;
 
   // 현재 사용자 역할에 따라 설정 가능한 역할 목록
   const getAvailableRoles = () => {
@@ -64,6 +78,7 @@ export default function UserList() {
               <th>지사</th>
               <th>팀</th>
               <th>가입일</th>
+              <th>삭제</th>
             </tr>
           </thead>
           <tbody>
@@ -126,6 +141,13 @@ export default function UserList() {
                     )}
                   </td>
                   <td>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
+                  <td>
+                    {canEdit && !isHigherOrEqual && (hierarchy[u.role] || 99) > myLevel && (
+                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u.id, u.name)}>
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </td>
                 </tr>
               );
             })}

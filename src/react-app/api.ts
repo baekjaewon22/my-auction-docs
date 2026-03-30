@@ -54,6 +54,8 @@ export const api = {
       request('/users/' + id + '/reject', { method: 'POST' }),
     updateRole: (id: string, role: string, branch?: string, department?: string) =>
       request('/users/' + id + '/role', { method: 'PUT', body: JSON.stringify({ role, branch, department }) }),
+    delete: (id: string) =>
+      request('/users/' + id, { method: 'DELETE' }),
     update: (id: string, data: { name?: string; password?: string }) =>
       request('/users/' + id, { method: 'PUT', body: JSON.stringify(data) }),
   },
