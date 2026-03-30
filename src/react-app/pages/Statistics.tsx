@@ -7,7 +7,7 @@ import type { JournalEntry } from '../journal/types';
 import { ACTIVITY_COLORS, type ActivityType } from '../journal/types';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line,
+  PieChart, Pie, Cell,
 } from 'recharts';
 import { BarChart3, TrendingUp, AlertTriangle, UserCheck, ChevronLeft, ChevronRight } from 'lucide-react';
 
@@ -76,10 +76,15 @@ export default function Statistics() {
 function BidAnalysis({ entries, members }: { entries: JournalEntry[]; members: Member[] }) {
   const bidEntries = entries.filter((e) => e.activity_type === '입찰');
 
-  // Per-person bid stats
+  // 판정 기준:
+  // 실제입찰가 >= 낙찰가 → 낙찰
+  // 실제입찰가 < 낙찰가 → 패찰
+  // 낙찰가 미입력 → 미확정
+
   const personStats = members.map((m) => {
     const myBids = bidEntries.filter((e) => e.user_id === m.id);
-    let totalSuggested = 0, totalActual = 0, totalWin = 0, winCount = 0, deviationOver5 = 0;
+    let totalSuggested = 0, totalActual = 0, totalWin = 0;
+    let winCount = 0, loseCount = 0, pendingCount = 0, deviationOver5 = 0;
     const deviations: number[] = [];
 
     myBids.forEach((e) => {
@@ -90,7 +95,17 @@ function BidAnalysis({ entries, members }: { entries: JournalEntry[]; members: M
         const w = parseCurrency(d.winPrice);
         if (s > 0) totalSuggested += s;
         if (a > 0) totalActual += a;
-        if (w > 0) { totalWin += w; winCount++; }
+
+        // 낙찰 판정
+        if (w > 0) {
+          totalWin += w;
+          if (a >= w) { winCount++; }    // 낙찰: 실제입찰가 >= 낙찰가
+          else { loseCount++; }           // 패찰: 실제입찰가 < 낙찰가
+        } else {
+          pendingCount++;                 // 미확정: 낙찰가 미입력
+        }
+
+        // 제시가 vs 실제가 차이
         if (s > 0 && a > 0) {
           const dev = (s - a) / s * 100;
           deviations.push(dev);
@@ -98,6 +113,8 @@ function BidAnalysis({ entries, members }: { entries: JournalEntry[]; members: M
         }
       } catch { /* */ }
     });
+
+    const determined = winCount + loseCount;
 
     return {
       name: m.name,
@@ -108,63 +125,116 @@ function BidAnalysis({ entries, members }: { entries: JournalEntry[]; members: M
       totalActual,
       totalWin,
       winCount,
-      winRate: totalActual > 0 && totalWin > 0 ? (totalWin / totalActual * 100) : 0,
+      loseCount,
+      pendingCount,
+      winRate: determined > 0 ? (winCount / determined * 100) : 0,
       avgDeviation: deviations.length > 0 ? deviations.reduce((a, b) => a + b, 0) / deviations.length : 0,
       deviationOver5,
+      deviationRate: myBids.length > 0 ? (deviationOver5 / myBids.length * 100) : 0,
     };
   }).filter((p) => p.bids > 0);
 
-  // Chart data
+  // 전체 합산
+  const totals = personStats.reduce((acc, p) => ({
+    bids: acc.bids + p.bids,
+    win: acc.win + p.winCount,
+    lose: acc.lose + p.loseCount,
+    pending: acc.pending + p.pendingCount,
+    dev5: acc.dev5 + p.deviationOver5,
+  }), { bids: 0, win: 0, lose: 0, pending: 0, dev5: 0 });
+
+  // Charts
   const barData = personStats.map((p) => ({
     name: p.name,
-    입찰건수: p.bids,
-    낙찰건수: p.winCount,
-    '5%초과': p.deviationOver5,
+    입찰: p.bids,
+    낙찰: p.winCount,
+    패찰: p.loseCount,
+    미확정: p.pendingCount,
   }));
 
-  const deviationData = personStats.map((p) => ({
+  const rateData = personStats.map((p) => ({
     name: p.name,
-    '평균차이율(%)': Number(p.avgDeviation.toFixed(1)),
-    '낙찰가율(%)': Number(p.winRate.toFixed(1)),
+    '낙찰률(%)': Number(p.winRate.toFixed(1)),
+    '5%초과비율(%)': Number(p.deviationRate.toFixed(1)),
   }));
+
+  // Pie for overall win/lose/pending
+  const resultPie = [
+    { name: '낙찰', value: totals.win },
+    { name: '패찰', value: totals.lose },
+    { name: '미확정', value: totals.pending },
+  ].filter((d) => d.value > 0);
+  const resultColors = ['#188038', '#d93025', '#9aa0a6'];
 
   const fmtWon = (n: number) => n > 0 ? (n / 10000).toLocaleString() + '만원' : '-';
 
   return (
     <div className="stats-section-content">
       <h3 className="stats-subtitle"><TrendingUp size={18} /> 담당자별 입찰 성과</h3>
+      <p className="stats-desc">
+        판정 기준: 실제입찰가 &ge; 낙찰가 → <strong style={{ color: '#188038' }}>낙찰</strong> / 실제입찰가 &lt; 낙찰가 → <strong style={{ color: '#d93025' }}>패찰</strong> / 낙찰가 미입력 → 미확정
+      </p>
 
-      {/* Bar Chart */}
-      <div className="stats-chart-card">
-        <h4>입찰 건수 / 낙찰 건수 / 5% 초과 건수</h4>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={barData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="name" fontSize={12} />
-            <YAxis fontSize={12} />
-            <Tooltip />
-            <Legend />
-            <Bar dataKey="입찰건수" fill="#1a73e8" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="낙찰건수" fill="#188038" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="5%초과" fill="#d93025" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+      {/* Summary cards */}
+      <div className="bid-stats-grid">
+        <div className="bid-stat-card"><div className="bid-stat-value">{totals.bids}</div><div className="bid-stat-label">총 입찰</div></div>
+        <div className="bid-stat-card" style={{ borderColor: '#c3e6cb' }}><div className="bid-stat-value" style={{ color: '#188038' }}>{totals.win}</div><div className="bid-stat-label">낙찰</div></div>
+        <div className="bid-stat-card" style={{ borderColor: '#f5c6cb' }}><div className="bid-stat-value" style={{ color: '#d93025' }}>{totals.lose}</div><div className="bid-stat-label">패찰</div></div>
+        <div className="bid-stat-card"><div className="bid-stat-value" style={{ color: '#9aa0a6' }}>{totals.pending}</div><div className="bid-stat-label">미확정</div></div>
+        <div className="bid-stat-card"><div className="bid-stat-value" style={{ color: '#1a73e8' }}>{totals.bids > 0 && (totals.win + totals.lose) > 0 ? (totals.win / (totals.win + totals.lose) * 100).toFixed(1) + '%' : '-'}</div><div className="bid-stat-label">전체 낙찰률</div></div>
+        {totals.dev5 > 0 && <div className="bid-stat-card bid-stat-warning"><AlertTriangle size={20} className="bid-stat-warn-icon" /><div className="bid-stat-value">{totals.dev5}건</div><div className="bid-stat-label">5%초과 차이</div></div>}
       </div>
 
-      {/* Line Chart */}
+      <div className="stats-chart-row">
+        {/* Result pie */}
+        <div className="stats-chart-card stats-chart-half">
+          <h4>입찰 결과 분포</h4>
+          <ResponsiveContainer width="100%" height={280}>
+            <PieChart>
+              <Pie data={resultPie} cx="50%" cy="50%" outerRadius={100} dataKey="value" label={(props: any) => `${props.name} ${props.value}건`}>
+                {resultPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
+              </Pie>
+              <Tooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Bar chart */}
+        <div className="stats-chart-card stats-chart-half">
+          <h4>담당자별 입찰 / 낙찰 / 패찰</h4>
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={barData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" fontSize={11} />
+              <YAxis fontSize={11} />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="입찰" fill="#1a73e8" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="낙찰" fill="#188038" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="패찰" fill="#d93025" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="미확정" fill="#bdc1c6" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Line chart - 낙찰률 vs 5% 초과 비율 */}
       <div className="stats-chart-card">
-        <h4>평균 차이율 vs 낙찰가율</h4>
+        <h4>낙찰률 vs 5% 초과 차이 비율 (담당자별)</h4>
         <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={deviationData}>
+          <BarChart data={rateData}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="name" fontSize={12} />
-            <YAxis fontSize={12} />
+            <YAxis fontSize={12} unit="%" />
             <Tooltip />
             <Legend />
-            <Line type="monotone" dataKey="평균차이율(%)" stroke="#e65100" strokeWidth={2} dot={{ r: 5 }} />
-            <Line type="monotone" dataKey="낙찰가율(%)" stroke="#1a73e8" strokeWidth={2} dot={{ r: 5 }} />
-          </LineChart>
+            <Bar dataKey="낙찰률(%)" fill="#188038" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="5%초과비율(%)" fill="#d93025" radius={[4, 4, 0, 0]} />
+          </BarChart>
         </ResponsiveContainer>
+        <p className="stats-desc" style={{ marginTop: 8 }}>
+          5% 초과 비율이 높고 낙찰률이 낮은 담당자는 입찰가 조정 패턴을 점검할 필요가 있습니다.
+        </p>
       </div>
 
       {/* Detail Table */}
@@ -176,27 +246,37 @@ function BidAnalysis({ entries, members }: { entries: JournalEntry[]; members: M
               <tr>
                 <th>담당자</th>
                 <th>팀</th>
-                <th>입찰수</th>
-                <th>제시입찰가 합</th>
-                <th>작성입찰가 합</th>
-                <th>낙찰가 합</th>
-                <th>낙찰가율</th>
+                <th>입찰</th>
+                <th>낙찰</th>
+                <th>패찰</th>
+                <th>미확정</th>
+                <th>낙찰률</th>
+                <th>제시가 합</th>
+                <th>입찰가 합</th>
                 <th>평균차이율</th>
                 <th>5%초과</th>
+                <th>초과비율</th>
               </tr>
             </thead>
             <tbody>
-              {personStats.map((p) => (
+              {personStats.sort((a, b) => b.winRate - a.winRate).map((p) => (
                 <tr key={p.name}>
-                  <td><strong>{p.name}</strong> <span style={{ color: '#9aa0a6', fontSize: '0.7rem' }}>{ROLE_LABELS[p.role as Role]}</span></td>
+                  <td><strong>{p.name}</strong> <span style={{ color: '#9aa0a6', fontSize: '0.65rem' }}>{ROLE_LABELS[p.role as Role]}</span></td>
                   <td>{p.department || '-'}</td>
                   <td>{p.bids}</td>
+                  <td style={{ color: '#188038', fontWeight: 600 }}>{p.winCount}</td>
+                  <td style={{ color: '#d93025', fontWeight: 600 }}>{p.loseCount}</td>
+                  <td style={{ color: '#9aa0a6' }}>{p.pendingCount}</td>
+                  <td style={{ fontWeight: 700, color: p.winRate >= 50 ? '#188038' : p.winRate > 0 ? '#e65100' : '#9aa0a6' }}>
+                    {p.winRate > 0 ? p.winRate.toFixed(1) + '%' : '-'}
+                  </td>
                   <td>{fmtWon(p.totalSuggested)}</td>
                   <td>{fmtWon(p.totalActual)}</td>
-                  <td>{fmtWon(p.totalWin)}</td>
-                  <td style={{ color: p.winRate > 0 ? '#1a73e8' : '#9aa0a6' }}>{p.winRate > 0 ? p.winRate.toFixed(1) + '%' : '-'}</td>
                   <td style={{ color: p.avgDeviation >= 5 ? '#d93025' : '#3c4043' }}>{p.avgDeviation.toFixed(1)}%</td>
-                  <td style={{ color: p.deviationOver5 > 0 ? '#d93025' : '#9aa0a6', fontWeight: p.deviationOver5 > 0 ? 700 : 400 }}>{p.deviationOver5}</td>
+                  <td style={{ color: p.deviationOver5 > 0 ? '#d93025' : '#9aa0a6', fontWeight: p.deviationOver5 > 0 ? 700 : 400 }}>{p.deviationOver5}건</td>
+                  <td style={{ color: p.deviationRate >= 30 ? '#d93025' : p.deviationRate > 0 ? '#e65100' : '#9aa0a6', fontWeight: 600 }}>
+                    {p.deviationRate > 0 ? p.deviationRate.toFixed(0) + '%' : '-'}
+                  </td>
                 </tr>
               ))}
             </tbody>
