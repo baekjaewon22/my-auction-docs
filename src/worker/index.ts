@@ -12,6 +12,12 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use('/api/*', cors());
 
+// Global error handler - always return JSON
+app.onError((err, c) => {
+  console.error('API Error:', err.message, err.stack);
+  return c.json({ error: err.message || '서버 오류가 발생했습니다.' }, 500);
+});
+
 // API Routes
 app.route('/api/auth', auth);
 app.route('/api/teams', teams);
