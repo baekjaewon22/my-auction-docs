@@ -12,6 +12,14 @@ import Image from '@tiptap/extension-image';
 import { FontSize, FONT_SIZES, FONT_SIZE_LABELS } from '../extensions/FontSize';
 import { api } from '../api';
 import FileImport from '../components/FileImport';
+import Select from '../components/Select';
+
+const CATEGORY_OPTS = [
+  { value: '근태/휴가', label: '근태/휴가' },
+  { value: '인사/채용', label: '인사/채용' },
+  { value: '경비/비용', label: '경비/비용' },
+  { value: '업무/보고', label: '업무/보고' },
+];
 
 export default function TemplateEdit() {
   const { id } = useParams<{ id: string }>();
@@ -111,13 +119,13 @@ export default function TemplateEdit() {
         </div>
         <div className="form-group">
           <label>카테고리</label>
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="">카테고리 선택</option>
-            <option value="근태/휴가">근태/휴가</option>
-            <option value="인사/채용">인사/채용</option>
-            <option value="경비/비용">경비/비용</option>
-            <option value="업무/보고">업무/보고</option>
-          </select>
+          <Select
+            options={CATEGORY_OPTS}
+            value={CATEGORY_OPTS.find(o => o.value === category) || null}
+            onChange={(o: any) => setCategory(o?.value || '')}
+            placeholder="카테고리 선택"
+            isClearable
+          />
         </div>
         <div className="form-group">
           <label>설명</label>

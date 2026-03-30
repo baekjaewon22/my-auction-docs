@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store';
 import { api } from '../api';
 import { BRANCHES } from '../types';
+import Select, { toOptions } from '../components/Select';
+
+const BRANCH_OPTS = toOptions(BRANCHES);
 
 export default function Login() {
   const [isRegister, setIsRegister] = useState(false);
@@ -82,10 +85,13 @@ export default function Login() {
               </div>
               <div className="form-group">
                 <label>지사 *</label>
-                <select value={branch} onChange={(e) => setBranch(e.target.value)} required>
-                  <option value="">지사 선택</option>
-                  {BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
-                </select>
+                <Select
+                  options={BRANCH_OPTS}
+                  value={BRANCH_OPTS.find(o => o.value === branch) || null}
+                  onChange={(o: any) => setBranch(o?.value || '')}
+                  placeholder="지사 선택"
+                  isClearable
+                />
               </div>
             </>
           )}

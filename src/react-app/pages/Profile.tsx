@@ -2,6 +2,10 @@ import { useState } from 'react';
 import { useAuthStore } from '../store';
 import { api } from '../api';
 import { ROLE_LABELS, BRANCHES, DEPARTMENTS } from '../types';
+import Select, { toOptions } from '../components/Select';
+
+const BRANCH_OPTS = toOptions(BRANCHES);
+const DEPT_OPTS = toOptions(DEPARTMENTS);
 import type { Role } from '../types';
 
 export default function Profile() {
@@ -76,17 +80,23 @@ export default function Profile() {
           <div className="form-row">
             <div className="form-group">
               <label>지사</label>
-              <select value={branch} onChange={(e) => setBranch(e.target.value)}>
-                <option value="">미지정</option>
-                {BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
-              </select>
+              <Select
+                options={BRANCH_OPTS}
+                value={BRANCH_OPTS.find(o => o.value === branch) || null}
+                onChange={(o: any) => setBranch(o?.value || '')}
+                placeholder="미지정"
+                isClearable
+              />
             </div>
             <div className="form-group">
               <label>팀</label>
-              <select value={department} onChange={(e) => setDepartment(e.target.value)}>
-                <option value="">미지정</option>
-                {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
+              <Select
+                options={DEPT_OPTS}
+                value={DEPT_OPTS.find(o => o.value === department) || null}
+                onChange={(o: any) => setDepartment(o?.value || '')}
+                placeholder="미지정"
+                isClearable
+              />
             </div>
           </div>
         </div>

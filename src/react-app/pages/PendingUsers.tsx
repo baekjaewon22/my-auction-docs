@@ -3,6 +3,9 @@ import { api } from '../api';
 import type { User } from '../types';
 import { DEPARTMENTS } from '../types';
 import { UserCheck, UserX } from 'lucide-react';
+import Select, { toOptions } from '../components/Select';
+
+const DEPT_OPTS = toOptions(DEPARTMENTS);
 
 export default function PendingUsers() {
   const [users, setUsers] = useState<User[]>([]);
@@ -65,14 +68,14 @@ export default function PendingUsers() {
                   <td>{u.email}</td>
                   <td>{u.branch || '-'}</td>
                   <td>
-                    <select
-                      className="role-select"
-                      value={departments[u.id] || ''}
-                      onChange={(e) => setDepartments({ ...departments, [u.id]: e.target.value })}
-                    >
-                      <option value="">팀 선택</option>
-                      {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
-                    </select>
+                    <Select
+                      size="sm"
+                      options={DEPT_OPTS}
+                      value={DEPT_OPTS.find(o => o.value === (departments[u.id] || '')) || null}
+                      onChange={(o: any) => setDepartments({ ...departments, [u.id]: o?.value || '' })}
+                      placeholder="팀 선택"
+                      isClearable
+                    />
                   </td>
                   <td>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
                   <td>

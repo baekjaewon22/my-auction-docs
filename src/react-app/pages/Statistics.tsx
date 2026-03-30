@@ -10,6 +10,7 @@ import {
   PieChart, Pie, Cell,
 } from 'recharts';
 import { BarChart3, TrendingUp, AlertTriangle, UserCheck, ChevronLeft, ChevronRight } from 'lucide-react';
+import Select from '../components/Select';
 
 interface Member {
   id: string; name: string; role: string; branch: string; department: string;
@@ -72,19 +73,38 @@ export default function Statistics() {
         {/* Filters */}
         <div className="stats-filters">
           {isCeoPlus && (
-            <select value={filterBranch} onChange={(e) => { setFilterBranch(e.target.value); setFilterDept(''); setFilterUser(''); }} className="stats-filter-select">
-              <option value="">전체 지사</option>
-              {branches.map((b) => <option key={b} value={b}>{b} 지사</option>)}
-            </select>
+            <div style={{ minWidth: 140 }}>
+              <Select
+                size="sm"
+                options={branches.map(b => ({ value: b, label: `${b} 지사` }))}
+                value={filterBranch ? { value: filterBranch, label: `${filterBranch} 지사` } : null}
+                onChange={(o: any) => { setFilterBranch(o?.value || ''); setFilterDept(''); setFilterUser(''); }}
+                placeholder="전체 지사"
+                isClearable
+              />
+            </div>
           )}
-          <select value={filterDept} onChange={(e) => { setFilterDept(e.target.value); setFilterUser(''); }} className="stats-filter-select">
-            <option value="">전체 팀</option>
-            {filteredDepts.map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
-          <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} className="stats-filter-select">
-            <option value="">전체 인원</option>
-            {filteredUsers.map((m) => <option key={m.id} value={m.id}>{m.name} ({ROLE_LABELS[m.role as Role]})</option>)}
-          </select>
+          <div style={{ minWidth: 140 }}>
+            <Select
+              size="sm"
+              options={filteredDepts.map(d => ({ value: d, label: d }))}
+              value={filterDept ? { value: filterDept, label: filterDept } : null}
+              onChange={(o: any) => { setFilterDept(o?.value || ''); setFilterUser(''); }}
+              placeholder="전체 팀"
+              isClearable
+            />
+          </div>
+          <div style={{ minWidth: 140 }}>
+            <Select
+              size="sm"
+              options={filteredUsers.map(m => ({ value: m.id, label: `${m.name} (${ROLE_LABELS[m.role as Role]})` }))}
+              value={filterUser ? { value: filterUser, label: `${filteredUsers.find(m => m.id === filterUser)?.name || ''} (${ROLE_LABELS[filteredUsers.find(m => m.id === filterUser)?.role as Role] || ''})` } : null}
+              onChange={(o: any) => setFilterUser(o?.value || '')}
+              placeholder="전체 인원"
+              isClearable
+              isSearchable
+            />
+          </div>
         </div>
       </div>
 

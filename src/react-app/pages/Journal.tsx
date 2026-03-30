@@ -8,6 +8,7 @@ import { getToday, getTomorrow } from '../journal/types';
 import JournalCard from '../journal/JournalCard';
 import JournalForm from '../journal/JournalForm';
 import { Plus, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
+import Select from '../components/Select';
 
 interface Member {
   id: string;
@@ -188,23 +189,26 @@ export default function Journal() {
         <div className="journal-history">
           {/* Filters */}
           <div className="journal-history-filters">
-            <div className="form-group" style={{ marginBottom: 0, minWidth: 140 }}>
-              <select value={filterDept} onChange={(e) => setFilterDept(e.target.value)} className="role-select">
-                <option value="">전체 팀</option>
-                {[...new Set(members.map((m) => m.department).filter(Boolean))].sort().map((d) => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
+            <div className="form-group" style={{ marginBottom: 0, minWidth: 160 }}>
+              <Select
+                options={[...new Set(members.map((m) => m.department).filter(Boolean))].sort().map(d => ({ value: d, label: d }))}
+                value={filterDept ? { value: filterDept, label: filterDept } : null}
+                onChange={(o: any) => setFilterDept(o?.value || '')}
+                placeholder="전체 팀"
+                isClearable
+              />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, minWidth: 140 }}>
-              <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} className="role-select">
-                <option value="">전체 컨설턴트</option>
-                {members
+            <div className="form-group" style={{ marginBottom: 0, minWidth: 160 }}>
+              <Select
+                options={members
                   .filter((m) => !filterDept || m.department === filterDept)
-                  .map((m) => (
-                    <option key={m.id} value={m.id}>{m.name} ({ROLE_LABELS[m.role as Role] || ''})</option>
-                  ))}
-              </select>
+                  .map((m) => ({ value: m.id, label: `${m.name} (${ROLE_LABELS[m.role as Role] || ''})` }))}
+                value={filterUser ? { value: filterUser, label: `${members.find(m => m.id === filterUser)?.name || ''} (${ROLE_LABELS[members.find(m => m.id === filterUser)?.role as Role] || ''})` } : null}
+                onChange={(o: any) => setFilterUser(o?.value || '')}
+                placeholder="전체 컨설턴트"
+                isClearable
+                isSearchable
+              />
             </div>
           </div>
 

@@ -3,6 +3,10 @@ import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User } from '../types';
 import { ROLE_LABELS, BRANCHES, DEPARTMENTS } from '../types';
+import Select, { toOptions } from '../components/Select';
+
+const BRANCH_OPTS = toOptions(BRANCHES);
+const DEPT_OPTS = toOptions(DEPARTMENTS);
 
 export default function UserList() {
   const { user: currentUser } = useAuthStore();
@@ -75,19 +79,18 @@ export default function UserList() {
                   <td>{u.email}</td>
                   <td>
                     {canEdit && !isHigherOrEqual ? (
-                      <select
-                        value={u.role}
-                        onChange={(e) => handleUpdate(u.id, e.target.value, u.branch, u.department)}
-                        className="role-select"
-                      >
-                        {/* Show current role even if not in available list */}
-                        {!availableRoles.includes(u.role) && (
-                          <option value={u.role}>{ROLE_LABELS[u.role as keyof typeof ROLE_LABELS]}</option>
-                        )}
-                        {availableRoles.map((r) => (
-                          <option key={r} value={r}>{ROLE_LABELS[r as keyof typeof ROLE_LABELS]}</option>
-                        ))}
-                      </select>
+                      <Select
+                        size="sm"
+                        options={(() => {
+                          const opts = availableRoles.map(r => ({ value: r, label: ROLE_LABELS[r as keyof typeof ROLE_LABELS] }));
+                          if (!availableRoles.includes(u.role)) {
+                            opts.unshift({ value: u.role, label: ROLE_LABELS[u.role as keyof typeof ROLE_LABELS] });
+                          }
+                          return opts;
+                        })()}
+                        value={{ value: u.role, label: ROLE_LABELS[u.role as keyof typeof ROLE_LABELS] }}
+                        onChange={(o: any) => handleUpdate(u.id, o?.value || u.role, u.branch, u.department)}
+                      />
                     ) : (
                       <span className={`role-badge role-${u.role}`}>
                         {ROLE_LABELS[u.role as keyof typeof ROLE_LABELS]}
@@ -96,28 +99,28 @@ export default function UserList() {
                   </td>
                   <td>
                     {canEdit ? (
-                      <select
-                        value={u.branch}
-                        onChange={(e) => handleUpdate(u.id, u.role, e.target.value, u.department)}
-                        className="role-select"
-                      >
-                        <option value="">미지정</option>
-                        {BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
-                      </select>
+                      <Select
+                        size="sm"
+                        options={BRANCH_OPTS}
+                        value={BRANCH_OPTS.find(o => o.value === u.branch) || null}
+                        onChange={(o: any) => handleUpdate(u.id, u.role, o?.value || '', u.department)}
+                        placeholder="미지정"
+                        isClearable
+                      />
                     ) : (
                       u.branch || '-'
                     )}
                   </td>
                   <td>
                     {canEdit && ['manager', 'member'].includes(u.role) ? (
-                      <select
-                        value={u.department}
-                        onChange={(e) => handleUpdate(u.id, u.role, u.branch, e.target.value)}
-                        className="role-select"
-                      >
-                        <option value="">미지정</option>
-                        {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
-                      </select>
+                      <Select
+                        size="sm"
+                        options={DEPT_OPTS}
+                        value={DEPT_OPTS.find(o => o.value === u.department) || null}
+                        onChange={(o: any) => handleUpdate(u.id, u.role, u.branch, o?.value || '')}
+                        placeholder="미지정"
+                        isClearable
+                      />
                     ) : (
                       u.department || '-'
                     )}
