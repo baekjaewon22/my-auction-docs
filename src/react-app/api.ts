@@ -22,9 +22,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new Error('Unauthorized');
   }
 
-  const data = await res.json();
+  let data: any;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(res.ok ? '응답 처리 중 오류가 발생했습니다.' : '서버 오류가 발생했습니다.');
+  }
   if (!res.ok) {
-    throw new Error((data as { error?: string }).error || 'Request failed');
+    throw new Error(data?.error || '요청 처리에 실패했습니다.');
   }
   return data as T;
 }
