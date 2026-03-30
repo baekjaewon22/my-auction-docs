@@ -16,7 +16,7 @@
 		{
 			"binding": "DB",
 			"database_name": "auction-docs-db",
-			"database_id": "local"
+			"database_id": "fb5d8533-0492-4189-91a0-98bdf6f23dd5"
 		}
 	]
 }
