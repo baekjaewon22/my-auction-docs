@@ -2155,6 +2155,44 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 /* ========================= */
 /* Statistics Page            */
 /* ========================= */
+.stats-filters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.stats-filter-select {
+  padding: 6px 10px;
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  background: #fff;
+  outline: none;
+  min-width: 120px;
+}
+
+.stats-filter-select:focus {
+  border-color: var(--primary);
+}
+
+.stats-filter-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 16px;
+  font-size: 0.8rem;
+  color: var(--gray-600);
+}
+
+.stats-filter-tag {
+  background: var(--primary-light);
+  color: var(--primary);
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 .stats-slide-tabs {
   display: flex;
   align-items: center;

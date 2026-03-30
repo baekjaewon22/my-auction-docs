@@ -22,12 +22,17 @@ function parseCurrency(val: string): number {
 const COLORS = ['#1a73e8', '#e65100', '#188038', '#7b1fa2', '#f9ab00', '#d93025', '#00897b', '#5c6bc0'];
 
 export default function Statistics() {
-  useAuthStore();
+  const { user } = useAuthStore();
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState(0);
+  const [filterBranch, setFilterBranch] = useState('');
+  const [filterDept, setFilterDept] = useState('');
+  const [filterUser, setFilterUser] = useState('');
   const tabs = ['입찰 분석', '근태 분석', '이상 감지'];
+
+  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo';
 
   useEffect(() => {
     Promise.all([api.journal.list({ range: 'all' }), api.journal.members()])
@@ -35,13 +40,63 @@ export default function Statistics() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Available branches/depts/users for filters
+  const branches = [...new Set(members.map((m) => m.branch).filter(Boolean))].sort();
+  const filteredDepts = [...new Set(
+    members.filter((m) => !filterBranch || m.branch === filterBranch).map((m) => m.department).filter(Boolean)
+  )].sort();
+  const filteredUsers = members.filter((m) =>
+    (!filterBranch || m.branch === filterBranch) &&
+    (!filterDept || m.department === filterDept)
+  );
+
+  // Apply filters
+  const filteredMembers = members.filter((m) =>
+    (!filterBranch || m.branch === filterBranch) &&
+    (!filterDept || m.department === filterDept) &&
+    (!filterUser || m.id === filterUser)
+  );
+  const filteredEntries = entries.filter((e) => {
+    if (filterUser) return e.user_id === filterUser;
+    if (filterDept) return e.department === filterDept && (!filterBranch || e.branch === filterBranch);
+    if (filterBranch) return e.branch === filterBranch;
+    return true;
+  });
+
   if (loading) return <div className="page-loading">로딩중...</div>;
 
   return (
     <div className="page">
       <div className="page-header">
         <h2><BarChart3 size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} />통계</h2>
+        {/* Filters */}
+        <div className="stats-filters">
+          {isCeoPlus && (
+            <select value={filterBranch} onChange={(e) => { setFilterBranch(e.target.value); setFilterDept(''); setFilterUser(''); }} className="stats-filter-select">
+              <option value="">전체 지사</option>
+              {branches.map((b) => <option key={b} value={b}>{b} 지사</option>)}
+            </select>
+          )}
+          <select value={filterDept} onChange={(e) => { setFilterDept(e.target.value); setFilterUser(''); }} className="stats-filter-select">
+            <option value="">전체 팀</option>
+            {filteredDepts.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} className="stats-filter-select">
+            <option value="">전체 인원</option>
+            {filteredUsers.map((m) => <option key={m.id} value={m.id}>{m.name} ({ROLE_LABELS[m.role as Role]})</option>)}
+          </select>
+        </div>
       </div>
+
+      {/* Filter summary */}
+      {(filterBranch || filterDept || filterUser) && (
+        <div className="stats-filter-summary">
+          필터: {filterBranch && <span className="stats-filter-tag">{filterBranch} 지사</span>}
+          {filterDept && <span className="stats-filter-tag">{filterDept}</span>}
+          {filterUser && <span className="stats-filter-tag">{filteredUsers.find((m) => m.id === filterUser)?.name}</span>}
+          <button className="btn-link" style={{ fontSize: '0.75rem', marginLeft: 8 }} onClick={() => { setFilterBranch(''); setFilterDept(''); setFilterUser(''); }}>초기화</button>
+        </div>
+      )}
 
       {/* Slide tabs */}
       <div className="stats-slide-tabs">
@@ -62,9 +117,9 @@ export default function Statistics() {
       </div>
 
       <div className="stats-content">
-        {tab === 0 && <BidAnalysis entries={entries} members={members} />}
-        {tab === 1 && <AttendanceAnalysis entries={entries} members={members} />}
-        {tab === 2 && <AnomalyDetection entries={entries} members={members} />}
+        {tab === 0 && <BidAnalysis entries={filteredEntries} members={filteredMembers} showBranchBreakdown={isCeoPlus && !filterBranch} allEntries={entries} allMembers={members} />}
+        {tab === 1 && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers} />}
+        {tab === 2 && <AnomalyDetection entries={filteredEntries} members={filteredMembers} />}
       </div>
     </div>
   );
@@ -73,7 +128,10 @@ export default function Statistics() {
 /* ============================================================ */
 /* 1. 입찰 분석                                                   */
 /* ============================================================ */
-function BidAnalysis({ entries, members }: { entries: JournalEntry[]; members: Member[] }) {
+function BidAnalysis({ entries, members, showBranchBreakdown, allEntries, allMembers }: {
+  entries: JournalEntry[]; members: Member[];
+  showBranchBreakdown?: boolean; allEntries?: JournalEntry[]; allMembers?: Member[];
+}) {
   const bidEntries = entries.filter((e) => e.activity_type === '입찰');
 
   // 판정 기준:
@@ -283,6 +341,76 @@ function BidAnalysis({ entries, members }: { entries: JournalEntry[]; members: M
           </table>
         </div>
       </div>
+
+      {/* 지사별 비교 (대표 이상, 필터 미적용 시) */}
+      {showBranchBreakdown && allEntries && allMembers && (
+        <div className="stats-chart-card">
+          <h4>지사별 입찰 성과 비교</h4>
+          {(() => {
+            const branchList = [...new Set(allMembers.map((m) => m.branch).filter(Boolean))].sort();
+            const branchData = branchList.map((branch) => {
+              const bEntries = allEntries.filter((e) => e.activity_type === '입찰' && e.branch === branch);
+              let win = 0, lose = 0, pending = 0, dev5 = 0;
+              bEntries.forEach((e) => {
+                try {
+                  const d = JSON.parse(e.data);
+                  const a = parseCurrency(d.bidPrice);
+                  const w = parseCurrency(d.winPrice);
+                  const s = parseCurrency(d.suggestedPrice);
+                  if (w > 0) { if (a >= w) win++; else lose++; } else pending++;
+                  if (s > 0 && a > 0 && (s - a) / s >= 0.05) dev5++;
+                } catch { /* */ }
+              });
+              const det = win + lose;
+              return {
+                name: branch + ' 지사',
+                입찰: bEntries.length,
+                낙찰: win,
+                패찰: lose,
+                미확정: pending,
+                낙찰률: det > 0 ? Number((win / det * 100).toFixed(1)) : 0,
+                '5%초과': dev5,
+              };
+            });
+
+            return (
+              <>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={branchData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" fontSize={12} />
+                    <YAxis fontSize={12} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="입찰" fill="#1a73e8" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="낙찰" fill="#188038" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="패찰" fill="#d93025" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="5%초과" fill="#f9ab00" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="table-wrapper" style={{ marginTop: 12 }}>
+                  <table className="data-table">
+                    <thead><tr><th>지사</th><th>입찰</th><th>낙찰</th><th>패찰</th><th>미확정</th><th>낙찰률</th><th>5%초과</th></tr></thead>
+                    <tbody>
+                      {branchData.map((b) => (
+                        <tr key={b.name}>
+                          <td><strong>{b.name}</strong></td>
+                          <td>{b.입찰}</td>
+                          <td style={{ color: '#188038', fontWeight: 600 }}>{b.낙찰}</td>
+                          <td style={{ color: '#d93025', fontWeight: 600 }}>{b.패찰}</td>
+                          <td style={{ color: '#9aa0a6' }}>{b.미확정}</td>
+                          <td style={{ fontWeight: 700, color: b.낙찰률 >= 50 ? '#188038' : '#e65100' }}>{b.낙찰률 > 0 ? b.낙찰률 + '%' : '-'}</td>
+                          <td style={{ color: b['5%초과'] > 0 ? '#d93025' : '#9aa0a6', fontWeight: 600 }}>{b['5%초과']}건</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      )}
     </div>
   );
 }
