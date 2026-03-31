@@ -680,6 +680,51 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border-top: 1px solid var(--gray-100);
 }
 
+/* Template favorite button */
+.template-card {
+  position: relative;
+}
+
+.template-fav-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 50%;
+  color: var(--gray-300);
+  transition: all 0.2s;
+  z-index: 2;
+}
+
+.template-fav-btn:hover {
+  color: #f9ab00;
+  transform: scale(1.2);
+}
+
+.template-fav-btn.active {
+  color: #f9ab00;
+}
+
+.fav-filter.active {
+  background: #f9ab00 !important;
+  border-color: #f9ab00 !important;
+}
+
+.template-fav-section {
+  border: 1px solid #fef0c7;
+  background: #fffdf5;
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.template-fav-section .template-category-header {
+  border-bottom-color: #fef0c7;
+}
+
 /* Dashboard template categories */
 .dashboard-tpl-category {
   margin-bottom: 20px;
