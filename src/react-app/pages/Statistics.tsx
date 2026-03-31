@@ -387,74 +387,71 @@ function BidAnalysis({ entries, members, showBranchBreakdown, allEntries, allMem
       </div>
 
       {/* 지사별 비교 (대표 이상, 필터 미적용 시) */}
-      {showBranchBreakdown && allEntries && allMembers && (
-        <div className="stats-chart-card">
-          <h4>지사별 입찰 성과 비교</h4>
-          {(() => {
-            const branchList = [...new Set(allMembers.map((m) => m.branch).filter(Boolean))].sort();
-            const branchData = branchList.map((branch) => {
-              const bEntries = allEntries.filter((e) => e.activity_type === '입찰' && e.branch === branch);
-              let win = 0, lose = 0, pending = 0, dev5 = 0;
-              bEntries.forEach((e) => {
-                try {
-                  const d = JSON.parse(e.data);
-                  const a = parseCurrency(d.bidPrice);
-                  const w = parseCurrency(d.winPrice);
-                  const s = parseCurrency(d.suggestedPrice);
-                  if (w > 0) { if (a >= w) win++; else lose++; } else pending++;
-                  if (s > 0 && a > 0 && (s - a) / s >= 0.05) dev5++;
-                } catch { /* */ }
-              });
-              const det = win + lose;
-              return {
-                name: branch + ' 지사',
-                입찰: bEntries.length,
-                낙찰: win,
-                패찰: lose,
-                미확정: pending,
-                낙찰률: det > 0 ? Number((win / det * 100).toFixed(1)) : 0,
-                '5%초과': dev5,
-              };
-            });
+      {showBranchBreakdown && allEntries && allMembers && (() => {
+        const branchList = [...new Set(allMembers.map((m) => m.branch).filter(Boolean))].sort();
 
-            return (
-              <>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={branchData}>
+        return branchList.map((branch) => {
+          const bMembers = allMembers.filter((m) => m.branch === branch);
+          const bEntries = allEntries.filter((e) => e.activity_type === '입찰' && e.branch === branch);
+
+          // 지사 전체 통계
+          let totalWin = 0, totalLose = 0, totalPending = 0, totalDev5 = 0;
+          bEntries.forEach((e) => {
+            try {
+              const d = JSON.parse(e.data);
+              const a = parseCurrency(d.bidPrice);
+              const w = parseCurrency(d.winPrice);
+              const s = parseCurrency(d.suggestedPrice);
+              if (w > 0) { if (a >= w) totalWin++; else totalLose++; } else totalPending++;
+              if (s > 0 && a > 0 && (s - a) / s >= 0.05) totalDev5++;
+            } catch { /* */ }
+          });
+          const totalDet = totalWin + totalLose;
+
+          // 담당자별 통계
+          const personData = bMembers.map((m) => {
+            const myBids = bEntries.filter((e) => e.user_id === m.id);
+            let win = 0, lose = 0;
+            myBids.forEach((e) => {
+              try {
+                const d = JSON.parse(e.data);
+                const a = parseCurrency(d.bidPrice);
+                const w = parseCurrency(d.winPrice);
+                if (w > 0) { if (a >= w) win++; else lose++; }
+              } catch { /* */ }
+            });
+            return { name: m.name, 입찰: myBids.length, 낙찰: win, 패찰: lose };
+          }).filter((p) => p.입찰 > 0);
+
+          return (
+            <div key={branch} className="stats-chart-card">
+              <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ background: '#1a73e8', color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem' }}>{branch} 지사</span>
+                <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>
+                  입찰 {bEntries.length} · 낙찰 {totalWin} · 패찰 {totalLose} · 낙찰률 {totalDet > 0 ? (totalWin / totalDet * 100).toFixed(1) + '%' : '-'}
+                  {totalDev5 > 0 && <span style={{ color: '#d93025', marginLeft: 8 }}>5%초과 {totalDev5}건</span>}
+                </span>
+              </h4>
+              {personData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={personData}>
                     <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" fontSize={12} />
-                    <YAxis fontSize={12} />
+                    <XAxis dataKey="name" fontSize={11} />
+                    <YAxis fontSize={11} allowDecimals={false} />
                     <Tooltip />
                     <Legend />
                     <Bar dataKey="입찰" fill="#1a73e8" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="낙찰" fill="#188038" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="패찰" fill="#d93025" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="5%초과" fill="#f9ab00" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
-                <div className="table-wrapper" style={{ marginTop: 12 }}>
-                  <table className="data-table">
-                    <thead><tr><th>지사</th><th>입찰</th><th>낙찰</th><th>패찰</th><th>미확정</th><th>낙찰률</th><th>5%초과</th></tr></thead>
-                    <tbody>
-                      {branchData.map((b) => (
-                        <tr key={b.name}>
-                          <td><strong>{b.name}</strong></td>
-                          <td>{b.입찰}</td>
-                          <td style={{ color: '#188038', fontWeight: 600 }}>{b.낙찰}</td>
-                          <td style={{ color: '#d93025', fontWeight: 600 }}>{b.패찰}</td>
-                          <td style={{ color: '#9aa0a6' }}>{b.미확정}</td>
-                          <td style={{ fontWeight: 700, color: b.낙찰률 >= 50 ? '#188038' : '#e65100' }}>{b.낙찰률 > 0 ? b.낙찰률 + '%' : '-'}</td>
-                          <td style={{ color: b['5%초과'] > 0 ? '#d93025' : '#9aa0a6', fontWeight: 600 }}>{b['5%초과']}건</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            );
-          })()}
-        </div>
-      )}
+              ) : (
+                <div className="empty-state">입찰 데이터가 없습니다.</div>
+              )}
+            </div>
+          );
+        });
+      })()}
     </div>
   );
 }
