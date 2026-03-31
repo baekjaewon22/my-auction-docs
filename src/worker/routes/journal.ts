@@ -2,6 +2,19 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware } from '../middleware/auth';
 
+// KST (한국 시간) 기준 날짜
+function getKSTToday(): string {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().split('T')[0];
+}
+
+function getKSTTomorrow(): string {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000 + 86400000);
+  return kst.toISOString().split('T')[0];
+}
+
 interface JournalEntry {
   id: string;
   user_id: string;
@@ -108,8 +121,8 @@ journal.post('/', async (c) => {
     return c.json({ error: '날짜와 활동 유형은 필수입니다.' }, 400);
   }
 
-  const today = new Date().toISOString().split('T')[0];
-  const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+  const today = getKSTToday();
+  const tomorrow = getKSTTomorrow();
   if (body.target_date !== today && body.target_date !== tomorrow) {
     return c.json({ error: '오늘 또는 내일 일정만 등록할 수 있습니다.' }, 400);
   }
@@ -134,7 +147,7 @@ journal.put('/:id', async (c) => {
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
   if (entry.user_id !== user.sub && user.role !== 'master') return c.json({ error: '권한이 없습니다.' }, 403);
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTToday();
   if (entry.target_date < today) return c.json({ error: '지난 일정은 수정할 수 없습니다.' }, 400);
 
   const body = await c.req.json<{
@@ -158,7 +171,7 @@ journal.delete('/:id', async (c) => {
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
   if (entry.user_id !== user.sub && user.role !== 'master') return c.json({ error: '권한이 없습니다.' }, 403);
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTToday();
   if (entry.target_date < today) return c.json({ error: '지난 일정은 삭제할 수 없습니다.' }, 400);
 
   await db.prepare('DELETE FROM journal_entries WHERE id = ?').bind(id).run();

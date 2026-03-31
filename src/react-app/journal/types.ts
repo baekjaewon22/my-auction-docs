@@ -88,15 +88,26 @@ export const COURT_OPTIONS: CourtOption[] = COURT_DATA.flatMap((c) => [
 // 하위 호환용
 export const COURTS = COURT_OPTIONS.map((c) => c.value);
 
+// KST (한국 시간) 기준 날짜
+function getKSTDate(offset = 0): Date {
+  const now = new Date();
+  const kst = new Date(now.getTime() + (9 * 60 * 60 * 1000) + (offset * 86400000));
+  return kst;
+}
+
+function formatDateStr(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
 export function getToday(): string {
-  return new Date().toISOString().split('T')[0];
+  return formatDateStr(getKSTDate(0));
 }
 
 export function getTomorrow(): string {
-  return new Date(Date.now() + 86400000).toISOString().split('T')[0];
+  return formatDateStr(getKSTDate(1));
 }
 
 export function formatShortDate(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00');
-  return `${d.getFullYear().toString().slice(2)}.${d.getMonth() + 1}.${d.getDate()}`;
+  const parts = dateStr.split('-');
+  return `${parts[0].slice(2)}.${Number(parts[1])}.${Number(parts[2])}`;
 }
