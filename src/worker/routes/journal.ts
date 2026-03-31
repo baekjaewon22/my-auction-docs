@@ -71,7 +71,7 @@ journal.get('/members', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
-  let query = 'SELECT id, name, role, branch, department FROM users WHERE approved = 1';
+  let query = 'SELECT id, name, role, branch, department, position_title FROM users WHERE approved = 1';
   const params: string[] = [];
 
   if (user.role === 'member') {

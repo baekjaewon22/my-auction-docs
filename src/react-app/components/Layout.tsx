@@ -84,7 +84,7 @@ export default function Layout() {
               <div className="user-details">
                 <div className="user-name">{user?.name}</div>
                 <div className="user-role">
-                  {ROLE_LABELS[role]}
+                  {user?.position_title || ROLE_LABELS[role]}
                   {user?.branch && ` · ${user.branch}`}
                   {user?.department && ` · ${user.department}`}
                 </div>

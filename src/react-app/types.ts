@@ -22,6 +22,7 @@ export interface User {
   team_name?: string;
   branch: string;
   department: string;
+  position_title: string;
   created_at?: string;
 }
 

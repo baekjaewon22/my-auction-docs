@@ -16,6 +16,7 @@ interface Member {
   role: string;
   branch: string;
   department: string;
+  position_title?: string;
 }
 
 export default function Journal() {
@@ -120,6 +121,7 @@ export default function Journal() {
           entries={memberEntries}
           userName={member.name}
           userRole={member.role}
+          positionTitle={member.position_title}
           date={dateStr || memberEntries[0].target_date}
           readonly={isReadonly}
           onDelete={handleDelete}
@@ -134,7 +136,7 @@ export default function Journal() {
         <div className="journal-card-date">&nbsp;</div>
         <div className="journal-card-name">
           {member.name}
-          <span className="journal-card-role">{ROLE_LABELS[member.role as Role] || ''}</span>
+          <span className="journal-card-role">{member.position_title || ROLE_LABELS[member.role as Role] || ''}</span>
         </div>
         <div className="journal-card-empty-label">미입력</div>
       </div>

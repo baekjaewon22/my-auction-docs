@@ -14,6 +14,7 @@ export interface User {
   team_id: string | null;
   branch: string;
   department: string;
+  position_title: string;
   approved: number;
   created_at: string;
   updated_at: string;

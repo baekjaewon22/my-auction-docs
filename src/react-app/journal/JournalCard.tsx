@@ -9,19 +9,20 @@ interface Props {
   entries: JournalEntry[];
   userName: string;
   userRole?: string;
+  positionTitle?: string;
   date: string;
   readonly?: boolean;
   onDelete?: (id: string) => void;
   onToggleComplete?: (id: string, completed: boolean, failReason?: string) => void;
 }
 
-export default function JournalCard({ entries, userName, userRole, date, readonly, onDelete, onToggleComplete }: Props) {
+export default function JournalCard({ entries, userName, userRole, positionTitle, date, readonly, onDelete, onToggleComplete }: Props) {
   const [showPopup, setShowPopup] = useState(false);
   const [failId, setFailId] = useState<string | null>(null);
   const [failReason, setFailReason] = useState('');
 
   const types = [...new Set(entries.map((e) => e.activity_type))];
-  const roleLabel = userRole ? ROLE_LABELS[userRole as Role] || '' : '';
+  const roleLabel = positionTitle || (userRole ? ROLE_LABELS[userRole as Role] || '' : '');
 
   const parseData = (data: string) => {
     try { return JSON.parse(data); } catch { return {}; }

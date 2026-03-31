@@ -10,7 +10,7 @@ users.get('/', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
-  let query = 'SELECT id, email, name, phone, role, team_id, branch, department, approved, created_at FROM users WHERE approved = 1';
+  let query = 'SELECT id, email, name, phone, role, team_id, branch, department, position_title, approved, created_at FROM users WHERE approved = 1';
   const params: string[] = [];
 
   if (user.role === 'admin' && user.branch === '의정부') {
@@ -163,8 +163,8 @@ users.put('/:id', async (c) => {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
-  const { phone, branch, department, password } = await c.req.json<{
-    phone?: string; branch?: string; department?: string; password?: string;
+  const { phone, branch, department, position_title, password } = await c.req.json<{
+    phone?: string; branch?: string; department?: string; position_title?: string; password?: string;
   }>();
   const existing = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<User>();
   if (!existing) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
@@ -172,8 +172,8 @@ users.put('/:id', async (c) => {
   const newHash = password ? await hashPassword(password) : existing.password_hash;
 
   await db.prepare(
-    "UPDATE users SET phone = ?, branch = ?, department = ?, password_hash = ?, updated_at = datetime('now') WHERE id = ?"
-  ).bind(phone ?? existing.phone, branch ?? existing.branch, department ?? existing.department, newHash, id).run();
+    "UPDATE users SET phone = ?, branch = ?, department = ?, position_title = ?, password_hash = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(phone ?? existing.phone, branch ?? existing.branch, department ?? existing.department, position_title ?? existing.position_title, newHash, id).run();
 
   return c.json({ success: true });
 });

@@ -13,6 +13,7 @@ export default function Profile() {
   const [phone, setPhone] = useState(user?.phone || '');
   const [branch, setBranch] = useState(user?.branch || '');
   const [department, setDepartment] = useState(user?.department || '');
+  const [positionTitle, setPositionTitle] = useState(user?.position_title || '');
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [saving, setSaving] = useState(false);
@@ -29,8 +30,8 @@ export default function Profile() {
     setSaving(true);
     setMessage('');
     try {
-      const data: { phone?: string; branch?: string; department?: string; password?: string } = {
-        phone, branch, department,
+      const data: { phone?: string; branch?: string; department?: string; position_title?: string; password?: string } = {
+        phone, branch, department, position_title: positionTitle,
       };
       if (password) data.password = password;
 
@@ -66,8 +67,16 @@ export default function Profile() {
             </div>
           </div>
           <div className="form-group">
-            <label>직책</label>
+            <label>직책 (시스템 권한)</label>
             <input type="text" value={ROLE_LABELS[user.role as Role]} disabled className="input-disabled" />
+          </div>
+        </div>
+
+        <div className="profile-section">
+          <h3>보직명 <span className="profile-editable-tag">수정 가능</span></h3>
+          <div className="form-group">
+            <label>보직명 <span style={{ color: '#9aa0a6', fontWeight: 400 }}>ex) 과장, 대리, 차장, 부장, 실장 등</span></label>
+            <input type="text" value={positionTitle} onChange={(e) => setPositionTitle(e.target.value)} placeholder="보직명을 입력하세요" />
           </div>
         </div>
 
