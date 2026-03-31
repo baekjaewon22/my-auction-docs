@@ -2898,6 +2898,141 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 /* ========================= */
+/* Archive Page              */
+/* ========================= */
+.archive-filters {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+
+.archive-filter-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.archive-filter-item {
+  min-width: 130px;
+}
+
+.archive-search {
+  flex: 1;
+  min-width: 180px;
+  position: relative;
+}
+
+.archive-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--gray-400);
+  z-index: 1;
+}
+
+.archive-search-input {
+  width: 100%;
+  padding: 6px 10px 6px 30px;
+  border: 1.5px solid var(--gray-200);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.archive-search-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(26,115,232,0.12);
+}
+
+.archive-filter-tags {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.archive-month-section {
+  margin-bottom: 24px;
+}
+
+.archive-month-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--gray-200);
+}
+
+.archive-month-label {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--gray-800);
+}
+
+.archive-month-count {
+  font-size: 0.75rem;
+  color: var(--gray-500);
+  background: var(--gray-100);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.archive-doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.archive-doc-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  transition: all 0.15s;
+}
+
+.archive-doc-item:hover {
+  box-shadow: var(--shadow);
+  border-color: var(--primary);
+}
+
+.archive-doc-icon {
+  flex-shrink: 0;
+}
+
+.archive-doc-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.archive-doc-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--gray-800);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archive-doc-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 0.72rem;
+  color: var(--gray-500);
+  margin-top: 3px;
+}
+
+/* ========================= */
 /* Profile Page              */
 /* ========================= */
 .profile-card {

@@ -13,6 +13,7 @@ import TeamList from './pages/TeamList';
 import UserManagement from './pages/UserManagement';
 import Profile from './pages/Profile';
 import Journal from './pages/Journal';
+import ArchivePage from './pages/Archive';
 import Statistics from './pages/Statistics';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -69,6 +70,7 @@ export default function App() {
           <Route path="documents/:id" element={<DocumentEdit />} />
           <Route path="templates" element={<TemplateList />} />
           <Route path="journal" element={<Journal />} />
+          <Route path="archive" element={<ArchivePage />} />
           <Route
             path="statistics"
             element={

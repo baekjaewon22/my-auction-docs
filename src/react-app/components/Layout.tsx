@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive
 } from 'lucide-react';
 
 export default function Layout() {
@@ -58,6 +58,9 @@ export default function Layout() {
         </Link>
         <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
           <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
+        </Link>
+        <Link to="/archive" className={`nav-item ${isActive('/archive') ? 'active' : ''}`} title="문서 보관함" onClick={() => setMobileOpen(false)}>
+          <Archive size={18} /> {!collapsed && '문서 보관함'}
         </Link>
 
         {canApprove && (
