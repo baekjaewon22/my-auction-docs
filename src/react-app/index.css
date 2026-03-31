@@ -425,18 +425,25 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .form-group textarea,
 .form-group select {
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--gray-300);
-  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  border: 1.5px solid var(--gray-200);
+  border-radius: 8px;
   font-size: 0.875rem;
-  transition: border-color 0.15s;
+  transition: all 0.2s ease;
   outline: none;
+  background: var(--gray-50);
 }
 
 .form-group input:focus,
 .form-group textarea:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px var(--primary-light);
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+  background: #fff;
+}
+
+.form-group input::placeholder,
+.form-group textarea::placeholder {
+  color: var(--gray-400);
 }
 
 .form-row {
@@ -456,10 +463,19 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .inline-input {
   width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--gray-300);
-  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  border: 1.5px solid var(--gray-200);
+  border-radius: 8px;
   font-size: 0.875rem;
+  transition: all 0.2s ease;
+  background: var(--gray-50);
+}
+
+.inline-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+  background: #fff;
+  outline: none;
 }
 
 /* ========================= */
@@ -1524,14 +1540,16 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 .login-form .form-group input {
-  border: 1px solid #e0d8cc;
+  border: 1.5px solid #e0d8cc;
+  border-radius: 10px;
   background: #faf8f4;
-  transition: all 0.2s;
+  padding: 12px 16px;
+  transition: all 0.25s ease;
 }
 
 .login-form .form-group input:focus {
   border-color: #e65100;
-  box-shadow: 0 0 0 3px rgba(230, 81, 0, 0.1);
+  box-shadow: 0 0 0 4px rgba(230, 81, 0, 0.08);
   background: #fff;
 }
 
@@ -2058,17 +2076,19 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .journal-edit-row input {
   flex: 1;
-  padding: 4px 8px;
-  border: 1px solid var(--gray-300);
-  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  border: 1.5px solid var(--gray-200);
+  border-radius: 8px;
   font-size: 0.8rem;
   outline: none;
   min-width: 0;
+  background: #fff;
+  transition: all 0.2s ease;
 }
 
 .journal-edit-row input:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px var(--primary-light);
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
 }
 
 .journal-popup-editable {
@@ -2372,17 +2392,20 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   flex: 0 0 80px;
   height: 34px;
   padding: 0 8px;
-  border: 1px solid var(--gray-300);
-  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--gray-200);
+  border-radius: 8px;
   font-size: 0.85rem;
   outline: none;
   text-align: center;
   letter-spacing: 1px;
+  background: var(--gray-50);
+  transition: all 0.2s ease;
 }
 
 .case-no-input:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px var(--primary-light);
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+  background: #fff;
 }
 
 .journal-field-badge.briefing-badge {
