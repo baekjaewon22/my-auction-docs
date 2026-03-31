@@ -43,6 +43,7 @@ const customStyles: StylesConfig<any, false, GroupBase<any>> = {
     fontSize: '0.83rem',
     color: '#9aa0a6',
   }),
+  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
   indicatorSeparator: () => ({ display: 'none' }),
   dropdownIndicator: (base, state) => ({
     ...base,
@@ -93,6 +94,8 @@ export default function Select({ size = 'default', ...props }: SelectProps) {
     <ReactSelect
       styles={size === 'sm' ? smallStyles : customStyles}
       noOptionsMessage={() => '결과 없음'}
+      menuPortalTarget={document.body}
+      menuPosition="fixed"
       {...props}
     />
   );

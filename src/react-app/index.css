@@ -1744,6 +1744,12 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 /* ========================= */
 .table-wrapper {
   overflow-x: auto;
+  overflow-y: visible;
+}
+
+.data-table td {
+  overflow: visible;
+  position: relative;
 }
 
 .data-table {
