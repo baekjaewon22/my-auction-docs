@@ -4,7 +4,7 @@ import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
-  Users, UserCog, Settings, LogOut, UserPlus, CalendarDays, BarChart3
+  Users, UserCog, Settings, LogOut, CalendarDays, BarChart3
 } from 'lucide-react';
 
 export default function Layout() {
@@ -58,21 +58,16 @@ export default function Layout() {
             </>
           )}
 
-          {canApproveUsers && (
-            <Link to="/pending" className={`nav-item ${isActive('/pending') ? 'active' : ''}`}>
-              <UserPlus size={18} /> 가입 승인
+          {canManage && (
+            <Link to="/teams" className={`nav-item ${isActive('/teams') ? 'active' : ''}`}>
+              <Users size={18} /> 팀 관리
             </Link>
           )}
 
-          {canManage && (
-            <>
-              <Link to="/teams" className={`nav-item ${isActive('/teams') ? 'active' : ''}`}>
-                <Users size={18} /> 팀 관리
-              </Link>
-              <Link to="/users" className={`nav-item ${isActive('/users') ? 'active' : ''}`}>
-                <UserCog size={18} /> 사용자 관리
-              </Link>
-            </>
+          {canApproveUsers && (
+            <Link to="/users" className={`nav-item ${isActive('/users') ? 'active' : ''}`}>
+              <UserCog size={18} /> 사용자 관리
+            </Link>
           )}
         </nav>
 

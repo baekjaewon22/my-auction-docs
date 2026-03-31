@@ -10,9 +10,8 @@ import TemplateList from './pages/TemplateList';
 import TemplateEdit from './pages/TemplateEdit';
 import ReviewList from './pages/ReviewList';
 import TeamList from './pages/TeamList';
-import UserList from './pages/UserList';
+import UserManagement from './pages/UserManagement';
 import Profile from './pages/Profile';
-import PendingUsers from './pages/PendingUsers';
 import Journal from './pages/Journal';
 import Statistics from './pages/Statistics';
 
@@ -73,14 +72,6 @@ export default function App() {
           />
           <Route path="profile" element={<Profile />} />
           <Route
-            path="pending"
-            element={
-              <ApproverRoute>
-                <PendingUsers />
-              </ApproverRoute>
-            }
-          />
-          <Route
             path="templates/:id"
             element={
               <TopRoute>
@@ -107,9 +98,9 @@ export default function App() {
           <Route
             path="users"
             element={
-              <TopRoute>
-                <UserList />
-              </TopRoute>
+              <ApproverRoute>
+                <UserManagement />
+              </ApproverRoute>
             }
           />
         </Route>
