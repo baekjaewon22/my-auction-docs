@@ -30,6 +30,10 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
   const [fieldCheckIn, setFieldCheckIn] = useState(false);
   const [fieldCheckOut, setFieldCheckOut] = useState(false);
+  const [briefingSubmit, setBriefingSubmit] = useState(false);
+  const [briefingYear, setBriefingYear] = useState('2026');
+  const [briefingCaseNo, setBriefingCaseNo] = useState('');
+  const [briefingCourt, setBriefingCourt] = useState('');
 
   const [timeFrom, setTimeFrom] = useState('09:00');
   const [timeTo, setTimeTo] = useState('10:00');
@@ -83,7 +87,8 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     }
     setSaving(true);
 
-    let data: Record<string, unknown> = { timeFrom, timeTo, fieldCheckIn, fieldCheckOut };
+    let data: Record<string, unknown> = { timeFrom, timeTo, fieldCheckIn, fieldCheckOut,
+      briefingSubmit, ...(briefingSubmit ? { briefingCaseNo: `${briefingYear}타경${briefingCaseNo}`, briefingCourt } : {}) };
     let subtype = '';
 
     switch (activityType) {
@@ -147,6 +152,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                 <label className={`field-check-label ${fieldCheckOut ? 'checked' : ''}`}>
                   <input type="checkbox" checked={fieldCheckOut} onChange={(e) => setFieldCheckOut(e.target.checked)} />현장퇴근
                 </label>
+                <label className={`field-check-label briefing ${briefingSubmit ? 'checked' : ''}`}>
+                  <input type="checkbox" checked={briefingSubmit} onChange={(e) => setBriefingSubmit(e.target.checked)} />브리핑자료 제출
+                </label>
               </div>
             </div>
           </div>
@@ -160,6 +168,34 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
               <div className="form-group">
                 <label>종료 시간</label>
                 <Select options={TIME_OPTS} value={TIME_OPTS.find((o) => o.value === timeTo)} onChange={(o: any) => setTimeTo(o.value)} />
+              </div>
+            </div>
+          )}
+
+          {/* 브리핑자료 제출 입력 */}
+          {briefingSubmit && (
+            <div className="briefing-fields">
+              <label className="form-label-sm">브리핑자료 사건정보</label>
+              <div className="form-row">
+                <div className="form-group" style={{ flex: '0 0 120px' }}>
+                  <Select options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === briefingYear)} onChange={(o: any) => setBriefingYear(o.value)} />
+                </div>
+                <div className="form-group" style={{ flex: '0 0 70px' }}>
+                  <input type="text" value="타경" disabled className="input-disabled" />
+                </div>
+                <div className="form-group">
+                  <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value)} placeholder="사건번호" required />
+                </div>
+              </div>
+              <div className="form-group">
+                <Select
+                  options={COURT_OPTIONS}
+                  value={COURT_OPTIONS.find((o) => o.value === briefingCourt) || null}
+                  onChange={(o: any) => setBriefingCourt(o?.value || '')}
+                  placeholder="법원 검색..."
+                  isSearchable
+                  formatOptionLabel={formatCourtLabel}
+                />
               </div>
             </div>
           )}

@@ -30,7 +30,7 @@ export default function JournalCard({ entries, userName, userRole, date, readonl
   // Check if any entry has field check-in/out
   const hasFieldCheck = entries.some((e) => {
     const d = parseData(e.data);
-    return d.fieldCheckIn || d.fieldCheckOut;
+    return d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit;
   });
 
   const handleFail = (id: string) => {
@@ -51,6 +51,9 @@ export default function JournalCard({ entries, userName, userRole, date, readonl
             )}
             {entries.some((e) => parseData(e.data).fieldCheckOut) && (
               <span className="journal-field-badge"><MapPin size={10} /> 현장퇴근</span>
+            )}
+            {entries.some((e) => parseData(e.data).briefingSubmit) && (
+              <span className="journal-field-badge briefing-badge">브리핑</span>
             )}
           </div>
         )}
@@ -88,10 +91,11 @@ export default function JournalCard({ entries, userName, userRole, date, readonl
                         {entry.activity_type}
                       </span>
                       {entry.activity_subtype && <span className="journal-entry-sub">{entry.activity_subtype}</span>}
-                      {(d.fieldCheckIn || d.fieldCheckOut) && (
+                      {(d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit) && (
                         <div className="journal-field-badges-inline">
                           {d.fieldCheckIn && <span className="journal-field-badge"><MapPin size={10} /> 현장출근</span>}
                           {d.fieldCheckOut && <span className="journal-field-badge"><MapPin size={10} /> 현장퇴근</span>}
+                          {d.briefingSubmit && <span className="journal-field-badge briefing-badge">브리핑</span>}
                         </div>
                       )}
                       {!readonly && (
@@ -160,6 +164,15 @@ export default function JournalCard({ entries, userName, userRole, date, readonl
                       )}
                       {entry.activity_type === '개인' && (
                         <div className="journal-detail-row"><span className="journal-detail-label">사유</span><span>{d.reason}</span></div>
+                      )}
+                      {d.briefingSubmit && d.briefingCaseNo && (
+                        <>
+                          <div className="journal-detail-row" style={{ marginTop: 6, paddingTop: 6, borderTop: '1px dashed #e8eaed' }}>
+                            <span className="journal-detail-label" style={{ color: '#1a73e8' }}>브리핑</span>
+                            <span>{d.briefingCaseNo}</span>
+                          </div>
+                          {d.briefingCourt && <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.briefingCourt}</span></div>}
+                        </>
                       )}
                     </div>
                   </div>

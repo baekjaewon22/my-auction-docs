@@ -31,6 +31,7 @@ export default function Statistics() {
   const [filterBranch, setFilterBranch] = useState('');
   const [filterDept, setFilterDept] = useState('');
   const [filterUser, setFilterUser] = useState('');
+  const [filterMonth, setFilterMonth] = useState('');
   const tabs = ['입찰 분석', '근태 분석', '이상 감지'];
 
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo';
@@ -51,6 +52,10 @@ export default function Statistics() {
     (!filterDept || m.department === filterDept)
   );
 
+  // 월별 옵션
+  const monthOptions = [...new Set(entries.map((e) => e.target_date.slice(0, 7)))].sort((a, b) => b.localeCompare(a))
+    .map((m) => ({ value: m, label: m }));
+
   // Apply filters
   const filteredMembers = members.filter((m) =>
     (!filterBranch || m.branch === filterBranch) &&
@@ -58,6 +63,7 @@ export default function Statistics() {
     (!filterUser || m.id === filterUser)
   );
   const filteredEntries = entries.filter((e) => {
+    if (filterMonth && !e.target_date.startsWith(filterMonth)) return false;
     if (filterUser) return e.user_id === filterUser;
     if (filterDept) return e.department === filterDept && (!filterBranch || e.branch === filterBranch);
     if (filterBranch) return e.branch === filterBranch;
@@ -105,16 +111,27 @@ export default function Statistics() {
               isSearchable
             />
           </div>
+          <div style={{ minWidth: 130 }}>
+            <Select
+              size="sm"
+              options={monthOptions}
+              value={filterMonth ? { value: filterMonth, label: filterMonth } : null}
+              onChange={(o: any) => setFilterMonth(o?.value || '')}
+              placeholder="전체 기간"
+              isClearable
+            />
+          </div>
         </div>
       </div>
 
       {/* Filter summary */}
-      {(filterBranch || filterDept || filterUser) && (
+      {(filterBranch || filterDept || filterUser || filterMonth) && (
         <div className="stats-filter-summary">
-          필터: {filterBranch && <span className="stats-filter-tag">{filterBranch} 지사</span>}
+          필터: {filterMonth && <span className="stats-filter-tag">{filterMonth}</span>}
+          {filterBranch && <span className="stats-filter-tag">{filterBranch} 지사</span>}
           {filterDept && <span className="stats-filter-tag">{filterDept}</span>}
           {filterUser && <span className="stats-filter-tag">{filteredUsers.find((m) => m.id === filterUser)?.name}</span>}
-          <button className="btn-link" style={{ fontSize: '0.75rem', marginLeft: 8 }} onClick={() => { setFilterBranch(''); setFilterDept(''); setFilterUser(''); }}>초기화</button>
+          <button className="btn-link" style={{ fontSize: '0.75rem', marginLeft: 8 }} onClick={() => { setFilterBranch(''); setFilterDept(''); setFilterUser(''); setFilterMonth(''); }}>초기화</button>
         </div>
       )}
 
@@ -588,42 +605,76 @@ function AttendanceAnalysis({ entries, members }: { entries: JournalEntry[]; mem
 /* 3. 이상 감지                                                   */
 /* ============================================================ */
 function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; members: Member[] }) {
-  // 1. 임장 했지만 입찰 안한 케이스
-  const inspectionNoBid: { member: Member; date: string; caseNo: string }[] = [];
+  // 파이프라인: 임장 → 브리핑 → 입찰
+  // 사건번호 기준으로 각 단계 매칭
 
-  // Group by user+date
-  const byUserDate: Record<string, JournalEntry[]> = {};
+  // 사용자별 사건번호별 단계 수집
+  interface CasePipeline {
+    caseNo: string;
+    userId: string;
+    member: Member | undefined;
+    hasInspection: boolean;
+    hasBriefing: boolean;
+    hasBid: boolean;
+    inspDate?: string;
+    briefDate?: string;
+    bidDate?: string;
+  }
+
+  const caseMap: Record<string, CasePipeline> = {};
+
+  // 임장 사건번호
+  entries.filter((e) => e.activity_type === '임장').forEach((e) => {
+    try {
+      const d = JSON.parse(e.data);
+      const caseNo = d.caseNo || '';
+      if (!caseNo) return;
+      const key = `${e.user_id}_${caseNo}`;
+      if (!caseMap[key]) caseMap[key] = { caseNo, userId: e.user_id, member: members.find((m) => m.id === e.user_id), hasInspection: false, hasBriefing: false, hasBid: false };
+      caseMap[key].hasInspection = true;
+      caseMap[key].inspDate = e.target_date;
+    } catch { /* */ }
+  });
+
+  // 브리핑 사건번호 (briefingSubmit 체크된 항목)
   entries.forEach((e) => {
-    const key = `${e.user_id}_${e.target_date}`;
-    if (!byUserDate[key]) byUserDate[key] = [];
-    byUserDate[key].push(e);
+    try {
+      const d = JSON.parse(e.data);
+      if (!d.briefingSubmit || !d.briefingCaseNo) return;
+      const caseNo = d.briefingCaseNo;
+      const key = `${e.user_id}_${caseNo}`;
+      if (!caseMap[key]) caseMap[key] = { caseNo, userId: e.user_id, member: members.find((m) => m.id === e.user_id), hasInspection: false, hasBriefing: false, hasBid: false };
+      caseMap[key].hasBriefing = true;
+      caseMap[key].briefDate = e.target_date;
+    } catch { /* */ }
   });
 
-  Object.values(byUserDate).forEach((dayEntries) => {
-    const inspections = dayEntries.filter((e) => e.activity_type === '임장');
-
-    inspections.forEach((insp) => {
-      try {
-        const d = JSON.parse(insp.data);
-        const caseNo = d.caseNo || '';
-        // Check if there's a bid for this case on any date
-        const hasBid = entries.some((e) =>
-          e.user_id === insp.user_id && e.activity_type === '입찰' &&
-          JSON.parse(e.data).caseNo === caseNo
-        );
-        if (!hasBid && caseNo) {
-          const member = members.find((m) => m.id === insp.user_id);
-          if (member) {
-            inspectionNoBid.push({ member, date: insp.target_date, caseNo });
-          }
-        }
-      } catch { /* */ }
-    });
+  // 입찰 사건번호
+  entries.filter((e) => e.activity_type === '입찰').forEach((e) => {
+    try {
+      const d = JSON.parse(e.data);
+      const caseNo = d.caseNo || '';
+      if (!caseNo) return;
+      const key = `${e.user_id}_${caseNo}`;
+      if (!caseMap[key]) caseMap[key] = { caseNo, userId: e.user_id, member: members.find((m) => m.id === e.user_id), hasInspection: false, hasBriefing: false, hasBid: false };
+      caseMap[key].hasBid = true;
+      caseMap[key].bidDate = e.target_date;
+    } catch { /* */ }
   });
 
-  // 2. 제시입찰가 대비 5% 이상 낮은 입찰
+  const allCases = Object.values(caseMap);
+
+  // 1. 임장O → 입찰X (브리핑 여부 무관)
+  const inspNoBid = allCases.filter((c) => c.hasInspection && !c.hasBid);
+
+  // 2. 임장O + 브리핑O → 입찰X
+  const inspBriefNoBid = allCases.filter((c) => c.hasInspection && c.hasBriefing && !c.hasBid);
+
+  // 3. 임장O → 브리핑X (브리핑 미제출)
+  const inspNoBrief = allCases.filter((c) => c.hasInspection && !c.hasBriefing);
+
+  // 4. 5% 초과 차이
   const deviationAlerts: { member: Member; date: string; caseNo: string; suggested: number; actual: number; deviation: number; reason: string }[] = [];
-
   entries.filter((e) => e.activity_type === '입찰').forEach((e) => {
     try {
       const d = JSON.parse(e.data);
@@ -633,28 +684,19 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
         const dev = (s - a) / s * 100;
         if (dev >= 5) {
           const member = members.find((m) => m.id === e.user_id);
-          if (member) {
-            deviationAlerts.push({
-              member, date: e.target_date, caseNo: d.caseNo || '',
-              suggested: s, actual: a, deviation: dev, reason: d.deviationReason || '',
-            });
-          }
+          if (member) deviationAlerts.push({ member, date: e.target_date, caseNo: d.caseNo || '', suggested: s, actual: a, deviation: dev, reason: d.deviationReason || '' });
         }
       }
     } catch { /* */ }
   });
 
-  // 3. 일지 미작성 일수 (최근 30일 기준)
+  // 5. 일지 미작성
   const today = new Date();
   const last30: string[] = [];
   for (let i = 0; i < 30; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    if (d.getDay() !== 0 && d.getDay() !== 6) { // 평일만
-      last30.push(d.toISOString().split('T')[0]);
-    }
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    if (d.getDay() !== 0 && d.getDay() !== 6) last30.push(d.toISOString().split('T')[0]);
   }
-
   const missingDays = members.filter((m) => ['member', 'manager'].includes(m.role)).map((m) => {
     const myDates = new Set(entries.filter((e) => e.user_id === m.id).map((e) => e.target_date));
     const missing = last30.filter((d) => !myDates.has(d));
@@ -663,39 +705,45 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
 
   const fmtWon = (n: number) => (n / 10000).toLocaleString() + '만원';
 
+  const renderCaseTable = (cases: CasePipeline[], title: string, color: string, desc: string) => (
+    <div className="stats-chart-card">
+      <h4 style={{ color }}>{title} ({cases.length}건)</h4>
+      <p className="stats-desc">{desc}</p>
+      {cases.length > 0 ? (
+        <div className="table-wrapper">
+          <table className="data-table">
+            <thead><tr><th>담당자</th><th>팀</th><th>사건번호</th><th>임장</th><th>브리핑</th><th>입찰</th></tr></thead>
+            <tbody>
+              {cases.map((c, i) => (
+                <tr key={i}>
+                  <td><strong>{c.member?.name}</strong></td>
+                  <td>{c.member?.department || '-'}</td>
+                  <td style={{ fontWeight: 600 }}>{c.caseNo}</td>
+                  <td style={{ color: c.hasInspection ? '#188038' : '#d93025' }}>{c.hasInspection ? `✓ ${c.inspDate}` : '—'}</td>
+                  <td style={{ color: c.hasBriefing ? '#1a73e8' : '#d93025' }}>{c.hasBriefing ? `✓ ${c.briefDate}` : '—'}</td>
+                  <td style={{ color: c.hasBid ? '#188038' : '#d93025', fontWeight: 700 }}>{c.hasBid ? `✓ ${c.bidDate}` : '✗ 미입찰'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty-state">해당 건이 없습니다.</div>
+      )}
+    </div>
+  );
+
   return (
     <div className="stats-section-content">
-      <h3 className="stats-subtitle"><AlertTriangle size={18} /> 이상 감지 및 알림</h3>
+      <h3 className="stats-subtitle"><AlertTriangle size={18} /> 이상 감지 — 업무 파이프라인 (임장 → 브리핑 → 입찰)</h3>
 
-      {/* Inspection without bid */}
-      <div className="stats-chart-card">
-        <h4 style={{ color: '#e65100' }}>임장 후 미입찰 건 ({inspectionNoBid.length}건)</h4>
-        <p className="stats-desc">임장을 진행했으나 해당 사건에 대한 입찰 기록이 없는 건입니다.</p>
-        {inspectionNoBid.length > 0 ? (
-          <div className="table-wrapper">
-            <table className="data-table">
-              <thead><tr><th>담당자</th><th>팀</th><th>일자</th><th>사건번호</th></tr></thead>
-              <tbody>
-                {inspectionNoBid.map((item, i) => (
-                  <tr key={i}>
-                    <td><strong>{item.member.name}</strong></td>
-                    <td>{item.member.department || '-'}</td>
-                    <td>{item.date}</td>
-                    <td style={{ color: '#e65100', fontWeight: 600 }}>{item.caseNo}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="empty-state">해당 건이 없습니다.</div>
-        )}
-      </div>
+      {renderCaseTable(inspNoBid, '임장 후 미입찰', '#e65100', '임장을 진행했으나 입찰 기록이 없는 사건입니다.')}
+      {renderCaseTable(inspBriefNoBid, '임장 + 브리핑 완료 → 미입찰', '#d93025', '임장과 브리핑까지 했으나 입찰을 하지 않은 사건입니다.')}
+      {renderCaseTable(inspNoBrief, '임장 후 브리핑 미제출', '#7b1fa2', '임장을 진행했으나 브리핑자료를 제출하지 않은 사건입니다.')}
 
-      {/* 5% deviation alerts */}
+      {/* 5% deviation */}
       <div className="stats-chart-card">
         <h4 style={{ color: '#d93025' }}>제시입찰가 대비 5% 이상 차이 ({deviationAlerts.length}건)</h4>
-        <p className="stats-desc">브리핑 시 제시된 금액보다 5% 이상 낮게 입찰한 건입니다.</p>
         {deviationAlerts.length > 0 ? (
           <div className="table-wrapper">
             <table className="data-table">
@@ -715,14 +763,12 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
               </tbody>
             </table>
           </div>
-        ) : (
-          <div className="empty-state">해당 건이 없습니다.</div>
-        )}
+        ) : (<div className="empty-state">해당 건이 없습니다.</div>)}
       </div>
 
-      {/* Missing journal days */}
+      {/* Missing journal */}
       <div className="stats-chart-card">
-        <h4>일지 미작성 현황 (최근 30일 평일 기준)</h4>
+        <h4>일지 미작성 현황 (최근 30일 평일)</h4>
         {missingDays.length > 0 ? (
           <>
             <ResponsiveContainer width="100%" height={250}>
@@ -751,9 +797,7 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
               </table>
             </div>
           </>
-        ) : (
-          <div className="empty-state">모든 인원이 일지를 작성했습니다.</div>
-        )}
+        ) : (<div className="empty-state">모든 인원이 일지를 작성했습니다.</div>)}
       </div>
     </div>
   );

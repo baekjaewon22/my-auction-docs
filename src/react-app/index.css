@@ -2128,6 +2128,34 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border: 1px solid #f5c6cb;
 }
 
+.journal-field-badge.briefing-badge {
+  background: #e8f0fe;
+  color: #1a73e8;
+  border-color: #c5d9f7;
+}
+
+.field-check-label.briefing.checked {
+  background: #e8f0fe;
+  color: #1a73e8;
+  border-color: #c5d9f7;
+}
+
+.briefing-fields {
+  background: #f8faff;
+  border: 1px solid #d2e3fc;
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.form-label-sm {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #1a73e8;
+  margin-bottom: 8px;
+  display: block;
+}
+
 /* Activity type row with checkboxes */
 .activity-type-row {
   display: flex;
