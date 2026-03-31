@@ -1437,6 +1437,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   align-items: center;
   justify-content: center;
   z-index: 100;
+  padding: 16px;
 }
 
 .modal {
@@ -2197,8 +2198,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border-radius: 12px;
   width: 100%;
   max-width: 520px;
-  max-height: 85vh;
-  overflow-y: auto;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
   box-shadow: var(--shadow-lg);
 }
 
@@ -2217,6 +2219,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .journal-form-body {
   padding: 16px 24px 24px;
+  flex: 1;
+  overflow-y: auto;
 }
 
 .journal-form-body .form-group {
