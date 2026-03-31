@@ -143,6 +143,7 @@ export default function JournalCard({ entries, userName, userRole, date, readonl
                       {entry.activity_type === '임장' && (
                         <>
                           <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span><span>{d.caseNo}</span></div>
+                          {d.court && <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.court}</span></div>}
                           <div className="journal-detail-row"><span className="journal-detail-label">장소</span><span>{d.place}</span></div>
                           {entry.completed === 1 && <div className="journal-detail-row"><span className="journal-detail-label">상태</span><span style={{ color: '#188038' }}>완료</span></div>}
                           {entry.completed === 0 && entry.fail_reason && <div className="journal-detail-row"><span className="journal-detail-label">미완료 사유</span><span style={{ color: '#d93025' }}>{entry.fail_reason}</span></div>}

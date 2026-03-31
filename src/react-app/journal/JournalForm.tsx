@@ -2,17 +2,21 @@ import { useState, useEffect } from 'react';
 import { api } from '../api';
 import {
   ACTIVITY_TYPES, MEETING_SUBTYPES, OFFICE_SUBTYPES,
-  COURTS, generateTimeOptions, generateYears,
-  type ActivityType,
+  COURT_OPTIONS, generateTimeOptions, generateYears,
+  type ActivityType, type CourtOption,
 } from './types';
 import Select, { toOptions } from '../components/Select';
 import { Plus, X } from 'lucide-react';
 
 const TIME_OPTS = toOptions(generateTimeOptions());
 const YEAR_OPTS = generateYears().map((y) => ({ value: String(y), label: String(y) }));
-const COURT_OPTS = toOptions(COURTS as unknown as string[]);
 const MEETING_OPTS = toOptions(MEETING_SUBTYPES as unknown as string[]);
 const OFFICE_OPTS = toOptions(OFFICE_SUBTYPES as unknown as string[]);
+
+// 법원 옵션 (본원 bold)
+const formatCourtLabel = (opt: CourtOption) => (
+  <span style={{ fontWeight: opt.isMain ? 700 : 400 }}>{opt.label}</span>
+);
 
 interface Props {
   targetDate: string;
@@ -56,6 +60,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   // 임장
   const [inspYear, setInspYear] = useState('2026');
   const [inspCaseNo, setInspCaseNo] = useState('');
+  const [inspCourt, setInspCourt] = useState('');
   const [inspPlace, setInspPlace] = useState('');
 
   // 미팅
@@ -89,7 +94,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
         subtype = `${bidYear}타경${bidCaseNo}`;
         break;
       case '임장':
-        data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, place: inspPlace };
+        data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, court: inspCourt, place: inspPlace };
         subtype = `${inspYear}타경${inspCaseNo}`;
         break;
       case '미팅':
@@ -181,7 +186,14 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
               </div>
               <div className="form-group">
                 <label>법원</label>
-                <Select options={COURT_OPTS} value={COURT_OPTS.find((o) => o.value === bidCourt)} onChange={(o: any) => setBidCourt(o.value)} placeholder="법원 검색..." isSearchable />
+                <Select
+                  options={COURT_OPTIONS}
+                  value={COURT_OPTIONS.find((o) => o.value === bidCourt) || null}
+                  onChange={(o: any) => setBidCourt(o?.value || '')}
+                  placeholder="법원 검색..."
+                  isSearchable
+                  formatOptionLabel={formatCourtLabel}
+                />
               </div>
               <div className="form-group">
                 <label>제시 입찰가 (원) <span style={{ color: '#9aa0a6', fontWeight: 400 }}>ex) 브리핑 시 제시금액</span></label>
@@ -227,6 +239,17 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                   <label>사건번호</label>
                   <input type="text" value={inspCaseNo} onChange={(e) => setInspCaseNo(e.target.value)} placeholder="12345" required />
                 </div>
+              </div>
+              <div className="form-group">
+                <label>법원</label>
+                <Select
+                  options={COURT_OPTIONS}
+                  value={COURT_OPTIONS.find((o) => o.value === inspCourt) || null}
+                  onChange={(o: any) => setInspCourt(o?.value || '')}
+                  placeholder="법원 검색..."
+                  isSearchable
+                  formatOptionLabel={formatCourtLabel}
+                />
               </div>
               <div className="form-group">
                 <label>장소</label>
