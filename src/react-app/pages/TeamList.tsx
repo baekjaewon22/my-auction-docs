@@ -1,174 +1,130 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { Team, User } from '../types';
+import { Plus, Pencil, Trash2, GripVertical } from 'lucide-react';
+
+interface Dept {
+  id: string;
+  name: string;
+  branch: string;
+  sort_order: number;
+}
 
 export default function TeamList() {
-  const [teams, setTeams] = useState<Team[]>([]);
-  const [selectedTeam, setSelectedTeam] = useState<string | null>(null);
-  const [members, setMembers] = useState<User[]>([]);
-  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [depts, setDepts] = useState<Dept[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
-  const [showEdit, setShowEdit] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
-  const [newDesc, setNewDesc] = useState('');
+  const [editId, setEditId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-  const [editDesc, setEditDesc] = useState('');
 
-  const load = async () => {
+  const load = () => {
     setLoading(true);
-    const [teamRes, userRes] = await Promise.all([api.teams.list(), api.users.list()]);
-    setTeams(teamRes.teams);
-    setAllUsers(userRes.users);
-    setLoading(false);
+    api.departments.list().then((res) => setDepts(res.departments)).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
 
-  const loadMembers = async (teamId: string) => {
-    setSelectedTeam(teamId);
-    const res = await api.teams.members(teamId);
-    setMembers(res.members);
-  };
-
   const handleCreate = async () => {
-    if (!newName) return;
-    await api.teams.create(newName, newDesc);
-    setShowCreate(false);
-    setNewName('');
-    setNewDesc('');
-    load();
+    if (!newName.trim()) { alert('팀 이름을 입력하세요.'); return; }
+    try {
+      await api.departments.create(newName.trim());
+      setNewName('');
+      load();
+    } catch (err: any) { alert(err.message); }
   };
 
   const handleUpdate = async (id: string) => {
-    await api.teams.update(id, { name: editName, description: editDesc });
-    setShowEdit(null);
+    if (!editName.trim()) return;
+    await api.departments.update(id, { name: editName.trim() });
+    setEditId(null);
     load();
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('팀을 삭제하시겠습니까? 팀원들은 소속 없음 상태가 됩니다.')) return;
-    await api.teams.delete(id);
-    if (selectedTeam === id) setSelectedTeam(null);
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`"${name}" 팀을 삭제하시겠습니까?\n해당 팀 소속 인원의 팀 정보가 유지됩니다.`)) return;
+    await api.departments.delete(id);
     load();
-  };
-
-  const handleAddMember = async (userId: string) => {
-    if (!selectedTeam) return;
-    await api.teams.addMember(selectedTeam, userId);
-    loadMembers(selectedTeam);
-    load();
-  };
-
-  const handleRemoveMember = async (userId: string) => {
-    if (!selectedTeam) return;
-    await api.teams.removeMember(selectedTeam, userId);
-    loadMembers(selectedTeam);
-    load();
-  };
-
-  const startEdit = (team: Team) => {
-    setShowEdit(team.id);
-    setEditName(team.name);
-    setEditDesc(team.description);
   };
 
   if (loading) return <div className="page-loading">로딩중...</div>;
-
-  const unassignedUsers = allUsers.filter((u) => !u.team_id);
 
   return (
     <div className="page">
       <div className="page-header">
         <h2>팀 관리</h2>
-        <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ 새 팀</button>
       </div>
 
-      {showCreate && (
-        <div className="card" style={{ marginBottom: '1rem' }}>
-          <h4>새 팀 만들기</h4>
-          <div className="form-row">
-            <div className="form-group">
-              <label>팀 이름</label>
-              <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="팀 이름" />
-            </div>
-            <div className="form-group">
-              <label>설명</label>
-              <input value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="팀 설명" />
-            </div>
+      {/* 팀 추가 */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="form-row form-row-inline" style={{ alignItems: 'flex-end' }}>
+          <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+            <label>새 팀 추가</label>
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="팀 이름 (예: 경매사업부4팀, 법무팀)"
+              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+            />
           </div>
-          <div className="form-actions">
-            <button className="btn" onClick={() => setShowCreate(false)}>취소</button>
-            <button className="btn btn-primary" onClick={handleCreate}>생성</button>
-          </div>
+          <button className="btn btn-primary" onClick={handleCreate} style={{ marginBottom: 0, height: 40 }}>
+            <Plus size={16} /> 추가
+          </button>
         </div>
-      )}
+      </div>
 
-      <div className="team-layout">
-        <div className="team-list-panel">
-          {teams.map((team) => (
-            <div
-              key={team.id}
-              className={`team-card ${selectedTeam === team.id ? 'active' : ''}`}
-              onClick={() => loadMembers(team.id)}
-            >
-              {showEdit === team.id ? (
-                <div onClick={(e) => e.stopPropagation()}>
-                  <input value={editName} onChange={(e) => setEditName(e.target.value)} className="inline-input" />
-                  <input value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className="inline-input" style={{ marginTop: 4 }} />
-                  <div className="form-actions" style={{ marginTop: 4 }}>
-                    <button className="btn btn-sm" onClick={() => setShowEdit(null)}>취소</button>
-                    <button className="btn btn-sm btn-primary" onClick={() => handleUpdate(team.id)}>저장</button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="team-name">{team.name}</div>
-                  <div className="team-desc">{team.description}</div>
-                  <div className="team-actions">
-                    <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); startEdit(team); }}>편집</button>
-                    <button className="btn btn-sm btn-danger" onClick={(e) => { e.stopPropagation(); handleDelete(team.id); }}>삭제</button>
-                  </div>
-                </>
-              )}
-            </div>
-          ))}
-          {teams.length === 0 && <div className="empty-state">팀이 없습니다.</div>}
-        </div>
-
-        {selectedTeam && (
-          <div className="team-members-panel">
-            <h4>팀원 목록</h4>
-            <div className="member-list">
-              {members.map((m) => (
-                <div key={m.id} className="member-item">
-                  <div>
-                    <span className="member-name">{m.name}</span>
-                    <span className="member-role">
-                      {m.role === 'admin' ? '관리자' : m.role === 'manager' ? '팀장' : '팀원'}
-                    </span>
-                  </div>
-                  <button className="btn btn-sm btn-danger" onClick={() => handleRemoveMember(m.id)}>제거</button>
-                </div>
-              ))}
-              {members.length === 0 && <div className="empty-state">팀원이 없습니다.</div>}
-            </div>
-
-            {unassignedUsers.length > 0 && (
-              <>
-                <h4 style={{ marginTop: '1rem' }}>미배정 사용자</h4>
-                <div className="member-list">
-                  {unassignedUsers.map((u) => (
-                    <div key={u.id} className="member-item">
-                      <span className="member-name">{u.name} ({u.email})</span>
-                      <button className="btn btn-sm btn-primary" onClick={() => handleAddMember(u.id)}>추가</button>
+      {/* 팀 목록 */}
+      <div className="table-wrapper">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th style={{ width: '5%' }}>#</th>
+              <th>팀 이름</th>
+              <th style={{ width: '15%' }}>소속 인원</th>
+              <th style={{ width: '15%' }}>관리</th>
+            </tr>
+          </thead>
+          <tbody>
+            {depts.map((d, i) => (
+              <tr key={d.id}>
+                <td style={{ textAlign: 'center', color: '#9aa0a6' }}>
+                  <GripVertical size={14} style={{ verticalAlign: 'middle' }} /> {i + 1}
+                </td>
+                <td>
+                  {editId === d.id ? (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleUpdate(d.id)}
+                        style={{ padding: '4px 8px', border: '1.5px solid #1a73e8', borderRadius: 6, fontSize: '0.85rem', flex: 1 }}
+                        autoFocus
+                      />
+                      <button className="btn btn-sm btn-primary" onClick={() => handleUpdate(d.id)}>저장</button>
+                      <button className="btn btn-sm" onClick={() => setEditId(null)}>취소</button>
                     </div>
-                  ))}
-                </div>
-              </>
+                  ) : (
+                    <strong>{d.name}</strong>
+                  )}
+                </td>
+                <td style={{ textAlign: 'center', color: '#9aa0a6' }}>-</td>
+                <td>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button className="btn btn-sm" onClick={() => { setEditId(d.id); setEditName(d.name); }}>
+                      <Pencil size={13} />
+                    </button>
+                    <button className="btn btn-sm btn-danger" onClick={() => handleDelete(d.id, d.name)}>
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {depts.length === 0 && (
+              <tr><td colSpan={4} className="empty-state">등록된 팀이 없습니다.</td></tr>
             )}
-          </div>
-        )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

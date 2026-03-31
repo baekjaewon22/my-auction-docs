@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User } from '../types';
-import { ROLE_LABELS, BRANCHES, DEPARTMENTS } from '../types';
+import { ROLE_LABELS, BRANCHES } from '../types';
 import type { Role } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { Trash2, UserCheck, UserX, UserCog, CalendarDays } from 'lucide-react';
 
 const BRANCH_OPTS = toOptions(BRANCHES);
-const DEPT_OPTS = toOptions(DEPARTMENTS);
+import { useDepartments } from '../hooks/useDepartments';
 const ROLE_OPTS = Object.entries(ROLE_LABELS).map(([v, l]) => ({ value: v, label: l }));
 
 interface LeaveInfo {
@@ -23,6 +23,8 @@ interface LeaveInfo {
 
 export default function UserManagement() {
   const { user: currentUser } = useAuthStore();
+  const { departments: deptList } = useDepartments();
+  const DEPT_OPTS = toOptions(deptList);
   const [tab, setTab] = useState<'approved' | 'pending' | 'leave'>('approved');
   const [users, setUsers] = useState<User[]>([]);
   const [pendingUsers, setPendingUsers] = useState<User[]>([]);

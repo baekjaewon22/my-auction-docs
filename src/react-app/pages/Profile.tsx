@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { useAuthStore } from '../store';
 import { api } from '../api';
-import { ROLE_LABELS, BRANCHES, DEPARTMENTS } from '../types';
+import { ROLE_LABELS, BRANCHES } from '../types';
 import Select, { toOptions } from '../components/Select';
+import { useDepartments } from '../hooks/useDepartments';
 
 const BRANCH_OPTS = toOptions(BRANCHES);
-const DEPT_OPTS = toOptions(DEPARTMENTS);
 import type { Role } from '../types';
 
 export default function Profile() {
   const { user, loadUser } = useAuthStore();
+  const { departments } = useDepartments();
+  const DEPT_OPTS = toOptions(departments);
   const [phone, setPhone] = useState(user?.phone || '');
   const [branch, setBranch] = useState(user?.branch || '');
   const [department, setDepartment] = useState(user?.department || '');

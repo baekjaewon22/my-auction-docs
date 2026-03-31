@@ -8,6 +8,7 @@ import signatures from './routes/signatures';
 import users from './routes/users';
 import journal from './routes/journal';
 import leave from './routes/leave';
+import departmentsRoute from './routes/departments';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -28,6 +29,7 @@ app.route('/api/signatures', signatures);
 app.route('/api/users', users);
 app.route('/api/journal', journal);
 app.route('/api/leave', leave);
+app.route('/api/departments', departmentsRoute);
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));

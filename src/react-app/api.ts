@@ -130,6 +130,15 @@ export const api = {
       request<{ signatures: import('./types').Signature[] }>('/signatures/document/' + documentId),
   },
 
+  departments: {
+    list: () => request<{ departments: { id: string; name: string; branch: string; sort_order: number }[] }>('/departments'),
+    create: (name: string, branch?: string) =>
+      request('/departments', { method: 'POST', body: JSON.stringify({ name, branch }) }),
+    update: (id: string, data: { name?: string; branch?: string; sort_order?: number }) =>
+      request('/departments/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) => request('/departments/' + id, { method: 'DELETE' }),
+  },
+
   leave: {
     list: () => request<{ leaves: any[] }>('/leave'),
     me: () => request<{ leave: any }>('/leave/me'),
