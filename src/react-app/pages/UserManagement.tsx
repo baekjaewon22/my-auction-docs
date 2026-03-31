@@ -95,7 +95,9 @@ export default function UserManagement() {
             </thead>
             <tbody>
               {users.map((u) => {
-                const canEdit = availableRoles.length > 0 && u.id !== currentUser?.id;
+                // 관리자는 본인 지사만 수정/삭제 가능 (의정부 관리자도 타지사 수정 불가)
+                const isSameBranch = currentUser?.role !== 'admin' || u.branch === currentUser?.branch;
+                const canEdit = availableRoles.length > 0 && u.id !== currentUser?.id && isSameBranch;
                 const targetLevel = hierarchy[u.role] || 99;
                 const isHigher = targetLevel <= myLevel;
                 const canDel = canEdit && !isHigher;

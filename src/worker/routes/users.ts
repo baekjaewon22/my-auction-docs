@@ -13,7 +13,9 @@ users.get('/', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
   let query = 'SELECT id, email, name, phone, role, team_id, branch, department, approved, created_at FROM users WHERE approved = 1';
   const params: string[] = [];
 
-  if (user.role === 'admin') {
+  if (user.role === 'admin' && user.branch === '의정부') {
+    // 의정부 관리자: 전체 열람 가능
+  } else if (user.role === 'admin') {
     query += ' AND branch = ?';
     params.push(user.branch);
   } else if (user.role === 'manager') {
@@ -87,6 +89,11 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   const existing = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<User>();
   if (!existing) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
+  // 관리자는 본인 지사 사용자만 수정 가능
+  if (currentUser.role === 'admin' && existing.branch !== currentUser.branch) {
+    return c.json({ error: '본인 지사 사용자만 수정할 수 있습니다.' }, 403);
+  }
+
   const newRole = role || existing.role;
 
   if (newRole === 'master' && currentUser.role !== 'master') {
@@ -122,6 +129,11 @@ users.delete('/:id', requireRole('master', 'ceo', 'admin'), async (c) => {
 
   const target = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<User>();
   if (!target) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
+
+  // 관리자는 본인 지사 사용자만 삭제 가능
+  if (currentUser.role === 'admin' && target.branch !== currentUser.branch) {
+    return c.json({ error: '본인 지사 사용자만 삭제할 수 있습니다.' }, 403);
+  }
 
   const hierarchy: Record<string, number> = { master: 1, ceo: 2, admin: 3, manager: 4, member: 5 };
   const myLevel = hierarchy[currentUser.role] || 99;

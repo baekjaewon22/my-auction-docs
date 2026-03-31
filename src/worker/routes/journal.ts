@@ -40,6 +40,8 @@ journal.get('/', async (c) => {
     conditions.push('j.department = ?');
     params.push(user.branch);
     params.push(user.department);
+  } else if (user.role === 'admin' && user.branch === '의정부') {
+    // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
     conditions.push('j.branch = ?');
     params.push(user.branch);
@@ -79,6 +81,8 @@ journal.get('/members', async (c) => {
     query += ' AND branch = ? AND department = ?';
     params.push(user.branch);
     params.push(user.department);
+  } else if (user.role === 'admin' && user.branch === '의정부') {
+    // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
     query += ' AND branch = ?';
     params.push(user.branch);

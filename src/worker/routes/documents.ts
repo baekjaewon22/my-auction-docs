@@ -23,7 +23,10 @@ documents.get('/', async (c) => {
 
   if (user.role === 'master' || user.role === 'ceo') {
     // Full access
+  } else if (user.role === 'admin' && user.branch === '의정부') {
+    // 의정부 관리자: 전체 열람 가능
   } else if (user.role === 'admin') {
+    // 기타 지사 관리자: 본인 지사만
     conditions.push('d.branch = ?');
     params.push(user.branch);
   } else if (user.role === 'manager') {
@@ -69,7 +72,8 @@ documents.get('/:id', async (c) => {
   if (user.role === 'manager' && doc.author_id !== user.sub && (doc.branch !== user.branch || doc.department !== user.department)) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
-  if (user.role === 'admin' && doc.branch !== user.branch && doc.author_id !== user.sub) {
+  // 의정부 관리자는 타지사 열람 가능, 기타 관리자는 본인 지사만
+  if (user.role === 'admin' && user.branch !== '의정부' && doc.branch !== user.branch && doc.author_id !== user.sub) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
@@ -153,7 +157,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
     return c.json({ error: '본인 팀 문서만 승인할 수 있습니다.' }, 403);
   }
   if (user.role === 'admin' && doc.branch !== user.branch) {
-    return c.json({ error: '본인 지사 문서만 승인할 수 있습니다.' }, 403);
+    return c.json({ error: '본인 지사 문서만 처리할 수 있습니다. (타지사 열람만 가능)' }, 403);
   }
 
   await db.prepare("UPDATE documents SET status = 'approved', updated_at = datetime('now') WHERE id = ?").bind(id).run();
