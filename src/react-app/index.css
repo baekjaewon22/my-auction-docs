@@ -1333,7 +1333,13 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   position: relative;
 }
 
-/* Logo image (uncomment when PNG is ready) */
+.login-logo-icon {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  margin-bottom: 12px;
+}
+
 .login-logo-img {
   max-width: 280px;
   height: auto;

@@ -58,6 +58,7 @@ export default function Login() {
 
       <div className="login-card">
         <div className="login-header">
+          <img src="/logo2.png" alt="My Auction" className="login-logo-icon" />
           <img src="/logo.png" alt="My Auction" className="login-logo-img" />
           <h1 className="login-logo">
             <span className="login-logo-sub">office</span>
