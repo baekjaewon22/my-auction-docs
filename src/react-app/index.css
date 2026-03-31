@@ -2029,6 +2029,43 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   font-size: 0.8rem;
 }
 
+.journal-edit-input {
+  padding: 3px 8px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  width: 120px;
+  outline: none;
+  background: #f8faff;
+}
+
+.journal-edit-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.editable-hint {
+  color: var(--primary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  text-decoration: underline;
+  font-weight: 500;
+}
+
+.editable-hint:hover { color: var(--primary-hover); }
+
+.journal-popup-editable {
+  display: inline-block;
+  font-size: 0.65rem;
+  color: var(--success);
+  background: var(--success-light);
+  padding: 1px 8px;
+  border-radius: 8px;
+  margin-left: 8px;
+  font-weight: 600;
+}
+
 /* Journal Form Modal */
 .journal-form-modal {
   background: #fff;

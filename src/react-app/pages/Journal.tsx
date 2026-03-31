@@ -112,7 +112,9 @@ export default function Journal() {
     const memberEntries = entries.filter((e) => e.user_id === member.id);
     const hasEntries = memberEntries.length > 0;
     const dateStr = tab === 'today' ? today : tab === 'tomorrow' ? tomorrow : '';
-    const isReadonly = tab === 'history' || (dateStr < today) || member.id !== user?.id;
+    // 오늘/내일 본인 일정만 수정 가능 (어제 이전은 불가)
+    const entryDate = dateStr || (hasEntries ? memberEntries[0].target_date : '');
+    const isReadonly = entryDate < today || member.id !== user?.id;
 
     if (hasEntries) {
       return (
@@ -126,6 +128,7 @@ export default function Journal() {
           readonly={isReadonly}
           onDelete={handleDelete}
           onToggleComplete={handleToggleComplete}
+          onUpdate={load}
         />
       );
     }
@@ -261,6 +264,7 @@ export default function Journal() {
                         readonly={date < today}
                         onDelete={handleDelete}
                         onToggleComplete={handleToggleComplete}
+          onUpdate={load}
                       />
                     ))}
                   </div>
