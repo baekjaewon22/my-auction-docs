@@ -431,22 +431,19 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
                 </div>
               ))}
             </div>
-            <div className="stats-chart-card">
-              <h4>지사별 활동 비교</h4>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={branchList.map((b) => {
-                  const be = allEntries.filter((e) => e.branch === b);
-                  return { name: b, 입찰: be.filter((e) => e.activity_type === '입찰').length, 임장: be.filter((e) => e.activity_type === '임장').length, 미팅: be.filter((e) => e.activity_type === '미팅').length, 사무: be.filter((e) => e.activity_type === '사무').length, 개인: be.filter((e) => e.activity_type === '개인').length };
-                })}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" fontSize={12} />
-                  <YAxis fontSize={12} />
-                  <Tooltip />
-                  <Legend />
-                  {activityTypes.map((t) => <Bar key={t} dataKey={t} stackId="a" fill={ACTIVITY_COLORS[t]} />)}
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {branchList.map((b) => {
+              const bMembers = (allMembers || []).filter((m) => m.branch === b);
+              const bEntries = (allEntries || []).filter((e) => e.branch === b);
+              return (
+                <div key={b} className="stats-chart-card">
+                  <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ background: '#1a73e8', color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem' }}>{b} 지사</span>
+                    <span style={{ fontSize: '0.8rem', color: '#9aa0a6' }}>담당자별 활동</span>
+                  </h4>
+                  {renderStackBar(bMembers, bEntries)}
+                </div>
+              );
+            })}
           </>
         );
       })()}
