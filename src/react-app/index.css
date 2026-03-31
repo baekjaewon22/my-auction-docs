@@ -2297,11 +2297,13 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .case-no-inline {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  height: 34px;
 }
 
 .case-no-inline > div:first-child {
   flex: 0 0 90px;
+  height: 34px;
 }
 
 .case-no-fixed {
@@ -2309,13 +2311,14 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   font-weight: 700;
   color: var(--gray-700);
   flex-shrink: 0;
-  padding: 0 2px;
+  line-height: 34px;
 }
 
 .case-no-input {
   width: 80px;
   flex: 0 0 80px;
-  padding: 6px 10px;
+  height: 34px;
+  padding: 0 8px;
   border: 1px solid var(--gray-300);
   border-radius: var(--radius-sm);
   font-size: 0.85rem;
@@ -2830,6 +2833,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .login-card { margin: 12px; max-width: calc(100vw - 24px); }
   .login-form { padding: 20px; }
   .form-row { flex-direction: column; gap: 0; }
+  .form-row.form-row-inline { flex-direction: row; gap: 8px; }
 
   .profile-card { padding: 16px; }
   .journal-branch-header { flex-wrap: wrap; justify-content: center; }

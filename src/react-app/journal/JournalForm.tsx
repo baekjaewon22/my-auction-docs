@@ -200,7 +200,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                 </div>
               </div>
               {/* 입찰자 + 법원 한줄 */}
-              <div className="form-row">
+              <div className="form-row form-row-inline">
                 <div className="form-group" style={{ flex: 1 }}>
                   <label>입찰자</label>
                   <input type="text" value={bidBidder} onChange={(e) => setBidBidder(e.target.value)} required />
@@ -249,7 +249,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                   <input type="text" value={inspCaseNo} onChange={(e) => setInspCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
                 </div>
               </div>
-              <div className="form-row">
+              <div className="form-row form-row-inline">
                 <div className="form-group" style={{ flex: 1 }}>
                   <label>법원</label>
                   <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === inspCourt) || null} onChange={(o: any) => setInspCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
