@@ -1000,20 +1000,21 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   background: var(--gray-100);
 }
 
+/* A4 용지: 210mm x 297mm = 794px x 1123px @96dpi */
 .editor-area {
-  width: 100%;
-  max-width: 816px;
-  min-height: 1056px;
+  width: 794px;
+  min-height: 1123px;
   background: #fff;
   box-shadow: var(--shadow-md);
-  border-radius: var(--radius);
-  padding: 72px 96px;
+  border-radius: 2px;
+  padding: 60px 72px;
   overflow: visible;
+  position: relative;
 }
 
 .editor-area .tiptap {
   outline: none;
-  min-height: 500px;
+  min-height: 960px;
   font-size: 0.95rem;
   line-height: 1.7;
 }
