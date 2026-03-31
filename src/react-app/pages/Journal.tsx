@@ -29,6 +29,7 @@ export default function Journal() {
   const [activeBranch, setActiveBranch] = useState(0);
   const [filterDept, setFilterDept] = useState('');
   const [filterUser, setFilterUser] = useState('');
+  const [filterMonth, setFilterMonth] = useState('');
 
   const today = getToday();
   const tomorrow = getTomorrow();
@@ -189,21 +190,30 @@ export default function Journal() {
         <div className="journal-history">
           {/* Filters */}
           <div className="journal-history-filters">
-            <div className="form-group" style={{ marginBottom: 0, minWidth: 160 }}>
+            <div className="form-group" style={{ marginBottom: 0, minWidth: 140 }}>
+              <Select
+                options={[...new Set(entries.map((e) => e.target_date.slice(0, 7)))].sort((a, b) => b.localeCompare(a)).map((m) => ({ value: m, label: m }))}
+                value={filterMonth ? { value: filterMonth, label: filterMonth } : null}
+                onChange={(o: any) => setFilterMonth(o?.value || '')}
+                placeholder="전체 기간"
+                isClearable
+              />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, minWidth: 150 }}>
               <Select
                 options={[...new Set(members.map((m) => m.department).filter(Boolean))].sort().map(d => ({ value: d, label: d }))}
                 value={filterDept ? { value: filterDept, label: filterDept } : null}
-                onChange={(o: any) => setFilterDept(o?.value || '')}
+                onChange={(o: any) => { setFilterDept(o?.value || ''); setFilterUser(''); }}
                 placeholder="전체 팀"
                 isClearable
               />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, minWidth: 160 }}>
+            <div className="form-group" style={{ marginBottom: 0, minWidth: 150 }}>
               <Select
                 options={members
                   .filter((m) => !filterDept || m.department === filterDept)
                   .map((m) => ({ value: m.id, label: `${m.name} (${ROLE_LABELS[m.role as Role] || ''})` }))}
-                value={filterUser ? { value: filterUser, label: `${members.find(m => m.id === filterUser)?.name || ''} (${ROLE_LABELS[members.find(m => m.id === filterUser)?.role as Role] || ''})` } : null}
+                value={filterUser ? { value: filterUser, label: `${members.find(m => m.id === filterUser)?.name || ''}` } : null}
                 onChange={(o: any) => setFilterUser(o?.value || '')}
                 placeholder="전체 컨설턴트"
                 isClearable
@@ -214,6 +224,7 @@ export default function Journal() {
 
           {(() => {
             let filtered = entries;
+            if (filterMonth) filtered = filtered.filter((e) => e.target_date.startsWith(filterMonth));
             if (filterDept) filtered = filtered.filter((e) => e.department === filterDept);
             if (filterUser) filtered = filtered.filter((e) => e.user_id === filterUser);
 
