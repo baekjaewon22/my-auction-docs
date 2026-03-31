@@ -71,8 +71,7 @@ export default function UserManagement() {
   };
 
   const handleApprove = async (id: string) => {
-    if (!pendingDepts[id]) { alert('팀을 선택해주세요.'); return; }
-    await api.users.approve(id, pendingDepts[id]);
+    await api.users.approve(id, pendingDepts[id] || '');
     load();
   };
 

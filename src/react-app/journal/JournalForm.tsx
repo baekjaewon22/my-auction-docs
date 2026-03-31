@@ -35,8 +35,8 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [briefingCaseNo, setBriefingCaseNo] = useState('');
   const [briefingCourt, setBriefingCourt] = useState('');
 
-  const [timeFrom, setTimeFrom] = useState('09:00');
-  const [timeTo, setTimeTo] = useState('10:00');
+  const [timeFrom, setTimeFrom] = useState('');
+  const [timeTo, setTimeTo] = useState('');
 
   // 입찰
   const [bidYear, setBidYear] = useState('2026');
@@ -81,6 +81,15 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // 법원 필수 체크
+    if (activityType === '입찰' && !bidCourt) {
+      alert('법원을 선택해주세요.');
+      return;
+    }
+    if (activityType === '임장' && !inspCourt) {
+      alert('법원을 선택해주세요.');
+      return;
+    }
     if (activityType === '입찰' && showDeviationWarning && !bidDeviationReason.trim()) {
       alert('제시입찰가 대비 실제입찰가가 5% 이상 낮습니다. 사유를 입력해주세요.');
       return;
@@ -129,7 +138,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay">
       <div className="journal-form-modal" onClick={(e) => e.stopPropagation()}>
         <div className="journal-form-header">
           <h3>일정 등록 — {targetDate}</h3>

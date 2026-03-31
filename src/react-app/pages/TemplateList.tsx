@@ -37,9 +37,9 @@ export default function TemplateList() {
   const [loading, setLoading] = useState(true);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [favorites, setFavorites] = useState<string[]>(getFavorites());
-  const { user } = useAuthStore();
+  useAuthStore();
   const navigate = useNavigate();
-  const isAdmin = user?.role === 'master' || user?.role === 'ceo';
+  const isAdmin = true; // 모든 권한자가 템플릿 관리 가능
 
   const load = () => {
     setLoading(true);

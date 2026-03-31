@@ -426,12 +426,13 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .form-group select {
   width: 100%;
   padding: 10px 14px;
-  border: 1.5px solid var(--gray-200);
+  border: 1.5px solid var(--gray-300);
   border-radius: 8px;
   font-size: 0.875rem;
   transition: all 0.2s ease;
   outline: none;
-  background: var(--gray-50);
+  background: #fff;
+  color: var(--gray-900);
 }
 
 .form-group input:focus,
@@ -2500,14 +2501,14 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   outline: none;
   text-align: center;
   letter-spacing: 1px;
-  background: var(--gray-50);
+  background: #fff;
+  color: var(--gray-900);
   transition: all 0.2s ease;
 }
 
 .case-no-input:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
-  background: #fff;
 }
 
 .journal-field-badge.briefing-badge {

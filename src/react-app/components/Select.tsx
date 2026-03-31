@@ -30,7 +30,7 @@ const customStyles: StylesConfig<any, false, GroupBase<any>> = {
   }),
   menuList: (base) => ({
     ...base,
-    maxHeight: 240,
+    maxHeight: 300,
     padding: 4,
   }),
   singleValue: (base) => ({

@@ -67,10 +67,14 @@ export default function Layout() {
             <Link to="/review" className={`nav-item ${isActive('/review') ? 'active' : ''}`} title="문서 승인" onClick={() => setMobileOpen(false)}>
               <CheckCircle size={18} /> {!collapsed && '문서 승인'}
             </Link>
-            <Link to="/statistics" className={`nav-item ${isActive('/statistics') ? 'active' : ''}`} title="통계" onClick={() => setMobileOpen(false)}>
-              <BarChart3 size={18} /> {!collapsed && '통계'}
-            </Link>
           </>
+        )}
+
+        {/* 통계: 관리자(admin) 이상만 - 팀장 이하는 메뉴 자체 숨김 */}
+        {canApproveUsers && (
+          <Link to="/statistics" className={`nav-item ${isActive('/statistics') ? 'active' : ''}`} title="통계" onClick={() => setMobileOpen(false)}>
+            <BarChart3 size={18} /> {!collapsed && '통계'}
+          </Link>
         )}
 
         {canManage && (

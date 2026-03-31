@@ -26,7 +26,7 @@ templates.get('/:id', async (c) => {
 });
 
 // POST /api/templates (admin only)
-templates.post('/', requireRole('master', 'ceo'), async (c) => {
+templates.post('/', requireRole('master', 'ceo', 'admin', 'manager', 'member'), async (c) => {
   const user = c.get('user');
   const { title, description, content, category } = await c.req.json<{
     title: string;
@@ -48,7 +48,7 @@ templates.post('/', requireRole('master', 'ceo'), async (c) => {
 });
 
 // PUT /api/templates/:id (admin only)
-templates.put('/:id', requireRole('master', 'ceo'), async (c) => {
+templates.put('/:id', requireRole('master', 'ceo', 'admin', 'manager', 'member'), async (c) => {
   const id = c.req.param('id');
   const { title, description, content, category, is_active } = await c.req.json<{
     title?: string;
@@ -77,7 +77,7 @@ templates.put('/:id', requireRole('master', 'ceo'), async (c) => {
 });
 
 // DELETE /api/templates/:id (admin only - soft delete)
-templates.delete('/:id', requireRole('master', 'ceo'), async (c) => {
+templates.delete('/:id', requireRole('master', 'ceo', 'admin', 'manager', 'member'), async (c) => {
   const id = c.req.param('id');
   const db = c.env.DB;
 
