@@ -402,27 +402,23 @@ export default function DocumentEdit() {
   );
 }
 
-// 페이지 번호 오버레이
+// 페이지 구분선 + 번호 오버레이
 function PageNumbers() {
   const [pageCount, setPageCount] = useState(1);
-  const PAGE_HEIGHT = 1123; // A4 높이 px
+  const PAGE_HEIGHT = 1123;
 
   useEffect(() => {
     const observe = () => {
       const el = document.querySelector('.editor-area');
       if (!el) return;
-      const h = el.scrollHeight;
-      setPageCount(Math.max(1, Math.ceil(h / PAGE_HEIGHT)));
+      setPageCount(Math.max(1, Math.ceil(el.scrollHeight / PAGE_HEIGHT)));
     };
 
     observe();
     const observer = new MutationObserver(observe);
-    const el = document.querySelector('.editor-area');
-    if (el) observer.observe(el, { childList: true, subtree: true, characterData: true });
-
     const resizeObserver = new ResizeObserver(observe);
-    if (el) resizeObserver.observe(el);
-
+    const el = document.querySelector('.editor-area');
+    if (el) { observer.observe(el, { childList: true, subtree: true, characterData: true }); resizeObserver.observe(el); }
     return () => { observer.disconnect(); resizeObserver.disconnect(); };
   }, []);
 
@@ -430,15 +426,15 @@ function PageNumbers() {
 
   return (
     <>
-      {Array.from({ length: pageCount }, (_, i) => (
-        <div
-          key={i}
-          className="page-number-label"
-          style={{ top: i * PAGE_HEIGHT + PAGE_HEIGHT - 30 }}
-        >
-          {i + 1} / {pageCount}
-        </div>
-      ))}
+      {Array.from({ length: pageCount - 1 }, (_, i) => {
+        const y = (i + 1) * PAGE_HEIGHT;
+        return (
+          <div key={i}>
+            <div className="page-break-line" style={{ top: y }} data-pages={`${i + 1}-${pageCount} / ${i + 2}-${pageCount}`} />
+            <div className="page-gap" style={{ top: y - 1 }} />
+          </div>
+        );
+      })}
     </>
   );
 }

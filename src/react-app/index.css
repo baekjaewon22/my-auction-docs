@@ -1001,7 +1001,6 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 /* A4 용지: 210mm x 297mm = 794px x 1123px @96dpi */
-/* 페이지 내용 영역: 1123px - padding(60+60) = 1003px */
 .editor-area {
   width: 794px;
   min-height: 1123px;
@@ -1011,17 +1010,6 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   padding: 60px 72px;
   overflow: visible;
   position: relative;
-  /* 페이지 경계선 반복 (매 1123px마다) */
-  background-image:
-    repeating-linear-gradient(
-      to bottom,
-      transparent 0px,
-      transparent 1122px,
-      #d93025 1122px,
-      #d93025 1123px
-    );
-  background-size: 100% 1123px;
-  background-position: 0 -60px;
 }
 
 .editor-page-container {
@@ -1029,16 +1017,40 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   width: 794px;
 }
 
-.page-number-label {
+/* 페이지 구분선 + 번호 */
+.page-break-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px dashed #d93025;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.page-break-line::after {
+  content: attr(data-pages);
   position: absolute;
   right: 8px;
+  top: -18px;
   font-size: 0.65rem;
-  color: var(--gray-400);
-  background: rgba(255,255,255,0.9);
-  padding: 2px 8px;
+  color: #d93025;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 1px 8px;
   border-radius: 8px;
+  font-weight: 600;
+}
+
+/* 각 페이지 사이 여백 표현 */
+.page-gap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 20px;
+  background: var(--gray-100);
+  z-index: 4;
   pointer-events: none;
-  z-index: 5;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.06), inset 0 -2px 4px rgba(0,0,0,0.06);
 }
 
 .editor-area .tiptap {
@@ -2775,9 +2787,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .editor-header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
   .editor-header-left { width: 100%; }
   .editor-header-right { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
-  .editor-area { width: 100% !important; min-height: auto; padding: 24px 16px; border-radius: 0; background-image: none; }
+  .editor-area { width: 100% !important; min-height: auto; padding: 24px 16px; border-radius: 0; }
   .editor-page-container { width: 100%; }
-  .page-number-label { display: none; }
+  .page-break-line, .page-gap { display: none; }
   .editor-content-wrapper { padding: 8px; }
   .toolbar { overflow-x: auto; flex-wrap: nowrap; padding: 4px 8px; }
   .toolbar-btn { flex-shrink: 0; }
