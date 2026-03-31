@@ -190,33 +190,36 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
           {activityType === '입찰' && (
             <>
-              {/* 사건번호 한줄: [연도 select] 타경 [번호 input] */}
-              <div className="form-group">
-                <label>사건번호</label>
-                <div className="case-no-inline">
-                  <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === bidYear)} onChange={(o: any) => setBidYear(o.value)} />
-                  <span className="case-no-fixed">타경</span>
-                  <input type="text" value={bidCaseNo} onChange={(e) => setBidCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
-                </div>
-              </div>
-              {/* 입찰자 + 법원 한줄 */}
+              {/* 사건번호 + 입찰자 한줄 */}
               <div className="form-row form-row-inline">
+                <div className="form-group" style={{ flex: 'none' }}>
+                  <label>사건번호</label>
+                  <div className="case-no-inline">
+                    <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === bidYear)} onChange={(o: any) => setBidYear(o.value)} />
+                    <span className="case-no-fixed">타경</span>
+                    <input type="text" value={bidCaseNo} onChange={(e) => setBidCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
+                  </div>
+                </div>
                 <div className="form-group" style={{ flex: 1 }}>
                   <label>입찰자</label>
                   <input type="text" value={bidBidder} onChange={(e) => setBidBidder(e.target.value)} required />
                 </div>
-                <div className="form-group" style={{ flex: 2 }}>
-                  <label>법원</label>
-                  <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === bidCourt) || null} onChange={(o: any) => setBidCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
+              </div>
+              {/* 법원 */}
+              <div className="form-group">
+                <label>법원</label>
+                <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === bidCourt) || null} onChange={(o: any) => setBidCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
+              </div>
+              {/* 제시입찰가 + 작성입찰가 한줄 */}
+              <div className="form-row form-row-inline">
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>제시입찰가 <span style={{ color: '#9aa0a6', fontWeight: 400, fontSize: '0.7rem' }}>브리핑 제시금액</span></label>
+                  <input type="text" value={bidSuggestedPrice} onChange={(e) => setBidSuggestedPrice(fmtCurrency(e.target.value))} placeholder="0" />
                 </div>
-              </div>
-              <div className="form-group">
-                <label>제시 입찰가 (원) <span style={{ color: '#9aa0a6', fontWeight: 400 }}>ex) 브리핑 시 제시금액</span></label>
-                <input type="text" value={bidSuggestedPrice} onChange={(e) => setBidSuggestedPrice(fmtCurrency(e.target.value))} placeholder="0" />
-              </div>
-              <div className="form-group">
-                <label>실제 작성 입찰가 (원)</label>
-                <input type="text" value={bidPrice} onChange={(e) => setBidPrice(fmtCurrency(e.target.value))} placeholder="0" />
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>작성입찰가</label>
+                  <input type="text" value={bidPrice} onChange={(e) => setBidPrice(fmtCurrency(e.target.value))} placeholder="0" />
+                </div>
               </div>
               {showDeviationWarning && (
                 <div className="form-group">
@@ -241,23 +244,24 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
           {activityType === '임장' && (
             <>
-              <div className="form-group">
-                <label>사건번호</label>
-                <div className="case-no-inline">
-                  <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === inspYear)} onChange={(o: any) => setInspYear(o.value)} />
-                  <span className="case-no-fixed">타경</span>
-                  <input type="text" value={inspCaseNo} onChange={(e) => setInspCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
-                </div>
-              </div>
+              {/* 사건번호 + 장소 한줄 */}
               <div className="form-row form-row-inline">
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label>법원</label>
-                  <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === inspCourt) || null} onChange={(o: any) => setInspCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
+                <div className="form-group" style={{ flex: 'none' }}>
+                  <label>사건번호</label>
+                  <div className="case-no-inline">
+                    <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === inspYear)} onChange={(o: any) => setInspYear(o.value)} />
+                    <span className="case-no-fixed">타경</span>
+                    <input type="text" value={inspCaseNo} onChange={(e) => setInspCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
+                  </div>
                 </div>
                 <div className="form-group" style={{ flex: 1 }}>
                   <label>장소</label>
                   <input type="text" value={inspPlace} onChange={(e) => setInspPlace(e.target.value)} required />
                 </div>
+              </div>
+              <div className="form-group">
+                <label>법원</label>
+                <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === inspCourt) || null} onChange={(o: any) => setInspCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
               </div>
             </>
           )}

@@ -2136,7 +2136,15 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 .journal-form-body {
-  padding: 20px 24px 24px;
+  padding: 16px 24px 24px;
+}
+
+.journal-form-body .form-group {
+  margin-bottom: 10px;
+}
+
+.journal-form-body .form-group label {
+  margin-bottom: 4px;
 }
 
 .activity-type-tabs {
