@@ -161,8 +161,8 @@ export default function Statistics() {
       </div>
 
       <div className="stats-content">
-        {tab === 0 && <BidAnalysis entries={filteredEntries} members={filteredMembers} showBranchBreakdown={isCeoPlus && !filterBranch} allEntries={entries} allMembers={members} />}
-        {tab === 1 && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers} />}
+        {tab === 0 && <BidAnalysis entries={filteredEntries} members={filteredMembers} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries} allMembers={members} />}
+        {tab === 1 && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries} allMembers={members} />}
         {tab === 2 && <AnomalyDetection entries={filteredEntries} members={filteredMembers} />}
       </div>
     </div>
@@ -170,97 +170,34 @@ export default function Statistics() {
 }
 
 /* ============================================================ */
+/* 입찰 통계 헬퍼: 그룹 데이터 계산                                  */
+/* ============================================================ */
+function calcBidStats(bidEntries: JournalEntry[]) {
+  let win = 0, lose = 0, pending = 0, dev5 = 0;
+  bidEntries.forEach((e) => {
+    try {
+      const d = JSON.parse(e.data);
+      const a = parseCurrency(d.bidPrice);
+      const w = parseCurrency(d.winPrice);
+      const s = parseCurrency(d.suggestedPrice);
+      if (w > 0) { if (a >= w) win++; else lose++; } else pending++;
+      if (s > 0 && a > 0 && (s - a) / s >= 0.05) dev5++;
+    } catch { /* */ }
+  });
+  const det = win + lose;
+  return { total: bidEntries.length, win, lose, pending, dev5, winRate: det > 0 ? (win / det * 100) : 0 };
+}
+
+/* ============================================================ */
 /* 1. 입찰 분석                                                   */
 /* ============================================================ */
-function BidAnalysis({ entries, members, showBranchBreakdown, allEntries, allMembers }: {
+function BidAnalysis({ entries, members, viewLevel, allEntries, allMembers }: {
   entries: JournalEntry[]; members: Member[];
-  showBranchBreakdown?: boolean; allEntries?: JournalEntry[]; allMembers?: Member[];
+  viewLevel: 'all' | 'branch' | 'team' | 'person';
+  allEntries?: JournalEntry[]; allMembers?: Member[];
 }) {
   const bidEntries = entries.filter((e) => e.activity_type === '입찰');
-
-  // 판정 기준:
-  // 실제입찰가 >= 낙찰가 → 낙찰
-  // 실제입찰가 < 낙찰가 → 패찰
-  // 낙찰가 미입력 → 미확정
-
-  const personStats = members.map((m) => {
-    const myBids = bidEntries.filter((e) => e.user_id === m.id);
-    let totalSuggested = 0, totalActual = 0, totalWin = 0;
-    let winCount = 0, loseCount = 0, pendingCount = 0, deviationOver5 = 0;
-    const deviations: number[] = [];
-
-    myBids.forEach((e) => {
-      try {
-        const d = JSON.parse(e.data);
-        const s = parseCurrency(d.suggestedPrice);
-        const a = parseCurrency(d.bidPrice);
-        const w = parseCurrency(d.winPrice);
-        if (s > 0) totalSuggested += s;
-        if (a > 0) totalActual += a;
-
-        // 낙찰 판정
-        if (w > 0) {
-          totalWin += w;
-          if (a >= w) { winCount++; }    // 낙찰: 실제입찰가 >= 낙찰가
-          else { loseCount++; }           // 패찰: 실제입찰가 < 낙찰가
-        } else {
-          pendingCount++;                 // 미확정: 낙찰가 미입력
-        }
-
-        // 제시가 vs 실제가 차이
-        if (s > 0 && a > 0) {
-          const dev = (s - a) / s * 100;
-          deviations.push(dev);
-          if (dev >= 5) deviationOver5++;
-        }
-      } catch { /* */ }
-    });
-
-    const determined = winCount + loseCount;
-
-    return {
-      name: m.name,
-      role: m.role,
-      department: m.department,
-      bids: myBids.length,
-      totalSuggested,
-      totalActual,
-      totalWin,
-      winCount,
-      loseCount,
-      pendingCount,
-      winRate: determined > 0 ? (winCount / determined * 100) : 0,
-      avgDeviation: deviations.length > 0 ? deviations.reduce((a, b) => a + b, 0) / deviations.length : 0,
-      deviationOver5,
-      deviationRate: myBids.length > 0 ? (deviationOver5 / myBids.length * 100) : 0,
-    };
-  }).filter((p) => p.bids > 0);
-
-  // 전체 합산
-  const totals = personStats.reduce((acc, p) => ({
-    bids: acc.bids + p.bids,
-    win: acc.win + p.winCount,
-    lose: acc.lose + p.loseCount,
-    pending: acc.pending + p.pendingCount,
-    dev5: acc.dev5 + p.deviationOver5,
-  }), { bids: 0, win: 0, lose: 0, pending: 0, dev5: 0 });
-
-  // Charts
-  const barData = personStats.map((p) => ({
-    name: p.name,
-    입찰: p.bids,
-    낙찰: p.winCount,
-    패찰: p.loseCount,
-    미확정: p.pendingCount,
-  }));
-
-  const rateData = personStats.map((p) => ({
-    name: p.name,
-    '낙찰률(%)': Number(p.winRate.toFixed(1)),
-    '5%초과비율(%)': Number(p.deviationRate.toFixed(1)),
-  }));
-
-  // Pie for overall win/lose/pending
+  const totals = calcBidStats(bidEntries);
   const resultPie = [
     { name: '낙찰', value: totals.win },
     { name: '패찰', value: totals.lose },
@@ -268,189 +205,148 @@ function BidAnalysis({ entries, members, showBranchBreakdown, allEntries, allMem
   ].filter((d) => d.value > 0);
   const resultColors = ['#188038', '#d93025', '#9aa0a6'];
 
-  const fmtWon = (n: number) => n > 0 ? (n / 10000).toLocaleString() + '만원' : '-';
+  // 그룹 바 차트 렌더 헬퍼
+  const renderBarChart = (chartData: { name: string; 입찰: number; 낙찰: number; 패찰: number }[]) => {
+    if (chartData.length === 0) return <div className="empty-state">입찰 데이터가 없습니다.</div>;
+    return (
+      <ResponsiveContainer width="100%" height={250}>
+        <BarChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="name" fontSize={11} />
+          <YAxis fontSize={11} allowDecimals={false} />
+          <Tooltip />
+          <Legend />
+          <Bar dataKey="입찰" fill="#1a73e8" radius={[4, 4, 0, 0]} />
+          <Bar dataKey="낙찰" fill="#188038" radius={[4, 4, 0, 0]} />
+          <Bar dataKey="패찰" fill="#d93025" radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  };
 
   return (
     <div className="stats-section-content">
-      <h3 className="stats-subtitle"><TrendingUp size={18} /> 담당자별 입찰 성과</h3>
+      <h3 className="stats-subtitle"><TrendingUp size={18} /> 입찰 분석 — {viewLevel === 'all' ? '지사별 비교' : viewLevel === 'branch' ? '팀별 비교' : viewLevel === 'team' ? '개인별 성과' : '개인 상세'}</h3>
       <p className="stats-desc">
-        판정 기준: 실제입찰가 &ge; 낙찰가 → <strong style={{ color: '#188038' }}>낙찰</strong> / 실제입찰가 &lt; 낙찰가 → <strong style={{ color: '#d93025' }}>패찰</strong> / 낙찰가 미입력 → 미확정
+        판정: 실제입찰가 &ge; 낙찰가 → <strong style={{ color: '#188038' }}>낙찰</strong> / 실제입찰가 &lt; 낙찰가 → <strong style={{ color: '#d93025' }}>패찰</strong>
       </p>
 
-      {/* Summary cards */}
+      {/* 요약 카드 */}
       <div className="bid-stats-grid">
-        <div className="bid-stat-card"><div className="bid-stat-value">{totals.bids}</div><div className="bid-stat-label">총 입찰</div></div>
+        <div className="bid-stat-card"><div className="bid-stat-value">{totals.total}</div><div className="bid-stat-label">총 입찰</div></div>
         <div className="bid-stat-card" style={{ borderColor: '#c3e6cb' }}><div className="bid-stat-value" style={{ color: '#188038' }}>{totals.win}</div><div className="bid-stat-label">낙찰</div></div>
         <div className="bid-stat-card" style={{ borderColor: '#f5c6cb' }}><div className="bid-stat-value" style={{ color: '#d93025' }}>{totals.lose}</div><div className="bid-stat-label">패찰</div></div>
-        <div className="bid-stat-card"><div className="bid-stat-value" style={{ color: '#9aa0a6' }}>{totals.pending}</div><div className="bid-stat-label">미확정</div></div>
-        <div className="bid-stat-card"><div className="bid-stat-value" style={{ color: '#1a73e8' }}>{totals.bids > 0 && (totals.win + totals.lose) > 0 ? (totals.win / (totals.win + totals.lose) * 100).toFixed(1) + '%' : '-'}</div><div className="bid-stat-label">전체 낙찰률</div></div>
-        {totals.dev5 > 0 && <div className="bid-stat-card bid-stat-warning"><AlertTriangle size={20} className="bid-stat-warn-icon" /><div className="bid-stat-value">{totals.dev5}건</div><div className="bid-stat-label">5%초과 차이</div></div>}
+        <div className="bid-stat-card"><div className="bid-stat-value" style={{ color: '#1a73e8' }}>{totals.winRate > 0 ? totals.winRate.toFixed(1) + '%' : '-'}</div><div className="bid-stat-label">낙찰률</div></div>
+        {totals.dev5 > 0 && <div className="bid-stat-card bid-stat-warning"><AlertTriangle size={20} className="bid-stat-warn-icon" /><div className="bid-stat-value">{totals.dev5}건</div><div className="bid-stat-label">5%초과</div></div>}
       </div>
 
-      <div className="stats-chart-row">
-        {/* Result pie */}
-        <div className="stats-chart-card stats-chart-half">
-          <h4>입찰 결과 분포</h4>
-          <ResponsiveContainer width="100%" height={280}>
-            <PieChart>
-              <Pie data={resultPie} cx="50%" cy="50%" outerRadius={100} dataKey="value" label={(props: any) => `${props.name} ${props.value}건`}>
-                {resultPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
-              </Pie>
-              <Tooltip />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Bar chart */}
-        <div className="stats-chart-card stats-chart-half">
-          <h4>담당자별 입찰 / 낙찰 / 패찰</h4>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={barData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" fontSize={11} />
-              <YAxis fontSize={11} />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="입찰" fill="#1a73e8" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="낙찰" fill="#188038" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="패찰" fill="#d93025" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="미확정" fill="#bdc1c6" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Line chart - 낙찰률 vs 5% 초과 비율 */}
-      <div className="stats-chart-card">
-        <h4>낙찰률 vs 5% 초과 차이 비율 (담당자별)</h4>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={rateData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="name" fontSize={12} />
-            <YAxis fontSize={12} unit="%" />
-            <Tooltip />
-            <Legend />
-            <Bar dataKey="낙찰률(%)" fill="#188038" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="5%초과비율(%)" fill="#d93025" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-        <p className="stats-desc" style={{ marginTop: 8 }}>
-          5% 초과 비율이 높고 낙찰률이 낮은 담당자는 입찰가 조정 패턴을 점검할 필요가 있습니다.
-        </p>
-      </div>
-
-      {/* Detail Table */}
-      <div className="stats-chart-card">
-        <h4>상세 데이터</h4>
-        <div className="table-wrapper">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>담당자</th>
-                <th>팀</th>
-                <th>입찰</th>
-                <th>낙찰</th>
-                <th>패찰</th>
-                <th>미확정</th>
-                <th>낙찰률</th>
-                <th>제시가 합</th>
-                <th>입찰가 합</th>
-                <th>평균차이율</th>
-                <th>5%초과</th>
-                <th>초과비율</th>
-              </tr>
-            </thead>
-            <tbody>
-              {personStats.sort((a, b) => b.winRate - a.winRate).map((p) => (
-                <tr key={p.name}>
-                  <td><strong>{p.name}</strong> <span style={{ color: '#9aa0a6', fontSize: '0.65rem' }}>{ROLE_LABELS[p.role as Role]}</span></td>
-                  <td>{p.department || '-'}</td>
-                  <td>{p.bids}</td>
-                  <td style={{ color: '#188038', fontWeight: 600 }}>{p.winCount}</td>
-                  <td style={{ color: '#d93025', fontWeight: 600 }}>{p.loseCount}</td>
-                  <td style={{ color: '#9aa0a6' }}>{p.pendingCount}</td>
-                  <td style={{ fontWeight: 700, color: p.winRate >= 50 ? '#188038' : p.winRate > 0 ? '#e65100' : '#9aa0a6' }}>
-                    {p.winRate > 0 ? p.winRate.toFixed(1) + '%' : '-'}
-                  </td>
-                  <td>{fmtWon(p.totalSuggested)}</td>
-                  <td>{fmtWon(p.totalActual)}</td>
-                  <td style={{ color: p.avgDeviation >= 5 ? '#d93025' : '#3c4043' }}>{p.avgDeviation.toFixed(1)}%</td>
-                  <td style={{ color: p.deviationOver5 > 0 ? '#d93025' : '#9aa0a6', fontWeight: p.deviationOver5 > 0 ? 700 : 400 }}>{p.deviationOver5}건</td>
-                  <td style={{ color: p.deviationRate >= 30 ? '#d93025' : p.deviationRate > 0 ? '#e65100' : '#9aa0a6', fontWeight: 600 }}>
-                    {p.deviationRate > 0 ? p.deviationRate.toFixed(0) + '%' : '-'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* 지사별 비교 (대표 이상, 필터 미적용 시) */}
-      {showBranchBreakdown && allEntries && allMembers && (() => {
+      {/* 전체: 지사별 비교 */}
+      {viewLevel === 'all' && allEntries && allMembers && (() => {
         const branchList = [...new Set(allMembers.map((m) => m.branch).filter(Boolean))].sort();
-
-        return branchList.map((branch) => {
-          const bMembers = allMembers.filter((m) => m.branch === branch);
-          const bEntries = allEntries.filter((e) => e.activity_type === '입찰' && e.branch === branch);
-
-          // 지사 전체 통계
-          let totalWin = 0, totalLose = 0, totalPending = 0, totalDev5 = 0;
-          bEntries.forEach((e) => {
-            try {
-              const d = JSON.parse(e.data);
-              const a = parseCurrency(d.bidPrice);
-              const w = parseCurrency(d.winPrice);
-              const s = parseCurrency(d.suggestedPrice);
-              if (w > 0) { if (a >= w) totalWin++; else totalLose++; } else totalPending++;
-              if (s > 0 && a > 0 && (s - a) / s >= 0.05) totalDev5++;
-            } catch { /* */ }
-          });
-          const totalDet = totalWin + totalLose;
-
-          // 담당자별 통계
-          const personData = bMembers.map((m) => {
-            const myBids = bEntries.filter((e) => e.user_id === m.id);
-            let win = 0, lose = 0;
-            myBids.forEach((e) => {
-              try {
-                const d = JSON.parse(e.data);
-                const a = parseCurrency(d.bidPrice);
-                const w = parseCurrency(d.winPrice);
-                if (w > 0) { if (a >= w) win++; else lose++; }
-              } catch { /* */ }
-            });
-            return { name: m.name, 입찰: myBids.length, 낙찰: win, 패찰: lose };
-          }).filter((p) => p.입찰 > 0);
-
-          return (
-            <div key={branch} className="stats-chart-card">
-              <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ background: '#1a73e8', color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem' }}>{branch} 지사</span>
-                <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>
-                  입찰 {bEntries.length} · 낙찰 {totalWin} · 패찰 {totalLose} · 낙찰률 {totalDet > 0 ? (totalWin / totalDet * 100).toFixed(1) + '%' : '-'}
-                  {totalDev5 > 0 && <span style={{ color: '#d93025', marginLeft: 8 }}>5%초과 {totalDev5}건</span>}
-                </span>
-              </h4>
-              {personData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={personData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" fontSize={11} />
-                    <YAxis fontSize={11} allowDecimals={false} />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="입찰" fill="#1a73e8" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="낙찰" fill="#188038" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="패찰" fill="#d93025" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="empty-state">입찰 데이터가 없습니다.</div>
-              )}
-            </div>
-          );
+        const branchChartData = branchList.map((b) => {
+          const s = calcBidStats(allEntries.filter((e) => e.activity_type === '입찰' && e.branch === b));
+          return { name: b + ' 지사', 입찰: s.total, 낙찰: s.win, 패찰: s.lose };
         });
+        return (
+          <>
+            <div className="stats-chart-card">
+              <h4>지사별 입찰 성과 비교</h4>
+              {renderBarChart(branchChartData)}
+            </div>
+            <div className="stats-chart-row">
+              <div className="stats-chart-card stats-chart-half">
+                <h4>전체 결과 분포</h4>
+                <ResponsiveContainer width="100%" height={250}>
+                  <PieChart>
+                    <Pie data={resultPie} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={(props: any) => `${props.name} ${props.value}건`}>
+                      {resultPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="stats-chart-card stats-chart-half">
+                <h4>지사별 낙찰률</h4>
+                {renderBarChart(branchList.map((b) => {
+                  const s = calcBidStats(allEntries.filter((e) => e.activity_type === '입찰' && e.branch === b));
+                  return { name: b, 입찰: 0, 낙찰: Number(s.winRate.toFixed(1)), 패찰: 0 };
+                }).map((d) => ({ name: d.name, '낙찰률(%)': d.낙찰 } as any)))}
+              </div>
+            </div>
+          </>
+        );
+      })()}
+
+      {/* 지사 선택: 팀별 비교 */}
+      {viewLevel === 'branch' && (() => {
+        const depts = [...new Set(members.map((m) => m.department).filter(Boolean))].sort();
+        const deptChartData = depts.map((d) => {
+          const s = calcBidStats(bidEntries.filter((e) => e.department === d));
+          return { name: d, 입찰: s.total, 낙찰: s.win, 패찰: s.lose };
+        });
+        return (
+          <>
+            <div className="stats-chart-card">
+              <h4>팀별 입찰 성과</h4>
+              {renderBarChart(deptChartData)}
+            </div>
+            {depts.map((d) => {
+              const deptBids = bidEntries.filter((e) => e.department === d);
+              const personData = members.filter((m) => m.department === d).map((m) => {
+                const s = calcBidStats(deptBids.filter((e) => e.user_id === m.id));
+                return { name: m.name, 입찰: s.total, 낙찰: s.win, 패찰: s.lose };
+              }).filter((p) => p.입찰 > 0);
+              if (personData.length === 0) return null;
+              const dStats = calcBidStats(deptBids);
+              return (
+                <div key={d} className="stats-chart-card">
+                  <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ background: '#7b1fa2', color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem' }}>{d}</span>
+                    <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>낙찰률 {dStats.winRate > 0 ? dStats.winRate.toFixed(1) + '%' : '-'}</span>
+                  </h4>
+                  {renderBarChart(personData)}
+                </div>
+              );
+            })}
+          </>
+        );
+      })()}
+
+      {/* 팀 선택 또는 개인: 개인별 상세 */}
+      {(viewLevel === 'team' || viewLevel === 'person') && (() => {
+        const personData = members.map((m) => {
+          const s = calcBidStats(bidEntries.filter((e) => e.user_id === m.id));
+          return { name: m.name, 입찰: s.total, 낙찰: s.win, 패찰: s.lose };
+        }).filter((p) => p.입찰 > 0);
+        return (
+          <>
+            <div className="stats-chart-card">
+              <h4>개인별 입찰 성과</h4>
+              {renderBarChart(personData)}
+            </div>
+            <div className="stats-chart-row">
+              <div className="stats-chart-card stats-chart-half">
+                <h4>결과 분포</h4>
+                <ResponsiveContainer width="100%" height={250}>
+                  <PieChart>
+                    <Pie data={resultPie} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={(props: any) => `${props.name} ${props.value}건`}>
+                      {resultPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="stats-chart-card stats-chart-half">
+                <h4>낙찰률 vs 5%초과</h4>
+                {renderBarChart(members.map((m) => {
+                  const myBids = bidEntries.filter((e) => e.user_id === m.id);
+                  const s = calcBidStats(myBids);
+                  return { name: m.name, 입찰: 0, 낙찰: Number(s.winRate.toFixed(1)), 패찰: 0 };
+                }).filter((d) => d.낙찰 > 0).map((d) => ({ name: d.name, '낙찰률(%)': d.낙찰 } as any)))}
+              </div>
+            </div>
+          </>
+        );
       })()}
     </div>
   );
@@ -459,144 +355,152 @@ function BidAnalysis({ entries, members, showBranchBreakdown, allEntries, allMem
 /* ============================================================ */
 /* 2. 근태 분석                                                   */
 /* ============================================================ */
-function AttendanceAnalysis({ entries, members }: { entries: JournalEntry[]; members: Member[] }) {
+function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMembers }: {
+  entries: JournalEntry[]; members: Member[];
+  viewLevel: 'all' | 'branch' | 'team' | 'person';
+  allEntries?: JournalEntry[]; allMembers?: Member[];
+}) {
   const activityTypes: ActivityType[] = ['입찰', '임장', '미팅', '사무', '개인'];
 
-  // Per-person activity breakdown
-  const personActivity = members.map((m) => {
-    const myEntries = entries.filter((e) => e.user_id === m.id);
-    const bid = myEntries.filter((e) => e.activity_type === '입찰').length;
-    const insp = myEntries.filter((e) => e.activity_type === '임장').length;
-    const meet = myEntries.filter((e) => e.activity_type === '미팅').length;
-    const office = myEntries.filter((e) => e.activity_type === '사무').length;
-    const personal = myEntries.filter((e) => e.activity_type === '개인').length;
+  // 활동 분포 파이차트 렌더 헬퍼
+  const renderPie = (label: string, targetEntries: JournalEntry[], color?: string) => {
+    const counts = activityTypes.map((t) => ({
+      name: t, value: targetEntries.filter((e) => e.activity_type === t).length,
+    })).filter((c) => c.value > 0);
+    if (counts.length === 0) return null;
+    return (
+      <div className="stats-chart-card">
+        <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {color && <span style={{ background: color, color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem' }}>{label}</span>}
+          {!color && label}
+          <span style={{ fontSize: '0.8rem', color: '#9aa0a6' }}>총 {targetEntries.length}건</span>
+        </h4>
+        <ResponsiveContainer width="100%" height={250}>
+          <PieChart>
+            <Pie data={counts} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={(props: any) => `${props.name} ${(props.percent * 100).toFixed(0)}%`}>
+              {counts.map((_, i) => <Cell key={i} fill={Object.values(ACTIVITY_COLORS)[i] || COLORS[i]} />)}
+            </Pie>
+            <Tooltip />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  };
 
-    let fieldCheckInCount = 0, fieldCheckOutCount = 0;
-    myEntries.forEach((e) => {
-      try {
-        const d = JSON.parse(e.data);
-        if (d.fieldCheckIn) fieldCheckInCount++;
-        if (d.fieldCheckOut) fieldCheckOutCount++;
-      } catch { /* */ }
-    });
-
-    return {
-      name: m.name,
-      role: m.role,
-      department: m.department,
-      total: myEntries.length,
-      bid, insp, meet, office, personal,
-      fieldCheckIn: fieldCheckInCount,
-      fieldCheckOut: fieldCheckOutCount,
-      외근율: myEntries.length > 0 ? ((bid + insp) / myEntries.length * 100) : 0,
-    };
-  }).filter((p) => p.total > 0);
-
-  // Pie chart - overall distribution
-  const overallCounts = activityTypes.map((t) => ({
-    name: t,
-    value: entries.filter((e) => e.activity_type === t).length,
-  })).filter((c) => c.value > 0);
-
-  const barData = personActivity.map((p) => ({
-    name: p.name,
-    입찰: p.bid,
-    임장: p.insp,
-    미팅: p.meet,
-    사무: p.office,
-    개인: p.personal,
-  }));
+  // 활동 스택바 렌더 헬퍼
+  const renderStackBar = (targetMembers: Member[], targetEntries: JournalEntry[]) => {
+    const barData = targetMembers.map((m) => {
+      const my = targetEntries.filter((e) => e.user_id === m.id);
+      return {
+        name: m.name,
+        입찰: my.filter((e) => e.activity_type === '입찰').length,
+        임장: my.filter((e) => e.activity_type === '임장').length,
+        미팅: my.filter((e) => e.activity_type === '미팅').length,
+        사무: my.filter((e) => e.activity_type === '사무').length,
+        개인: my.filter((e) => e.activity_type === '개인').length,
+      };
+    }).filter((d) => d.입찰 + d.임장 + d.미팅 + d.사무 + d.개인 > 0);
+    if (barData.length === 0) return null;
+    return (
+      <ResponsiveContainer width="100%" height={280}>
+        <BarChart data={barData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="name" fontSize={11} />
+          <YAxis fontSize={11} />
+          <Tooltip />
+          <Legend />
+          {activityTypes.map((t) => <Bar key={t} dataKey={t} stackId="a" fill={ACTIVITY_COLORS[t]} />)}
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  };
 
   return (
     <div className="stats-section-content">
-      <h3 className="stats-subtitle"><UserCheck size={18} /> 근태 및 활동 분석</h3>
+      <h3 className="stats-subtitle"><UserCheck size={18} /> 근태 분석 — {viewLevel === 'all' ? '지사별 활동 분포' : viewLevel === 'branch' ? '팀별 분석' : '개인별 분석'}</h3>
 
-      <div className="stats-chart-row">
-        {/* Pie */}
-        <div className="stats-chart-card stats-chart-half">
-          <h4>전체 활동 분포</h4>
-          <ResponsiveContainer width="100%" height={280}>
-            <PieChart>
-              <Pie data={overallCounts} cx="50%" cy="50%" outerRadius={100} dataKey="value" label={(props: any) => `${props.name} ${(props.percent * 100).toFixed(0)}%`}>
-                {overallCounts.map((_, i) => <Cell key={i} fill={Object.values(ACTIVITY_COLORS)[i] || COLORS[i]} />)}
-              </Pie>
-              <Tooltip />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
+      {/* 전체: 지사별 파이차트 */}
+      {viewLevel === 'all' && allEntries && allMembers && (() => {
+        const branchList = [...new Set(allMembers.map((m) => m.branch).filter(Boolean))].sort();
+        return (
+          <>
+            <div className="stats-chart-row">
+              {branchList.map((b) => (
+                <div key={b} className="stats-chart-half">
+                  {renderPie(b + ' 지사', allEntries.filter((e) => e.branch === b), '#1a73e8')}
+                </div>
+              ))}
+            </div>
+            <div className="stats-chart-card">
+              <h4>지사별 활동 비교</h4>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={branchList.map((b) => {
+                  const be = allEntries.filter((e) => e.branch === b);
+                  return { name: b, 입찰: be.filter((e) => e.activity_type === '입찰').length, 임장: be.filter((e) => e.activity_type === '임장').length, 미팅: be.filter((e) => e.activity_type === '미팅').length, 사무: be.filter((e) => e.activity_type === '사무').length, 개인: be.filter((e) => e.activity_type === '개인').length };
+                })}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" fontSize={12} />
+                  <YAxis fontSize={12} />
+                  <Tooltip />
+                  <Legend />
+                  {activityTypes.map((t) => <Bar key={t} dataKey={t} stackId="a" fill={ACTIVITY_COLORS[t]} />)}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        );
+      })()}
 
-        {/* Field check stats */}
-        <div className="stats-chart-card stats-chart-half">
-          <h4>현장 출퇴근 현황</h4>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={personActivity.map((p) => ({ name: p.name, 현장출근: p.fieldCheckIn, 현장퇴근: p.fieldCheckOut }))}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" fontSize={11} />
-              <YAxis fontSize={11} />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="현장출근" fill="#d93025" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="현장퇴근" fill="#e65100" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
+      {/* 지사 선택: 해당 지사 파이 + 담당자별 스택바 */}
+      {viewLevel === 'branch' && (
+        <>
+          {renderPie('활동 분포', entries)}
+          <div className="stats-chart-card">
+            <h4>담당자별 활동 유형</h4>
+            {renderStackBar(members, entries)}
+          </div>
+        </>
+      )}
 
-      {/* Stacked bar per person */}
-      <div className="stats-chart-card">
-        <h4>담당자별 활동 유형 분포</h4>
-        <ResponsiveContainer width="100%" height={320}>
-          <BarChart data={barData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="name" fontSize={12} />
-            <YAxis fontSize={12} />
-            <Tooltip />
-            <Legend />
-            {activityTypes.map((t) => (
-              <Bar key={t} dataKey={t} stackId="a" fill={ACTIVITY_COLORS[t]} />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      {/* 팀/개인: 상세 */}
+      {(viewLevel === 'team' || viewLevel === 'person') && (
+        <>
+          {renderPie('활동 분포', entries)}
+          <div className="stats-chart-card">
+            <h4>활동 유형 분포</h4>
+            {renderStackBar(members, entries)}
+          </div>
+        </>
+      )}
 
-      {/* Detail Table */}
+      {/* 공통: 외근율 테이블 */}
       <div className="stats-chart-card">
         <h4>외근율 상세</h4>
         <div className="table-wrapper">
           <table className="data-table">
-            <thead>
-              <tr>
-                <th>담당자</th>
-                <th>팀</th>
-                <th>총 활동</th>
-                <th>입찰</th>
-                <th>임장</th>
-                <th>미팅</th>
-                <th>사무</th>
-                <th>개인</th>
-                <th>현장출근</th>
-                <th>현장퇴근</th>
-                <th>외근율</th>
-              </tr>
-            </thead>
+            <thead><tr><th>담당자</th><th>팀</th><th>총 활동</th><th>입찰</th><th>임장</th><th>미팅</th><th>사무</th><th>개인</th><th>외근율</th></tr></thead>
             <tbody>
-              {personActivity.sort((a, b) => b.외근율 - a.외근율).map((p) => (
-                <tr key={p.name}>
-                  <td><strong>{p.name}</strong></td>
-                  <td>{p.department || '-'}</td>
-                  <td>{p.total}</td>
-                  <td>{p.bid}</td>
-                  <td>{p.insp}</td>
-                  <td>{p.meet}</td>
-                  <td>{p.office}</td>
-                  <td>{p.personal}</td>
-                  <td style={{ color: '#d93025', fontWeight: 600 }}>{p.fieldCheckIn}</td>
-                  <td style={{ color: '#e65100', fontWeight: 600 }}>{p.fieldCheckOut}</td>
-                  <td style={{ fontWeight: 700, color: p.외근율 > 70 ? '#d93025' : p.외근율 > 50 ? '#e65100' : '#3c4043' }}>
-                    {p.외근율.toFixed(0)}%
-                  </td>
-                </tr>
-              ))}
+              {members.map((m) => {
+                const my = entries.filter((e) => e.user_id === m.id);
+                const bid = my.filter((e) => e.activity_type === '입찰').length;
+                const insp = my.filter((e) => e.activity_type === '임장').length;
+                const total = my.length;
+                const rate = total > 0 ? ((bid + insp) / total * 100) : 0;
+                if (total === 0) return null;
+                return (
+                  <tr key={m.id}>
+                    <td><strong>{m.name}</strong></td>
+                    <td>{m.department || '-'}</td>
+                    <td>{total}</td>
+                    <td>{bid}</td>
+                    <td>{insp}</td>
+                    <td>{my.filter((e) => e.activity_type === '미팅').length}</td>
+                    <td>{my.filter((e) => e.activity_type === '사무').length}</td>
+                    <td>{my.filter((e) => e.activity_type === '개인').length}</td>
+                    <td style={{ fontWeight: 700, color: rate > 70 ? '#d93025' : rate > 50 ? '#e65100' : '#3c4043' }}>{rate.toFixed(0)}%</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
