@@ -179,7 +179,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                 <div className="case-no-inline">
                   <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === briefingYear)} onChange={(o: any) => setBriefingYear(o.value)} />
                   <span className="case-no-fixed">타경</span>
-                  <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" />
+                  <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
                 </div>
               </div>
               <div className="form-group">
@@ -196,7 +196,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                 <div className="case-no-inline">
                   <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === bidYear)} onChange={(o: any) => setBidYear(o.value)} />
                   <span className="case-no-fixed">타경</span>
-                  <input type="text" value={bidCaseNo} onChange={(e) => setBidCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" />
+                  <input type="text" value={bidCaseNo} onChange={(e) => setBidCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
                 </div>
               </div>
               {/* 입찰자 + 법원 한줄 */}
@@ -246,7 +246,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                 <div className="case-no-inline">
                   <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === inspYear)} onChange={(o: any) => setInspYear(o.value)} />
                   <span className="case-no-fixed">타경</span>
-                  <input type="text" value={inspCaseNo} onChange={(e) => setInspCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" />
+                  <input type="text" value={inspCaseNo} onChange={(e) => setInspCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
                 </div>
               </div>
               <div className="form-row">
