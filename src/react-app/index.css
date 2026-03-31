@@ -2543,12 +2543,146 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 /* ========================= */
-/* Responsive                */
+/* Mobile Header             */
+/* ========================= */
+.mobile-header {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid var(--gray-200);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.mobile-menu-btn {
+  border: none;
+  background: transparent;
+  padding: 6px;
+  cursor: pointer;
+  color: var(--gray-700);
+}
+
+.mobile-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.mobile-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 49;
+}
+
+.mobile-close-btn {
+  display: none;
+  border: none;
+  background: transparent;
+  color: var(--gray-500);
+  cursor: pointer;
+  padding: 4px;
+  position: absolute;
+  top: 16px;
+  right: 12px;
+}
+
+.desktop-only { display: flex; }
+
+/* ========================= */
+/* Responsive (Mobile)       */
 /* ========================= */
 @media (max-width: 768px) {
-  .sidebar { display: none; }
+  .mobile-header { display: flex; }
+  .mobile-overlay { display: block; }
+  .mobile-close-btn { display: block; }
+  .desktop-only { display: none !important; }
+
+  .sidebar {
+    position: fixed;
+    left: -280px;
+    top: 0;
+    bottom: 0;
+    width: 260px !important;
+    z-index: 50;
+    transition: left 0.3s ease;
+  }
+  .sidebar.mobile-open { left: 0; }
+  .sidebar.collapsed { width: 260px !important; }
+  .main-content { margin-left: 0 !important; }
+  .app-layout { flex-direction: column; }
+
+  .page { padding: 16px; }
+  .page-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-grid .stat-card:first-child { grid-column: 1 / -1; }
+
+  .doc-card-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .template-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+
+  .editor-page { height: auto; min-height: 100vh; }
+  .editor-header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
+  .editor-header-left { width: 100%; }
+  .editor-header-right { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
+  .editor-area { width: 100% !important; min-height: auto; padding: 24px 16px; border-radius: 0; }
+  .editor-content-wrapper { padding: 8px; }
+  .toolbar { overflow-x: auto; flex-wrap: nowrap; padding: 4px 8px; }
+  .toolbar-btn { flex-shrink: 0; }
+
+  .approval-bar { padding: 8px 12px; gap: 8px; }
+  .approval-slot { width: 80px; min-width: 80px; }
+  .approval-slot-body { height: 60px; }
+  .approval-slot-img { width: 60px; height: 30px; }
+
+  .side-panel { width: 100%; position: fixed; top: 0; right: 0; bottom: 0; z-index: 50; }
+
+  .modal { min-width: auto; margin: 12px; max-width: calc(100vw - 24px); }
+  .journal-form-modal { max-width: calc(100vw - 24px); max-height: 90vh; }
+
+  .journal-tabs { flex-wrap: wrap; }
+  .journal-tab { min-width: 90px; padding: 8px 14px; }
+  .journal-member-grid, .journal-card-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .journal-card { min-height: 150px; padding: 12px; }
+  .journal-popup { max-width: calc(100vw - 24px); }
+
+  .stats-filters { flex-wrap: wrap; gap: 6px; }
+  .stats-chart-row { flex-direction: column; }
+  .stats-slide-tabs { flex-wrap: wrap; gap: 4px; }
+  .stats-slide-tab { padding: 6px 12px; font-size: 0.75rem; }
+  .stats-branch-slide { flex-wrap: wrap; }
+  .bid-stats-grid { grid-template-columns: repeat(2, 1fr); }
+
+  .table-wrapper { margin: 0 -16px; padding: 0 16px; }
+  .data-table td, .data-table th { padding: 8px 10px; font-size: 0.78rem; }
+
   .team-layout { flex-direction: column; }
-  .editor-area { padding: 40px 24px; }
-  .modal { min-width: auto; margin: 16px; }
+  .filter-bar { flex-wrap: wrap; gap: 6px; }
+  .filter-btn { padding: 5px 10px; font-size: 0.75rem; }
+
+  .login-card { margin: 12px; max-width: calc(100vw - 24px); }
+  .login-form { padding: 20px; }
+  .form-row { flex-direction: column; gap: 0; }
+
+  .profile-card { padding: 16px; }
+  .journal-branch-header { flex-wrap: wrap; justify-content: center; }
+  .doc-list .doc-item { flex-direction: column; align-items: flex-start; gap: 8px; }
 }
