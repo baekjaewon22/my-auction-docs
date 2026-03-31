@@ -7,6 +7,7 @@ import documents from './routes/documents';
 import signatures from './routes/signatures';
 import users from './routes/users';
 import journal from './routes/journal';
+import leave from './routes/leave';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -26,6 +27,7 @@ app.route('/api/documents', documents);
 app.route('/api/signatures', signatures);
 app.route('/api/users', users);
 app.route('/api/journal', journal);
+app.route('/api/leave', leave);
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));

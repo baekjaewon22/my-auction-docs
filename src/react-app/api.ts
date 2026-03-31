@@ -130,6 +130,15 @@ export const api = {
       request<{ signatures: import('./types').Signature[] }>('/signatures/document/' + documentId),
   },
 
+  leave: {
+    list: () => request<{ leaves: any[] }>('/leave'),
+    me: () => request<{ leave: any }>('/leave/me'),
+    init: (userId: string, totalDays: number) =>
+      request('/leave/init', { method: 'POST', body: JSON.stringify({ user_id: userId, total_days: totalDays }) }),
+    update: (userId: string, data: { total_days?: number; used_days?: number }) =>
+      request('/leave/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
+  },
+
   journal: {
     members: () =>
       request<{ members: { id: string; name: string; role: string; branch: string; department: string }[] }>('/journal/members'),

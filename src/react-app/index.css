@@ -2770,6 +2770,59 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 /* ========================= */
+/* Leave management          */
+/* ========================= */
+.leave-input {
+  width: 60px;
+  padding: 4px 6px;
+  border: 1.5px solid var(--gray-200);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  text-align: center;
+  outline: none;
+  background: var(--gray-50);
+  transition: all 0.2s;
+}
+
+.leave-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+  background: #fff;
+}
+
+.leave-bar {
+  width: 60px;
+  height: 6px;
+  background: var(--gray-100);
+  border-radius: 3px;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.leave-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.pending-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #d93025;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  margin-left: 4px;
+}
+
+/* ========================= */
 /* Profile Page              */
 /* ========================= */
 .profile-card {

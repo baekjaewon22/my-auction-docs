@@ -83,6 +83,17 @@ CREATE TABLE IF NOT EXISTS document_logs (
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+-- Annual leave management
+CREATE TABLE IF NOT EXISTS annual_leave (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL UNIQUE,
+  total_days REAL NOT NULL DEFAULT 15,
+  used_days REAL NOT NULL DEFAULT 0,
+  year INTEGER NOT NULL DEFAULT 2026,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_branch ON users(branch);
@@ -91,3 +102,4 @@ CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
 CREATE INDEX IF NOT EXISTS idx_documents_branch ON documents(branch);
 CREATE INDEX IF NOT EXISTS idx_signatures_document ON signatures(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_logs_document ON document_logs(document_id);
+CREATE INDEX IF NOT EXISTS idx_annual_leave_user ON annual_leave(user_id);

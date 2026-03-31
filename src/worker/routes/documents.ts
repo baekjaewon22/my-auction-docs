@@ -163,6 +163,21 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
   await db.prepare("UPDATE documents SET status = 'approved', updated_at = datetime('now') WHERE id = ?").bind(id).run();
   await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
     .bind(crypto.randomUUID(), id, user.sub, 'approved', '문서가 승인되었습니다.').run();
+
+  // 연차/반차 문서 승인 시 자동 차감
+  const title = doc.title || '';
+  if (title.includes('연차') || title.includes('반차')) {
+    const days = title.includes('반차') ? 0.5 : 1;
+    let existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
+    if (!existing) {
+      await db.prepare('INSERT INTO annual_leave (id, user_id, total_days, used_days) VALUES (?, ?, 15, 0)')
+        .bind(crypto.randomUUID(), doc.author_id).run();
+      existing = { used_days: 0 };
+    }
+    await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
+      .bind(days, doc.author_id).run();
+  }
+
   return c.json({ success: true });
 });
 
