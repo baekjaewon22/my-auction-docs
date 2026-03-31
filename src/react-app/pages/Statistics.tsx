@@ -419,11 +419,12 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
     <div className="stats-section-content">
       <h3 className="stats-subtitle"><UserCheck size={18} /> 근태 분석 — {viewLevel === 'all' ? '지사별 활동 분포' : viewLevel === 'branch' ? '팀별 분석' : '개인별 분석'}</h3>
 
-      {/* 전체: 지사별 파이차트 */}
+      {/* 전체: 지사별 파이차트(좌우 비교) + 지사별 전체 스택바(좌우 비교) */}
       {viewLevel === 'all' && allEntries && allMembers && (() => {
         const branchList = [...new Set(allMembers.map((m) => m.branch).filter(Boolean))].sort();
         return (
           <>
+            {/* 파이차트 좌우 비교 */}
             <div className="stats-chart-row">
               {branchList.map((b) => (
                 <div key={b} className="stats-chart-half">
@@ -431,40 +432,90 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
                 </div>
               ))}
             </div>
-            {branchList.map((b) => {
-              const bMembers = (allMembers || []).filter((m) => m.branch === b);
-              const bEntries = (allEntries || []).filter((e) => e.branch === b);
-              return (
-                <div key={b} className="stats-chart-card">
-                  <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ background: '#1a73e8', color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem' }}>{b} 지사</span>
-                    <span style={{ fontSize: '0.8rem', color: '#9aa0a6' }}>담당자별 활동</span>
-                  </h4>
-                  {renderStackBar(bMembers, bEntries)}
-                </div>
-              );
-            })}
+            {/* 스택바 좌우 비교 (지사 전체 합산) */}
+            <div className="stats-chart-row">
+              {branchList.map((b) => {
+                const be = allEntries.filter((e) => e.branch === b);
+                const barData = [{
+                  name: b + ' 지사',
+                  입찰: be.filter((e) => e.activity_type === '입찰').length,
+                  임장: be.filter((e) => e.activity_type === '임장').length,
+                  미팅: be.filter((e) => e.activity_type === '미팅').length,
+                  사무: be.filter((e) => e.activity_type === '사무').length,
+                  개인: be.filter((e) => e.activity_type === '개인').length,
+                }];
+                return (
+                  <div key={b} className="stats-chart-card stats-chart-half">
+                    <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ background: '#1a73e8', color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem' }}>{b} 지사</span>
+                      <span style={{ fontSize: '0.8rem', color: '#9aa0a6' }}>전체 활동 {be.length}건</span>
+                    </h4>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={barData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" fontSize={11} />
+                        <YAxis fontSize={11} />
+                        <Tooltip />
+                        <Legend />
+                        {activityTypes.map((t) => <Bar key={t} dataKey={t} fill={ACTIVITY_COLORS[t]} radius={[4, 4, 0, 0]} />)}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                );
+              })}
+            </div>
           </>
         );
       })()}
 
-      {/* 지사 선택: 해당 지사 파이 + 담당자별 스택바 */}
-      {viewLevel === 'branch' && (
-        <>
-          {renderPie('활동 분포', entries)}
-          <div className="stats-chart-card">
-            <h4>담당자별 활동 유형</h4>
-            {renderStackBar(members, entries)}
-          </div>
-        </>
-      )}
+      {/* 지사 선택: 팀별 전체 통계 */}
+      {viewLevel === 'branch' && (() => {
+        const depts = [...new Set(members.map((m) => m.department).filter(Boolean))].sort();
+        return (
+          <>
+            {renderPie('활동 분포', entries)}
+            {/* 팀별 좌우 비교 */}
+            <div className="stats-chart-row">
+              {depts.map((d) => {
+                const de = entries.filter((e) => e.department === d);
+                const barData = [{
+                  name: d,
+                  입찰: de.filter((e) => e.activity_type === '입찰').length,
+                  임장: de.filter((e) => e.activity_type === '임장').length,
+                  미팅: de.filter((e) => e.activity_type === '미팅').length,
+                  사무: de.filter((e) => e.activity_type === '사무').length,
+                  개인: de.filter((e) => e.activity_type === '개인').length,
+                }];
+                return (
+                  <div key={d} className="stats-chart-card stats-chart-half">
+                    <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ background: '#7b1fa2', color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem' }}>{d}</span>
+                      <span style={{ fontSize: '0.8rem', color: '#9aa0a6' }}>{de.length}건</span>
+                    </h4>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={barData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" fontSize={11} />
+                        <YAxis fontSize={11} />
+                        <Tooltip />
+                        <Legend />
+                        {activityTypes.map((t) => <Bar key={t} dataKey={t} fill={ACTIVITY_COLORS[t]} radius={[4, 4, 0, 0]} />)}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        );
+      })()}
 
-      {/* 팀/개인: 상세 */}
+      {/* 팀/개인: 담당자별 상세 */}
       {(viewLevel === 'team' || viewLevel === 'person') && (
         <>
           {renderPie('활동 분포', entries)}
           <div className="stats-chart-card">
-            <h4>활동 유형 분포</h4>
+            <h4>담당자별 활동 유형</h4>
             {renderStackBar(members, entries)}
           </div>
         </>
