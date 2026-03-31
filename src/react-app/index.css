@@ -2029,31 +2029,47 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   font-size: 0.8rem;
 }
 
-.journal-edit-input {
-  padding: 3px 8px;
-  border: 1px solid var(--primary);
+.journal-entry-item.editing {
+  background: #f8faff;
+  border-color: var(--primary);
+}
+
+.journal-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.journal-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+
+.journal-edit-row label {
+  min-width: 60px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--gray-600);
+  font-weight: 600;
+}
+
+.journal-edit-row input {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--gray-300);
   border-radius: var(--radius-sm);
   font-size: 0.8rem;
-  width: 120px;
   outline: none;
-  background: #f8faff;
+  min-width: 0;
 }
 
-.journal-edit-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
+.journal-edit-row input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-light);
 }
-
-.editable-hint {
-  color: var(--primary);
-  font-size: 0.75rem;
-  cursor: pointer;
-  text-decoration: underline;
-  font-weight: 500;
-}
-
-.editable-hint:hover { color: var(--primary-hover); }
 
 .journal-popup-editable {
   display: inline-block;

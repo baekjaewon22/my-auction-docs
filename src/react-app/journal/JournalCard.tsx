@@ -4,7 +4,7 @@ import { ACTIVITY_COLORS, formatShortDate, type ActivityType } from './types';
 import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import { api } from '../api';
-import { Trash2, CheckCircle, XCircle, MapPin, Pencil } from 'lucide-react';
+import { Trash2, CheckCircle, XCircle, MapPin, Pencil, Save, X } from 'lucide-react';
 
 interface Props {
   entries: JournalEntry[];
@@ -23,7 +23,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
   const [failId, setFailId] = useState<string | null>(null);
   const [failReason, setFailReason] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editData, setEditData] = useState<Record<string, string>>({});
+  const [editData, setEditData] = useState<Record<string, any>>({});
 
   const types = [...new Set(entries.map((e) => e.activity_type))];
   const roleLabel = positionTitle || (userRole ? ROLE_LABELS[userRole as Role] || '' : '');
@@ -44,23 +44,16 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     setFailReason('');
   };
 
-  // 인라인 편집 시작
   const startEdit = (entry: JournalEntry) => {
-    const d = parseData(entry.data);
     setEditingId(entry.id);
-    setEditData({
-      suggestedPrice: d.suggestedPrice || '',
-      bidPrice: d.bidPrice || '',
-      winPrice: d.winPrice || '',
-    });
+    setEditData({ ...parseData(entry.data) });
   };
 
-  // 인라인 편집 저장
+  const cancelEdit = () => { setEditingId(null); setEditData({}); };
+
   const saveEdit = async (entry: JournalEntry) => {
-    const d = parseData(entry.data);
-    const updated = { ...d, ...editData };
     try {
-      await api.journal.update(entry.id, { data: updated });
+      await api.journal.update(entry.id, { data: editData });
       setEditingId(null);
       onUpdate?.();
     } catch (err: any) { alert(err.message); }
@@ -71,10 +64,12 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     return num ? Number(num).toLocaleString() : '';
   };
 
-  // 값 표시: 있으면 값, 없으면 수정가능이면 클릭유도, readonly면 미입력
-  const renderValue = (val: string, unit: string, entryId: string, _field: string) => {
-    if (val && val !== '0') return <span>{val}{unit}</span>;
-    if (!readonly && editingId !== entryId) return <span className="editable-hint" onClick={() => startEdit(entries.find(e => e.id === entryId)!)}>입력하기</span>;
+  const ed = (key: string) => editData[key] || '';
+  const setEd = (key: string, val: any) => setEditData({ ...editData, [key]: val });
+
+  // 읽기 모드에서 값 표시
+  const showVal = (val: string, unit?: string) => {
+    if (val && val !== '0') return <span>{val}{unit || ''}</span>;
     return <span style={{ color: '#bdc1c6' }}>미입력</span>;
   };
 
@@ -99,7 +94,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
       </div>
 
       {showPopup && (
-        <div className="modal-overlay" onClick={() => setShowPopup(false)}>
+        <div className="modal-overlay" onClick={() => { setShowPopup(false); cancelEdit(); }}>
           <div className="journal-popup" onClick={(e) => e.stopPropagation()}>
             <div className="journal-popup-header">
               <div>
@@ -107,19 +102,20 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                 <span className="journal-popup-date">{formatShortDate(date)}</span>
                 {!readonly && <span className="journal-popup-editable">수정 가능</span>}
               </div>
-              <button className="btn-close" onClick={() => setShowPopup(false)}>×</button>
+              <button className="btn-close" onClick={() => { setShowPopup(false); cancelEdit(); }}>×</button>
             </div>
 
             <div className="journal-popup-body">
               {entries.map((entry) => {
                 const d = parseData(entry.data);
                 const isEditing = editingId === entry.id;
+
                 return (
-                  <div key={entry.id} className={`journal-entry-item ${entry.completed ? 'completed' : ''}`}>
+                  <div key={entry.id} className={`journal-entry-item ${entry.completed ? 'completed' : ''} ${isEditing ? 'editing' : ''}`}>
                     <div className="journal-entry-header">
                       <span className="journal-type-tag" style={{ backgroundColor: ACTIVITY_COLORS[entry.activity_type as ActivityType] + '18', color: ACTIVITY_COLORS[entry.activity_type as ActivityType], borderColor: ACTIVITY_COLORS[entry.activity_type as ActivityType] + '40' }}>{entry.activity_type}</span>
-                      {entry.activity_subtype && <span className="journal-entry-sub">{entry.activity_subtype}</span>}
-                      {(d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit) && (
+                      {!isEditing && entry.activity_subtype && <span className="journal-entry-sub">{entry.activity_subtype}</span>}
+                      {(d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit) && !isEditing && (
                         <div className="journal-field-badges-inline">
                           {d.fieldCheckIn && <span className="journal-field-badge"><MapPin size={10} /> 현장출근</span>}
                           {d.fieldCheckOut && <span className="journal-field-badge"><MapPin size={10} /> 현장퇴근</span>}
@@ -128,16 +124,16 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       )}
                       {!readonly && (
                         <div className="journal-entry-actions">
-                          {entry.activity_type === '입찰' && !isEditing && (
-                            <button className="btn-icon" title="수정" onClick={() => startEdit(entry)}><Pencil size={14} /></button>
-                          )}
-                          {entry.activity_type === '임장' && (
+                          {!isEditing && <button className="btn-icon" title="수정" onClick={() => startEdit(entry)}><Pencil size={14} /></button>}
+                          {isEditing && <button className="btn-icon success" title="저장" onClick={() => saveEdit(entry)}><Save size={14} /></button>}
+                          {isEditing && <button className="btn-icon" title="취소" onClick={cancelEdit}><X size={14} /></button>}
+                          {entry.activity_type === '임장' && !isEditing && (
                             <>
                               <button className="btn-icon success" title="완료" onClick={() => onToggleComplete?.(entry.id, true)}><CheckCircle size={16} /></button>
                               <button className="btn-icon danger" title="미완료" onClick={() => setFailId(entry.id)}><XCircle size={16} /></button>
                             </>
                           )}
-                          <button className="btn-icon danger" title="삭제" onClick={() => { if (confirm('삭제하시겠습니까?')) onDelete?.(entry.id); }}><Trash2 size={14} /></button>
+                          {!isEditing && <button className="btn-icon danger" title="삭제" onClick={() => { if (confirm('삭제하시겠습니까?')) onDelete?.(entry.id); }}><Trash2 size={14} /></button>}
                         </div>
                       )}
                     </div>
@@ -151,71 +147,101 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                     )}
 
                     <div className="journal-entry-details">
-                      {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
-
+                      {/* === 입찰 === */}
                       {entry.activity_type === '입찰' && (
-                        <>
-                          <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span><span>{d.caseNo}</span></div>
-                          <div className="journal-detail-row"><span className="journal-detail-label">입찰자</span><span>{d.bidder}</span></div>
-                          <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.court}</span></div>
-                          <div className="journal-detail-row">
-                            <span className="journal-detail-label">제시입찰가</span>
-                            {isEditing ? (
-                              <input className="journal-edit-input" value={editData.suggestedPrice} onChange={(e) => setEditData({ ...editData, suggestedPrice: fmtCurrency(e.target.value) })} placeholder="0" />
-                            ) : renderValue(d.suggestedPrice, '원', entry.id, 'suggestedPrice')}
+                        isEditing ? (
+                          <div className="journal-edit-form">
+                            <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>입찰자</label><input value={ed('bidder')} onChange={(e) => setEd('bidder', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>제시입찰가</label><input value={ed('suggestedPrice')} onChange={(e) => setEd('suggestedPrice', fmtCurrency(e.target.value))} /></div>
+                            <div className="journal-edit-row"><label>작성입찰가</label><input value={ed('bidPrice')} onChange={(e) => setEd('bidPrice', fmtCurrency(e.target.value))} /></div>
+                            <div className="journal-edit-row"><label>낙찰가</label><input value={ed('winPrice')} onChange={(e) => setEd('winPrice', fmtCurrency(e.target.value))} /></div>
                           </div>
-                          <div className="journal-detail-row">
-                            <span className="journal-detail-label">작성입찰가</span>
-                            {isEditing ? (
-                              <input className="journal-edit-input" value={editData.bidPrice} onChange={(e) => setEditData({ ...editData, bidPrice: fmtCurrency(e.target.value) })} placeholder="0" />
-                            ) : renderValue(d.bidPrice, '원', entry.id, 'bidPrice')}
-                          </div>
-                          <div className="journal-detail-row">
-                            <span className="journal-detail-label">낙찰가</span>
-                            {isEditing ? (
-                              <input className="journal-edit-input" value={editData.winPrice} onChange={(e) => setEditData({ ...editData, winPrice: fmtCurrency(e.target.value) })} placeholder="0" />
-                            ) : renderValue(d.winPrice, '원', entry.id, 'winPrice')}
-                          </div>
-                          {isEditing && (
-                            <div className="journal-edit-actions">
-                              <button className="btn btn-sm btn-primary" onClick={() => saveEdit(entry)}>저장</button>
-                              <button className="btn btn-sm" onClick={() => setEditingId(null)}>취소</button>
-                            </div>
-                          )}
-                          {d.deviationReason && (
-                            <div className="journal-detail-row">
-                              <span className="journal-detail-label" style={{ color: '#d93025' }}>차이사유</span>
-                              <span style={{ color: '#d93025' }}>{d.deviationReason}</span>
-                            </div>
-                          )}
-                        </>
+                        ) : (
+                          <>
+                            {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
+                            <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">입찰자</span>{showVal(d.bidder)}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">제시입찰가</span>{showVal(d.suggestedPrice, '원')}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">작성입찰가</span>{showVal(d.bidPrice, '원')}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">낙찰가</span>{showVal(d.winPrice, '원')}</div>
+                            {d.deviationReason && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#d93025' }}>차이사유</span><span style={{ color: '#d93025' }}>{d.deviationReason}</span></div>}
+                          </>
+                        )
                       )}
+
+                      {/* === 임장 === */}
                       {entry.activity_type === '임장' && (
-                        <>
-                          <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span><span>{d.caseNo}</span></div>
-                          {d.court && <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.court}</span></div>}
-                          <div className="journal-detail-row"><span className="journal-detail-label">장소</span><span>{d.place}</span></div>
-                          {entry.completed === 1 && <div className="journal-detail-row"><span className="journal-detail-label">상태</span><span style={{ color: '#188038' }}>완료</span></div>}
-                          {entry.completed === 0 && entry.fail_reason && <div className="journal-detail-row"><span className="journal-detail-label">미완료 사유</span><span style={{ color: '#d93025' }}>{entry.fail_reason}</span></div>}
-                        </>
+                        isEditing ? (
+                          <div className="journal-edit-form">
+                            <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>장소</label><input value={ed('place')} onChange={(e) => setEd('place', e.target.value)} /></div>
+                          </div>
+                        ) : (
+                          <>
+                            {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
+                            <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
+                            {d.court && <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>}
+                            <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>
+                            {entry.completed === 1 && <div className="journal-detail-row"><span className="journal-detail-label">상태</span><span style={{ color: '#188038' }}>완료</span></div>}
+                            {entry.completed === 0 && entry.fail_reason && <div className="journal-detail-row"><span className="journal-detail-label">미완료</span><span style={{ color: '#d93025' }}>{entry.fail_reason}</span></div>}
+                          </>
+                        )
                       )}
+
+                      {/* === 미팅 === */}
                       {entry.activity_type === '미팅' && (
-                        <>
-                          <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.meetingType}{d.etcReason ? ` - ${d.etcReason}` : ''}</span></div>
-                          {d.place && <div className="journal-detail-row"><span className="journal-detail-label">장소</span><span>{d.place}</span></div>}
-                        </>
+                        isEditing ? (
+                          <div className="journal-edit-form">
+                            <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>유형</label><input value={ed('meetingType')} onChange={(e) => setEd('meetingType', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>장소</label><input value={ed('place')} onChange={(e) => setEd('place', e.target.value)} /></div>
+                          </div>
+                        ) : (
+                          <>
+                            {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
+                            <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.meetingType}{d.etcReason ? ` - ${d.etcReason}` : ''}</span></div>
+                            {d.place && <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>}
+                          </>
+                        )
                       )}
+
+                      {/* === 사무 === */}
                       {entry.activity_type === '사무' && (
-                        <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.officeType}{d.etcReason ? ` - ${d.etcReason}` : ''}</span></div>
+                        isEditing ? (
+                          <div className="journal-edit-form">
+                            <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>유형</label><input value={ed('officeType')} onChange={(e) => setEd('officeType', e.target.value)} /></div>
+                          </div>
+                        ) : (
+                          <>
+                            {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
+                            <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.officeType}{d.etcReason ? ` - ${d.etcReason}` : ''}</span></div>
+                          </>
+                        )
                       )}
+
+                      {/* === 개인 === */}
                       {entry.activity_type === '개인' && (
-                        <div className="journal-detail-row"><span className="journal-detail-label">사유</span><span>{d.reason}</span></div>
+                        isEditing ? (
+                          <div className="journal-edit-form">
+                            <div className="journal-edit-row"><label>사유</label><input value={ed('reason')} onChange={(e) => setEd('reason', e.target.value)} /></div>
+                          </div>
+                        ) : (
+                          <div className="journal-detail-row"><span className="journal-detail-label">사유</span>{showVal(d.reason)}</div>
+                        )
                       )}
-                      {d.briefingSubmit && d.briefingCaseNo && (
+
+                      {/* 브리핑 */}
+                      {!isEditing && d.briefingSubmit && d.briefingCaseNo && (
                         <>
                           <div className="journal-detail-row" style={{ marginTop: 6, paddingTop: 6, borderTop: '1px dashed #e8eaed' }}>
-                            <span className="journal-detail-label" style={{ color: '#1a73e8' }}>브리핑</span>
-                            <span>{d.briefingCaseNo}</span>
+                            <span className="journal-detail-label" style={{ color: '#1a73e8' }}>브리핑</span><span>{d.briefingCaseNo}</span>
                           </div>
                           {d.briefingCourt && <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.briefingCourt}</span></div>}
                         </>
