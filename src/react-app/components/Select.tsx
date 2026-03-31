@@ -96,6 +96,7 @@ export default function Select({ size = 'default', ...props }: SelectProps) {
       noOptionsMessage={() => '결과 없음'}
       menuPortalTarget={document.body}
       menuPosition="fixed"
+      menuPlacement="auto"
       {...props}
     />
   );
