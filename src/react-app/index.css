@@ -2306,6 +2306,37 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   align-items: center;
 }
 
+.stats-branch-slide {
+  display: flex;
+  background: var(--gray-100);
+  border-radius: 20px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.stats-branch-btn {
+  padding: 5px 16px;
+  border: none;
+  border-radius: 18px;
+  background: transparent;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--gray-600);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.stats-branch-btn:hover {
+  color: var(--gray-800);
+}
+
+.stats-branch-btn.active {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(26, 115, 232, 0.3);
+}
+
 .stats-filter-select {
   padding: 6px 10px;
   border: 1px solid var(--gray-300);

@@ -78,16 +78,23 @@ export default function Statistics() {
         <h2><BarChart3 size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} />통계</h2>
         {/* Filters */}
         <div className="stats-filters">
-          {isCeoPlus && (
-            <div style={{ minWidth: 140 }}>
-              <Select
-                size="sm"
-                options={branches.map(b => ({ value: b, label: `${b} 지사` }))}
-                value={filterBranch ? { value: filterBranch, label: `${filterBranch} 지사` } : null}
-                onChange={(o: any) => { setFilterBranch(o?.value || ''); setFilterDept(''); setFilterUser(''); }}
-                placeholder="전체 지사"
-                isClearable
-              />
+          {isCeoPlus && branches.length > 0 && (
+            <div className="stats-branch-slide">
+              <button
+                className={`stats-branch-btn ${filterBranch === '' ? 'active' : ''}`}
+                onClick={() => { setFilterBranch(''); setFilterDept(''); setFilterUser(''); }}
+              >
+                전체
+              </button>
+              {branches.map((b) => (
+                <button
+                  key={b}
+                  className={`stats-branch-btn ${filterBranch === b ? 'active' : ''}`}
+                  onClick={() => { setFilterBranch(filterBranch === b ? '' : b); setFilterDept(''); setFilterUser(''); }}
+                >
+                  {b}
+                </button>
+              ))}
             </div>
           )}
           <div style={{ minWidth: 140 }}>
