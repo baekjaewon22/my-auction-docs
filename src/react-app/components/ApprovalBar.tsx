@@ -15,8 +15,6 @@ const SLOTS = [
 ];
 
 export default function ApprovalBar({ signatures, currentUserId, currentUserRole, docStatus, onSign }: Props) {
-  // Map signatures to slots by order
-  // First signature = author, second = manager, third = director
   const slotData = SLOTS.map((slot, idx) => {
     const sig = signatures[idx] || null;
     return { ...slot, signature: sig };
@@ -27,6 +25,16 @@ export default function ApprovalBar({ signatures, currentUserId, currentUserRole
     ['master', 'ceo', 'admin', 'manager'].includes(currentUserRole || '');
 
   const authorSigned = signatures.some(s => s.user_id === currentUserId);
+  const alreadyApproved = signatures.find(s => s.user_id === currentUserId && signatures.indexOf(s) >= 1);
+
+  // 관리자(admin)는 대표(director) 슬롯에도 서명 가능
+  const canSignSlot = (idx: number) => {
+    if (idx === 0) return isAuthor && !authorSigned;
+    if (!isApprover || alreadyApproved) return false;
+    if (idx === 1) return ['master', 'ceo', 'admin', 'manager'].includes(currentUserRole || '');
+    if (idx === 2) return ['master', 'ceo', 'admin'].includes(currentUserRole || ''); // 관리자도 대표란 서명 가능
+    return false;
+  };
 
   return (
     <div className="approval-bar">
@@ -38,27 +46,14 @@ export default function ApprovalBar({ signatures, currentUserId, currentUserRole
             <div className="approval-slot-body">
               {slot.signature ? (
                 <>
-                  <img
-                    src={slot.signature.signature_data}
-                    alt={`${slot.signature.user_name} 서명`}
-                    className="approval-slot-img"
-                  />
+                  <img src={slot.signature.signature_data} alt={`${slot.signature.user_name} 서명`} className="approval-slot-img" />
                   <div className="approval-slot-name">{slot.signature.user_name}</div>
-                  <div className="approval-slot-date">
-                    {new Date(slot.signature.signed_at).toLocaleDateString('ko-KR')}
-                  </div>
+                  <div className="approval-slot-date">{new Date(slot.signature.signed_at).toLocaleDateString('ko-KR')}</div>
                 </>
               ) : (
                 <div className="approval-slot-empty">
-                  {/* Author slot - show sign button for draft */}
-                  {idx === 0 && isAuthor && !authorSigned && (
-                    <button className="approval-sign-btn" onClick={() => onSign('author')}>
-                      서명
-                    </button>
-                  )}
-                  {/* Approver slots - show sign button for submitted docs */}
-                  {idx > 0 && isApprover && !signatures.find(s => s.user_id === currentUserId && signatures.indexOf(s) >= 1) && (
-                    <button className="approval-sign-btn" onClick={() => onSign('approver')}>
+                  {canSignSlot(idx) && (
+                    <button className="approval-sign-btn" onClick={() => onSign(idx === 0 ? 'author' : 'approver')}>
                       서명
                     </button>
                   )}

@@ -28,6 +28,7 @@
 		"@tiptap/react": "^3.21.0",
 		"@tiptap/starter-kit": "^3.21.0",
 		"hono": "4.11.1",
+		"html2pdf.js": "^0.14.0",
 		"hwp.js": "^0.0.3",
 		"jose": "^6.2.2",
 		"lucide-react": "^1.7.0",

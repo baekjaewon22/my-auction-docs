@@ -1008,6 +1008,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   box-shadow: var(--shadow-md);
   border-radius: var(--radius);
   padding: 72px 96px;
+  overflow: visible;
 }
 
 .editor-area .tiptap {
@@ -1049,6 +1050,28 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border: none;
   border-top: 1px solid var(--gray-300);
   margin: 1em 0;
+}
+
+.editor-area .tiptap table {
+  width: 100%;
+  border-collapse: collapse;
+  page-break-inside: auto;
+}
+
+.editor-area .tiptap table td,
+.editor-area .tiptap table th {
+  border: 1px solid var(--gray-300);
+  padding: 6px 8px;
+  font-size: 0.85rem;
+}
+
+.editor-area .tiptap table th {
+  background: var(--gray-50);
+  font-weight: 600;
+}
+
+.editor-area .tiptap table tr {
+  page-break-inside: avoid;
 }
 
 .editor-area .tiptap p.is-editor-empty:first-child::before {

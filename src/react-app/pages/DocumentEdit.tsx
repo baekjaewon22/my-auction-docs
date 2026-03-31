@@ -16,6 +16,7 @@ import type { Document, DocumentLog, Signature } from '../types';
 import SignaturePanel from '../components/SignaturePanel';
 import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
+import { FileDown } from 'lucide-react';
 
 export default function DocumentEdit() {
   const { id } = useParams<{ id: string }>();
@@ -127,6 +128,79 @@ export default function DocumentEdit() {
     window.location.reload();
   };
 
+  // PDF 출력
+  const handleExportPdf = async () => {
+    const html2pdf = (await import('html2pdf.js')).default;
+    const editorEl = document.querySelector('.editor-area');
+    if (!editorEl) return;
+
+    // Build PDF content with signature header
+    const pdfContainer = document.createElement('div');
+    pdfContainer.style.cssText = 'font-family: "Segoe UI", sans-serif; color: #202124;';
+
+    // 우측 상단 결재란
+    const sigHeader = document.createElement('div');
+    sigHeader.style.cssText = 'display: flex; justify-content: flex-end; margin-bottom: 20px;';
+
+    const sigTable = document.createElement('table');
+    sigTable.style.cssText = 'border-collapse: collapse; font-size: 10px;';
+
+    const headerRow = document.createElement('tr');
+    ['작성자', '팀장', '대표'].forEach((label) => {
+      const th = document.createElement('th');
+      th.style.cssText = 'border: 1px solid #999; padding: 4px 12px; background: #f5f5f5; font-size: 10px; width: 70px; text-align: center;';
+      th.textContent = label;
+      headerRow.appendChild(th);
+    });
+    sigTable.appendChild(headerRow);
+
+    const dataRow = document.createElement('tr');
+    [0, 1, 2].forEach((idx) => {
+      const td = document.createElement('td');
+      td.style.cssText = 'border: 1px solid #999; padding: 4px; height: 50px; width: 70px; text-align: center; vertical-align: middle;';
+      const sig = signatures[idx];
+      if (sig) {
+        const img = document.createElement('img');
+        img.src = sig.signature_data;
+        img.style.cssText = 'width: 55px; height: 28px; object-fit: contain;';
+        td.appendChild(img);
+        const name = document.createElement('div');
+        name.style.cssText = 'font-size: 8px; color: #666; margin-top: 2px;';
+        name.textContent = sig.user_name || '';
+        td.appendChild(name);
+      }
+      dataRow.appendChild(td);
+    });
+    sigTable.appendChild(dataRow);
+    sigHeader.appendChild(sigTable);
+    pdfContainer.appendChild(sigHeader);
+
+    // 문서 제목
+    const titleEl = document.createElement('h2');
+    titleEl.style.cssText = 'text-align: center; margin-bottom: 16px; font-size: 18px;';
+    titleEl.textContent = title;
+    pdfContainer.appendChild(titleEl);
+
+    // 문서 본문
+    const content = document.createElement('div');
+    content.innerHTML = editor?.getHTML() || '';
+    content.style.cssText = 'font-size: 12px; line-height: 1.6;';
+    pdfContainer.appendChild(content);
+
+    document.body.appendChild(pdfContainer);
+
+    await (html2pdf().set as any)({
+      margin: [15, 15, 15, 15],
+      filename: `${title || '문서'}.pdf`,
+      image: { type: 'jpeg', quality: 0.95 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+    }).from(pdfContainer).save();
+
+    document.body.removeChild(pdfContainer);
+  };
+
   // ApprovalBar에서 서명 버튼 클릭 시
   const handleApprovalSign = (type: 'author' | 'approver') => {
     setSignatureType(type);
@@ -175,6 +249,7 @@ export default function DocumentEdit() {
             </span>
           )}
           <button className="btn btn-sm" onClick={() => setShowLogs(!showLogs)}>이력</button>
+          <button className="btn btn-sm" onClick={handleExportPdf} title="PDF 다운로드"><FileDown size={14} /> PDF</button>
 
           {/* Draft/Rejected: 최종 제출 (서명은 결재란에서) */}
           {isEditable && (doc.status === 'draft' || doc.status === 'rejected') && (
