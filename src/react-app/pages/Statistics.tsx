@@ -240,38 +240,61 @@ function BidAnalysis({ entries, members, viewLevel, allEntries, allMembers }: {
         {totals.dev5 > 0 && <div className="bid-stat-card bid-stat-warning"><AlertTriangle size={20} className="bid-stat-warn-icon" /><div className="bid-stat-value">{totals.dev5}건</div><div className="bid-stat-label">5%초과</div></div>}
       </div>
 
-      {/* 전체: 지사별 비교 */}
+      {/* 전체: 지사별 개별 카드 */}
       {viewLevel === 'all' && allEntries && allMembers && (() => {
         const branchList = [...new Set(allMembers.map((m) => m.branch).filter(Boolean))].sort();
-        const branchChartData = branchList.map((b) => {
-          const s = calcBidStats(allEntries.filter((e) => e.activity_type === '입찰' && e.branch === b));
-          return { name: b + ' 지사', 입찰: s.total, 낙찰: s.win, 패찰: s.lose };
-        });
         return (
           <>
+            {/* 전체 결과 파이 */}
             <div className="stats-chart-card">
-              <h4>지사별 입찰 성과 비교</h4>
-              {renderBarChart(branchChartData)}
+              <h4>전체 결과 분포</h4>
+              <ResponsiveContainer width="100%" height={250}>
+                <PieChart>
+                  <Pie data={resultPie} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={(props: any) => `${props.name} ${props.value}건`}>
+                    {resultPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
             </div>
+
+            {/* 지사별 개별 카드 */}
             <div className="stats-chart-row">
-              <div className="stats-chart-card stats-chart-half">
-                <h4>전체 결과 분포</h4>
-                <ResponsiveContainer width="100%" height={250}>
-                  <PieChart>
-                    <Pie data={resultPie} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={(props: any) => `${props.name} ${props.value}건`}>
-                      {resultPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="stats-chart-card stats-chart-half">
-                <h4>지사별 낙찰률</h4>
-                {renderBarChart(branchList.map((b) => {
-                  const s = calcBidStats(allEntries.filter((e) => e.activity_type === '입찰' && e.branch === b));
-                  return { name: b, 입찰: 0, 낙찰: Number(s.winRate.toFixed(1)), 패찰: 0 };
-                }).map((d) => ({ name: d.name, '낙찰률(%)': d.낙찰 } as any)))}
-              </div>
+              {branchList.map((b) => {
+                const bEntries = allEntries.filter((e) => e.activity_type === '입찰' && e.branch === b);
+                const s = calcBidStats(bEntries);
+                const bPie = [
+                  { name: '낙찰', value: s.win },
+                  { name: '패찰', value: s.lose },
+                  { name: '미확정', value: s.pending },
+                ].filter((d) => d.value > 0);
+                return (
+                  <div key={b} className="stats-chart-card stats-chart-half">
+                    <h4 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ background: '#1a73e8', color: '#fff', padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem' }}>{b} 지사</span>
+                      <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>
+                        입찰 {s.total} · 낙찰률 {s.winRate > 0 ? s.winRate.toFixed(1) + '%' : '-'}
+                      </span>
+                    </h4>
+                    {s.total > 0 ? (
+                      <ResponsiveContainer width="100%" height={200}>
+                        <PieChart>
+                          <Pie data={bPie} cx="50%" cy="50%" outerRadius={70} dataKey="value" label={(props: any) => `${props.name} ${props.value}`}>
+                            {bPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
+                          </Pie>
+                          <Tooltip />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="empty-state">입찰 데이터 없음</div>
+                    )}
+                    <div style={{ fontSize: '0.75rem', color: '#5f6368', textAlign: 'center', marginTop: 4 }}>
+                      낙찰 {s.win} · 패찰 {s.lose} · 미확정 {s.pending}
+                      {s.dev5 > 0 && <span style={{ color: '#d93025', marginLeft: 8 }}>5%초과 {s.dev5}건</span>}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </>
         );
