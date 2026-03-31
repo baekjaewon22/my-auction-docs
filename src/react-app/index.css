@@ -1001,6 +1001,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 /* A4 용지: 210mm x 297mm = 794px x 1123px @96dpi */
+/* 페이지 내용 영역: 1123px - padding(60+60) = 1003px */
 .editor-area {
   width: 794px;
   min-height: 1123px;
@@ -1010,6 +1011,34 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   padding: 60px 72px;
   overflow: visible;
   position: relative;
+  /* 페이지 경계선 반복 (매 1123px마다) */
+  background-image:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 1122px,
+      #d93025 1122px,
+      #d93025 1123px
+    );
+  background-size: 100% 1123px;
+  background-position: 0 -60px;
+}
+
+.editor-page-container {
+  position: relative;
+  width: 794px;
+}
+
+.page-number-label {
+  position: absolute;
+  right: 8px;
+  font-size: 0.65rem;
+  color: var(--gray-400);
+  background: rgba(255,255,255,0.9);
+  padding: 2px 8px;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 5;
 }
 
 .editor-area .tiptap {
@@ -2746,7 +2775,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .editor-header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
   .editor-header-left { width: 100%; }
   .editor-header-right { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
-  .editor-area { width: 100% !important; min-height: auto; padding: 24px 16px; border-radius: 0; }
+  .editor-area { width: 100% !important; min-height: auto; padding: 24px 16px; border-radius: 0; background-image: none; }
+  .editor-page-container { width: 100%; }
+  .page-number-label { display: none; }
   .editor-content-wrapper { padding: 8px; }
   .toolbar { overflow-x: auto; flex-wrap: nowrap; padding: 4px 8px; }
   .toolbar-btn { flex-shrink: 0; }
