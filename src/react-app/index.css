@@ -2898,6 +2898,74 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 /* ========================= */
+/* Missing Alert (Dashboard) */
+/* ========================= */
+.missing-alert-count {
+  font-size: 0.7rem;
+  color: #fff;
+  background: #d93025;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+.missing-alert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.missing-alert-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #fce8e6;
+  border: 1px solid #f5c6cb;
+  border-radius: 8px;
+  border-left: 4px solid #d93025;
+}
+
+.missing-alert-icon {
+  color: #d93025;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.missing-alert-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.missing-alert-main {
+  font-size: 0.85rem;
+  color: var(--gray-800);
+}
+
+.missing-alert-detail {
+  font-size: 0.78rem;
+  color: var(--gray-600);
+  margin-top: 3px;
+}
+
+.missing-alert-activity {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.missing-alert-doc {
+  color: #d93025;
+  font-weight: 600;
+}
+
+.missing-alert-more {
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--gray-500);
+  padding: 6px;
+}
+
+/* ========================= */
 /* Archive Page              */
 /* ========================= */
 .archive-filters {
