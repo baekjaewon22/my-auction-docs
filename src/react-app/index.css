@@ -98,10 +98,17 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   margin: 0 auto;
 }
 
+.logo-text-group {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
 .logo-sub {
-  font-size: 0.75rem;
+  font-size: 0.65rem;
+  font-weight: 400;
   color: var(--gray-500);
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .sidebar-nav {

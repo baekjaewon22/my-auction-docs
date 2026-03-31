@@ -29,8 +29,13 @@ export default function Layout() {
         <div className="sidebar-header">
           {!collapsed ? (
             <>
-              <h1 className="logo"><img src="/logo2.png" alt="로고" className="sidebar-logo-img" />마이옥션 오피스</h1>
-              <span className="logo-sub">문서 관리 시스템</span>
+              <h1 className="logo">
+                <img src="/logo2.png" alt="로고" className="sidebar-logo-img" />
+                <span className="logo-text-group">
+                  <span>마이옥션 오피스</span>
+                  <span className="logo-sub">문서 관리 시스템</span>
+                </span>
+              </h1>
             </>
           ) : (
             <img src="/logo2.png" alt="로고" className="sidebar-logo-img-sm" />
