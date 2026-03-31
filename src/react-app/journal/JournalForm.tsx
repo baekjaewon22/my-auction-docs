@@ -2,14 +2,13 @@ import { useState, useEffect } from 'react';
 import { api } from '../api';
 import {
   ACTIVITY_TYPES, MEETING_SUBTYPES, OFFICE_SUBTYPES,
-  COURT_OPTIONS, generateTimeOptions, generateYears,
+  COURT_OPTIONS, generateTimeOptions,
   type ActivityType, type CourtOption,
 } from './types';
 import Select, { toOptions } from '../components/Select';
 import { Plus, X } from 'lucide-react';
 
 const TIME_OPTS = toOptions(generateTimeOptions());
-const YEAR_OPTS = generateYears().map((y) => ({ value: String(y), label: String(y) }));
 const MEETING_OPTS = toOptions(MEETING_SUBTYPES as unknown as string[]);
 const OFFICE_OPTS = toOptions(OFFICE_SUBTYPES as unknown as string[]);
 
@@ -31,7 +30,6 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [fieldCheckIn, setFieldCheckIn] = useState(false);
   const [fieldCheckOut, setFieldCheckOut] = useState(false);
   const [briefingSubmit, setBriefingSubmit] = useState(false);
-  const [briefingYear, setBriefingYear] = useState('2026');
   const [briefingCaseNo, setBriefingCaseNo] = useState('');
   const [briefingCourt, setBriefingCourt] = useState('');
 
@@ -39,7 +37,6 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [timeTo, setTimeTo] = useState('10:00');
 
   // 입찰
-  const [bidYear, setBidYear] = useState('2026');
   const [bidCaseNo, setBidCaseNo] = useState('');
   const [bidBidder, setBidBidder] = useState('');
   const [bidCourt, setBidCourt] = useState('');
@@ -62,7 +59,6 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   }, [bidSuggestedPrice, bidPrice]);
 
   // 임장
-  const [inspYear, setInspYear] = useState('2026');
   const [inspCaseNo, setInspCaseNo] = useState('');
   const [inspCourt, setInspCourt] = useState('');
   const [inspPlace, setInspPlace] = useState('');
@@ -88,19 +84,19 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     setSaving(true);
 
     let data: Record<string, unknown> = { timeFrom, timeTo, fieldCheckIn, fieldCheckOut,
-      briefingSubmit, ...(briefingSubmit ? { briefingCaseNo: `${briefingYear}타경${briefingCaseNo}`, briefingCourt } : {}) };
+      briefingSubmit, ...(briefingSubmit ? { briefingCaseNo, briefingCourt } : {}) };
     let subtype = '';
 
     switch (activityType) {
       case '입찰':
-        data = { ...data, caseNo: `${bidYear}타경${bidCaseNo}`, bidder: bidBidder, court: bidCourt,
+        data = { ...data, caseNo: bidCaseNo, bidder: bidBidder, court: bidCourt,
           suggestedPrice: bidSuggestedPrice, bidPrice, winPrice: bidWon ? bidPrice : bidWinPrice,
           bidWon, deviationReason: bidDeviationReason };
-        subtype = `${bidYear}타경${bidCaseNo}`;
+        subtype = bidCaseNo;
         break;
       case '임장':
-        data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, court: inspCourt, place: inspPlace };
-        subtype = `${inspYear}타경${inspCaseNo}`;
+        data = { ...data, caseNo: inspCaseNo, court: inspCourt, place: inspPlace };
+        subtype = inspCaseNo;
         break;
       case '미팅':
         data = { ...data, meetingType, etcReason: meetingEtc, place: meetingPlace };
@@ -176,16 +172,8 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
           {briefingSubmit && (
             <div className="briefing-fields">
               <label className="form-label-sm">브리핑자료 사건정보</label>
-              <div className="form-row">
-                <div className="form-group" style={{ flex: '0 0 120px' }}>
-                  <Select options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === briefingYear)} onChange={(o: any) => setBriefingYear(o.value)} />
-                </div>
-                <div className="form-group" style={{ flex: '0 0 70px' }}>
-                  <input type="text" value="타경" disabled className="input-disabled" />
-                </div>
-                <div className="form-group">
-                  <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value)} placeholder="사건번호" required />
-                </div>
+              <div className="form-group">
+                <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value)} placeholder="2024타경1234" required />
               </div>
               <div className="form-group">
                 <Select
@@ -202,19 +190,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
           {activityType === '입찰' && (
             <>
-              <div className="form-row">
-                <div className="form-group" style={{ flex: '0 0 120px' }}>
-                  <label>연도</label>
-                  <Select options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === bidYear)} onChange={(o: any) => setBidYear(o.value)} />
-                </div>
-                <div className="form-group" style={{ flex: '0 0 70px' }}>
-                  <label>&nbsp;</label>
-                  <input type="text" value="타경" disabled className="input-disabled" />
-                </div>
-                <div className="form-group">
-                  <label>사건번호</label>
-                  <input type="text" value={bidCaseNo} onChange={(e) => setBidCaseNo(e.target.value)} placeholder="12345" required />
-                </div>
+              <div className="form-group">
+                <label>사건번호</label>
+                <input type="text" value={bidCaseNo} onChange={(e) => setBidCaseNo(e.target.value)} placeholder="2024타경1234" required />
               </div>
               <div className="form-group">
                 <label>입찰자 이름</label>
@@ -262,19 +240,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
           {activityType === '임장' && (
             <>
-              <div className="form-row">
-                <div className="form-group" style={{ flex: '0 0 120px' }}>
-                  <label>연도</label>
-                  <Select options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === inspYear)} onChange={(o: any) => setInspYear(o.value)} />
-                </div>
-                <div className="form-group" style={{ flex: '0 0 70px' }}>
-                  <label>&nbsp;</label>
-                  <input type="text" value="타경" disabled className="input-disabled" />
-                </div>
-                <div className="form-group">
-                  <label>사건번호</label>
-                  <input type="text" value={inspCaseNo} onChange={(e) => setInspCaseNo(e.target.value)} placeholder="12345" required />
-                </div>
+              <div className="form-group">
+                <label>사건번호</label>
+                <input type="text" value={inspCaseNo} onChange={(e) => setInspCaseNo(e.target.value)} placeholder="2024타경1234" required />
               </div>
               <div className="form-group">
                 <label>법원</label>
