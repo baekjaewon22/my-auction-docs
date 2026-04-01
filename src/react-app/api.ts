@@ -1,7 +1,7 @@
 const BASE = '/api';
 
 function getToken(): string | null {
-  return localStorage.getItem('token');
+  return sessionStorage.getItem('token');
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -17,7 +17,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { ...options, headers });
 
   if (res.status === 401) {
-    localStorage.removeItem('token');
+    sessionStorage.removeItem('token');
     window.location.href = '/login';
     throw new Error('Unauthorized');
   }
@@ -46,6 +46,16 @@ export const api = {
       request<{ message: string }>('/auth/register', {
         method: 'POST',
         body: JSON.stringify({ email, password, name, phone, branch }),
+      }),
+    sendCode: (email: string) =>
+      request<{ message: string }>('/auth/send-code', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      }),
+    verifyCode: (email: string, code: string) =>
+      request<{ verified: boolean }>('/auth/verify-code', {
+        method: 'POST',
+        body: JSON.stringify({ email, code }),
       }),
     me: () => request<{ user: import('./types').User }>('/auth/me'),
   },

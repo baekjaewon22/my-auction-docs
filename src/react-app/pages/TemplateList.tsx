@@ -17,10 +17,18 @@ const CATEGORY_ICONS: Record<string, typeof CalendarDays> = {
 
 const CATEGORY_ORDER = ['근태/휴가', '인사/채용', '경비/비용', '업무/보고'];
 const FAV_KEY = 'myauction_fav_templates';
+const FAV_INIT_KEY = 'myauction_fav_initialized';
+const DEFAULT_FAVS = ['tpl-att-001', 'tpl-att-002', 'tpl-att-003', 'tpl-work-002', 'tpl-work-007'];
 
 function getFavorites(): string[] {
-  try { return JSON.parse(localStorage.getItem(FAV_KEY) || '[]'); }
-  catch { return []; }
+  try {
+    if (!localStorage.getItem(FAV_INIT_KEY)) {
+      localStorage.setItem(FAV_KEY, JSON.stringify(DEFAULT_FAVS));
+      localStorage.setItem(FAV_INIT_KEY, '1');
+      return [...DEFAULT_FAVS];
+    }
+    return JSON.parse(localStorage.getItem(FAV_KEY) || '[]');
+  } catch { return []; }
 }
 
 function toggleFavorite(id: string): string[] {

@@ -34,7 +34,7 @@ export default function Statistics() {
   const [filterMonth, setFilterMonth] = useState('');
   const tabs = ['입찰 분석', '근태 분석', '이상 감지'];
 
-  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo';
+  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || (user?.role === 'admin' && user?.branch === '의정부');
 
   useEffect(() => {
     Promise.all([api.journal.list({ range: 'all' }), api.journal.members()])
@@ -652,7 +652,7 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
   // 3. 임장O → 브리핑X (브리핑 미제출)
   const inspNoBrief = allCases.filter((c) => c.hasInspection && !c.hasBriefing);
 
-  // 4. 5% 초과 차이
+  // 4. 제시입찰가 vs 실제입찰가 5% 초과 차이
   const deviationAlerts: { member: Member; date: string; caseNo: string; suggested: number; actual: number; deviation: number; reason: string }[] = [];
   entries.filter((e) => e.activity_type === '입찰').forEach((e) => {
     try {
@@ -664,6 +664,23 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
         if (dev >= 5) {
           const member = members.find((m) => m.id === e.user_id);
           if (member) deviationAlerts.push({ member, date: e.target_date, caseNo: d.caseNo || '', suggested: s, actual: a, deviation: dev, reason: d.deviationReason || '' });
+        }
+      }
+    } catch { /* */ }
+  });
+
+  // 4-2. 제시입찰가 vs 낙찰가 5% 초과 차이
+  const winDevAlerts: { member: Member; date: string; caseNo: string; suggested: number; winPrice: number; deviation: number }[] = [];
+  entries.filter((e) => e.activity_type === '입찰').forEach((e) => {
+    try {
+      const d = JSON.parse(e.data);
+      const s = parseCurrency(d.suggestedPrice);
+      const w = parseCurrency(d.winPrice);
+      if (s > 0 && w > 0) {
+        const dev = Math.abs(s - w) / s * 100;
+        if (dev >= 5) {
+          const member = members.find((m) => m.id === e.user_id);
+          if (member) winDevAlerts.push({ member, date: e.target_date, caseNo: d.caseNo || '', suggested: s, winPrice: w, deviation: dev });
         }
       }
     } catch { /* */ }
@@ -720,9 +737,9 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
       {renderCaseTable(inspBriefNoBid, '임장 + 브리핑 완료 → 미입찰', '#d93025', '임장과 브리핑까지 했으나 입찰을 하지 않은 사건입니다.')}
       {renderCaseTable(inspNoBrief, '임장 후 브리핑 미제출', '#7b1fa2', '임장을 진행했으나 브리핑자료를 제출하지 않은 사건입니다.')}
 
-      {/* 5% deviation */}
+      {/* 제시입찰가 vs 실제입찰가 5% 차이 */}
       <div className="stats-chart-card">
-        <h4 style={{ color: '#d93025' }}>제시입찰가 대비 5% 이상 차이 ({deviationAlerts.length}건)</h4>
+        <h4 style={{ color: '#d93025' }}>제시입찰가 vs 실제입찰가 — 5% 이상 차이 ({deviationAlerts.length}건)</h4>
         {deviationAlerts.length > 0 ? (
           <div className="table-wrapper">
             <table className="data-table">
@@ -737,6 +754,30 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
                     <td>{fmtWon(item.actual)}</td>
                     <td style={{ color: '#d93025', fontWeight: 700 }}>-{item.deviation.toFixed(1)}%</td>
                     <td style={{ color: item.reason ? '#3c4043' : '#d93025' }}>{item.reason || '미작성'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (<div className="empty-state">해당 건이 없습니다.</div>)}
+      </div>
+
+      {/* 제시입찰가 vs 낙찰가 5% 차이 */}
+      <div className="stats-chart-card">
+        <h4 style={{ color: '#e65100' }}>제시입찰가 vs 낙찰가 — 5% 이상 차이 ({winDevAlerts.length}건)</h4>
+        {winDevAlerts.length > 0 ? (
+          <div className="table-wrapper">
+            <table className="data-table">
+              <thead><tr><th>담당자</th><th>일자</th><th>사건번호</th><th>제시가</th><th>낙찰가</th><th>차이율</th></tr></thead>
+              <tbody>
+                {winDevAlerts.map((item, i) => (
+                  <tr key={i}>
+                    <td><strong>{item.member.name}</strong></td>
+                    <td>{item.date}</td>
+                    <td>{item.caseNo}</td>
+                    <td>{fmtWon(item.suggested)}</td>
+                    <td>{fmtWon(item.winPrice)}</td>
+                    <td style={{ color: '#e65100', fontWeight: 700 }}>{item.winPrice > item.suggested ? '+' : '-'}{item.deviation.toFixed(1)}%</td>
                   </tr>
                 ))}
               </tbody>

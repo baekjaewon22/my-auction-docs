@@ -15,6 +15,7 @@ import Profile from './pages/Profile';
 import Journal from './pages/Journal';
 import ArchivePage from './pages/Archive';
 import Statistics from './pages/Statistics';
+import OrgChart from './pages/OrgChart';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore();
@@ -102,6 +103,14 @@ export default function App() {
               <TopRoute>
                 <TeamList />
               </TopRoute>
+            }
+          />
+          <Route
+            path="org"
+            element={
+              <AdminRoute>
+                <OrgChart />
+              </AdminRoute>
             }
           />
           <Route

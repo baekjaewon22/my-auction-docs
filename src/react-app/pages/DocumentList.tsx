@@ -65,7 +65,7 @@ export default function DocumentList() {
               <Link to={'/documents/' + doc.id} key={doc.id} className="doc-card">
                 <div className="doc-card-header">
                   <span className={`status-badge ${cfg?.className}`}>{cfg?.label}</span>
-                  {doc.status === 'draft' && (
+                  {(doc.status === 'draft' || doc.status === 'rejected') && (
                     <button className="doc-card-delete" onClick={(e) => handleDelete(doc.id, e)} title="삭제">
                       <X size={14} />
                     </button>

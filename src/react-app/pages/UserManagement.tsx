@@ -2,12 +2,11 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User } from '../types';
-import { ROLE_LABELS, BRANCHES } from '../types';
+import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { Trash2, UserCheck, UserX, UserCog, CalendarDays } from 'lucide-react';
 
-const BRANCH_OPTS = toOptions(BRANCHES);
 import { useDepartments } from '../hooks/useDepartments';
 const ROLE_OPTS = Object.entries(ROLE_LABELS).map(([v, l]) => ({ value: v, label: l }));
 
@@ -60,11 +59,6 @@ export default function UserManagement() {
     return [];
   };
   const availableRoles = getAvailableRoles();
-
-  const handleRoleUpdate = async (id: string, role: string, branch: string, dept: string) => {
-    try { await api.users.updateRole(id, role, branch, dept); load(); }
-    catch (err: any) { alert(err.message); }
-  };
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`"${name}" 계정을 삭제하시겠습니까?\n관련된 문서, 일지, 서명이 모두 삭제됩니다.`)) return;
@@ -145,28 +139,9 @@ export default function UserManagement() {
                     <td><strong>{u.name}</strong></td>
                     <td>{u.phone || '-'}</td>
                     <td>{u.email}</td>
-                    <td>
-                      {canEdit && !isHigher ? (
-                        <Select size="sm"
-                          options={!availableRoles.find((r) => r.value === u.role) ? [{ value: u.role, label: ROLE_LABELS[u.role as Role] }, ...availableRoles] : availableRoles}
-                          value={{ value: u.role, label: ROLE_LABELS[u.role as Role] }}
-                          onChange={(o: any) => handleRoleUpdate(u.id, o.value, u.branch, u.department)} />
-                      ) : (
-                        <span className={`role-badge role-${u.role}`}>{ROLE_LABELS[u.role as Role]}</span>
-                      )}
-                    </td>
-                    <td>
-                      {canEdit ? (
-                        <Select size="sm" options={BRANCH_OPTS} value={BRANCH_OPTS.find((o) => o.value === u.branch) || null}
-                          onChange={(o: any) => handleRoleUpdate(u.id, u.role, o?.value || '', u.department)} placeholder="미지정" isClearable />
-                      ) : (u.branch || '-')}
-                    </td>
-                    <td>
-                      {canEdit && ['manager', 'member'].includes(u.role) ? (
-                        <Select size="sm" options={DEPT_OPTS} value={DEPT_OPTS.find((o) => o.value === u.department) || null}
-                          onChange={(o: any) => handleRoleUpdate(u.id, u.role, u.branch, o?.value || '')} placeholder="미지정" isClearable />
-                      ) : (u.department || '-')}
-                    </td>
+                    <td><span className={`role-badge role-${u.role}`}>{ROLE_LABELS[u.role as Role]}</span></td>
+                    <td>{u.branch || '-'}</td>
+                    <td>{u.department || '-'}</td>
                     <td>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
                     <td>{canDel && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u.id, u.name)}><Trash2 size={13} /></button>}</td>
                   </tr>

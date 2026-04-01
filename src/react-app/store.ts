@@ -13,28 +13,28 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
-  token: localStorage.getItem('token'),
+  token: sessionStorage.getItem('token'),
   loading: true,
 
   login: async (email, password) => {
     const { token, user } = await api.auth.login(email, password);
-    localStorage.setItem('token', token);
+    sessionStorage.setItem('token', token);
     set({ token, user, loading: false });
   },
 
   logout: () => {
-    localStorage.removeItem('token');
+    sessionStorage.removeItem('token');
     set({ user: null, token: null, loading: false });
   },
 
   loadUser: async () => {
-    const token = localStorage.getItem('token');
+    const token = sessionStorage.getItem('token');
     if (!token) { set({ loading: false }); return; }
     try {
       const { user } = await api.auth.me();
       set({ user, token, loading: false });
     } catch {
-      localStorage.removeItem('token');
+      sessionStorage.removeItem('token');
       set({ user: null, token: null, loading: false });
     }
   },

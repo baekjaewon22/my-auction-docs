@@ -13,7 +13,7 @@ import { FontSize, FONT_SIZES, FONT_SIZE_LABELS } from '../extensions/FontSize';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { Document, DocumentLog, Signature } from '../types';
-import SignaturePanel from '../components/SignaturePanel';
+import SignaturePanel, { hasSavedSignature, quickSign } from '../components/SignaturePanel';
 import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
 import { FileDown } from 'lucide-react';
@@ -54,6 +54,44 @@ export default function DocumentEdit() {
       saveTimer.current = setTimeout(() => {
         autoSave(editor.getHTML());
       }, 1500);
+    },
+    editorProps: {
+      handleDOMEvents: {
+        click: (view, event) => {
+          const target = event.target as HTMLElement;
+          if (!target || !target.closest('.tiptap')) return false;
+
+          // 클릭 지점의 텍스트 노드 찾기
+          const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+          if (!range) return false;
+
+          const textNode = range.startContainer;
+          if (textNode.nodeType !== 3) return false;
+          const text = textNode.textContent || '';
+          const offset = range.startOffset;
+
+          // 클릭 위치 근처(±2)에서 ☐/☑ 찾기
+          let idx = -1;
+          for (let i = Math.max(0, offset - 2); i <= Math.min(text.length - 1, offset + 2); i++) {
+            if (text[i] === '☐' || text[i] === '☑') { idx = i; break; }
+          }
+          if (idx === -1) return false;
+
+          // ProseMirror pos 계산: DOM 텍스트 노드 → ProseMirror 위치
+          const pmPos = view.posAtDOM(textNode, idx);
+          if (pmPos < 0) return false;
+
+          const toggled = text[idx] === '☐' ? '☑' : '☐';
+          const tr = view.state.tr.replaceWith(
+            pmPos, pmPos + 1,
+            view.state.schema.text(toggled)
+          );
+          view.dispatch(tr); // 상태 동기화 → onUpdate → 자동저장
+
+          event.preventDefault();
+          return true;
+        },
+      },
     },
   });
 
@@ -202,7 +240,18 @@ export default function DocumentEdit() {
   };
 
   // ApprovalBar에서 서명 버튼 클릭 시
-  const handleApprovalSign = (type: 'author' | 'approver') => {
+  const handleApprovalSign = async (type: 'author' | 'approver') => {
+    if (!id) return;
+    // 저장된 서명이 있으면 패널 없이 즉시 서명
+    if (hasSavedSignature()) {
+      try {
+        await quickSign(id, type, handleSignComplete);
+      } catch (err: any) {
+        alert(err.message || '서명 처리 중 오류가 발생했습니다.');
+      }
+      return;
+    }
+    // 저장된 서명이 없으면 패널 열기 (최초 서명 등록)
     setSignatureType(type);
     setShowSignature(true);
   };
@@ -212,6 +261,18 @@ export default function DocumentEdit() {
     if (!id) return;
     api.signatures.getByDocument(id).then((res) => setSignatures(res.signatures));
     setShowSignature(false);
+  };
+
+  // 현재 문서 내용을 원본 템플릿에 덮어쓰기
+  const handleSaveAsTemplate = async () => {
+    if (!doc?.template_id || !editor) return;
+    if (!confirm('현재 문서 내용으로 템플릿을 업데이트하시겠습니까?\n이후 이 템플릿으로 만드는 문서에 모두 적용됩니다.')) return;
+    try {
+      await api.templates.update(doc.template_id, { content: editor.getHTML() });
+      alert('템플릿이 업데이트되었습니다.');
+    } catch {
+      alert('템플릿 업데이트에 실패했습니다.');
+    }
   };
 
   if (!doc) return <div className="page-loading">로딩중...</div>;
@@ -250,6 +311,9 @@ export default function DocumentEdit() {
           )}
           <button className="btn btn-sm" onClick={() => setShowLogs(!showLogs)}>이력</button>
           <button className="btn btn-sm" onClick={handleExportPdf} title="PDF 다운로드"><FileDown size={14} /> PDF</button>
+          {isEditable && doc.template_id && (
+            <button className="btn btn-sm" onClick={handleSaveAsTemplate} title="현재 내용을 템플릿에 반영">템플릿 저장</button>
+          )}
 
           {/* Draft/Rejected: 최종 제출 (서명은 결재란에서) */}
           {isEditable && (doc.status === 'draft' || doc.status === 'rejected') && (

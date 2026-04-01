@@ -4,7 +4,7 @@ import { ACTIVITY_COLORS, formatShortDate, type ActivityType } from './types';
 import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import { api } from '../api';
-import { Trash2, CheckCircle, XCircle, MapPin, Pencil, Save, X } from 'lucide-react';
+import { Trash2, CheckCircle, XCircle, MapPin, Pencil, Save, X, Trophy } from 'lucide-react';
 
 interface Props {
   entries: JournalEntry[];
@@ -59,6 +59,18 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     } catch (err: any) { alert(err.message); }
   };
 
+  const toggleBidWon = async (entry: JournalEntry) => {
+    const d = parseData(entry.data);
+    const newWon = !d.bidWon;
+    const updated = { ...d, bidWon: newWon };
+    // 낙찰 시 실제입찰가를 낙찰가로 자동 적용
+    if (newWon) updated.winPrice = d.bidPrice || '';
+    try {
+      await api.journal.update(entry.id, { data: updated });
+      onUpdate?.();
+    } catch (err: any) { alert(err.message); }
+  };
+
   const fmtCurrency = (val: string) => {
     const num = (val || '').replace(/[^0-9]/g, '');
     return num ? Number(num).toLocaleString() : '';
@@ -90,7 +102,12 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
             <span key={t} className="journal-type-tag" style={{ backgroundColor: ACTIVITY_COLORS[t as ActivityType] + '18', color: ACTIVITY_COLORS[t as ActivityType], borderColor: ACTIVITY_COLORS[t as ActivityType] + '40' }}>{t}</span>
           ))}
         </div>
-        <div className="journal-card-count">{entries.length}건</div>
+        <div className="journal-card-bottom">
+          <span className="journal-card-count">{entries.length}건</span>
+          {entries.some((e) => e.activity_type === '입찰' && parseData(e.data).bidWon) && (
+            <span className="journal-won-badge"><Trophy size={11} /> 낙찰</span>
+          )}
+        </div>
       </div>
 
       {showPopup && (
@@ -150,15 +167,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       {/* === 입찰 === */}
                       {entry.activity_type === '입찰' && (
                         isEditing ? (
-                          <div className="journal-edit-form">
-                            <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
-                            <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
-                            <div className="journal-edit-row"><label>입찰자</label><input value={ed('bidder')} onChange={(e) => setEd('bidder', e.target.value)} /></div>
-                            <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
-                            <div className="journal-edit-row"><label>제시입찰가</label><input value={ed('suggestedPrice')} onChange={(e) => setEd('suggestedPrice', fmtCurrency(e.target.value))} /></div>
-                            <div className="journal-edit-row"><label>작성입찰가</label><input value={ed('bidPrice')} onChange={(e) => setEd('bidPrice', fmtCurrency(e.target.value))} /></div>
-                            <div className="journal-edit-row"><label>낙찰가</label><input value={ed('winPrice')} onChange={(e) => setEd('winPrice', fmtCurrency(e.target.value))} /></div>
-                          </div>
+                          <BidEditForm ed={ed} setEd={setEd} fmtCurrency={fmtCurrency} />
                         ) : (
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
@@ -167,8 +176,22 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                             <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">제시입찰가</span>{showVal(d.suggestedPrice, '원')}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">작성입찰가</span>{showVal(d.bidPrice, '원')}</div>
-                            <div className="journal-detail-row"><span className="journal-detail-label">낙찰가</span>{showVal(d.winPrice, '원')}</div>
+                            <div className="journal-detail-row">
+                              <span className="journal-detail-label">낙찰가</span>
+                              {d.bidWon
+                                ? <span style={{ color: '#188038', fontWeight: 600 }}>{d.winPrice || d.bidPrice}원</span>
+                                : showVal(d.winPrice, '원')}
+                            </div>
                             {d.deviationReason && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#d93025' }}>차이사유</span><span style={{ color: '#d93025' }}>{d.deviationReason}</span></div>}
+                            {!readonly && (
+                              <button
+                                type="button"
+                                className={`btn btn-sm journal-bid-won-btn ${d.bidWon ? 'active' : ''}`}
+                                onClick={() => toggleBidWon(entry)}
+                              >
+                                <Trophy size={13} /> {d.bidWon ? '낙찰 취소' : '낙찰'}
+                              </button>
+                            )}
                           </>
                         )
                       )}
@@ -255,5 +278,30 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
         </div>
       )}
     </>
+  );
+}
+
+// 입찰 수정 폼 (5% 차이 사유 포함)
+function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd: (k: string, v: any) => void; fmtCurrency: (v: string) => string }) {
+  const s = Number((ed('suggestedPrice') || '').replace(/[^0-9]/g, ''));
+  const a = Number((ed('bidPrice') || '').replace(/[^0-9]/g, ''));
+  const hasDeviation = s > 0 && a > 0 && (s - a) / s >= 0.05;
+
+  return (
+    <div className="journal-edit-form">
+      <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
+      <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
+      <div className="journal-edit-row"><label>입찰자</label><input value={ed('bidder')} onChange={(e) => setEd('bidder', e.target.value)} /></div>
+      <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
+      <div className="journal-edit-row"><label>제시입찰가</label><input value={ed('suggestedPrice')} onChange={(e) => setEd('suggestedPrice', fmtCurrency(e.target.value))} /></div>
+      <div className="journal-edit-row"><label>작성입찰가</label><input value={ed('bidPrice')} onChange={(e) => setEd('bidPrice', fmtCurrency(e.target.value))} /></div>
+      {hasDeviation && (
+        <div className="journal-edit-row" style={{ background: '#fef2f2', borderRadius: 6, padding: '6px 8px' }}>
+          <label style={{ color: '#d93025' }}>5% 이상 차이 — 사유</label>
+          <input value={ed('deviationReason')} onChange={(e) => setEd('deviationReason', e.target.value)} placeholder="사유를 입력하세요" style={{ borderColor: '#d93025' }} />
+        </div>
+      )}
+      <div className="journal-edit-row"><label>낙찰가</label><input value={ed('winPrice')} onChange={(e) => setEd('winPrice', fmtCurrency(e.target.value))} /></div>
+    </div>
   );
 }

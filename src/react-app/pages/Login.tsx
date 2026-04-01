@@ -4,13 +4,21 @@ import { useAuthStore } from '../store';
 import { api } from '../api';
 import { BRANCHES } from '../types';
 import Select, { toOptions } from '../components/Select';
+import { Mail, CheckCircle } from 'lucide-react';
 
 const BRANCH_OPTS = toOptions(BRANCHES);
 
+const SAVED_CRED_KEY = 'myauction_saved_cred';
+
 export default function Login() {
+  // 저장된 아이디/비밀번호 불러오기
+  const savedCred = (() => {
+    try { const s = localStorage.getItem(SAVED_CRED_KEY); return s ? JSON.parse(s) : null; } catch { return null; }
+  })();
+
   const [isRegister, setIsRegister] = useState(false);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState(savedCred?.email || '');
+  const [password, setPassword] = useState(savedCred?.password || '');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -18,17 +26,53 @@ export default function Login() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  const [rememberMe, setRememberMe] = useState(!!savedCred);
   const { login } = useAuthStore();
   const navigate = useNavigate();
 
+  // 이메일 인증 상태
+  const [verifyStep, setVerifyStep] = useState<'none' | 'sent' | 'verified'>('none');
+  const [verifyCode, setVerifyCode] = useState('');
+  const [sendingCode, setSendingCode] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  // 인증코드 발송
+  const handleSendCode = async () => {
+    if (!email) { setError('이메일을 먼저 입력하세요.'); return; }
+    setSendingCode(true); setError('');
+    try {
+      await api.auth.sendCode(email);
+      setVerifyStep('sent');
+      setSuccess('인증 코드가 발송되었습니다. 이메일을 확인해주세요.');
+      // 60초 쿨다운
+      setCooldown(60);
+      const timer = setInterval(() => {
+        setCooldown((prev) => { if (prev <= 1) { clearInterval(timer); return 0; } return prev - 1; });
+      }, 1000);
+    } catch (err: any) { setError(err.message); }
+    finally { setSendingCode(false); }
+  };
+
+  // 인증코드 확인
+  const handleVerifyCode = async () => {
+    if (!verifyCode || verifyCode.length !== 6) { setError('6자리 인증 코드를 입력하세요.'); return; }
+    setVerifying(true); setError('');
+    try {
+      await api.auth.verifyCode(email, verifyCode);
+      setVerifyStep('verified');
+      setSuccess('이메일 인증이 완료되었습니다.');
+    } catch (err: any) { setError(err.message); }
+    finally { setVerifying(false); }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    setSuccess('');
+    setError(''); setSuccess('');
 
-    if (isRegister && password !== passwordConfirm) {
-      setError('비밀번호가 일치하지 않습니다.');
-      return;
+    if (isRegister) {
+      // 이메일 인증은 선택사항 (도메인 등록 후 활성화 예정)
+      if (password !== passwordConfirm) { setError('비밀번호가 일치하지 않습니다.'); return; }
     }
 
     setLoading(true);
@@ -37,17 +81,26 @@ export default function Login() {
         const res = await api.auth.register(email, password, name, phone, branch);
         setSuccess(res.message);
         setIsRegister(false);
-        setPassword('');
-        setPasswordConfirm('');
+        setPassword(''); setPasswordConfirm('');
+        setVerifyStep('none'); setVerifyCode('');
       } else {
+        // 아이디/비밀번호 저장
+        if (rememberMe) {
+          localStorage.setItem(SAVED_CRED_KEY, JSON.stringify({ email, password }));
+        } else {
+          localStorage.removeItem(SAVED_CRED_KEY);
+        }
         await login(email, password);
         navigate('/dashboard');
       }
     } catch (err: any) {
       setError(err.message || '오류가 발생했습니다.');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
+  };
+
+  const resetForm = () => {
+    setIsRegister(!isRegister); setError(''); setSuccess('');
+    setVerifyStep('none'); setVerifyCode('');
   };
 
   return (
@@ -98,8 +151,47 @@ export default function Login() {
 
           <div className="form-group">
             <label>이메일 *</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="이메일을 입력하세요" required />
+            <div className="email-verify-row">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => { setEmail(e.target.value); if (verifyStep !== 'none') { setVerifyStep('none'); setVerifyCode(''); } }}
+                placeholder="이메일을 입력하세요"
+                required
+                disabled={isRegister && verifyStep === 'verified'}
+              />
+              {isRegister && verifyStep !== 'verified' && (
+                <button type="button" className="btn btn-sm btn-verify" onClick={handleSendCode} disabled={sendingCode || cooldown > 0}>
+                  <Mail size={13} />
+                  {sendingCode ? '발송중' : cooldown > 0 ? `${cooldown}초` : verifyStep === 'sent' ? '재발송' : '인증'}
+                </button>
+              )}
+              {isRegister && verifyStep === 'verified' && (
+                <span className="email-verified"><CheckCircle size={14} /> 인증완료</span>
+              )}
+            </div>
           </div>
+
+          {/* 인증코드 입력 */}
+          {isRegister && verifyStep === 'sent' && (
+            <div className="form-group">
+              <label>인증 코드 (6자리)</label>
+              <div className="email-verify-row">
+                <input
+                  type="text"
+                  value={verifyCode}
+                  onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="000000"
+                  maxLength={6}
+                  className="verify-code-input"
+                />
+                <button type="button" className="btn btn-sm btn-primary" onClick={handleVerifyCode} disabled={verifying || verifyCode.length !== 6}>
+                  {verifying ? '확인중' : '확인'}
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="form-group">
             <label>비밀번호 *</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="비밀번호를 입력하세요" required />
@@ -111,13 +203,20 @@ export default function Login() {
             </div>
           )}
 
+          {!isRegister && (
+            <label className="remember-me">
+              <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} />
+              아이디 / 비밀번호 저장
+            </label>
+          )}
+
           <button type="submit" className="btn btn-login" disabled={loading}>
             {loading ? '처리중...' : isRegister ? '가입 신청' : '로그인'}
           </button>
 
           <p className="login-toggle">
             {isRegister ? '이미 계정이 있으신가요?' : '계정이 없으신가요?'}{' '}
-            <button type="button" className="btn-link-login" onClick={() => { setIsRegister(!isRegister); setError(''); setSuccess(''); }}>
+            <button type="button" className="btn-link-login" onClick={resetForm}>
               {isRegister ? '로그인' : '회원가입'}
             </button>
           </p>

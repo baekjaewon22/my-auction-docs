@@ -186,7 +186,16 @@ function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[
       } catch { /* */ }
     });
 
-    // 3. 출장 일지 있으면 출장신청서/보고서 확인
+    // 3. 미팅 일지 → 외근 보고서 확인
+    const hasMeeting = dayEntries.some((e) => e.activity_type === '미팅');
+    if (hasMeeting) {
+      const hasOutingReport = userDocs.some((doc) => doc.title.includes('외근') && doc.title.includes('보고'));
+      if (!hasOutingReport) {
+        alerts.push({ userName, date, activity: '미팅(외근)', missingDoc: '외근 보고서 미제출' });
+      }
+    }
+
+    // 4. 출장 일지 있으면 출장신청서/보고서 확인
     const hasBizTrip = dayEntries.some((e) => {
       try {
         const d = JSON.parse(e.data);

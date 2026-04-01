@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network
 } from 'lucide-react';
 
 export default function Layout() {
@@ -29,17 +29,15 @@ export default function Layout() {
     <>
       <div className="sidebar-header">
         {!collapsed ? (
-          <>
-            <h1 className="logo">
-              <img src="/logo2.png" alt="로고" className="sidebar-logo-img" />
-              <span className="logo-text-group">
-                <span>마이옥션 오피스</span>
-                <span className="logo-sub">문서 관리 시스템</span>
-              </span>
-            </h1>
-          </>
+          <h1 className="logo" onClick={() => navTo('/')} style={{ cursor: 'pointer' }}>
+            <img src="/logo2.png" alt="로고" className="sidebar-logo-img" />
+            <span className="logo-text-group">
+              <span>마이옥션 오피스</span>
+              <span className="logo-sub">문서 관리 시스템</span>
+            </span>
+          </h1>
         ) : (
-          <img src="/logo2.png" alt="로고" className="sidebar-logo-img-sm" />
+          <img src="/logo2.png" alt="로고" className="sidebar-logo-img-sm" onClick={() => navTo('/')} style={{ cursor: 'pointer' }} />
         )}
         <button className="mobile-close-btn" onClick={() => setMobileOpen(false)}>
           <X size={20} />
@@ -83,6 +81,12 @@ export default function Layout() {
         {canManage && (
           <Link to="/teams" className={`nav-item ${isActive('/teams') ? 'active' : ''}`} title="팀 관리" onClick={() => setMobileOpen(false)}>
             <Users size={18} /> {!collapsed && '팀 관리'}
+          </Link>
+        )}
+
+        {canApproveUsers && (
+          <Link to="/org" className={`nav-item ${isActive('/org') ? 'active' : ''}`} title="조직도" onClick={() => setMobileOpen(false)}>
+            <Network size={18} /> {!collapsed && '조직도'}
           </Link>
         )}
 

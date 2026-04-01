@@ -4,7 +4,7 @@ import { useAuthStore } from '../store';
 import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { getToday, getTomorrow } from '../journal/types';
+import { getToday, getTomorrow, isEditable } from '../journal/types';
 import JournalCard from '../journal/JournalCard';
 import JournalForm from '../journal/JournalForm';
 import { Plus, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -112,9 +112,9 @@ export default function Journal() {
     const memberEntries = entries.filter((e) => e.user_id === member.id);
     const hasEntries = memberEntries.length > 0;
     const dateStr = tab === 'today' ? today : tab === 'tomorrow' ? tomorrow : '';
-    // 오늘/내일 본인 일정만 수정 가능 (어제 이전은 불가)
+    // 당일건 16시 이후 수정불가, 익일건 16시 전까지 수정가능, 과거 수정불가
     const entryDate = dateStr || (hasEntries ? memberEntries[0].target_date : '');
-    const isReadonly = entryDate < today || member.id !== user?.id;
+    const isReadonly = !isEditable(entryDate) || member.id !== user?.id;
 
     if (hasEntries) {
       return (
@@ -261,7 +261,7 @@ export default function Journal() {
                         userName={ue[0].user_name || ''}
                         userRole={ue[0].user_role}
                         date={date}
-                        readonly={date < today}
+                        readonly={!isEditable(date)}
                         onDelete={handleDelete}
                         onToggleComplete={handleToggleComplete}
           onUpdate={load}

@@ -94,7 +94,27 @@ documents.post('/', async (c) => {
   let initialContent = content || '{}';
   if (template_id && !content) {
     const template = await db.prepare('SELECT content FROM templates WHERE id = ?').bind(template_id).first<{ content: string }>();
-    if (template) initialContent = template.content;
+    if (template) {
+      // 사용자 정보 자동 기입
+      const profile = await db.prepare('SELECT name, department, position_title FROM users WHERE id = ?').bind(user.sub).first<{ name: string; department: string; position_title: string }>();
+      let html = template.content;
+      if (profile) {
+        // 성 명 / 부 서 / 직 급 셀 자동 채움
+        html = html.replace(
+          /(<th[^>]*>성\s*명<\/th>\s*<td[^>]*>)(.*?)(<\/td>)/,
+          `$1${profile.name}$3`
+        );
+        html = html.replace(
+          /(<th[^>]*>부\s*서<\/th>\s*<td[^>]*>)(.*?)(<\/td>)/,
+          `$1${profile.department}$3`
+        );
+        html = html.replace(
+          /(<th[^>]*>직\s*급<\/th>\s*<td[^>]*>)(.*?)(<\/td>)/,
+          `$1${profile.position_title}$3`
+        );
+      }
+      initialContent = html;
+    }
   }
 
   await db.prepare(
@@ -215,6 +235,11 @@ documents.delete('/:id', async (c) => {
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
   if (doc.author_id !== user.sub && user.role !== 'master') return c.json({ error: '권한이 없습니다.' }, 403);
+
+  // 제출/승인된 문서는 삭제 불가
+  if (doc.status === 'submitted' || doc.status === 'approved') {
+    return c.json({ error: '제출 또는 승인된 문서는 삭제할 수 없습니다.' }, 400);
+  }
 
   await db.prepare('DELETE FROM documents WHERE id = ?').bind(id).run();
   return c.json({ success: true });

@@ -30,11 +30,12 @@ export const ACTIVITY_COLORS: Record<ActivityType, string> = {
 export const MEETING_SUBTYPES = ['고객상담', '브리핑', '계약서작성', '기타'] as const;
 export const OFFICE_SUBTYPES = ['고객관리', '자료작성', '기타'] as const;
 
-// 시간 선택 옵션 (06:00 ~ 22:00, 10분 단위)
+// 시간 선택 옵션 (09:00 ~ 18:00, 30분 단위)
 export function generateTimeOptions(): string[] {
   const times: string[] = [];
-  for (let h = 6; h <= 22; h++) {
-    for (let m = 0; m < 60; m += 10) {
+  for (let h = 9; h <= 18; h++) {
+    for (let m = 0; m < 60; m += 30) {
+      if (h === 18 && m > 0) break;
       times.push(`${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`);
     }
   }
@@ -105,6 +106,28 @@ export function getToday(): string {
 
 export function getTomorrow(): string {
   return formatDateStr(getKSTDate(1));
+}
+
+/** KST 기준 현재 시(hour) 반환 */
+export function getKSTHour(): number {
+  const now = new Date();
+  return (now.getUTCHours() + 9) % 24;
+}
+
+/**
+ * 일지 수정 가능 여부 판단
+ * - 당일건: 오후 4시(16시) 전까지 수정 가능
+ * - 익일건: 오후 4시 전까지 수정 가능
+ * - 그 외(과거): 수정 불가
+ */
+export function isEditable(entryDate: string): boolean {
+  const today = getToday();
+  const tomorrow = getTomorrow();
+  const hour = getKSTHour();
+
+  if (entryDate === today) return hour < 16;
+  if (entryDate === tomorrow) return hour < 16;
+  return false;
 }
 
 export function formatShortDate(dateStr: string): string {
