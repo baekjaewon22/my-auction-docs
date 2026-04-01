@@ -193,6 +193,7 @@ dist
 
 ### Wrangler ###
 .wrangler/
+worker-configuration.d.ts
 .env*
 !.env.example
 .dev.vars*
