@@ -12,11 +12,42 @@
 		"directory": "./dist/client",
 		"not_found_handling": "single-page-application"
 	},
+	"vars": {
+		"ENVIRONMENT": "production"
+	},
 	"d1_databases": [
 		{
 			"binding": "DB",
 			"database_name": "auction-docs-db",
 			"database_id": "88c89438-7ba0-4d40-9033-8c0641428ea6"
 		}
-	]
+	],
+	"env": {
+		"dev": {
+			"name": "my-auction-docs-dev",
+			"vars": {
+				"ENVIRONMENT": "development"
+			},
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "auction-docs-db-dev",
+					"database_id": "YOUR_DEV_DB_ID"
+				}
+			]
+		},
+		"staging": {
+			"name": "my-auction-docs-staging",
+			"vars": {
+				"ENVIRONMENT": "staging"
+			},
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "auction-docs-db-staging",
+					"database_id": "YOUR_STAGING_DB_ID"
+				}
+			]
+		}
+	}
 }
