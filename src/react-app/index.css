@@ -1684,6 +1684,42 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   width: 16px; height: 16px; accent-color: #e65100; cursor: pointer;
 }
 
+/* 동의서 섹션 */
+.agree-section {
+  margin: 12px 0 16px;
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fafafa;
+}
+.agree-all {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.85rem; font-weight: 600; color: var(--gray-900);
+  cursor: pointer; padding-bottom: 10px;
+  border-bottom: 1px solid var(--gray-200); margin-bottom: 8px;
+}
+.agree-all input[type="checkbox"] { width: 18px; height: 18px; accent-color: #e65100; cursor: pointer; }
+.agree-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 0;
+}
+.agree-check {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 0.78rem; color: var(--gray-700); cursor: pointer;
+}
+.agree-check input[type="checkbox"] { width: 16px; height: 16px; accent-color: #e65100; cursor: pointer; }
+.agree-toggle {
+  background: none; border: none; color: var(--gray-500); padding: 2px;
+  cursor: pointer; display: flex; align-items: center;
+}
+.agree-toggle:hover { color: var(--gray-900); }
+.agree-content {
+  font-size: 0.68rem; color: var(--gray-600); line-height: 1.6;
+  background: #fff; border: 1px solid var(--gray-200); border-radius: 6px;
+  padding: 10px 12px; margin: 4px 0 8px;
+  max-height: 150px; overflow-y: auto; white-space: pre-wrap;
+}
+
 .btn-login {
   display: flex;
   align-items: center;

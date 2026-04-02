@@ -3,16 +3,43 @@ import type { AuthEnv } from '../types';
 import { authMiddleware } from '../middleware/auth';
 
 // KST (한국 시간) 기준 날짜
+const HOLIDAYS_2026 = [
+  '2026-01-01','2026-01-28','2026-01-29','2026-01-30','2026-03-01',
+  '2026-05-05','2026-05-24','2026-06-06','2026-08-15',
+  '2026-09-24','2026-09-25','2026-09-26','2026-10-03','2026-10-09','2026-12-25',
+];
+
+function fmtDate(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+function isOffDay(d: Date): boolean {
+  const day = d.getUTCDay();
+  return day === 0 || day === 6 || HOLIDAYS_2026.includes(fmtDate(d));
+}
+
+function nextBizDay(d: Date): Date {
+  let r = new Date(d.getTime());
+  while (isOffDay(r)) r = new Date(r.getTime() + 86400000);
+  return r;
+}
+
+function prevBizDay(d: Date): Date {
+  let r = new Date(d.getTime());
+  while (isOffDay(r)) r = new Date(r.getTime() - 86400000);
+  return r;
+}
+
 function getKSTToday(): string {
-  const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
-  return kst.toISOString().split('T')[0];
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  return isOffDay(kst) ? fmtDate(prevBizDay(kst)) : fmtDate(kst);
 }
 
 function getKSTTomorrow(): string {
-  const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000 + 86400000);
-  return kst.toISOString().split('T')[0];
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  if (isOffDay(kst)) return fmtDate(nextBizDay(kst));
+  const tmr = new Date(kst.getTime() + 86400000);
+  return fmtDate(nextBizDay(tmr));
 }
 
 interface JournalEntry {
@@ -126,6 +153,13 @@ journal.post('/', async (c) => {
   if (body.target_date !== today && body.target_date !== tomorrow) {
     return c.json({ error: '오늘 또는 내일 일정만 등록할 수 있습니다.' }, 400);
   }
+  // 오늘 일정은 16시 이후 등록 불가 (ceo/cc_ref/master 제외)
+  if (body.target_date === today && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
+    const hour = new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCHours();
+    if (hour >= 16) {
+      return c.json({ error: '오늘 일정은 16시 이후 등록할 수 없습니다.' }, 400);
+    }
+  }
 
   const db = c.env.DB;
   const id = crypto.randomUUID();
@@ -148,11 +182,38 @@ journal.put('/:id', async (c) => {
   if (entry.user_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const today = getKSTToday();
-  if (entry.target_date < today && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '지난 일정은 수정할 수 없습니다.' }, 400);
+  const tomorrow = getKSTTomorrow();
+  const isTopRole = ['master', 'ceo', 'cc_ref'].includes(user.role);
+  const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
+  const isBidEntry = entry.activity_type === '입찰';
 
   const body = await c.req.json<{
     activity_subtype?: string; data?: Record<string, unknown>; completed?: number; fail_reason?: string;
+    bid_field_only?: boolean; // 낙찰가/입찰가만 수정하는 경우
   }>();
+
+  // 시간 제한 체크
+  if (!isTopRole) {
+    if (entry.target_date < today) {
+      // 과거 일지: 입찰의 낙찰가/입찰가만 허용 (admin 이상 또는 일반 사용자 낙찰가)
+      if (isBidEntry && (body.bid_field_only || isAdminPlus)) {
+        // 허용: 입찰 필드만 수정
+      } else {
+        return c.json({ error: '지난 일정은 수정할 수 없습니다.' }, 400);
+      }
+    } else if (entry.target_date === today) {
+      const hour = new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCHours();
+      if (hour >= 16) {
+        // 오늘 16시 이후: 입찰 낙찰가/입찰가만 허용
+        if (isBidEntry && (body.bid_field_only || isAdminPlus)) {
+          // 허용
+        } else {
+          return c.json({ error: '오늘 일정은 16시 이후 수정할 수 없습니다.' }, 400);
+        }
+      }
+    }
+    // 내일 일지: 언제든 수정 가능 (제한 없음)
+  }
 
   await db.prepare(
     "UPDATE journal_entries SET activity_subtype = ?, data = ?, completed = ?, fail_reason = ?, updated_at = datetime('now') WHERE id = ?"

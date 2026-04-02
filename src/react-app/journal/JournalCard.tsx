@@ -13,12 +13,16 @@ interface Props {
   positionTitle?: string;
   date: string;
   readonly?: boolean;
+  currentUserRole?: string;
   onDelete?: (id: string) => void;
   onToggleComplete?: (id: string, completed: boolean, failReason?: string) => void;
   onUpdate?: () => void;
 }
 
-export default function JournalCard({ entries, userName, userRole, positionTitle, date, readonly, onDelete, onToggleComplete, onUpdate }: Props) {
+export default function JournalCard({ entries, userName, userRole, positionTitle, date, readonly, currentUserRole, onDelete, onToggleComplete, onUpdate }: Props) {
+  const canEditBidFields = entries.some(e => e.activity_type === '입찰') && (
+    !readonly || ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUserRole || '')
+  );
   const [showPopup, setShowPopup] = useState(false);
   const [failId, setFailId] = useState<string | null>(null);
   const [failReason, setFailReason] = useState('');
@@ -172,7 +176,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
-                            <div className="journal-detail-row"><span className="journal-detail-label">입찰자</span>{showVal(d.bidder)}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.bidder)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">제시입찰가</span>{showVal(d.suggestedPrice, '원')}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">작성입찰가</span>{showVal(d.bidPrice, '원')}</div>
@@ -183,13 +187,19 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                                 : showVal(d.winPrice, '원')}
                             </div>
                             {d.deviationReason && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#d93025' }}>차이사유</span><span style={{ color: '#d93025' }}>{d.deviationReason}</span></div>}
-                            {!readonly && (
+                            {(!readonly || canEditBidFields) && (
                               <button
                                 type="button"
                                 className={`btn btn-sm journal-bid-won-btn ${d.bidWon ? 'active' : ''}`}
                                 onClick={() => toggleBidWon(entry)}
                               >
                                 <Trophy size={13} /> {d.bidWon ? '낙찰 취소' : '낙찰'}
+                              </button>
+                            )}
+                            {canEditBidFields && readonly && (
+                              <button type="button" className="btn btn-sm" style={{ marginTop: 4 }}
+                                onClick={() => startEdit(entry)}>
+                                <Pencil size={11} /> 입찰가/낙찰가 수정
                               </button>
                             )}
                           </>
@@ -209,6 +219,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
+                            {d.client && <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.client)}</div>}
                             {d.court && <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>
                             {entry.completed === 1 && <div className="journal-detail-row"><span className="journal-detail-label">상태</span><span style={{ color: '#188038' }}>완료</span></div>}
@@ -229,6 +240,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.meetingType}{d.etcReason ? ` - ${d.etcReason}` : ''}</span></div>
+                            {d.client && <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.client)}</div>}
                             {d.place && <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>}
                           </>
                         )
@@ -265,6 +277,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                         <>
                           <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.briefingCaseNo)}</div>
                           {d.briefingCourt && <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.briefingCourt}</span></div>}
+                          {d.client && <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.client)}</div>}
                         </>
                       )}
 
@@ -299,7 +312,7 @@ function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd
     <div className="journal-edit-form">
       <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
       <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
-      <div className="journal-edit-row"><label>입찰자</label><input value={ed('bidder')} onChange={(e) => setEd('bidder', e.target.value)} /></div>
+      <div className="journal-edit-row"><label>고객명</label><input value={ed('bidder')} onChange={(e) => setEd('bidder', e.target.value)} /></div>
       <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
       <div className="journal-edit-row"><label>제시입찰가</label><input value={ed('suggestedPrice')} onChange={(e) => setEd('suggestedPrice', fmtCurrency(e.target.value))} /></div>
       <div className="journal-edit-row"><label>작성입찰가</label><input value={ed('bidPrice')} onChange={(e) => setEd('bidPrice', fmtCurrency(e.target.value))} /></div>

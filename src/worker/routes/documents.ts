@@ -138,11 +138,43 @@ documents.post('/', async (c) => {
   if (template_id && !content) {
     const template = await db.prepare('SELECT content FROM templates WHERE id = ?').bind(template_id).first<{ content: string }>();
     if (template) {
-      // 사용자 정보 자동 기입
-      const profile = await db.prepare('SELECT name, department, position_title FROM users WHERE id = ?').bind(user.sub).first<{ name: string; department: string; position_title: string }>();
+      const profile = await db.prepare(
+        'SELECT name, department, position_title, branch, phone, email FROM users WHERE id = ?'
+      ).bind(user.sub).first<{ name: string; department: string; position_title: string; branch: string; phone: string; email: string }>();
+
       let html = template.content;
+
       if (profile) {
-        // 성 명 / 부 서 / 직 급 셀 자동 채움
+        // KST 날짜
+        const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+        const yyyy = now.getUTCFullYear();
+        const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(now.getUTCDate()).padStart(2, '0');
+
+        // {{변수}} 치환
+        const vars: Record<string, string> = {
+          '이름': profile.name,
+          '성명': profile.name,
+          '부서': profile.department,
+          '팀': profile.department,
+          '직급': profile.position_title,
+          '보직': profile.position_title,
+          '지사': profile.branch,
+          '전화번호': profile.phone,
+          '이메일': profile.email,
+          '이름_직급': `${profile.name} ${profile.position_title}`,
+          '날짜': `${yyyy}-${mm}-${dd}`,
+          '년도': String(yyyy),
+          '월': String(now.getUTCMonth() + 1),
+          '일': String(now.getUTCDate()),
+          '작성일': `${yyyy}년 ${Number(mm)}월 ${Number(dd)}일`,
+        };
+
+        for (const [key, value] of Object.entries(vars)) {
+          html = html.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
+        }
+
+        // 기존 테이블 구조 호환 (성 명 / 부 서 / 직 급 셀)
         html = html.replace(
           /(<th[^>]*>성\s*명<\/th>\s*<td[^>]*>)(.*?)(<\/td>)/,
           `$1${profile.name}$3`

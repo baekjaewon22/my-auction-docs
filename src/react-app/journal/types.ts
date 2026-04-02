@@ -101,12 +101,67 @@ function formatDateStr(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
+// 한국 공휴일 (고정 + 대체공휴일은 매년 수동 추가 필요)
+const HOLIDAYS_2026 = [
+  '2026-01-01', // 신정
+  '2026-01-28', '2026-01-29', '2026-01-30', // 설날 연휴
+  '2026-03-01', // 삼일절
+  '2026-05-05', // 어린이날
+  '2026-05-24', // 부처님오신날
+  '2026-06-06', // 현충일
+  '2026-08-15', // 광복절
+  '2026-09-24', '2026-09-25', '2026-09-26', // 추석 연휴
+  '2026-10-03', // 개천절
+  '2026-10-09', // 한글날
+  '2026-12-25', // 성탄절
+];
+
+function isHoliday(dateStr: string): boolean {
+  return HOLIDAYS_2026.includes(dateStr);
+}
+
+function isWeekend(d: Date): boolean {
+  const day = d.getUTCDay(); // 0=일, 6=토
+  return day === 0 || day === 6;
+}
+
+/** 주말/공휴일이면 다음 영업일로 이동 */
+function nextBusinessDay(d: Date): Date {
+  let result = new Date(d.getTime());
+  while (isWeekend(result) || isHoliday(formatDateStr(result))) {
+    result = new Date(result.getTime() + 86400000);
+  }
+  return result;
+}
+
+/** 주말/공휴일이면 이전 영업일로 이동 */
+function prevBusinessDay(d: Date): Date {
+  let result = new Date(d.getTime());
+  while (isWeekend(result) || isHoliday(formatDateStr(result))) {
+    result = new Date(result.getTime() - 86400000);
+  }
+  return result;
+}
+
 export function getToday(): string {
-  return formatDateStr(getKSTDate(0));
+  const kst = getKSTDate(0);
+  // 주말/공휴일이면 이전 영업일 (금요일)
+  if (isWeekend(kst) || isHoliday(formatDateStr(kst))) {
+    return formatDateStr(prevBusinessDay(kst));
+  }
+  return formatDateStr(kst);
 }
 
 export function getTomorrow(): string {
-  return formatDateStr(getKSTDate(1));
+  const kst = getKSTDate(0);
+  // 오늘 기준 다음 영업일
+  if (isWeekend(kst) || isHoliday(formatDateStr(kst))) {
+    // 주말/공휴일이면: 오늘 = 이전 영업일, 내일 = 다음 영업일
+    return formatDateStr(nextBusinessDay(kst));
+  }
+  // 평일이면: 내일부터 다음 영업일 찾기
+  const tomorrow = getKSTDate(1);
+  return formatDateStr(nextBusinessDay(tomorrow));
 }
 
 /** KST 기준 현재 시(hour) 반환 */
@@ -117,18 +172,35 @@ export function getKSTHour(): number {
 
 /**
  * 일지 수정 가능 여부 판단
- * - 당일건: 오후 4시(16시) 전까지 수정 가능
- * - 익일건: 오후 4시 전까지 수정 가능
- * - 그 외(과거): 수정 불가
+ * - 당일건: 16시 전까지 수정 가능
+ * - 익일건: 언제든 수정 가능
+ * - 과거: 수정 불가 (ceo/cc_ref/master는 가능)
  */
-export function isEditable(entryDate: string): boolean {
+export function isEditable(entryDate: string, userRole?: string): boolean {
+  // ceo/cc_ref/master는 항상 수정 가능
+  if (userRole && ['master', 'ceo', 'cc_ref'].includes(userRole)) return true;
+
   const today = getToday();
   const tomorrow = getTomorrow();
   const hour = getKSTHour();
 
   if (entryDate === today) return hour < 16;
-  if (entryDate === tomorrow) return hour < 16;
+  if (entryDate === tomorrow) return true;
   return false;
+}
+
+/**
+ * 입찰 필드(작성입찰가/낙찰가) 수정 가능 여부
+ * - 누구나 낙찰가는 언제든 수정 가능
+ * - admin 이상은 입찰 필드 전체 언제든 수정 가능
+ */
+export function isBidFieldEditable(userRole?: string): boolean {
+  return true; // 낙찰가는 누구나 언제든
+}
+
+export function isBidFullEditable(userRole?: string): boolean {
+  if (!userRole) return false;
+  return ['master', 'ceo', 'cc_ref', 'admin'].includes(userRole);
 }
 
 export function formatShortDate(dateStr: string): string {

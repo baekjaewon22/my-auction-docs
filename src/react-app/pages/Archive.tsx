@@ -6,7 +6,7 @@ import { BRANCHES } from '../types';
 import type { Document } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { useDepartments } from '../hooks/useDepartments';
-import { Archive, FileCheck, FileText, Search } from 'lucide-react';
+import { Archive, FileCheck, FileText, Search, Trash2 } from 'lucide-react';
 
 const BRANCH_OPTS = toOptions(BRANCHES);
 
@@ -72,6 +72,16 @@ export default function ArchivePage() {
     setFilterAuthor('');
     setSearchText('');
     setFilterStatus('approved');
+  };
+
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirm('문서를 삭제하시겠습니까?')) return;
+    try {
+      await api.documents.delete(id);
+      setDocuments(documents.filter(d => d.id !== id));
+    } catch (err: any) { alert(err.message); }
   };
 
   if (loading) return <div className="page-loading">로딩중...</div>;
@@ -154,9 +164,16 @@ export default function ArchivePage() {
                     <span>{new Date(doc.created_at).toLocaleDateString('ko-KR')}</span>
                   </div>
                 </div>
-                <span className={`status-badge ${statusConfig[doc.status]?.className}`}>
-                  {statusConfig[doc.status]?.label}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span className={`status-badge ${statusConfig[doc.status]?.className}`}>
+                    {statusConfig[doc.status]?.label}
+                  </span>
+                  {isCeoPlus && (
+                    <button className="btn btn-sm btn-danger" style={{ padding: '2px 6px' }} onClick={(e) => handleDelete(doc.id, e)} title="삭제">
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
               </Link>
             ))}
           </div>

@@ -78,11 +78,16 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [inspCaseNo, setInspCaseNo] = useState('');
   const [inspCourt, setInspCourt] = useState('');
   const [inspPlace, setInspPlace] = useState('');
+  const [inspClient, setInspClient] = useState('');
+
+  // 브리핑 고객명
+  const [briefingClient, setBriefingClient] = useState('');
 
   // 미팅
   const [meetingType, setMeetingType] = useState('고객상담');
   const [meetingEtc, setMeetingEtc] = useState('');
   const [meetingPlace, setMeetingPlace] = useState('');
+  const [meetingClient, setMeetingClient] = useState('');
 
   // 사무
   const [officeType, setOfficeType] = useState('고객관리');
@@ -121,12 +126,12 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
         label = `입찰 — ${subtype}`;
         break;
       case '임장':
-        data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, court: inspCourt, place: inspPlace };
+        data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, court: inspCourt, place: inspPlace, client: inspClient };
         subtype = `${inspYear}타경${inspCaseNo}`;
         label = `임장 — ${subtype}`;
         break;
       case '미팅':
-        data = { ...data, meetingType, etcReason: meetingEtc, place: meetingPlace };
+        data = { ...data, meetingType, etcReason: meetingEtc, place: meetingPlace, client: meetingClient };
         subtype = meetingType === '기타' ? meetingEtc : meetingType;
         label = `미팅 — ${subtype}`;
         break;
@@ -137,7 +142,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
         break;
       case '브리핑': {
         const caseNo = `${briefingYear}타경${briefingCaseNo}`;
-        data = { briefingSubmit: true, briefingCaseNo: caseNo, briefingCourt };
+        data = { briefingSubmit: true, briefingCaseNo: caseNo, briefingCourt, client: briefingClient };
         subtype = '브리핑자료 제출';
         label = `브리핑 — ${caseNo}`;
         break;
@@ -166,11 +171,11 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const resetFields = () => {
     setBidCaseNo(''); setBidBidder(''); setBidSuggestedPrice(''); setBidPrice('');
     setBidWinPrice(''); setBidWon(false); setBidDeviationReason('');
-    setInspCaseNo(''); setInspPlace('');
-    setMeetingEtc(''); setMeetingPlace('');
+    setInspCaseNo(''); setInspPlace(''); setInspClient('');
+    setMeetingEtc(''); setMeetingPlace(''); setMeetingClient('');
     setOfficeEtc('');
     setPersonalReason('');
-    setBriefingSubmit(false); setBriefingCaseNo(''); setBriefingCourt('');
+    setBriefingSubmit(false); setBriefingCaseNo(''); setBriefingCourt(''); setBriefingClient('');
   };
 
   const removeTask = (idx: number) => {
@@ -278,8 +283,8 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                   </div>
                 </div>
                 <div className="form-group" style={{ flex: 1 }}>
-                  <label>입찰자</label>
-                  <input type="text" value={bidBidder} onChange={(e) => setBidBidder(e.target.value)} required />
+                  <label>고객명</label>
+                  <input type="text" value={bidBidder} onChange={(e) => setBidBidder(e.target.value)} placeholder="고객명" required />
                 </div>
               </div>
               <div className="form-group">
@@ -330,13 +335,17 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                   </div>
                 </div>
                 <div className="form-group" style={{ flex: 1 }}>
-                  <label>장소</label>
-                  <input type="text" value={inspPlace} onChange={(e) => setInspPlace(e.target.value)} required />
+                  <label>고객명</label>
+                  <input type="text" value={inspClient} onChange={(e) => setInspClient(e.target.value)} placeholder="고객명" />
                 </div>
               </div>
               <div className="form-group">
                 <label>법원</label>
                 <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === inspCourt) || null} onChange={(o: any) => setInspCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
+              </div>
+              <div className="form-group">
+                <label>장소</label>
+                <input type="text" value={inspPlace} onChange={(e) => setInspPlace(e.target.value)} required />
               </div>
             </>
           )}
@@ -351,6 +360,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
               {meetingType === '기타' && (
                 <div className="form-group"><label>사유</label><input type="text" value={meetingEtc} onChange={(e) => setMeetingEtc(e.target.value)} required /></div>
               )}
+              <div className="form-group"><label>고객명</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="고객명" /></div>
               <div className="form-group"><label>장소</label><input type="text" value={meetingPlace} onChange={(e) => setMeetingPlace(e.target.value)} required /></div>
             </>
           )}
@@ -382,6 +392,10 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
               <div className="form-group">
                 <label>법원</label>
                 <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === briefingCourt) || null} onChange={(o: any) => setBriefingCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
+              </div>
+              <div className="form-group">
+                <label>고객명</label>
+                <input type="text" value={briefingClient} onChange={(e) => setBriefingClient(e.target.value)} placeholder="고객명" />
               </div>
             </>
           )}

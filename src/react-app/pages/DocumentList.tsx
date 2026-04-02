@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
+import { useAuthStore } from '../store';
 import type { Document } from '../types';
 import { FileText, FilePlus, FileCheck, FileX, Plus, X } from 'lucide-react';
 
@@ -15,7 +16,9 @@ export default function DocumentList() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [filter, setFilter] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const { user } = useAuthStore();
   const navigate = useNavigate();
+  const isTopRole = !!user && ['master', 'ceo', 'cc_ref'].includes(user.role);
 
   const load = () => {
     setLoading(true);
@@ -65,7 +68,7 @@ export default function DocumentList() {
               <Link to={'/documents/' + doc.id} key={doc.id} className="doc-card">
                 <div className="doc-card-header">
                   <span className={`status-badge ${cfg?.className}`}>{cfg?.label}</span>
-                  {(doc.status === 'draft' || doc.status === 'rejected') && (
+                  {(doc.status === 'draft' || doc.status === 'rejected' || isTopRole) && (
                     <button className="doc-card-delete" onClick={(e) => handleDelete(doc.id, e)} title="삭제">
                       <X size={14} />
                     </button>

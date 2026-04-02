@@ -106,7 +106,7 @@ export default function TemplateList() {
   const renderCard = (t: Template) => {
     const isFav = favorites.includes(t.id);
     return (
-      <div key={t.id} className="template-card" onClick={() => handleNewDoc(t.id)}>
+      <div key={t.id} className="template-card">
         <button className={`template-fav-btn ${isFav ? 'active' : ''}`} onClick={(e) => handleFav(t.id, e)} title={isFav ? '즐겨찾기 해제' : '즐겨찾기 추가'}>
           <Star size={14} fill={isFav ? '#f9ab00' : 'none'} />
         </button>

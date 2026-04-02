@@ -112,9 +112,11 @@ export default function Journal() {
     const memberEntries = entries.filter((e) => e.user_id === member.id);
     const hasEntries = memberEntries.length > 0;
     const dateStr = tab === 'today' ? today : tab === 'tomorrow' ? tomorrow : '';
-    // 당일건 16시 이후 수정불가, 익일건 16시 전까지 수정가능, 과거 수정불가
     const entryDate = dateStr || (hasEntries ? memberEntries[0].target_date : '');
-    const isReadonly = !isEditable(entryDate) || member.id !== user?.id;
+    const isMine = member.id === user?.id;
+    const isReadonly = !isMine && !['master', 'ceo', 'cc_ref'].includes(user?.role || '')
+      ? true
+      : !isEditable(entryDate, user?.role);
 
     if (hasEntries) {
       return (
@@ -126,6 +128,7 @@ export default function Journal() {
           positionTitle={member.position_title}
           date={dateStr || memberEntries[0].target_date}
           readonly={isReadonly}
+          currentUserRole={user?.role}
           onDelete={handleDelete}
           onToggleComplete={handleToggleComplete}
           onUpdate={load}
@@ -261,7 +264,8 @@ export default function Journal() {
                         userName={ue[0].user_name || ''}
                         userRole={ue[0].user_role}
                         date={date}
-                        readonly={!isEditable(date)}
+                        readonly={!isEditable(date, user?.role)}
+                        currentUserRole={user?.role}
                         onDelete={handleDelete}
                         onToggleComplete={handleToggleComplete}
           onUpdate={load}

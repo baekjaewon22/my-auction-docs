@@ -1,18 +1,34 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
+import { useAuthStore } from '../store';
 import type { Document } from '../types';
-import { FileText } from 'lucide-react';
+import { FileText, Trash2 } from 'lucide-react';
 
 export default function ReviewList() {
+  const { user } = useAuthStore();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
+  const isCeoPlus = !!user && ['master', 'ceo', 'cc_ref'].includes(user.role);
 
-  useEffect(() => {
+  const load = () => {
+    setLoading(true);
     api.documents.list('submitted')
       .then((res) => setDocuments(res.documents))
       .finally(() => setLoading(false));
-  }, []);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirm('문서를 삭제하시겠습니까?')) return;
+    try {
+      await api.documents.delete(id);
+      setDocuments(documents.filter(d => d.id !== id));
+    } catch (err: any) { alert(err.message); }
+  };
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -38,7 +54,14 @@ export default function ReviewList() {
                 </div>
               </div>
             </div>
-            <span className="status-badge status-submitted">제출</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span className="status-badge status-submitted">제출</span>
+              {isCeoPlus && (
+                <button className="btn btn-sm btn-danger" style={{ padding: '2px 6px' }} onClick={(e) => handleDelete(doc.id, e)} title="삭제">
+                  <Trash2 size={12} />
+                </button>
+              )}
+            </div>
           </Link>
         ))}
         {documents.length === 0 && (
