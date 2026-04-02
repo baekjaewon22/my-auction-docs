@@ -21,9 +21,9 @@ export default function Layout() {
   const navTo = (path: string) => { navigate(path); setMobileOpen(false); };
 
   const role = (user?.role || 'member') as Role;
-  const canApprove = ['master', 'ceo', 'admin', 'manager'].includes(role);
-  const canApproveUsers = ['master', 'ceo', 'admin'].includes(role);
-  const canManage = ['master', 'ceo'].includes(role);
+  const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(role);
+  const canApproveUsers = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canManage = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
 
   const sidebarContent = (
     <>

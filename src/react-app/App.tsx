@@ -26,20 +26,20 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
 
 function TopRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  if (user?.role !== 'master' && user?.role !== 'ceo') return <Navigate to="/dashboard" replace />;
+  if (!user || !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 function ApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  const allowed = ['master', 'ceo', 'admin', 'manager'];
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  const allowed = ['master', 'ceo', 'admin'];
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }

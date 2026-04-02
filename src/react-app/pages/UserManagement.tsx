@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User } from '../types';
-import { ROLE_LABELS } from '../types';
+import { ROLE_LABELS, VISIBLE_ROLES } from '../types';
 import type { Role } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { Trash2, UserCheck, UserX, UserCog, CalendarDays } from 'lucide-react';
 
 import { useDepartments } from '../hooks/useDepartments';
-const ROLE_OPTS = Object.entries(ROLE_LABELS).map(([v, l]) => ({ value: v, label: l }));
+const ROLE_OPTS = VISIBLE_ROLES.map((v) => ({ value: v, label: ROLE_LABELS[v] }));
 
 interface LeaveInfo {
   user_id: string;
@@ -31,10 +31,10 @@ export default function UserManagement() {
   const [loading, setLoading] = useState(true);
   const [pendingDepts, setPendingDepts] = useState<Record<string, string>>({});
 
-  const hierarchy: Record<string, number> = { master: 1, ceo: 2, admin: 3, manager: 4, member: 5 };
+  const hierarchy: Record<string, number> = { master: 1, ceo: 2, cc_ref: 2, admin: 3, manager: 4, member: 5 };
   const myLevel = hierarchy[currentUser?.role || ''] || 99;
-  const canManagePending = ['master', 'ceo', 'admin'].includes(currentUser?.role || '');
-  const canManageLeave = ['master', 'ceo', 'admin'].includes(currentUser?.role || '');
+  const canManagePending = ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser?.role || '');
+  const canManageLeave = ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser?.role || '');
 
   const load = () => {
     setLoading(true);
@@ -54,7 +54,7 @@ export default function UserManagement() {
 
   const getAvailableRoles = () => {
     if (currentUser?.role === 'master') return ROLE_OPTS;
-    if (currentUser?.role === 'ceo') return ROLE_OPTS.filter((r) => ['admin', 'manager', 'member'].includes(r.value));
+    if (currentUser?.role === 'ceo' || currentUser?.role === 'cc_ref') return ROLE_OPTS.filter((r) => ['admin', 'manager', 'member'].includes(r.value));
     if (currentUser?.role === 'admin') return ROLE_OPTS.filter((r) => ['manager', 'member'].includes(r.value));
     return [];
   };
@@ -92,6 +92,14 @@ export default function UserManagement() {
     } catch (err: any) { alert(err.message); }
   };
 
+  // 역할 변경
+  const handleRoleChange = async (userId: string, role: string) => {
+    try {
+      await api.users.updateRole(userId, role);
+      load();
+    } catch (err: any) { alert(err.message); }
+  };
+
   // 연차 미등록 사용자
   const usersWithoutLeave = users.filter((u) => !leaves.find((l) => l.user_id === u.id));
 
@@ -125,24 +133,34 @@ export default function UserManagement() {
         <div className="table-wrapper">
           <table className="data-table">
             <thead>
-              <tr><th>이름</th><th>전화번호</th><th>이메일</th><th>역할</th><th>지사</th><th>팀</th><th>가입일</th><th></th></tr>
+              <tr><th>이름</th><th>이메일</th><th>역할</th><th>보직</th><th>지사</th><th>팀</th><th>가입일</th><th></th></tr>
             </thead>
             <tbody>
-              {users.map((u) => {
+              {users.filter((u) => u.role !== 'master' || currentUser?.role === 'master').map((u) => {
                 const isSameBranch = currentUser?.role !== 'admin' || u.branch === currentUser?.branch;
                 const canEdit = availableRoles.length > 0 && u.id !== currentUser?.id && isSameBranch;
                 const targetLevel = hierarchy[u.role] || 99;
                 const isHigher = targetLevel <= myLevel;
                 const canDel = canEdit && !isHigher;
+                const canChangeRole = canEdit && !isHigher;
                 return (
                   <tr key={u.id}>
                     <td><strong>{u.name}</strong></td>
-                    <td>{u.phone || '-'}</td>
-                    <td>{u.email}</td>
-                    <td><span className={`role-badge role-${u.role}`}>{ROLE_LABELS[u.role as Role]}</span></td>
+                    <td style={{ fontSize: '0.75rem' }}>{u.email}</td>
+                    <td>
+                      {canChangeRole ? (
+                        <Select size="sm" options={availableRoles}
+                          value={availableRoles.find((o) => o.value === u.role) || ROLE_OPTS.find((o) => o.value === u.role) || null}
+                          onChange={(o: any) => o && handleRoleChange(u.id, o.value)}
+                          placeholder="역할" />
+                      ) : (
+                        <span className={`role-badge role-${u.role}`}>{ROLE_LABELS[u.role as Role]}</span>
+                      )}
+                    </td>
+                    <td>{u.position_title || '-'}</td>
                     <td>{u.branch || '-'}</td>
                     <td>{u.department || '-'}</td>
-                    <td>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
+                    <td style={{ fontSize: '0.72rem' }}>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
                     <td>{canDel && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u.id, u.name)}><Trash2 size={13} /></button>}</td>
                   </tr>
                 );

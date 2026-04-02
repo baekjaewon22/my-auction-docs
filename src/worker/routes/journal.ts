@@ -101,7 +101,7 @@ journal.get('/members', async (c) => {
     params.push(user.branch);
   }
 
-  query += " ORDER BY branch, department, CASE role WHEN 'master' THEN 1 WHEN 'ceo' THEN 2 WHEN 'admin' THEN 3 WHEN 'manager' THEN 4 WHEN 'member' THEN 5 END, name";
+  query += " ORDER BY branch, department, CASE role WHEN 'master' THEN 1 WHEN 'ceo' THEN 2 WHEN 'cc_ref' THEN 2 WHEN 'admin' THEN 3 WHEN 'manager' THEN 4 WHEN 'member' THEN 5 END, name";
   const stmt = db.prepare(query);
   const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all();
   return c.json({ members: result.results });

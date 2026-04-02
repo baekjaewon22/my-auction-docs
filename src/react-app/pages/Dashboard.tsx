@@ -4,7 +4,7 @@ import { useAuthStore } from '../store';
 import { api } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink } from 'lucide-react';
 
 const statusConfig: Record<string, { label: string; className: string; icon: typeof FileText }> = {
   draft: { label: '작성중', className: 'status-draft', icon: FilePlus },
@@ -29,7 +29,7 @@ export default function Dashboard() {
   useEffect(() => {
     const promises: Promise<any>[] = [api.documents.list()];
     // 팀장 이상은 일지도 로드하여 매칭 체크
-    if (['master', 'ceo', 'admin', 'manager'].includes(user?.role || '')) {
+    if (['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '')) {
       promises.push(api.journal.list({ range: 'month' }));
     } else {
       // 팀원: 본인 일지만
@@ -63,7 +63,12 @@ export default function Dashboard() {
     <div className="page dashboard-page">
       <div className="page-header">
         <h2>대시보드</h2>
-        <p className="greeting">안녕하세요, <strong>{user?.name}</strong>님!</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <p className="greeting">안녕하세요, <strong>{user?.name}</strong>님!</p>
+          <a href="http://crm.my-auction.co.kr/login.php" target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+            마이옥션CRM+ <ExternalLink size={12} />
+          </a>
+        </div>
       </div>
 
       <div className="stats-grid">

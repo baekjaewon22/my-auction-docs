@@ -34,7 +34,7 @@ export default function Statistics() {
   const [filterMonth, setFilterMonth] = useState('');
   const tabs = ['입찰 분석', '근태 분석', '이상 감지'];
 
-  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || (user?.role === 'admin' && user?.branch === '의정부');
+  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || (user?.role === 'admin' && user?.branch === '의정부');
 
   useEffect(() => {
     Promise.all([api.journal.list({ range: 'all' }), api.journal.members()])
@@ -212,7 +212,7 @@ function BidAnalysis({ entries, members, viewLevel, allEntries, allMembers }: {
       <ResponsiveContainer width="100%" height={250}>
         <BarChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="name" fontSize={11} />
+          <XAxis dataKey="name" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
           <YAxis fontSize={11} allowDecimals={false} />
           <Tooltip />
           <Legend />
@@ -250,7 +250,7 @@ function BidAnalysis({ entries, members, viewLevel, allEntries, allMembers }: {
               <h4>전체 결과 분포</h4>
               <ResponsiveContainer width="100%" height={250}>
                 <PieChart>
-                  <Pie data={resultPie} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={(props: any) => `${props.name} ${props.value}건`}>
+                  <Pie data={resultPie} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={({ name, value, cx, cy, midAngle, outerRadius, percent }: any) => { const r = outerRadius + 20; const x = cx + r * Math.cos(-midAngle * Math.PI / 180); const y = cy + r * Math.sin(-midAngle * Math.PI / 180); return percent > 0.05 ? <text x={x} y={y} textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontSize={11} fill="#333">{name} {value}건</text> : null; }}>
                     {resultPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
                   </Pie>
                   <Tooltip />
@@ -279,7 +279,7 @@ function BidAnalysis({ entries, members, viewLevel, allEntries, allMembers }: {
                     {s.total > 0 ? (
                       <ResponsiveContainer width="100%" height={200}>
                         <PieChart>
-                          <Pie data={bPie} cx="50%" cy="50%" outerRadius={70} dataKey="value" label={(props: any) => `${props.name} ${props.value}`}>
+                          <Pie data={bPie} cx="50%" cy="50%" outerRadius={70} dataKey="value" label={({ name, value, cx, cy, midAngle, outerRadius, percent }: any) => { const r = outerRadius + 18; const x = cx + r * Math.cos(-midAngle * Math.PI / 180); const y = cy + r * Math.sin(-midAngle * Math.PI / 180); return percent > 0.05 ? <text x={x} y={y} textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontSize={10} fill="#333">{name} {value}</text> : null; }}>
                             {bPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
                           </Pie>
                           <Tooltip />
@@ -352,7 +352,7 @@ function BidAnalysis({ entries, members, viewLevel, allEntries, allMembers }: {
                 <h4>결과 분포</h4>
                 <ResponsiveContainer width="100%" height={250}>
                   <PieChart>
-                    <Pie data={resultPie} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={(props: any) => `${props.name} ${props.value}건`}>
+                    <Pie data={resultPie} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={({ name, value, cx, cy, midAngle, outerRadius, percent }: any) => { const r = outerRadius + 20; const x = cx + r * Math.cos(-midAngle * Math.PI / 180); const y = cy + r * Math.sin(-midAngle * Math.PI / 180); return percent > 0.05 ? <text x={x} y={y} textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontSize={11} fill="#333">{name} {value}건</text> : null; }}>
                       {resultPie.map((_, i) => <Cell key={i} fill={resultColors[i]} />)}
                     </Pie>
                     <Tooltip />
@@ -400,7 +400,7 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
         </h4>
         <ResponsiveContainer width="100%" height={250}>
           <PieChart>
-            <Pie data={counts} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={(props: any) => `${props.name} ${(props.percent * 100).toFixed(0)}%`}>
+            <Pie data={counts} cx="50%" cy="50%" outerRadius={90} dataKey="value" label={({ name, cx, cy, midAngle, outerRadius, percent }: any) => { const r = outerRadius + 20; const x = cx + r * Math.cos(-midAngle * Math.PI / 180); const y = cy + r * Math.sin(-midAngle * Math.PI / 180); return percent > 0.03 ? <text x={x} y={y} textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontSize={11} fill="#333">{name} {(percent * 100).toFixed(0)}%</text> : null; }}>
               {counts.map((_, i) => <Cell key={i} fill={Object.values(ACTIVITY_COLORS)[i] || COLORS[i]} />)}
             </Pie>
             <Tooltip />
@@ -428,7 +428,7 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
       <ResponsiveContainer width="100%" height={280}>
         <BarChart data={barData}>
           <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="name" fontSize={11} />
+          <XAxis dataKey="name" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
           <YAxis fontSize={11} />
           <Tooltip />
           <Legend />
@@ -476,7 +476,7 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
                     <ResponsiveContainer width="100%" height={200}>
                       <BarChart data={barData}>
                         <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="name" fontSize={11} />
+                        <XAxis dataKey="name" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
                         <YAxis fontSize={11} />
                         <Tooltip />
                         <Legend />
@@ -518,7 +518,7 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
                     <ResponsiveContainer width="100%" height={200}>
                       <BarChart data={barData}>
                         <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="name" fontSize={11} />
+                        <XAxis dataKey="name" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
                         <YAxis fontSize={11} />
                         <Tooltip />
                         <Legend />

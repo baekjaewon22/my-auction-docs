@@ -260,8 +260,16 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                         )
                       )}
 
-                      {/* 브리핑 */}
-                      {!isEditing && d.briefingSubmit && d.briefingCaseNo && (
+                      {/* === 브리핑 (독립 타입) === */}
+                      {entry.activity_type === '브리핑' && !isEditing && (
+                        <>
+                          <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.briefingCaseNo)}</div>
+                          {d.briefingCourt && <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.briefingCourt}</span></div>}
+                        </>
+                      )}
+
+                      {/* 브리핑 (다른 타입 하위 체크박스) */}
+                      {entry.activity_type !== '브리핑' && !isEditing && d.briefingSubmit && d.briefingCaseNo && (
                         <>
                           <div className="journal-detail-row" style={{ marginTop: 6, paddingTop: 6, borderTop: '1px dashed #e8eaed' }}>
                             <span className="journal-detail-label" style={{ color: '#1a73e8' }}>브리핑</span><span>{d.briefingCaseNo}</span>

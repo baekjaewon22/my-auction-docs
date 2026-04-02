@@ -11,7 +11,7 @@ teams.get('/', async (c) => {
   const db = c.env.DB;
 
   let result;
-  if (user.role === 'master' || user.role === 'ceo' || user.role === 'admin') {
+  if (user.role === 'master' || user.role === 'ceo' || user.role === 'cc_ref' || user.role === 'admin') {
     result = await db.prepare('SELECT * FROM teams ORDER BY created_at DESC').all<Team>();
   } else {
     result = await db.prepare('SELECT * FROM teams WHERE id = ?').bind(user.team_id).all<Team>();

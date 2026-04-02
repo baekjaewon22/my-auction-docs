@@ -30,8 +30,8 @@ export default function ArchivePage() {
   const [filterStatus, setFilterStatus] = useState('approved');
   const [searchText, setSearchText] = useState('');
 
-  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo';
-  const isAdmin = ['master', 'ceo', 'admin'].includes(user?.role || '');
+  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref';
+  const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
 
   useEffect(() => {
     setLoading(true);

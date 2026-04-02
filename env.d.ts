@@ -9,8 +9,11 @@ declare namespace Cloudflare {
 		DB: D1Database;
 		/** 현재 배포 환경 (dev/staging/production에서 자동 주입) */
 		ENVIRONMENT: "development" | "staging" | "production";
-		/** Resend 이메일 API Key */
-		RESEND_API_KEY: string;
+		/** NCP SENS 알림톡 (시크릿으로 등록) */
+		NCP_ACCESS_KEY: string;
+		NCP_SECRET_KEY: string;
+		NCP_SERVICE_ID: string;
+		NCP_KAKAO_CHANNEL_ID: string;
 	}
 }
 

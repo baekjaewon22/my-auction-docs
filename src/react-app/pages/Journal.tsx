@@ -34,7 +34,7 @@ export default function Journal() {
 
   const today = getToday();
   const tomorrow = getTomorrow();
-  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo';
+  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref';
 
   const load = () => {
     setLoading(true);

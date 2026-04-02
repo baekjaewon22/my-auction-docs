@@ -37,7 +37,10 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
 export function requireRole(...roles: Role[]) {
   return async (c: Context<AuthEnv>, next: Next) => {
     const user = c.get('user');
-    if (!user || !roles.includes(user.role)) {
+    if (!user) return c.json({ error: '권한이 없습니다.' }, 403);
+    // cc_ref는 ceo와 동일 권한
+    const effectiveRole = user.role === 'cc_ref' ? 'ceo' : user.role;
+    if (!roles.includes(user.role) && !roles.includes(effectiveRole as Role)) {
       return c.json({ error: '권한이 없습니다.' }, 403);
     }
     await next();

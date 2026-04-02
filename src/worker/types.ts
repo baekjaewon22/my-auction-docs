@@ -1,4 +1,4 @@
-export type Role = 'master' | 'ceo' | 'admin' | 'manager' | 'member';
+export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'manager' | 'member';
 export type DocStatus = 'draft' | 'submitted' | 'approved' | 'rejected';
 
 export const BRANCHES = ['의정부', '서초'] as const;
@@ -71,6 +71,33 @@ export interface DocumentLog {
   user_id: string;
   action: string;
   details: string;
+  created_at: string;
+}
+
+export interface OrgNode {
+  id: string;
+  label: string;
+  user_id: string | null;
+  parent_id: string | null;
+  tier: number;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface ApprovalStep {
+  id: string;
+  document_id: string;
+  step_order: number;
+  approver_id: string;
+  status: 'pending' | 'approved' | 'rejected';
+  comment: string | null;
+  signed_at: string | null;
+}
+
+export interface ApprovalCC {
+  id: string;
+  cc_user_id: string;
+  created_by: string;
   created_at: string;
 }
 

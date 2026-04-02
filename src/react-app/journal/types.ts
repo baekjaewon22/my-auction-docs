@@ -15,15 +15,16 @@ export interface JournalEntry {
   updated_at: string;
 }
 
-export type ActivityType = '입찰' | '임장' | '미팅' | '사무' | '개인';
+export type ActivityType = '입찰' | '임장' | '미팅' | '사무' | '브리핑' | '개인';
 
-export const ACTIVITY_TYPES: ActivityType[] = ['입찰', '임장', '미팅', '사무', '개인'];
+export const ACTIVITY_TYPES: ActivityType[] = ['입찰', '임장', '미팅', '사무', '브리핑', '개인'];
 
 export const ACTIVITY_COLORS: Record<ActivityType, string> = {
   '입찰': '#1a73e8',
   '임장': '#188038',
   '미팅': '#e65100',
   '사무': '#7b1fa2',
+  '브리핑': '#0d47a1',
   '개인': '#9aa0a6',
 };
 

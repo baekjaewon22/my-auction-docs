@@ -82,7 +82,7 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   const { role, branch, department } = await c.req.json<{ role?: string; branch?: string; department?: string }>();
   const db = c.env.DB;
 
-  if (role && !['master', 'ceo', 'admin', 'manager', 'member'].includes(role)) {
+  if (role && !['master', 'ceo', 'cc_ref', 'admin', 'manager', 'member'].includes(role)) {
     return c.json({ error: '유효하지 않은 역할입니다.' }, 400);
   }
 
@@ -99,10 +99,10 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   if (newRole === 'master' && currentUser.role !== 'master') {
     return c.json({ error: '마스터 권한은 마스터만 설정할 수 있습니다.' }, 403);
   }
-  if (newRole === 'ceo' && currentUser.role !== 'master') {
-    return c.json({ error: '대표 권한은 마스터만 설정할 수 있습니다.' }, 403);
+  if ((newRole === 'ceo' || newRole === 'cc_ref') && currentUser.role !== 'master') {
+    return c.json({ error: '대표/CC참조자 권한은 마스터만 설정할 수 있습니다.' }, 403);
   }
-  if (newRole === 'admin' && currentUser.role !== 'master' && currentUser.role !== 'ceo') {
+  if (newRole === 'admin' && currentUser.role !== 'master' && currentUser.role !== 'ceo' && currentUser.role !== 'cc_ref') {
     return c.json({ error: '관리자 등급 설정은 대표 이상만 가능합니다.' }, 403);
   }
   if (currentUser.role === 'admin' && (newRole !== 'manager' && newRole !== 'member' && newRole !== existing.role)) {
@@ -159,7 +159,7 @@ users.put('/:id', async (c) => {
   const currentUser = c.get('user');
   const db = c.env.DB;
 
-  if (currentUser.sub !== id && currentUser.role !== 'master' && currentUser.role !== 'ceo' && currentUser.role !== 'admin') {
+  if (currentUser.sub !== id && currentUser.role !== 'master' && currentUser.role !== 'ceo' && currentUser.role !== 'cc_ref' && currentUser.role !== 'admin') {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 

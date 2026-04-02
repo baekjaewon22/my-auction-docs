@@ -47,16 +47,6 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ email, password, name, phone, branch }),
       }),
-    sendCode: (email: string) =>
-      request<{ message: string }>('/auth/send-code', {
-        method: 'POST',
-        body: JSON.stringify({ email }),
-      }),
-    verifyCode: (email: string, code: string) =>
-      request<{ verified: boolean }>('/auth/verify-code', {
-        method: 'POST',
-        body: JSON.stringify({ email, code }),
-      }),
     me: () => request<{ user: import('./types').User }>('/auth/me'),
   },
 
@@ -71,7 +61,7 @@ export const api = {
       request('/users/' + id + '/role', { method: 'PUT', body: JSON.stringify({ role, branch, department }) }),
     delete: (id: string) =>
       request('/users/' + id, { method: 'DELETE' }),
-    update: (id: string, data: { name?: string; password?: string }) =>
+    update: (id: string, data: { name?: string; password?: string; phone?: string; branch?: string; department?: string; position_title?: string }) =>
       request('/users/' + id, { method: 'PUT', body: JSON.stringify(data) }),
   },
 
@@ -128,6 +118,7 @@ export const api = {
         body: JSON.stringify({ reason }),
       }),
     logs: (id: string) => request<{ logs: import('./types').DocumentLog[] }>('/documents/' + id + '/logs'),
+    steps: (id: string) => request<{ steps: import('./types').ApprovalStep[] }>('/documents/' + id + '/steps'),
   },
 
   signatures: {
@@ -138,6 +129,18 @@ export const api = {
       }),
     getByDocument: (documentId: string) =>
       request<{ signatures: import('./types').Signature[] }>('/signatures/document/' + documentId),
+  },
+
+  org: {
+    list: () => request<{ nodes: import('./types').OrgNodeDB[] }>('/org'),
+    sync: (nodes: { id: string; label: string; user_id?: string; parent_id?: string; tier: number; sort_order: number }[]) =>
+      request<{ success: boolean; count: number }>('/org/sync', { method: 'PUT', body: JSON.stringify({ nodes }) }),
+    chain: (userId: string) =>
+      request<{ chain: { user_id: string; name: string; tier: number; label: string }[]; type: string }>('/org/chain/' + userId),
+    ccList: () => request<{ ccList: (import('./types').ApprovalCC & { cc_user_name: string; cc_user_email: string })[] }>('/org/cc'),
+    ccAdd: (cc_user_id: string) =>
+      request<{ success: boolean; id: string }>('/org/cc', { method: 'POST', body: JSON.stringify({ cc_user_id }) }),
+    ccDelete: (id: string) => request('/org/cc/' + id, { method: 'DELETE' }),
   },
 
   departments: {

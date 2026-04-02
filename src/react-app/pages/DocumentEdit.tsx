@@ -12,7 +12,7 @@ import Image from '@tiptap/extension-image';
 import { FontSize, FONT_SIZES, FONT_SIZE_LABELS } from '../extensions/FontSize';
 import { api } from '../api';
 import { useAuthStore } from '../store';
-import type { Document, DocumentLog, Signature } from '../types';
+import type { Document, DocumentLog, Signature, ApprovalStep } from '../types';
 import SignaturePanel, { hasSavedSignature, quickSign } from '../components/SignaturePanel';
 import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
@@ -33,6 +33,7 @@ export default function DocumentEdit() {
   const [signatureType, setSignatureType] = useState<SignatureType>('author');
   const [rejectReason, setRejectReason] = useState('');
   const [showReject, setShowReject] = useState(false);
+  const [approvalSteps, setApprovalSteps] = useState<ApprovalStep[]>([]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const editor = useEditor({
@@ -98,8 +99,15 @@ export default function DocumentEdit() {
   const isEditable = doc && (doc.status === 'draft' || doc.status === 'rejected') &&
     (doc.author_id === user?.id || user?.role === 'master');
 
-  const canApprove = doc && doc.status === 'submitted' &&
-    ['master', 'ceo', 'admin', 'manager'].includes(user?.role || '');
+  // 결재선에 내가 포함되어 있고 pending인 단계가 있으면 승인 가능, 또는 master/ceo
+  const myPendingStep = approvalSteps.find(s => s.approver_id === user?.id && s.status === 'pending');
+  const prevAllApproved = myPendingStep
+    ? approvalSteps.filter(s => s.step_order < myPendingStep.step_order).every(s => s.status === 'approved')
+    : false;
+  const canApprove = doc && doc.status === 'submitted' && (
+    (myPendingStep && prevAllApproved) ||
+    ['master', 'ceo', 'cc_ref'].includes(user?.role || '')
+  );
 
   const mySigned = signatures.some((s) => s.user_id === user?.id);
 
@@ -119,12 +127,14 @@ export default function DocumentEdit() {
       api.documents.get(id),
       api.documents.logs(id),
       api.signatures.getByDocument(id),
-    ]).then(([docRes, logRes, sigRes]) => {
+      api.documents.steps(id),
+    ]).then(([docRes, logRes, sigRes, stepsRes]) => {
       const d = docRes.document;
       setDoc(d);
       setTitle(d.title);
       setLogs(logRes.logs);
       setSignatures(sigRes.signatures);
+      setApprovalSteps(stepsRes.steps || []);
       if (editor) {
         editor.commands.setContent(d.content === '{}' ? '' : d.content);
         const canEdit = (d.status === 'draft' || d.status === 'rejected') &&
@@ -156,7 +166,12 @@ export default function DocumentEdit() {
 
   const handleApprove = async () => {
     if (!id) return;
-    await api.documents.approve(id);
+    const result = await api.documents.approve(id) as any;
+    if (result.final) {
+      alert('문서가 최종 승인되었습니다.');
+    } else {
+      alert('승인 완료. 다음 단계 결재자에게 전달됩니다.');
+    }
     window.location.reload();
   };
 
@@ -183,20 +198,33 @@ export default function DocumentEdit() {
     const sigTable = document.createElement('table');
     sigTable.style.cssText = 'border-collapse: collapse; font-size: 10px;';
 
+    // 동적 결재선: 작성자 + approval_steps
+    const pdfSlots: { label: string; sig?: Signature }[] = [
+      { label: '작성자', sig: signatures[0] },
+    ];
+    for (const step of approvalSteps) {
+      const stepSig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1);
+      pdfSlots.push({ label: step.approver_name || `승인 ${step.step_order}`, sig: stepSig });
+    }
+    // 결재선 없으면 기존 고정 슬롯
+    if (approvalSteps.length === 0) {
+      pdfSlots.push({ label: '승인자', sig: signatures[1] });
+    }
+
     const headerRow = document.createElement('tr');
-    ['작성자', '팀장', '대표'].forEach((label) => {
+    pdfSlots.forEach((slot) => {
       const th = document.createElement('th');
       th.style.cssText = 'border: 1px solid #999; padding: 4px 12px; background: #f5f5f5; font-size: 10px; width: 70px; text-align: center;';
-      th.textContent = label;
+      th.textContent = slot.label;
       headerRow.appendChild(th);
     });
     sigTable.appendChild(headerRow);
 
     const dataRow = document.createElement('tr');
-    [0, 1, 2].forEach((idx) => {
+    pdfSlots.forEach((slot) => {
       const td = document.createElement('td');
       td.style.cssText = 'border: 1px solid #999; padding: 4px; height: 50px; width: 70px; text-align: center; vertical-align: middle;';
-      const sig = signatures[idx];
+      const sig = slot.sig;
       if (sig) {
         const img = document.createElement('img');
         img.src = sig.signature_data;
@@ -367,9 +395,11 @@ export default function DocumentEdit() {
         {/* ── 고정 결재란 (에디터 위) ── */}
         <ApprovalBar
           signatures={signatures}
+          approvalSteps={approvalSteps}
           currentUserId={user?.id}
           currentUserRole={user?.role}
           docStatus={doc.status}
+          authorName={doc.author_name}
           onSign={handleApprovalSign}
         />
 

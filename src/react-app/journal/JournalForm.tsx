@@ -101,6 +101,8 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     if (activityType === '입찰' && !bidCourt) { alert('법원을 선택해주세요.'); return null; }
     if (activityType === '임장' && !inspCourt) { alert('법원을 선택해주세요.'); return null; }
     if (activityType === '미팅' && !meetingPlace.trim()) { alert('장소를 입력해주세요.'); return null; }
+    if (activityType === '브리핑' && !briefingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
+    if (activityType === '브리핑' && !briefingCourt) { alert('법원을 선택해주세요.'); return null; }
     if (activityType === '입찰' && showDeviationWarning && !bidDeviationReason.trim()) {
       alert('제시입찰가 대비 실제입찰가가 5% 이상 낮습니다. 사유를 입력해주세요.');
       return null;
@@ -134,6 +136,13 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
         subtype = officeType === '기타' ? officeEtc : officeType;
         label = `사무 — ${subtype}`;
         break;
+      case '브리핑': {
+        const caseNo = `${briefingYear}타경${briefingCaseNo}`;
+        data = { briefingSubmit: true, briefingCaseNo: caseNo, briefingCourt };
+        subtype = '브리핑자료 ���출';
+        label = `브리핑 — ${caseNo}`;
+        break;
+      }
       case '개인':
         data = { ...data, reason: personalReason };
         subtype = personalReason;
@@ -396,6 +405,24 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
               {officeType === '기타' && (
                 <div className="form-group"><label>내용</label><input type="text" value={officeEtc} onChange={(e) => setOfficeEtc(e.target.value)} required /></div>
               )}
+            </>
+          )}
+
+          {/* === 브리핑 (독립 탭) === */}
+          {activityType === '브리핑' && (
+            <>
+              <div className="form-group">
+                <label>사건번호</label>
+                <div className="case-no-inline">
+                  <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === briefingYear)} onChange={(o: any) => setBriefingYear(o.value)} />
+                  <span className="case-no-fixed">타경</span>
+                  <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" className="case-no-input" maxLength={6} />
+                </div>
+              </div>
+              <div className="form-group">
+                <label>법원</label>
+                <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === briefingCourt) || null} onChange={(o: any) => setBriefingCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
+              </div>
             </>
           )}
 

@@ -1315,6 +1315,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   width: 100%;
 }
 
+.approval-slot-done .approval-slot-header { background: #e8f5e9; color: #188038; }
+.approval-slot-rejected .approval-slot-header { background: #fce8e6; color: #d32f2f; }
+.approval-slot-status { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 2px; }
+
 .approval-sign-btn {
   padding: 6px 14px;
   border: 1px dashed var(--primary);
@@ -1510,13 +1514,17 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 /* Login Page                */
 /* ========================= */
 .login-page {
-  height: 100vh;
+  min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #f5f0e8;
-  position: relative;
-  overflow: hidden;
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 20px 0;
+  z-index: 100;
 }
 
 /* Decorative background shapes */
@@ -3460,20 +3468,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .oc-layout { display: flex; gap: 12px; height: calc(100vh - 130px); }
 .oc-tree {
-  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 24px; background: #fff;
+  flex: 1; overflow: auto; padding: 32px 24px; background: #fff;
   border-radius: var(--radius); border: 1px solid var(--gray-100);
   position: relative; display: flex; flex-direction: column; align-items: center;
-}
-
-/* SVG 연결선 */
-.oc-lines { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
-.oc-lines path {
-  stroke-dasharray: 1000;
-  stroke-dashoffset: 1000;
-  animation: oc-lineIn 1.2s ease forwards;
-}
-@keyframes oc-lineIn {
-  to { stroke-dashoffset: 0; }
 }
 
 /* 피라미드: 중앙 정렬 + 자동 축소 */
@@ -3488,6 +3485,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 /* 분기: 세로 정렬 + 등장 애니메이션 */
 .oc-branch {
   display: flex; flex-direction: column; align-items: center;
+  position: relative;
   animation: oc-fadeIn 0.5s cubic-bezier(.4,0,.2,1) both;
 }
 .oc-kids > .oc-branch:nth-child(1) { animation-delay: 0.05s; }
@@ -3500,15 +3498,18 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* 자식 행: 가로 배치 — 축소 금지로 겹침 방지 (autoScale이 전체를 줄여줌) */
+/* 자식 행: 가로 배치 */
 .oc-kids {
   display: flex; gap: 24px; justify-content: center; align-items: flex-start;
-  margin-top: 28px;
+  margin-top: 28px; position: relative;
 }
 .oc-kids > .oc-branch { flex: 0 0 auto; }
 /* 말단 자식(인원)은 세로 일렬 */
 .oc-kids-col { gap: 6px; margin-top: 18px; flex-direction: column; align-items: center; }
 .oc-kids-col > .oc-branch { flex: unset; min-width: unset; }
+
+/* SVG 연결선 */
+.oc-lines { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; overflow: visible; }
 
 /* 카드 래퍼 */
 .oc-card-wrap { display: flex; flex-direction: column; align-items: center; padding: 0 4px; }
