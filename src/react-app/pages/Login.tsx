@@ -103,7 +103,7 @@ export default function Login() {
                 </div>
               </div>
               <div className="form-group">
-                <label>지사 *</label>
+                <label>지사</label>
                 <Select
                   options={BRANCH_OPTS}
                   value={BRANCH_OPTS.find(o => o.value === branch) || null}

@@ -11,6 +11,7 @@ import Color from '@tiptap/extension-color';
 import Image from '@tiptap/extension-image';
 import { FontSize, FONT_SIZES, FONT_SIZE_LABELS } from '../extensions/FontSize';
 import { api } from '../api';
+import { useAuthStore } from '../store';
 import FileImport from '../components/FileImport';
 import Select from '../components/Select';
 
@@ -24,7 +25,12 @@ const CATEGORY_OPTS = [
 export default function TemplateEdit() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { user } = useAuthStore();
   const isNew = id === 'new';
+  const canEdit = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
+
+  // 권한 없으면 목록으로
+  if (!canEdit) { navigate('/templates'); return null; }
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');

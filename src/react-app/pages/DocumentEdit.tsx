@@ -339,7 +339,7 @@ export default function DocumentEdit() {
           )}
           <button className="btn btn-sm" onClick={() => setShowLogs(!showLogs)}>이력</button>
           <button className="btn btn-sm" onClick={handleExportPdf} title="PDF 다운로드"><FileDown size={14} /> PDF</button>
-          {isEditable && doc.template_id && (
+          {isEditable && doc.template_id && user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role) && (
             <button className="btn btn-sm" onClick={handleSaveAsTemplate} title="현재 내용을 템플릿에 반영">템플릿 저장</button>
           )}
 

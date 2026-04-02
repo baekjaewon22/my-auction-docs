@@ -2401,6 +2401,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   padding: 16px 24px 24px;
   flex: 1;
   overflow-y: auto;
+  overflow-x: visible;
+  min-height: 0;
+  padding-bottom: 120px;
 }
 
 .journal-form-body .form-group {

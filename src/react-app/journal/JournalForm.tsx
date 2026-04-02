@@ -108,8 +108,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
       return null;
     }
 
-    let data: Record<string, unknown> = { timeFrom, timeTo, fieldCheckIn, fieldCheckOut,
-      briefingSubmit, ...(briefingSubmit ? { briefingCaseNo: `${briefingYear}타경${briefingCaseNo}`, briefingCourt } : {}) };
+    let data: Record<string, unknown> = { timeFrom, timeTo, fieldCheckIn, fieldCheckOut };
     let subtype = '';
     let label = '';
 
@@ -139,7 +138,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
       case '브리핑': {
         const caseNo = `${briefingYear}타경${briefingCaseNo}`;
         data = { briefingSubmit: true, briefingCaseNo: caseNo, briefingCourt };
-        subtype = '브리핑자료 ���출';
+        subtype = '브리핑자료 제출';
         label = `브리핑 — ${caseNo}`;
         break;
       }
@@ -161,22 +160,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     resetFields();
   };
 
-  // 브리핑자료만 단독 추가
-  const handleAddBriefing = () => {
-    if (!briefingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return; }
-    if (!briefingCourt) { alert('법원을 선택해주세요.'); return; }
-    const caseNo = `${briefingYear}타경${briefingCaseNo}`;
-    const task: TaskItem = {
-      activityType: '사무',
-      timeFrom: '', timeTo: '',
-      fieldCheckIn: false, fieldCheckOut: false,
-      data: { briefingSubmit: true, briefingCaseNo: caseNo, briefingCourt },
-      subtype: '브리핑자료 제출',
-      label: `브리핑자료 — ${caseNo}`,
-    };
-    setTasks([...tasks, task]);
-    setBriefingSubmit(false); setBriefingCaseNo(''); setBriefingCourt('');
-  };
+
 
   // 필드 초기화 (공통 필드는 유지)
   const resetFields = () => {
@@ -255,8 +239,8 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
             </div>
           </div>
 
-          {/* 현장출근/퇴근 + 브리핑자료 — 별도 행 */}
-          {activityType !== '개인' && (
+          {/* 현장출근/퇴근 */}
+          {activityType !== '개인' && activityType !== '브리핑' && (
             <div className="form-group">
               <div className="field-check-group">
                 <label className={`field-check-label ${fieldCheckIn ? 'checked' : ''}`}>
@@ -265,36 +249,12 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                 <label className={`field-check-label ${fieldCheckOut ? 'checked' : ''}`}>
                   <input type="checkbox" checked={fieldCheckOut} onChange={(e) => setFieldCheckOut(e.target.checked)} />현장퇴근
                 </label>
-                <span style={{ width: 1, height: 20, background: 'var(--gray-200)', margin: '0 4px' }} />
-                <label className={`field-check-label briefing ${briefingSubmit ? 'checked' : ''}`}>
-                  <input type="checkbox" checked={briefingSubmit} onChange={(e) => setBriefingSubmit(e.target.checked)} />브리핑자료 제출
-                </label>
               </div>
             </div>
           )}
 
-          {/* 브리핑자료 상세 */}
-          {briefingSubmit && (
-            <div className="briefing-fields">
-              <label className="form-label-sm">브리핑자료 사건정보</label>
-              <div className="form-group">
-                <div className="case-no-inline">
-                  <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === briefingYear)} onChange={(o: any) => setBriefingYear(o.value)} />
-                  <span className="case-no-fixed">타경</span>
-                  <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" className="case-no-input" maxLength={6} />
-                </div>
-              </div>
-              <div className="form-group">
-                <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === briefingCourt) || null} onChange={(o: any) => setBriefingCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
-              </div>
-              <button type="button" className="btn btn-sm btn-outline" onClick={handleAddBriefing} style={{ width: '100%' }}>
-                <Plus size={14} /> 브리핑자료 추가
-              </button>
-            </div>
-          )}
-
-          {/* 시간 */}
-          {activityType !== '개인' && (
+          {/* 시간 (브리핑/개인은 불필요) */}
+          {activityType !== '개인' && activityType !== '브리핑' && (
             <div className="form-group">
               <label>시간</label>
               <div className="inline-row">

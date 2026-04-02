@@ -25,8 +25,8 @@ templates.get('/:id', async (c) => {
   return c.json({ template });
 });
 
-// POST /api/templates (admin only)
-templates.post('/', requireRole('master', 'ceo', 'admin', 'manager', 'member'), async (c) => {
+// POST /api/templates (admin+)
+templates.post('/', requireRole('master', 'ceo', 'cc_ref', 'admin'), async (c) => {
   const user = c.get('user');
   const { title, description, content, category } = await c.req.json<{
     title: string;
@@ -47,8 +47,8 @@ templates.post('/', requireRole('master', 'ceo', 'admin', 'manager', 'member'), 
   return c.json({ template: { id, title, description, content, category } }, 201);
 });
 
-// PUT /api/templates/:id (admin only)
-templates.put('/:id', requireRole('master', 'ceo', 'admin', 'manager', 'member'), async (c) => {
+// PUT /api/templates/:id (admin+)
+templates.put('/:id', requireRole('master', 'ceo', 'cc_ref', 'admin'), async (c) => {
   const id = c.req.param('id');
   const { title, description, content, category, is_active } = await c.req.json<{
     title?: string;
@@ -76,8 +76,8 @@ templates.put('/:id', requireRole('master', 'ceo', 'admin', 'manager', 'member')
   return c.json({ success: true });
 });
 
-// DELETE /api/templates/:id (admin only - soft delete)
-templates.delete('/:id', requireRole('master', 'ceo', 'admin', 'manager', 'member'), async (c) => {
+// DELETE /api/templates/:id (admin+ - soft delete)
+templates.delete('/:id', requireRole('master', 'ceo', 'cc_ref', 'admin'), async (c) => {
   const id = c.req.param('id');
   const db = c.env.DB;
 
