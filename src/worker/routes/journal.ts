@@ -145,10 +145,10 @@ journal.put('/:id', async (c) => {
 
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(id).first<JournalEntry>();
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
-  if (entry.user_id !== user.sub && user.role !== 'master') return c.json({ error: '권한이 없습니다.' }, 403);
+  if (entry.user_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const today = getKSTToday();
-  if (entry.target_date < today) return c.json({ error: '지난 일정은 수정할 수 없습니다.' }, 400);
+  if (entry.target_date < today && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '지난 일정은 수정할 수 없습니다.' }, 400);
 
   const body = await c.req.json<{
     activity_subtype?: string; data?: Record<string, unknown>; completed?: number; fail_reason?: string;
@@ -169,10 +169,10 @@ journal.delete('/:id', async (c) => {
 
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(id).first<JournalEntry>();
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
-  if (entry.user_id !== user.sub && user.role !== 'master') return c.json({ error: '권한이 없습니다.' }, 403);
+  if (entry.user_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const today = getKSTToday();
-  if (entry.target_date < today) return c.json({ error: '지난 일정은 삭제할 수 없습니다.' }, 400);
+  if (entry.target_date < today && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '지난 일정은 삭제할 수 없습니다.' }, 400);
 
   await db.prepare('DELETE FROM journal_entries WHERE id = ?').bind(id).run();
   return c.json({ success: true });

@@ -97,7 +97,7 @@ export default function DocumentEdit() {
   });
 
   const isEditable = doc && (doc.status === 'draft' || doc.status === 'rejected') &&
-    (doc.author_id === user?.id || user?.role === 'master');
+    (doc.author_id === user?.id || ['master', 'ceo', 'cc_ref'].includes(user?.role || ''));
 
   // 결재선에 내가 포함되어 있고 pending인 단계가 있으면 승인 가능, 또는 master/ceo
   const myPendingStep = approvalSteps.find(s => s.approver_id === user?.id && s.status === 'pending');
@@ -138,7 +138,7 @@ export default function DocumentEdit() {
       if (editor) {
         editor.commands.setContent(d.content === '{}' ? '' : d.content);
         const canEdit = (d.status === 'draft' || d.status === 'rejected') &&
-          (d.author_id === user?.id || user?.role === 'master');
+          (d.author_id === user?.id || ['master', 'ceo', 'cc_ref'].includes(user?.role || ''));
         editor.setEditable(canEdit);
       }
     }).catch(() => navigate('/documents'));

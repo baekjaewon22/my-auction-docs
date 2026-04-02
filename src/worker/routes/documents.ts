@@ -179,7 +179,7 @@ documents.put('/:id', async (c) => {
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (doc.author_id !== user.sub && user.role !== 'master') return c.json({ error: '권한이 없습니다.' }, 403);
+  if (doc.author_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
   if (doc.status !== 'draft' && doc.status !== 'rejected') return c.json({ error: '작성중 또는 반려된 문서만 수정할 수 있습니다.' }, 400);
 
   const { title, content } = await c.req.json<{ title?: string; content?: string }>();
@@ -343,10 +343,10 @@ documents.delete('/:id', async (c) => {
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (doc.author_id !== user.sub && user.role !== 'master') return c.json({ error: '권한이 없습니다.' }, 403);
+  if (doc.author_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
 
-  // 제출/승인된 문서는 삭제 불가
-  if (doc.status === 'submitted' || doc.status === 'approved') {
+  // 제출/승인된 문서는 일반 사용자 삭제 불가 (대표/CC는 가능)
+  if ((doc.status === 'submitted' || doc.status === 'approved') && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
     return c.json({ error: '제출 또는 승인된 문서는 삭제할 수 없습니다.' }, 400);
   }
 
