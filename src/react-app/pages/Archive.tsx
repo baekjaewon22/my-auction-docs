@@ -30,12 +30,12 @@ export default function ArchivePage() {
   const [filterStatus, setFilterStatus] = useState('approved');
   const [searchText, setSearchText] = useState('');
 
-  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref';
+  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'admin';
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
 
   useEffect(() => {
     setLoading(true);
-    api.documents.list()
+    api.documents.list('approved')
       .then((res) => setDocuments(res.documents))
       .finally(() => setLoading(false));
   }, []);
@@ -97,20 +97,6 @@ export default function ArchivePage() {
       <div className="archive-filters">
         <div className="archive-filter-row">
           <div className="archive-filter-item">
-            <Select
-              size="sm"
-              options={[
-                { value: '', label: '전체 상태' },
-                { value: 'approved', label: '승인' },
-                { value: 'submitted', label: '제출' },
-                { value: 'rejected', label: '반려' },
-                { value: 'draft', label: '작성중' },
-              ]}
-              value={filterStatus ? { value: filterStatus, label: statusConfig[filterStatus]?.label || filterStatus } : { value: '', label: '전체 상태' }}
-              onChange={(o: any) => setFilterStatus(o?.value || '')}
-            />
-          </div>
-          <div className="archive-filter-item">
             <Select size="sm" options={monthOpts} value={filterMonth ? { value: filterMonth, label: filterMonth } : null} onChange={(o: any) => setFilterMonth(o?.value || '')} placeholder="전체 기간" isClearable />
           </div>
           {(isCeoPlus || isAdmin) && (
@@ -129,9 +115,8 @@ export default function ArchivePage() {
             <input type="text" value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="제목/작성자 검색" className="archive-search-input" />
           </div>
         </div>
-        {(filterMonth || filterBranch || filterDept || filterAuthor || searchText || filterStatus !== 'approved') && (
+        {(filterMonth || filterBranch || filterDept || filterAuthor || searchText) && (
           <div className="archive-filter-tags">
-            {filterStatus && filterStatus !== 'approved' && <span className="stats-filter-tag">{statusConfig[filterStatus]?.label}</span>}
             {filterMonth && <span className="stats-filter-tag">{filterMonth}</span>}
             {filterBranch && <span className="stats-filter-tag">{filterBranch}</span>}
             {filterDept && <span className="stats-filter-tag">{filterDept}</span>}
@@ -168,7 +153,7 @@ export default function ArchivePage() {
                   <span className={`status-badge ${statusConfig[doc.status]?.className}`}>
                     {statusConfig[doc.status]?.label}
                   </span>
-                  {isCeoPlus && (
+                  {isCeoPlus && (doc.status !== 'approved' || user?.role === 'master') && (
                     <button className="btn btn-sm btn-danger" style={{ padding: '2px 6px' }} onClick={(e) => handleDelete(doc.id, e)} title="삭제">
                       <Trash2 size={12} />
                     </button>

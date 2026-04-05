@@ -37,6 +37,13 @@ function ApproverRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function StatsRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'admin'];
+  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin'];
@@ -75,9 +82,9 @@ export default function App() {
           <Route
             path="statistics"
             element={
-              <AdminRoute>
+              <StatsRoute>
                 <Statistics />
-              </AdminRoute>
+              </StatsRoute>
             }
           />
           <Route path="profile" element={<Profile />} />

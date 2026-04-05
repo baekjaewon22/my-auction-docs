@@ -20,6 +20,11 @@ export const useAuthStore = create<AuthState>((set) => ({
     const { token, user } = await api.auth.login(email, password);
     sessionStorage.setItem('token', token);
     set({ token, user, loading: false });
+    // 서명 동기화: DB → localStorage
+    try {
+      const { syncSignatureFromServer } = await import('./components/SignaturePanel');
+      await syncSignatureFromServer();
+    } catch { /* */ }
   },
 
   logout: () => {
@@ -33,6 +38,11 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const { user } = await api.auth.me();
       set({ user, token, loading: false });
+      // 서명 동기화
+      const u = user as any;
+      if (u.saved_signature) {
+        localStorage.setItem('myauction_saved_signature', u.saved_signature);
+      }
     } catch {
       sessionStorage.removeItem('token');
       set({ user: null, token: null, loading: false });

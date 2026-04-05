@@ -4,7 +4,8 @@ import { useAuthStore } from '../store';
 import { api } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell } from 'lucide-react';
+import type { ApprovalStep } from '../types';
 
 const statusConfig: Record<string, { label: string; className: string; icon: typeof FileText }> = {
   draft: { label: '작성중', className: 'status-draft', icon: FilePlus },
@@ -24,26 +25,56 @@ export default function Dashboard() {
   const { user } = useAuthStore();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [alerts, setAlerts] = useState<MissingAlert[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<(Document & { steps?: ApprovalStep[] })[]>([]);
   const [loading, setLoading] = useState(true);
+  const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '');
 
   useEffect(() => {
-    const promises: Promise<any>[] = [api.documents.list()];
-    // 팀장 이상은 일지도 로드하여 매칭 체크
-    if (['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '')) {
-      promises.push(api.journal.list({ range: 'month' }));
-    } else {
-      // 팀원: 본인 일지만
-      promises.push(api.journal.list({ range: 'month' }));
+    const promises: Promise<any>[] = [
+      api.documents.list(),
+      api.journal.list({ range: 'month' }),
+    ];
+    // 승인 권한자면 submitted 문서도 조회
+    if (canApprove) {
+      promises.push(api.documents.list('submitted'));
     }
 
     Promise.all(promises)
-      .then(([docRes, journalRes]) => {
-        const docs = docRes.documents as Document[];
-        setDocuments(docs);
+      .then(async ([docRes, journalRes, submittedRes]) => {
+        const allDocs = docRes.documents as Document[];
+        const myDocs = allDocs.filter((d: any) => d.author_id === user?.id);
+        setDocuments(myDocs);
 
         if (journalRes) {
           const entries = (journalRes as { entries: JournalEntry[] }).entries;
-          setAlerts(detectMissing(entries, docs));
+          setAlerts(detectMissing(entries, allDocs));
+        }
+
+        // 승인 대기 문서 + 결재선 확인
+        if (submittedRes && canApprove) {
+          const submitted = (submittedRes.documents as Document[]).filter((d: any) => d.author_id !== user?.id);
+          const pending: (Document & { steps?: ApprovalStep[]; myStatus?: string })[] = [];
+          const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
+
+          for (const doc of submitted.slice(0, 20)) {
+            try {
+              const stepsRes = await api.documents.steps(doc.id);
+              const steps = stepsRes.steps || [];
+              // 내 차례인지 확인
+              const myStep = steps.find((s: ApprovalStep) => s.approver_id === user?.id && s.status === 'pending');
+              const prevDone = myStep ? steps.filter((s: ApprovalStep) => s.step_order < myStep.step_order).every((s: ApprovalStep) => s.status === 'approved') : false;
+              // 내가 이미 승인했지만 최종 승인 전인 문서
+              const myApproved = steps.find((s: ApprovalStep) => s.approver_id === user?.id && s.status === 'approved');
+              const hasPending = steps.some((s: ApprovalStep) => s.status === 'pending');
+
+              if ((myStep && prevDone) || isAdmin) {
+                pending.push({ ...doc, steps, myStatus: 'need_approve' });
+              } else if (myApproved && hasPending) {
+                pending.push({ ...doc, steps, myStatus: 'waiting_final' });
+              }
+            } catch { /* */ }
+          }
+          setPendingApprovals(pending);
         }
       })
       .finally(() => setLoading(false));
@@ -103,6 +134,39 @@ export default function Dashboard() {
             {alerts.length > 10 && (
               <div className="missing-alert-more">외 {alerts.length - 10}건 더 있음</div>
             )}
+          </div>
+        </section>
+      )}
+
+      {/* 승인 대기 알림 */}
+      {pendingApprovals.length > 0 && (
+        <section className="section">
+          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Bell size={18} color="#e65100" /> 승인 대기
+            <span style={{ background: '#e65100', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{pendingApprovals.length}건</span>
+          </h3>
+          <div className="doc-list">
+            {pendingApprovals.map((doc: any) => {
+              const isWaiting = doc.myStatus === 'waiting_final';
+              return (
+                <Link to={'/documents/' + doc.id} key={doc.id} className="doc-item" style={{ borderLeft: `3px solid ${isWaiting ? '#1a73e8' : '#e65100'}` }}>
+                  <div className="doc-info">
+                    <FileText size={16} style={{ color: isWaiting ? '#1a73e8' : '#e65100', marginRight: 8, flexShrink: 0 }} />
+                    <div>
+                      <div className="doc-title">{doc.title}</div>
+                      <div className="doc-meta">
+                        <span>작성자: {doc.author_name}</span>
+                        {doc.department && <span>{doc.department}</span>}
+                        <span>{new Date(doc.updated_at).toLocaleDateString('ko-KR')}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <span className={`status-badge ${isWaiting ? 'status-draft' : 'status-submitted'}`}>
+                    {isWaiting ? '최종 승인 대기' : '승인 필요'}
+                  </span>
+                </Link>
+              );
+            })}
           </div>
         </section>
       )}
@@ -180,11 +244,11 @@ function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[
           }
         }
 
-        // 2. 현장출근/퇴근 체크 → 외근 기록 확인
-        if (d.fieldCheckIn || d.fieldCheckOut) {
-          // 출장 관련 문서 확인
-          if (entry.activity_type === '임장' || entry.activity_type === '입찰') {
-            // 임장/입찰은 일상 업무이므로 출장보고서 불필요
+        // 2. 입찰 현장출근 + 대리입찰이 아닌 경우 → 외근보고서 필요
+        if (entry.activity_type === '입찰' && (d.fieldCheckIn || d.fieldCheckOut) && !d.bidProxy) {
+          const hasOutingReport = userDocs.some((doc) => doc.title.includes('외근') && doc.title.includes('보고'));
+          if (!hasOutingReport) {
+            alerts.push({ userName, date, activity: '입찰(외근)', missingDoc: '외근 보고서 미제출' });
           }
         }
 

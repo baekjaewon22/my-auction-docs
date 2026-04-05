@@ -2,13 +2,16 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User } from '../types';
-import { ROLE_LABELS, VISIBLE_ROLES } from '../types';
+import { ROLE_LABELS, VISIBLE_ROLES, BRANCHES } from '../types';
 import type { Role } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { Trash2, UserCheck, UserX, UserCog, CalendarDays } from 'lucide-react';
 
 import { useDepartments } from '../hooks/useDepartments';
 const ROLE_OPTS = VISIBLE_ROLES.map((v) => ({ value: v, label: ROLE_LABELS[v] }));
+const BRANCH_OPTS = BRANCHES.map((b) => ({ value: b, label: b }));
+const POSITION_TITLES = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴'];
+const POSITION_OPTS = POSITION_TITLES.map((p) => ({ value: p, label: p }));
 
 interface LeaveInfo {
   user_id: string;
@@ -54,7 +57,7 @@ export default function UserManagement() {
 
   const getAvailableRoles = () => {
     if (currentUser?.role === 'master') return ROLE_OPTS;
-    if (currentUser?.role === 'ceo' || currentUser?.role === 'cc_ref') return ROLE_OPTS.filter((r) => ['admin', 'manager', 'member'].includes(r.value));
+    if (currentUser?.role === 'ceo' || currentUser?.role === 'cc_ref') return ROLE_OPTS.filter((r) => ['cc_ref', 'admin', 'manager', 'member'].includes(r.value));
     if (currentUser?.role === 'admin') return ROLE_OPTS.filter((r) => ['manager', 'member'].includes(r.value));
     return [];
   };
@@ -100,6 +103,16 @@ export default function UserManagement() {
     } catch (err: any) { alert(err.message); }
   };
 
+  // 보직/지사/팀 변경
+  const handleProfileChange = async (userId: string, data: { position_title?: string; branch?: string; department?: string }) => {
+    try {
+      await api.users.update(userId, data);
+      load();
+    } catch (err: any) { alert(err.message); }
+  };
+
+  const isAdminPlus = !!currentUser && ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser.role);
+
   // 연차 미등록 사용자
   const usersWithoutLeave = users.filter((u) => !leaves.find((l) => l.user_id === u.id));
 
@@ -140,7 +153,7 @@ export default function UserManagement() {
                 const isSameBranch = currentUser?.role !== 'admin' || u.branch === currentUser?.branch;
                 const canEdit = availableRoles.length > 0 && u.id !== currentUser?.id && isSameBranch;
                 const targetLevel = hierarchy[u.role] || 99;
-                const isHigher = targetLevel <= myLevel;
+                const isHigher = targetLevel < myLevel || (targetLevel === myLevel && u.role !== 'cc_ref');
                 const canDel = canEdit && !isHigher;
                 const canChangeRole = canEdit && !isHigher;
                 return (
@@ -157,9 +170,36 @@ export default function UserManagement() {
                         <span className={`role-badge role-${u.role}`}>{ROLE_LABELS[u.role as Role]}</span>
                       )}
                     </td>
-                    <td>{u.position_title || '-'}</td>
-                    <td>{u.branch || '-'}</td>
-                    <td>{u.department || '-'}</td>
+                    <td>
+                      {isAdminPlus && u.id !== currentUser?.id ? (
+                        <Select size="sm" options={POSITION_OPTS}
+                          value={POSITION_OPTS.find((o) => o.value === u.position_title) || (u.position_title ? { value: u.position_title, label: u.position_title } : null)}
+                          onChange={(o: any) => handleProfileChange(u.id, { position_title: o?.value || '' })}
+                          placeholder="보직" isClearable />
+                      ) : (
+                        <span>{u.position_title || '-'}</span>
+                      )}
+                    </td>
+                    <td>
+                      {isAdminPlus && u.id !== currentUser?.id ? (
+                        <Select size="sm" options={BRANCH_OPTS}
+                          value={BRANCH_OPTS.find((o) => o.value === u.branch) || null}
+                          onChange={(o: any) => handleProfileChange(u.id, { branch: o?.value || '' })}
+                          placeholder="지사" isClearable />
+                      ) : (
+                        <span>{u.branch || '-'}</span>
+                      )}
+                    </td>
+                    <td>
+                      {isAdminPlus && u.id !== currentUser?.id ? (
+                        <Select size="sm" options={DEPT_OPTS}
+                          value={DEPT_OPTS.find((o) => o.value === u.department) || null}
+                          onChange={(o: any) => handleProfileChange(u.id, { department: o?.value || '' })}
+                          placeholder="팀" isClearable />
+                      ) : (
+                        <span>{u.department || '-'}</span>
+                      )}
+                    </td>
                     <td style={{ fontSize: '0.72rem' }}>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
                     <td>{canDel && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u.id, u.name)}><Trash2 size={13} /></button>}</td>
                   </tr>

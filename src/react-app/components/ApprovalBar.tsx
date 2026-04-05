@@ -40,7 +40,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
       const isMyTurn = step.status === 'pending' && prevAllApproved &&
         step.approver_id === currentUserId && docStatus === 'submitted';
 
-      // master/ceo는 pending 단계면 서명 가능
+      // master/ceo/cc_ref만 순서 무관 서명 가능 (admin은 결재선 순서 따름)
       const isSuperApprover = (currentUserRole === 'master' || currentUserRole === 'ceo' || currentUserRole === 'cc_ref') &&
         step.status === 'pending' && docStatus === 'submitted';
 

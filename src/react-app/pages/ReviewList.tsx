@@ -9,7 +9,7 @@ export default function ReviewList() {
   const { user } = useAuthStore();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
-  const isCeoPlus = !!user && ['master', 'ceo', 'cc_ref'].includes(user.role);
+  const isCeoPlus = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   const load = () => {
     setLoading(true);

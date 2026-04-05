@@ -63,6 +63,10 @@ export const api = {
       request('/users/' + id, { method: 'DELETE' }),
     update: (id: string, data: { name?: string; password?: string; phone?: string; branch?: string; department?: string; position_title?: string }) =>
       request('/users/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    saveSignature: (id: string, signature_data: string) =>
+      request('/users/' + id + '/signature', { method: 'PUT', body: JSON.stringify({ signature_data }) }),
+    deleteSignature: (id: string) =>
+      request('/users/' + id + '/signature', { method: 'DELETE' }),
   },
 
   teams: {

@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, useRef, useLayoutEffect } from 'react';
-// CSS-based connection lines (no SVG needed)
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User, ApprovalCC } from '../types';
-import { ROLE_LABELS } from '../types';
+import { ROLE_LABELS, BRANCHES } from '../types';
 import type { Role } from '../types';
-import { Users, Plus, Trash2, Settings, UserMinus, Pencil, Shield } from 'lucide-react';
+import { Users, Plus, Trash2, Settings, UserMinus, Pencil, Shield, ChevronRight, ChevronDown } from 'lucide-react';
+import Select from '../components/Select';
+import { useDepartments } from '../hooks/useDepartments';
 
 const STORAGE_KEY = 'myauction_org_tree';
 const TIER_KEY = 'myauction_org_tiers';
@@ -88,8 +89,12 @@ function flatToTree(flat: { id: string; label: string; user_id: string | null; p
   return roots;
 }
 
+const BRANCH_OPTS = BRANCHES.map(b => ({ value: b, label: b }));
+
 export default function OrgChart() {
   const { user: currentUser } = useAuthStore();
+  const { departments: deptList } = useDepartments();
+  const DEPT_OPTS = deptList.map(d => ({ value: d, label: d }));
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [tree, setTree] = useState<OrgNode[]>([]);
@@ -99,13 +104,15 @@ export default function OrgChart() {
   const [addLabel, setAddLabel] = useState('');
   const [addUserId, setAddUserId] = useState('');
   const [addTier, setAddTier] = useState(1);
+  const [addType, setAddType] = useState<'branch' | 'dept' | 'free'>('free');
   const [editingTiers, setEditingTiers] = useState(false);
   const [editTiers, setEditTiers] = useState<string[]>([]);
   const [dragNodeId, setDragNodeId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
   const [syncing, setSyncing] = useState(false);
-  const [lines, setLines] = useState<{ x1: number; y1: number; x2: number; y2: number }[]>([]);
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
   const treeRef = useRef<HTMLDivElement>(null);
   const pyramidRef = useRef<HTMLDivElement>(null);
 
@@ -171,43 +178,6 @@ export default function OrgChart() {
 
   const saveTiers = (t: string[]) => { setTiers(t); localStorage.setItem(TIER_KEY, JSON.stringify(t)); };
 
-  // 연결선: oc-card 요소의 offsetLeft/offsetTop 기반 (스케일 무관)
-  const calcLines = useCallback(() => {
-    if (!pyramidRef.current) return;
-    const pyramid = pyramidRef.current;
-    const result: { x1: number; y1: number; x2: number; y2: number }[] = [];
-
-    // 모든 oc-card 요소에서 부모-자식 관계 추출
-    pyramid.querySelectorAll('.oc-card[data-oc-id]').forEach((el) => {
-      const pid = el.getAttribute('data-oc-id')!;
-      const kids = pyramid.querySelectorAll(`.oc-card[data-oc-parent="${pid}"]`);
-      if (kids.length === 0) return;
-
-      const pEl = el as HTMLElement;
-      // pyramid 기준 절대 좌표 계산
-      let px = pEl.offsetWidth / 2, py = pEl.offsetHeight;
-      let node: HTMLElement | null = pEl;
-      while (node && node !== pyramid) {
-        px += node.offsetLeft;
-        py += node.offsetTop;
-        node = node.offsetParent as HTMLElement;
-      }
-
-      kids.forEach((cel) => {
-        const cEl = cel as HTMLElement;
-        let cx = cEl.offsetWidth / 2, cy = 0;
-        let cNode: HTMLElement | null = cEl;
-        while (cNode && cNode !== pyramid) {
-          cx += cNode.offsetLeft;
-          cy += cNode.offsetTop;
-          cNode = cNode.offsetParent as HTMLElement;
-        }
-        result.push({ x1: px, y1: py, x2: cx, y2: cy });
-      });
-    });
-    setLines(result);
-  }, []);
-
   const autoScale = useCallback(() => {
     if (!treeRef.current || !pyramidRef.current) return;
     pyramidRef.current.style.transform = 'scale(1)';
@@ -216,11 +186,17 @@ export default function OrgChart() {
     const newScale = contentW > containerW ? Math.max(containerW / contentW, 0.45) : 1;
     setScale(newScale);
     pyramidRef.current.style.transform = `scale(${newScale})`;
-    setTimeout(calcLines, 50);
-  }, [calcLines]);
+  }, []);
 
   useLayoutEffect(() => { const t = setTimeout(autoScale, 80); return () => clearTimeout(t); }, [tree, autoScale]);
-  useEffect(() => { window.addEventListener('resize', autoScale); return () => window.removeEventListener('resize', autoScale); }, [autoScale]);
+  useEffect(() => {
+    const handleResize = () => {
+      autoScale();
+      setIsMobile(window.innerWidth <= 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [autoScale]);
 
   const usedIds = getAllUserIds(tree);
   const poolUsers = users.filter((u) => u.role !== 'master' && !usedIds.includes(u.id));
@@ -303,7 +279,7 @@ export default function OrgChart() {
         if (target && !target.userId) {
           // 빈 자리(부서)에 드롭 → 채워넣기
           target.userId = u.id;
-          target.label = `${target.label} — ${u.name}`;
+          // 라벨은 변경하지 않음 (부서명 유지)
         } else if (target) {
           // 인원이 있는 노드 → 하위로 추가
           const label = `${u.name} ${u.position_title || ROLE_LABELS[u.role]}`;
@@ -367,6 +343,87 @@ export default function OrgChart() {
     (u.name.includes(ccSearch) || u.email.includes(ccSearch) || (u.position_title || '').includes(ccSearch))
   );
 
+  // 모바일: 접기/펼치기 토글
+  const toggleCollapse = (id: string) => {
+    setCollapsedNodes(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  // 모바일 리스트 렌더 (재귀)
+  const renderMobileNode = (node: OrgNode, depth: number = 0): React.ReactNode => {
+    const u = node.userId ? getUserById(node.userId) : null;
+    const tierIdx = Math.max(0, Math.min(node.tier - 1, 4));
+    const color = TIER_COLORS[tierIdx];
+    const bg = TIER_BG[tierIdx];
+    const hasChildren = node.children.length > 0;
+    const isCollapsed = collapsedNodes.has(node.id);
+
+    return (
+      <div key={node.id} className="ocm-item" style={{ paddingLeft: depth * 16 }}>
+        <div
+          className={`ocm-row ${u ? '' : 'ocm-row-dept'}`}
+          style={{ borderLeftColor: color, background: u ? '#fff' : bg }}
+          onClick={() => hasChildren && toggleCollapse(node.id)}
+        >
+          {hasChildren && (
+            <span className="ocm-chevron">
+              {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            </span>
+          )}
+          {u ? (
+            <div className="ocm-avatar" style={{ background: (ROLE_COLORS[u.role] || color) + '20', color: ROLE_COLORS[u.role] || color }}>{u.name.charAt(0)}</div>
+          ) : (
+            <div className="ocm-avatar ocm-avatar-empty" style={{ borderColor: color, color }}>?</div>
+          )}
+          <div className="ocm-info">
+            <div className="ocm-label">{node.label}</div>
+            {u && <div className="ocm-pos">{u.position_title || ROLE_LABELS[u.role]}</div>}
+          </div>
+          {hasChildren && <span className="ocm-badge">{node.children.length}</span>}
+          {canEdit && (
+            <div className="ocm-actions">
+              <button className="oc-card-btn" title="하위 추가" onClick={(e) => { e.stopPropagation(); setAddingTo(node.id); setAddLabel(''); setAddUserId(''); setAddTier(Math.min(node.tier + 1, 5)); setAddType('dept'); }}>
+                <Plus size={10} />
+              </button>
+              <button className="oc-card-btn oc-card-btn-del" title="삭제" onClick={(e) => { e.stopPropagation(); handleDelete(node.id); }}>
+                <Trash2 size={10} />
+              </button>
+            </div>
+          )}
+        </div>
+        {addingTo === node.id && (
+          <div className="oc-inline-add" style={{ marginLeft: depth * 16 + 16 }} onClick={(e) => e.stopPropagation()}>
+            <select className="oc-add-type" value={addType} onChange={(e) => { setAddType(e.target.value as any); setAddLabel(''); }} style={{ padding: '4px 6px', borderRadius: 6, border: '1px solid #dadce0', fontSize: '0.75rem' }}>
+              <option value="dept">부서</option>
+              <option value="branch">지사</option>
+              <option value="free">직접 입력</option>
+            </select>
+            {addType === 'branch' ? (
+              <Select size="sm" options={BRANCH_OPTS} value={BRANCH_OPTS.find(o => o.value === addLabel) || null}
+                onChange={(o: any) => setAddLabel(o?.value || '')} placeholder="지사 선택" />
+            ) : addType === 'dept' ? (
+              <Select size="sm" options={DEPT_OPTS} value={DEPT_OPTS.find(o => o.value === addLabel) || null}
+                onChange={(o: any) => setAddLabel(o?.value || '')} placeholder="부서 선택" />
+            ) : (
+              <input className="oc-add-input" value={addLabel} onChange={(e) => setAddLabel(e.target.value)}
+                placeholder="이름 입력" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleAdd()} />
+            )}
+            <button className="btn btn-sm btn-primary" onClick={handleAdd}>추가</button>
+            <button className="btn btn-sm" onClick={() => setAddingTo(null)}>취소</button>
+          </div>
+        )}
+        {hasChildren && !isCollapsed && (
+          <div className="ocm-children">
+            {node.children.map((child) => renderMobileNode(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // 노드 렌더 (재귀 피라미드)
   const renderNode = (node: OrgNode, parentId?: string): React.ReactNode => {
     const u = node.userId ? getUserById(node.userId) : null;
@@ -423,7 +480,7 @@ export default function OrgChart() {
             </div>
             {canEdit && (
               <div className="oc-card-actions">
-                <button className="oc-card-btn" title="하위 추가" onClick={(e) => { e.stopPropagation(); setAddingTo(node.id); setAddLabel(''); setAddUserId(''); setAddTier(Math.min(node.tier + 1, 5)); }}>
+                <button className="oc-card-btn" title="하위 추가" onClick={(e) => { e.stopPropagation(); setAddingTo(node.id); setAddLabel(''); setAddUserId(''); setAddTier(Math.min(node.tier + 1, 5)); setAddType('dept'); }}>
                   <Plus size={9} />
                 </button>
                 {u && (
@@ -441,8 +498,21 @@ export default function OrgChart() {
 
         {addingTo === node.id && (
           <div className="oc-inline-add" onClick={(e) => e.stopPropagation()}>
-            <input className="oc-add-input" value={addLabel} onChange={(e) => setAddLabel(e.target.value)}
-              placeholder="직책/부서명 (예: 경매1팀)" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleAdd()} />
+            <select className="oc-add-type" value={addType} onChange={(e) => { setAddType(e.target.value as any); setAddLabel(''); }} style={{ padding: '4px 6px', borderRadius: 6, border: '1px solid #dadce0', fontSize: '0.75rem' }}>
+              <option value="dept">부서</option>
+              <option value="branch">지사</option>
+              <option value="free">직접 입력</option>
+            </select>
+            {addType === 'branch' ? (
+              <Select size="sm" options={BRANCH_OPTS} value={BRANCH_OPTS.find(o => o.value === addLabel) || null}
+                onChange={(o: any) => setAddLabel(o?.value || '')} placeholder="지사 선택" />
+            ) : addType === 'dept' ? (
+              <Select size="sm" options={DEPT_OPTS} value={DEPT_OPTS.find(o => o.value === addLabel) || null}
+                onChange={(o: any) => setAddLabel(o?.value || '')} placeholder="부서 선택" />
+            ) : (
+              <input className="oc-add-input" value={addLabel} onChange={(e) => setAddLabel(e.target.value)}
+                placeholder="이름 입력" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleAdd()} />
+            )}
             <button className="btn btn-sm btn-primary" onClick={handleAdd}>추가</button>
             <button className="btn btn-sm" onClick={() => setAddingTo(null)}>취소</button>
           </div>
@@ -474,14 +544,27 @@ export default function OrgChart() {
               </button>
               <button className="btn btn-sm" onClick={startEditTiers}><Settings size={13} /> 등급 설정</button>
               {addingTo === 'root' ? (
-                <div className="oc-add-form">
-                  <input className="oc-add-input" value={addLabel} onChange={(e) => setAddLabel(e.target.value)}
-                    placeholder="직책/부서명 (예: 대표이사)" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleAdd()} />
+                <div className="oc-add-form" style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select className="oc-add-type" value={addType} onChange={(e) => { setAddType(e.target.value as any); setAddLabel(''); }} style={{ padding: '4px 6px', borderRadius: 6, border: '1px solid #dadce0', fontSize: '0.75rem' }}>
+                    <option value="branch">지사</option>
+                    <option value="dept">부서</option>
+                    <option value="free">직접 입력</option>
+                  </select>
+                  {addType === 'branch' ? (
+                    <Select size="sm" options={BRANCH_OPTS} value={BRANCH_OPTS.find(o => o.value === addLabel) || null}
+                      onChange={(o: any) => setAddLabel(o?.value || '')} placeholder="지사 선택" />
+                  ) : addType === 'dept' ? (
+                    <Select size="sm" options={DEPT_OPTS} value={DEPT_OPTS.find(o => o.value === addLabel) || null}
+                      onChange={(o: any) => setAddLabel(o?.value || '')} placeholder="부서 선택" />
+                  ) : (
+                    <input className="oc-add-input" value={addLabel} onChange={(e) => setAddLabel(e.target.value)}
+                      placeholder="이름 입력" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleAdd()} />
+                  )}
                   <button className="btn btn-sm btn-primary" onClick={handleAdd}>추가</button>
                   <button className="btn btn-sm" onClick={() => setAddingTo(null)}>취소</button>
                 </div>
               ) : (
-                <button className="btn btn-sm btn-primary" onClick={() => { setAddingTo('root'); setAddLabel(''); setAddUserId(''); setAddTier(1); }}>
+                <button className="btn btn-sm btn-primary" onClick={() => { setAddingTo('root'); setAddLabel(''); setAddUserId(''); setAddTier(1); setAddType('branch'); }}>
                   <Plus size={13} /> 조직 추가
                 </button>
               )}
@@ -578,25 +661,26 @@ export default function OrgChart() {
             </div>
           )}
 
-          <div className="oc-pyramid" ref={pyramidRef} style={{ transform: `scale(${scale})`, transformOrigin: 'top center' }}>
-            <svg className="oc-lines">
-              {lines.map((l, i) => {
-                const midY = (l.y1 + l.y2) / 2;
-                return <path key={i} d={`M${l.x1},${l.y1} L${l.x1},${midY} L${l.x2},${midY} L${l.x2},${l.y2}`}
-                  fill="none" stroke="rgba(232,168,56,0.55)" strokeWidth="2" strokeLinejoin="round" />;
-              })}
-            </svg>
-            {tree.length === 1 ? (
-              renderNode(tree[0])
-            ) : (
-              <div className="oc-kids">
-                {tree.map((node) => renderNode(node))}
-              </div>
-            )}
-          </div>
+          {isMobile ? (
+            /* 모바일: 세로 리스트 + 접기/펼치기 */
+            <div className="ocm-tree">
+              {tree.map((node) => renderMobileNode(node, 0))}
+            </div>
+          ) : (
+            /* 데스크탑: 피라미드 */
+            <div className="oc-pyramid oc-css-lines" ref={pyramidRef} style={{ transform: `scale(${scale})`, transformOrigin: 'top center' }}>
+              {tree.length === 1 ? (
+                renderNode(tree[0])
+              ) : (
+                <div className="oc-kids">
+                  {tree.map((node) => renderNode(node))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* 우측 풀 */}
+        {/* 우측 풀 (모바일에서는 하단 접이식) */}
         <div className="oc-pool">
           <div className="oc-pool-hd"><span>미배치 인원 <b>{poolUsers.length}</b></span></div>
           <input className="oc-pool-search" placeholder="검색..." value={poolSearch} onChange={(e) => setPoolSearch(e.target.value)} />

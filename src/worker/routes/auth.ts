@@ -62,7 +62,7 @@ auth.get('/me', authMiddleware, async (c) => {
   const payload = c.get('user');
   const db = c.env.DB;
   const user = await db.prepare(
-    'SELECT id, email, name, phone, role, team_id, branch, department, position_title, created_at FROM users WHERE id = ?'
+    'SELECT id, email, name, phone, role, team_id, branch, department, position_title, saved_signature, created_at FROM users WHERE id = ?'
   ).bind(payload.sub).first();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
   return c.json({ user });

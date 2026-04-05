@@ -99,8 +99,11 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   if (newRole === 'master' && currentUser.role !== 'master') {
     return c.json({ error: '마스터 권한은 마스터만 설정할 수 있습니다.' }, 403);
   }
-  if ((newRole === 'ceo' || newRole === 'cc_ref') && currentUser.role !== 'master') {
-    return c.json({ error: '대표/CC참조자 권한은 마스터만 설정할 수 있습니다.' }, 403);
+  if (newRole === 'ceo' && currentUser.role !== 'master') {
+    return c.json({ error: '대표 권한은 마스터만 설정할 수 있습니다.' }, 403);
+  }
+  if (newRole === 'cc_ref' && currentUser.role !== 'master' && currentUser.role !== 'ceo' && currentUser.role !== 'cc_ref') {
+    return c.json({ error: 'CC참조자 권한은 대표 이상만 설정할 수 있습니다.' }, 403);
   }
   if (newRole === 'admin' && currentUser.role !== 'master' && currentUser.role !== 'ceo' && currentUser.role !== 'cc_ref') {
     return c.json({ error: '관리자 등급 설정은 대표 이상만 가능합니다.' }, 403);
@@ -169,12 +172,47 @@ users.put('/:id', async (c) => {
   const existing = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<User>();
   if (!existing) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
+  // admin의 지사/부서/보직 변경은 대표(ceo/master)만 가능
+  if (existing.role === 'admin') {
+    const changingProfile = (branch !== undefined && branch !== existing.branch) ||
+      (department !== undefined && department !== existing.department) ||
+      (position_title !== undefined && position_title !== existing.position_title);
+    if (changingProfile && currentUser.role !== 'master' && currentUser.role !== 'ceo') {
+      return c.json({ error: '관리자의 소속 정보는 대표만 변경할 수 있습니다.' }, 403);
+    }
+  }
+
   const newHash = password ? await hashPassword(password) : existing.password_hash;
 
   await db.prepare(
     "UPDATE users SET phone = ?, branch = ?, department = ?, position_title = ?, password_hash = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(phone ?? existing.phone, branch ?? existing.branch, department ?? existing.department, position_title ?? existing.position_title, newHash, id).run();
 
+  return c.json({ success: true });
+});
+
+// PUT /api/users/:id/signature — 서명 저장
+users.put('/:id/signature', async (c) => {
+  const id = c.req.param('id');
+  const currentUser = c.get('user');
+  if (currentUser.sub !== id) return c.json({ error: '본인 서명만 저장할 수 있습니다.' }, 403);
+
+  const { signature_data } = await c.req.json<{ signature_data: string }>();
+  const db = c.env.DB;
+  await db.prepare("UPDATE users SET saved_signature = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(signature_data || '', id).run();
+  return c.json({ success: true });
+});
+
+// DELETE /api/users/:id/signature — 서명 삭제
+users.delete('/:id/signature', async (c) => {
+  const id = c.req.param('id');
+  const currentUser = c.get('user');
+  if (currentUser.sub !== id) return c.json({ error: '본인 서명만 삭제할 수 있습니다.' }, 403);
+
+  const db = c.env.DB;
+  await db.prepare("UPDATE users SET saved_signature = '', updated_at = datetime('now') WHERE id = ?")
+    .bind(id).run();
   return c.json({ success: true });
 });
 

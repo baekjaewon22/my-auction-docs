@@ -2599,13 +2599,17 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   animation: journalSlideIn 0.3s ease-out;
 }
 
-/* Department sections */
+/* Department sections — 행(row) 레이아웃 */
 .journal-dept-section {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
+  background: var(--gray-50);
+  border-radius: 10px;
+  padding: 12px;
+  border: 1px solid var(--gray-100);
 }
 
 .journal-dept-label {
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   font-weight: 700;
   color: var(--gray-600);
   margin-bottom: 10px;
@@ -2618,7 +2622,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .journal-member-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 12px;
+  gap: 10px;
   margin-top: 8px;
 }
 
@@ -2849,6 +2853,67 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .journal-history-filters select {
   min-width: 150px;
+}
+
+/* 월간 테이블 */
+.journal-month-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  table-layout: fixed;
+}
+.journal-month-table th,
+.journal-month-table td {
+  border: 1px solid var(--gray-100);
+  padding: 4px 2px;
+  vertical-align: middle;
+}
+.journal-month-table th {
+  background: #f8f9fa;
+  font-weight: 600;
+  font-size: 0.7rem;
+}
+.journal-month-table td:hover {
+  background: #f1f3f4;
+}
+.journal-month-table tr:nth-child(even) td {
+  background: #fafbfc;
+}
+.journal-month-table tr:nth-child(even) td:hover {
+  background: #f1f3f4;
+}
+
+/* 호버 팝업 */
+.journal-month-dot-wrap {
+  display: flex; flex-direction: column; align-items: center; gap: 1;
+  cursor: pointer;
+}
+.journal-hover-popup {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  padding: 8px 10px;
+  min-width: 200px;
+  max-width: 280px;
+  z-index: 100;
+  text-align: left;
+  font-size: 0.72rem;
+  pointer-events: none;
+}
+.journal-month-dot-wrap:hover .journal-hover-popup {
+  display: block;
+}
+/* 팝업이 위로 잘리면 아래로 */
+.journal-month-table tr:first-child .journal-hover-popup,
+.journal-month-table tr:nth-child(2) .journal-hover-popup {
+  bottom: auto;
+  top: 100%;
 }
 
 @keyframes journalSlideIn {
@@ -3470,7 +3535,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
   .journal-tabs { flex-wrap: wrap; }
   .journal-tab { min-width: 90px; padding: 8px 14px; }
-  .journal-member-grid, .journal-card-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .journal-member-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .journal-card { min-height: 150px; padding: 12px; }
   .journal-popup { max-width: calc(100vw - 24px); }
 
@@ -3537,18 +3602,66 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* 자식 행: 가로 배치 */
+/* 자식 행: 가로 배치 — gap 대신 padding으로 간격 (수평선 끊김 방지) */
 .oc-kids {
-  display: flex; gap: 24px; justify-content: center; align-items: flex-start;
+  display: flex; gap: 0; justify-content: center; align-items: flex-start;
   margin-top: 28px; position: relative;
 }
+.oc-kids > .oc-branch { padding: 0 12px; }
 .oc-kids > .oc-branch { flex: 0 0 auto; }
 /* 말단 자식(인원)은 세로 일렬 */
 .oc-kids-col { gap: 6px; margin-top: 18px; flex-direction: column; align-items: center; }
 .oc-kids-col > .oc-branch { flex: unset; min-width: unset; }
 
-/* SVG 연결선 */
-.oc-lines { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; overflow: visible; }
+/* CSS 연결선 */
+/* 부모 카드 하단 수직선: 자식이 있는 branch만 */
+.oc-css-lines .oc-branch:has(> .oc-kids) > .oc-card-wrap::after,
+.oc-css-lines .oc-branch:has(> .oc-inline-add + .oc-kids) > .oc-card-wrap::after {
+  content: '';
+  display: block;
+  width: 2px;
+  height: 14px;
+  background: rgba(232,168,56,0.6);
+  margin: 0 auto;
+}
+/* 자식 카드 상단 수직선 */
+.oc-css-lines .oc-kids > .oc-branch > .oc-card-wrap::before {
+  content: '';
+  display: block;
+  width: 2px;
+  height: 14px;
+  background: rgba(232,168,56,0.6);
+  margin: 0 auto;
+}
+/* 세로 모드에서 짧은 수직선 */
+.oc-css-lines .oc-kids-col > .oc-branch > .oc-card-wrap::before {
+  height: 6px;
+}
+/* 가로 형제 연결: 각 자식 branch 상단에 수평선을 50%씩 확장 */
+.oc-css-lines .oc-kids:not(.oc-kids-col) > .oc-branch {
+  position: relative;
+}
+.oc-css-lines .oc-kids:not(.oc-kids-col) > .oc-branch::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(232,168,56,0.5);
+}
+/* 첫째 자식: 왼쪽 절반 숨김 */
+.oc-css-lines .oc-kids:not(.oc-kids-col) > .oc-branch:first-child::before {
+  left: 50%;
+}
+/* 마지막 자식: 오른쪽 절반 숨김 */
+.oc-css-lines .oc-kids:not(.oc-kids-col) > .oc-branch:last-child::before {
+  right: 50%;
+}
+/* 자식 1개면 수평선 불필요 */
+.oc-css-lines .oc-kids:not(.oc-kids-col) > .oc-branch:only-child::before {
+  display: none;
+}
 
 /* 카드 래퍼 */
 .oc-card-wrap { display: flex; flex-direction: column; align-items: center; padding: 0 4px; }
@@ -3701,7 +3814,48 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 @media (max-width: 768px) {
   .oc-layout { flex-direction: column; }
-  .oc-pool { width: 100%; max-height: 200px; }
-  .oc-kids { gap: 8px; }
-  .oc-pyramid { gap: 12px; }
+  .oc-pool { width: 100%; max-height: 180px; }
+  .oc-tree { padding: 12px 8px; }
+
+  /* 모바일 트리 리스트 */
+  .ocm-tree { width: 100%; }
+  .ocm-item { width: 100%; }
+  .ocm-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; margin-bottom: 4px;
+    border-radius: 10px; border-left: 3px solid #ccc;
+    min-height: 48px; cursor: pointer;
+    transition: background 0.15s;
+  }
+  .ocm-row:active { background: #f0f4ff !important; }
+  .ocm-row-dept { font-weight: 600; border-left-style: dashed; }
+  .ocm-chevron { flex-shrink: 0; color: var(--gray-400); display: flex; align-items: center; }
+  .ocm-avatar {
+    width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 0.75rem;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+  .ocm-avatar-empty {
+    background: var(--gray-50); border: 2px dashed; font-weight: 600;
+  }
+  .ocm-info { flex: 1; min-width: 0; }
+  .ocm-label {
+    font-weight: 700; font-size: 0.82rem; color: #1a1a2e;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ocm-pos { font-size: 0.68rem; color: var(--gray-500); margin-top: 1px; }
+  .ocm-badge {
+    flex-shrink: 0; background: var(--gray-100); color: var(--gray-500);
+    font-size: 0.6rem; font-weight: 700; padding: 2px 7px;
+    border-radius: 10px; min-width: 20px; text-align: center;
+  }
+  .ocm-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .ocm-children {
+    animation: ocm-slideDown 0.2s ease;
+  }
+  @keyframes ocm-slideDown {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
 }

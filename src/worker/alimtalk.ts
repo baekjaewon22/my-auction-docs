@@ -180,7 +180,7 @@ async function createHeaders(
 }
 
 /** 환경변수에 NCP 키가 설정되어 있는지 확인 */
-export function isAlimtalkConfigured(env: Record<string, unknown>): env is AlimtalkEnv {
+export function isAlimtalkConfigured(env: Record<string, unknown>): env is Record<string, unknown> & AlimtalkEnv {
   return !!(env.NCP_ACCESS_KEY && env.NCP_SECRET_KEY && env.NCP_SERVICE_ID && env.NCP_KAKAO_CHANNEL_ID);
 }
 

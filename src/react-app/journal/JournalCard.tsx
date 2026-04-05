@@ -186,6 +186,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                                 ? <span style={{ color: '#188038', fontWeight: 600 }}>{d.winPrice || d.bidPrice}원</span>
                                 : showVal(d.winPrice, '원')}
                             </div>
+                            {d.bidProxy && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#7b1fa2' }}>대리입찰</span><span style={{ color: '#7b1fa2' }}>대리입찰</span></div>}
                             {d.deviationReason && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#d93025' }}>차이사유</span><span style={{ color: '#d93025' }}>{d.deviationReason}</span></div>}
                             {(!readonly || canEditBidFields) && (
                               <button
@@ -240,6 +241,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.meetingType}{d.etcReason ? ` - ${d.etcReason}` : ''}</span></div>
+                            {d.caseNo && <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>}
                             {d.client && <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.client)}</div>}
                             {d.place && <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>}
                           </>
@@ -273,7 +275,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       )}
 
                       {/* === 브리핑 (독립 타입) === */}
-                      {entry.activity_type === '브리핑' && !isEditing && (
+                      {entry.activity_type === '브리핑자료제출' && !isEditing && (
                         <>
                           <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.briefingCaseNo)}</div>
                           {d.briefingCourt && <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.briefingCourt}</span></div>}
@@ -282,7 +284,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       )}
 
                       {/* 브리핑 (다른 타입 하위 체크박스) */}
-                      {entry.activity_type !== '브리핑' && !isEditing && d.briefingSubmit && d.briefingCaseNo && (
+                      {entry.activity_type !== '브리핑자료제출' && !isEditing && d.briefingSubmit && d.briefingCaseNo && (
                         <>
                           <div className="journal-detail-row" style={{ marginTop: 6, paddingTop: 6, borderTop: '1px dashed #e8eaed' }}>
                             <span className="journal-detail-label" style={{ color: '#1a73e8' }}>브리핑</span><span>{d.briefingCaseNo}</span>

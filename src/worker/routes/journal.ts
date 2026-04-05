@@ -182,7 +182,6 @@ journal.put('/:id', async (c) => {
   if (entry.user_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const today = getKSTToday();
-  const tomorrow = getKSTTomorrow();
   const isTopRole = ['master', 'ceo', 'cc_ref'].includes(user.role);
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
   const isBidEntry = entry.activity_type === '입찰';

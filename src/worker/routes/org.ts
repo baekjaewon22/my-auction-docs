@@ -36,6 +36,17 @@ org.put('/sync', requireRole('master', 'ceo', 'admin'), async (c) => {
     // 위로 올라가며 부서명과 지사명 추출
     let department = '';
     let branch = '';
+
+    // 자기 자신의 노드 라벨 분석
+    const ownLabel = n.label.replace(/ — .+$/, '').trim();
+    if (n.tier === 2) {
+      // tier 2 = 지사 레벨 → 자기 자신을 branch로
+      branch = ownLabel.replace(/지사|지점|본부/g, '').trim() || ownLabel;
+    } else if (n.tier === 3) {
+      // tier 3 = 부서 레벨 → 자기 자신을 department로
+      department = ownLabel;
+    }
+
     let currentId: string | undefined = n.parent_id;
 
     while (currentId) {
@@ -43,29 +54,25 @@ org.put('/sync', requireRole('master', 'ceo', 'admin'), async (c) => {
       if (!parent) break;
       const parentLabel = parent.label.replace(/ — .+$/, '').trim();
 
-      // tier 3 = 부서 레벨 (기본 등급: 대표/임원/부서/팀원/스태프)
-      if (parent.tier <= 2 && !parent.user_id && !branch) {
-        // 상위 비인원 노드 → 지사 후보
-        if (parentLabel.includes('지사') || parentLabel.includes('지점') || parentLabel.includes('본부')) {
-          branch = parentLabel;
-        }
+      // 지사 추출: tier 2 또는 라벨에 "지사/지점/본부" 포함
+      const isbranchNode = parent.tier <= 2 && parent.parent_id && (
+        parentLabel.includes('지사') || parentLabel.includes('지점') || parentLabel.includes('본부') || parent.tier === 2
+      );
+      if (!branch && isbranchNode) {
+        branch = parentLabel.replace(/지사|지점|본부/g, '').trim() || parentLabel;
       }
-      if (parent.tier >= 2 && !parent.user_id && !department) {
-        // 부서 레벨 노드 (인원 아닌 조직 노드)
-        if (!parentLabel.includes('지사') && !parentLabel.includes('지점') && !parentLabel.includes('본부')) {
-          department = parentLabel;
-        }
+      // 부서 추출: 지사가 아닌 상위 노드 (팀/부서 레벨)
+      if (!department && !isbranchNode && parent.tier >= 2 && parent.tier <= 3) {
+        department = parentLabel;
       }
 
       currentId = parent.parent_id;
     }
 
-    // 보직: 노드 라벨에서 이름 부분 제거
-    const positionTitle = n.label.replace(/ — .+$/, '').trim();
-
+    // 조직도는 지사/부서만 설정, 보직(position_title)은 건드리지 않음
     await db.prepare(
-      "UPDATE users SET department = ?, branch = ?, position_title = ?, updated_at = datetime('now') WHERE id = ?"
-    ).bind(department, branch, positionTitle, n.user_id).run();
+      "UPDATE users SET department = ?, branch = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(department, branch, n.user_id).run();
   }
 
   return c.json({ success: true, count: nodes.length });

@@ -60,7 +60,7 @@ signatures.get('/document/:documentId', async (c) => {
   const db = c.env.DB;
 
   const result = await db.prepare(
-    'SELECT s.*, u.name as user_name, u.email as user_email FROM signatures s LEFT JOIN users u ON s.user_id = u.id WHERE s.document_id = ? ORDER BY s.signed_at DESC'
+    'SELECT s.*, u.name as user_name, u.email as user_email FROM signatures s LEFT JOIN users u ON s.user_id = u.id WHERE s.document_id = ? ORDER BY s.signed_at ASC'
   ).bind(documentId).all<Signature & { user_name: string; user_email: string }>();
 
   return c.json({ signatures: result.results });

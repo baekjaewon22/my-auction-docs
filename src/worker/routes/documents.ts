@@ -65,18 +65,26 @@ documents.get('/', async (c) => {
   const params: string[] = [];
 
   if (user.role === 'master' || user.role === 'ceo' || user.role === 'cc_ref') {
-    // Full access
+    // Full access — 단, 타인의 draft는 제외
+    conditions.push("(d.status != 'draft' OR d.author_id = ?)");
+    params.push(user.sub);
   } else if (user.role === 'admin' && user.branch === '의정부') {
-    // 의정부 관리자: 전체 열람 가능
+    // 의정부 관리자: 전체 열람 — 타인 draft 제외
+    conditions.push("(d.status != 'draft' OR d.author_id = ?)");
+    params.push(user.sub);
   } else if (user.role === 'admin') {
-    // 기타 지사 관리자: 본인 지사만
+    // 기타 지사 관리자: 본인 지사 — 타인 draft 제외
     conditions.push('d.branch = ?');
+    conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(user.branch);
+    params.push(user.sub);
   } else if (user.role === 'manager') {
     conditions.push('d.branch = ?');
     conditions.push('d.department = ?');
+    conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(user.branch);
     params.push(user.department);
+    params.push(user.sub);
   } else {
     conditions.push('d.author_id = ?');
     params.push(user.sub);
@@ -211,8 +219,16 @@ documents.put('/:id', async (c) => {
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (doc.author_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
-  if (doc.status !== 'draft' && doc.status !== 'rejected') return c.json({ error: '작성중 또는 반려된 문서만 수정할 수 있습니다.' }, 400);
+  // 승인된 문서는 절대 수정 불가
+  if (doc.status === 'approved') return c.json({ error: '승인된 문서는 수정할 수 없습니다.' }, 400);
+  // draft/rejected: 본인만 수정 가능 (master 예외)
+  if ((doc.status === 'draft' || doc.status === 'rejected') && doc.author_id !== user.sub && user.role !== 'master') {
+    return c.json({ error: '작성중/반려 문서는 본인만 수정할 수 있습니다.' }, 403);
+  }
+  // submitted: 관리자 이상만 수정 가능 (본인도 불가)
+  if (doc.status === 'submitted' && !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
+    return c.json({ error: '제출된 문서는 관리자만 수정할 수 있습니다.' }, 403);
+  }
 
   const { title, content } = await c.req.json<{ title?: string; content?: string }>();
   await db.prepare("UPDATE documents SET title = ?, content = ?, updated_at = datetime('now') WHERE id = ?")
@@ -375,11 +391,24 @@ documents.delete('/:id', async (c) => {
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (doc.author_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
+  // 승인된 문서는 삭제 불가 (master만 예외)
+  if (doc.status === 'approved' && user.role !== 'master') return c.json({ error: '승인된 문서는 삭제할 수 없습니다.' }, 400);
 
-  // 제출/승인된 문서는 일반 사용자 삭제 불가 (대표/CC는 가능)
-  if ((doc.status === 'submitted' || doc.status === 'approved') && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
-    return c.json({ error: '제출 또는 승인된 문서는 삭제할 수 없습니다.' }, 400);
+  // 제출 중: 본인 또는 관리자 이상만 삭제 가능
+  if (doc.status === 'submitted') {
+    if (doc.author_id !== user.sub && !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
+      return c.json({ error: '제출된 문서는 작성자 또는 관리자만 삭제할 수 있습니다.' }, 403);
+    }
+  } else {
+    // draft/rejected: 본인 또는 관리자 이상
+    if (doc.author_id !== user.sub && !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
+      return c.json({ error: '권한이 없습니다.' }, 403);
+    }
+  }
+
+  // 제출 중인 문서 삭제 시 결재선도 삭제
+  if (doc.status === 'submitted') {
+    await db.prepare('DELETE FROM approval_steps WHERE document_id = ?').bind(id).run();
   }
 
   await db.prepare('DELETE FROM documents WHERE id = ?').bind(id).run();

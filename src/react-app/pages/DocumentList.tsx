@@ -18,12 +18,12 @@ export default function DocumentList() {
   const [loading, setLoading] = useState(true);
   const { user } = useAuthStore();
   const navigate = useNavigate();
-  const isTopRole = !!user && ['master', 'ceo', 'cc_ref'].includes(user.role);
+  // const isTopRole = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   const load = () => {
     setLoading(true);
     api.documents.list(filter || undefined)
-      .then((res) => setDocuments(res.documents))
+      .then((res) => setDocuments(res.documents.filter((d: any) => d.author_id === user?.id)))
       .finally(() => setLoading(false));
   };
 
@@ -68,7 +68,7 @@ export default function DocumentList() {
               <Link to={'/documents/' + doc.id} key={doc.id} className="doc-card">
                 <div className="doc-card-header">
                   <span className={`status-badge ${cfg?.className}`}>{cfg?.label}</span>
-                  {(doc.status === 'draft' || doc.status === 'rejected' || isTopRole) && (
+                  {(doc.status !== 'approved' || user?.role === 'master') && (
                     <button className="doc-card-delete" onClick={(e) => handleDelete(doc.id, e)} title="삭제">
                       <X size={14} />
                     </button>

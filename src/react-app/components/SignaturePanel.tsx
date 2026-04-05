@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react';
 import { api } from '../api';
+import { useAuthStore } from '../store';
 import { Save, Trash2 } from 'lucide-react';
 
 export type SignatureType = 'author' | 'approver';
@@ -11,23 +12,41 @@ interface Props {
   onSign: (signatureData: string, type: SignatureType) => void;
 }
 
-const SAVED_SIG_KEY = 'myauction_saved_signature';
+const SIG_CACHE_KEY = 'myauction_saved_signature';
 
-/** 저장된 서명이 있는지 확인 */
+/** 저장된 서명이 있는지 확인 (localStorage 캐시 또는 DB) */
 export function hasSavedSignature(): boolean {
-  return !!localStorage.getItem(SAVED_SIG_KEY);
+  return !!localStorage.getItem(SIG_CACHE_KEY);
 }
 
 /** 저장된 서명으로 즉시 서명 처리 */
 export async function quickSign(documentId: string, signatureType: SignatureType, onSign: (data: string, type: SignatureType) => void) {
-  const saved = localStorage.getItem(SAVED_SIG_KEY);
+  const saved = localStorage.getItem(SIG_CACHE_KEY);
   if (!saved) return false;
   await api.signatures.sign(documentId, saved);
   onSign(saved, signatureType);
   return true;
 }
 
+/** 로그인 시 DB에서 서명 로드 → localStorage 캐시 */
+export async function syncSignatureFromServer() {
+  try {
+    const res = await api.auth.me();
+    const user = res.user as any;
+    if (user.saved_signature) {
+      localStorage.setItem(SIG_CACHE_KEY, user.saved_signature);
+    } else {
+      // DB에 없으면 localStorage에 있는 걸 DB에 올림
+      const local = localStorage.getItem(SIG_CACHE_KEY);
+      if (local && user.id) {
+        await api.users.saveSignature(user.id, local);
+      }
+    }
+  } catch { /* */ }
+}
+
 export default function SignaturePanel({ documentId, signatureType, onClose, onSign }: Props) {
+  const { user } = useAuthStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [hasDrawn, setHasDrawn] = useState(false);
@@ -37,13 +56,11 @@ export default function SignaturePanel({ documentId, signatureType, onClose, onS
   const [usingSaved, setUsingSaved] = useState(false);
 
   useEffect(() => {
-    const saved = localStorage.getItem(SAVED_SIG_KEY);
+    const saved = localStorage.getItem(SIG_CACHE_KEY);
     if (saved) setSavedSignature(saved);
   }, []);
 
-  useEffect(() => {
-    initCanvas();
-  }, []);
+  useEffect(() => { initCanvas(); }, []);
 
   const initCanvas = () => {
     const canvas = canvasRef.current;
@@ -67,14 +84,11 @@ export default function SignaturePanel({ documentId, signatureType, onClose, onS
   };
 
   const startDraw = (e: React.MouseEvent | React.TouchEvent) => {
-    setIsDrawing(true);
-    setHasDrawn(true);
-    setUsingSaved(false);
+    setIsDrawing(true); setHasDrawn(true); setUsingSaved(false);
     const ctx = canvasRef.current?.getContext('2d');
     if (!ctx) return;
     const { x, y } = getPos(e);
-    ctx.beginPath();
-    ctx.moveTo(x, y);
+    ctx.beginPath(); ctx.moveTo(x, y);
   };
 
   const draw = (e: React.MouseEvent | React.TouchEvent) => {
@@ -82,61 +96,44 @@ export default function SignaturePanel({ documentId, signatureType, onClose, onS
     const ctx = canvasRef.current?.getContext('2d');
     if (!ctx) return;
     const { x, y } = getPos(e);
-    ctx.lineTo(x, y);
-    ctx.stroke();
+    ctx.lineTo(x, y); ctx.stroke();
   };
 
   const endDraw = () => setIsDrawing(false);
+  const clear = () => { initCanvas(); setHasDrawn(false); setUsingSaved(false); };
 
-  const clear = () => {
-    initCanvas();
-    setHasDrawn(false);
-    setUsingSaved(false);
-  };
-
-  const saveCurrentSignature = () => {
-    const canvas = canvasRef.current;
-    if (!canvas || !hasDrawn) return;
-    const data = canvas.toDataURL('image/png');
-    localStorage.setItem(SAVED_SIG_KEY, data);
+  const saveToServer = async (data: string) => {
+    localStorage.setItem(SIG_CACHE_KEY, data);
     setSavedSignature(data);
-    alert('서명이 저장되었습니다. 다음부터 서명 버튼 클릭만으로 자동 서명됩니다.');
+    if (user?.id) {
+      try { await api.users.saveSignature(user.id, data); } catch { /* */ }
+    }
   };
 
-  const deleteSavedSignature = () => {
+  const deleteSavedSignature = async () => {
     if (!confirm('저장된 서명을 삭제하시겠습니까?')) return;
-    localStorage.removeItem(SAVED_SIG_KEY);
-    setSavedSignature(null);
-    setUsingSaved(false);
+    localStorage.removeItem(SIG_CACHE_KEY);
+    setSavedSignature(null); setUsingSaved(false);
+    if (user?.id) {
+      try { await api.users.deleteSignature(user.id); } catch { /* */ }
+    }
   };
 
   const handleSign = async () => {
-    if (!hasDrawn) {
-      setError('서명을 그려주세요.');
-      return;
-    }
-
-    setSubmitting(true);
-    setError('');
-
+    if (!hasDrawn && !savedSignature) { setError('서명을 그려주세요.'); return; }
+    setSubmitting(true); setError('');
     try {
       const signatureData = usingSaved && savedSignature
         ? savedSignature
         : canvasRef.current!.toDataURL('image/png');
 
-      // 새로 그린 서명이면 자동 저장
-      if (!usingSaved) {
-        localStorage.setItem(SAVED_SIG_KEY, signatureData);
-        setSavedSignature(signatureData);
-      }
+      // 새로 그린 서명이면 서버+로컬 저장
+      if (!usingSaved) await saveToServer(signatureData);
 
       await api.signatures.sign(documentId, signatureData);
       onSign(signatureData, signatureType);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
-    }
+    } catch (err: any) { setError(err.message); }
+    finally { setSubmitting(false); }
   };
 
   const typeLabel = signatureType === 'author' ? '작성자 서명' : '승인자 서명';
@@ -150,16 +147,13 @@ export default function SignaturePanel({ documentId, signatureType, onClose, onS
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {/* 저장된 서명 관리 */}
       {savedSignature && (
         <div className="saved-sig-section">
           <div className="saved-sig-header">
             <span className="saved-sig-label">저장된 서명</span>
-            <div className="saved-sig-actions">
-              <button className="btn btn-sm btn-danger" onClick={deleteSavedSignature}>
-                <Trash2 size={12} /> 삭제
-              </button>
-            </div>
+            <button className="btn btn-sm btn-danger" onClick={deleteSavedSignature}>
+              <Trash2 size={12} /> 삭제
+            </button>
           </div>
           <img src={savedSignature} alt="저장된 서명" className="saved-sig-preview" />
           <p style={{ fontSize: '12px', color: 'var(--gray-400)', marginTop: '4px' }}>
@@ -168,27 +162,16 @@ export default function SignaturePanel({ documentId, signatureType, onClose, onS
         </div>
       )}
 
-      {/* 캔버스: 저장된 서명 없을 때만 표시 */}
       {!savedSignature && (
         <div className="signature-canvas-wrapper">
           <p className="signature-notice">최초 서명을 그려주세요. 이후 자동으로 사용됩니다.</p>
-          <canvas
-            ref={canvasRef}
-            width={240}
-            height={120}
-            className="signature-canvas"
-            onMouseDown={startDraw}
-            onMouseMove={draw}
-            onMouseUp={endDraw}
-            onMouseLeave={endDraw}
-            onTouchStart={startDraw}
-            onTouchMove={draw}
-            onTouchEnd={endDraw}
-          />
+          <canvas ref={canvasRef} width={240} height={120} className="signature-canvas"
+            onMouseDown={startDraw} onMouseMove={draw} onMouseUp={endDraw} onMouseLeave={endDraw}
+            onTouchStart={startDraw} onTouchMove={draw} onTouchEnd={endDraw} />
           <div className="signature-canvas-btns">
             <button className="btn btn-sm" onClick={clear}>초기화</button>
             {hasDrawn && (
-              <button className="btn btn-sm" onClick={saveCurrentSignature}>
+              <button className="btn btn-sm" onClick={() => saveToServer(canvasRef.current!.toDataURL('image/png'))}>
                 <Save size={12} /> 서명 저장
               </button>
             )}
@@ -196,12 +179,8 @@ export default function SignaturePanel({ documentId, signatureType, onClose, onS
         </div>
       )}
 
-      <button
-        className="btn btn-primary btn-full"
-        onClick={handleSign}
-        disabled={submitting || (!hasDrawn && !savedSignature)}
-        style={{ marginTop: '0.75rem' }}
-      >
+      <button className="btn btn-primary btn-full" onClick={handleSign}
+        disabled={submitting || (!hasDrawn && !savedSignature)} style={{ marginTop: '0.75rem' }}>
         {submitting ? '서명 처리중...' : `${typeLabel} 하기`}
       </button>
     </div>

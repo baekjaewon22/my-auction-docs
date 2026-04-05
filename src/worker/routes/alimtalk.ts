@@ -100,7 +100,7 @@ alimtalk.get('/logs', requireRole('master', 'ceo', 'admin'), async (c) => {
 
 // GET /api/alimtalk/status — NCP 키 설정 상태 확인
 alimtalk.get('/status', requireRole('master', 'ceo', 'admin'), async (c) => {
-  const configured = isAlimtalkConfigured(c.env as Record<string, unknown>);
+  const configured = isAlimtalkConfigured(c.env as unknown as Record<string, unknown>);
   const templates = Object.entries(ALIMTALK_TEMPLATES).map(([key, t]) => ({
     key,
     code: t.code,
@@ -136,7 +136,7 @@ alimtalk.post('/test', requireRole('master', 'ceo'), async (c) => {
 
   try {
     const result = await sendAlimtalkByTemplate(
-      c.env as Record<string, unknown>,
+      c.env as unknown as Record<string, unknown>,
       template_key as keyof typeof ALIMTALK_TEMPLATES,
       variables,
       [phone],

@@ -71,8 +71,8 @@ export default function Layout() {
           </>
         )}
 
-        {/* 통계: 관리자(admin) 이상만 - 팀장 이하는 메뉴 자체 숨김 */}
-        {canApproveUsers && (
+        {/* 통계: master/ceo/admin만 (cc_ref 제외) */}
+        {['master', 'ceo', 'admin'].includes(role) && (
           <Link to="/statistics" className={`nav-item ${isActive('/statistics') ? 'active' : ''}`} title="통계" onClick={() => setMobileOpen(false)}>
             <BarChart3 size={18} /> {!collapsed && '통계'}
           </Link>

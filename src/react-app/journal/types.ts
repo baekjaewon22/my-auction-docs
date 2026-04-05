@@ -15,20 +15,20 @@ export interface JournalEntry {
   updated_at: string;
 }
 
-export type ActivityType = '입찰' | '임장' | '미팅' | '사무' | '브리핑' | '개인';
+export type ActivityType = '입찰' | '임장' | '미팅' | '사무' | '브리핑자료제출' | '개인';
 
-export const ACTIVITY_TYPES: ActivityType[] = ['입찰', '임장', '미팅', '사무', '브리핑', '개인'];
+export const ACTIVITY_TYPES: ActivityType[] = ['입찰', '임장', '미팅', '사무', '브리핑자료제출', '개인'];
 
 export const ACTIVITY_COLORS: Record<ActivityType, string> = {
   '입찰': '#1a73e8',
   '임장': '#188038',
   '미팅': '#e65100',
   '사무': '#7b1fa2',
-  '브리핑': '#0d47a1',
+  '브리핑자료제출': '#0d47a1',
   '개인': '#9aa0a6',
 };
 
-export const MEETING_SUBTYPES = ['고객상담', '브리핑', '계약서작성', '기타'] as const;
+export const MEETING_SUBTYPES = ['브리핑', '계약서작성', '기타'] as const;
 export const OFFICE_SUBTYPES = ['고객관리', '자료작성', '기타'] as const;
 
 // 시간 선택 옵션 (09:00 ~ 18:00, 30분 단위)
@@ -194,7 +194,7 @@ export function isEditable(entryDate: string, userRole?: string): boolean {
  * - 누구나 낙찰가는 언제든 수정 가능
  * - admin 이상은 입찰 필드 전체 언제든 수정 가능
  */
-export function isBidFieldEditable(userRole?: string): boolean {
+export function isBidFieldEditable(_userRole?: string): boolean {
   return true; // 낙찰가는 누구나 언제든
 }
 

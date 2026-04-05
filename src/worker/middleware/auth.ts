@@ -27,6 +27,20 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
   try {
     const token = authHeader.slice(7);
     const payload = await verifyToken(token);
+
+    // DB에서 최신 사용자 정보 조회 (JWT 캐시 대신 실시간)
+    const db = c.env.DB;
+    const freshUser = await db.prepare(
+      'SELECT id, role, team_id, branch, department FROM users WHERE id = ?'
+    ).bind(payload.sub).first<{ id: string; role: Role; team_id: string | null; branch: string; department: string }>();
+
+    if (freshUser) {
+      payload.role = freshUser.role;
+      payload.team_id = freshUser.team_id;
+      payload.branch = freshUser.branch;
+      payload.department = freshUser.department;
+    }
+
     c.set('user', payload);
     await next();
   } catch {
