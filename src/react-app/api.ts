@@ -123,6 +123,12 @@ export const api = {
       }),
     logs: (id: string) => request<{ logs: import('./types').DocumentLog[] }>('/documents/' + id + '/logs'),
     steps: (id: string) => request<{ steps: import('./types').ApprovalStep[] }>('/documents/' + id + '/steps'),
+    cancelRequest: (id: string, reason: string) =>
+      request('/documents/' + id + '/cancel-request', { method: 'POST', body: JSON.stringify({ reason }) }),
+    cancelApprove: (id: string) =>
+      request('/documents/' + id + '/cancel-approve', { method: 'POST' }),
+    cancelRequests: () =>
+      request<{ documents: import('./types').Document[] }>('/documents/cancel-requests'),
   },
 
   signatures: {
@@ -163,6 +169,37 @@ export const api = {
       request('/leave/init', { method: 'POST', body: JSON.stringify({ user_id: userId, total_days: totalDays }) }),
     update: (userId: string, data: { total_days?: number; used_days?: number }) =>
       request('/leave/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
+  },
+
+  minutes: {
+    list: () => request<{ minutes: { id: string; title: string; description: string; file_name: string; file_size: number; created_at: string; uploader_name: string }[] }>('/minutes'),
+    upload: async (title: string, description: string, file: File) => {
+      const token = getToken();
+      const fd = new FormData();
+      fd.append('title', title);
+      fd.append('description', description);
+      fd.append('file', file);
+      const res = await fetch('/api/minutes', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      });
+      const data = await res.json() as any;
+      if (!res.ok) throw new Error(data?.error || '업로드 실패');
+      return data as { success: boolean; id: string };
+    },
+    downloadUrl: (id: string) => `/api/minutes/${id}/download`,
+    delete: (id: string) => request('/minutes/' + id, { method: 'DELETE' }),
+  },
+
+  commissions: {
+    list: () => request<{ commissions: any[] }>('/commissions'),
+    pendingCount: () => request<{ count: number }>('/commissions/pending-count'),
+    myPending: () => request<{ commissions: any[] }>('/commissions/my-pending'),
+    complete: (id: string) => request('/commissions/' + id + '/complete', { method: 'POST' }),
+    create: (data: { journal_entry_id: string; user_id: string; user_name: string; client_name: string; case_no: string; win_price: string }) =>
+      request('/commissions', { method: 'POST', body: JSON.stringify(data) }),
+    deleteByEntry: (entryId: string) => request('/commissions/by-entry/' + entryId, { method: 'DELETE' }),
   },
 
   journal: {

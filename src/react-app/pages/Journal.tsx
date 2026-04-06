@@ -7,7 +7,19 @@ import type { JournalEntry } from '../journal/types';
 import { getToday, getTomorrow, isEditable } from '../journal/types';
 import JournalCard from '../journal/JournalCard';
 import JournalForm from '../journal/JournalForm';
-import { Plus, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar } from 'lucide-react';
+import DatePicker, { registerLocale } from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
+import { ko } from 'date-fns/locale';
+
+const koCustom = {
+  ...ko,
+  localize: {
+    ...ko.localize,
+    month: (n: number) => `${n + 1}월`,
+  },
+};
+registerLocale('ko-custom', koCustom as any);
 
 interface Member {
   id: string;
@@ -18,37 +30,52 @@ interface Member {
   position_title?: string;
 }
 
+function toDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 export default function Journal() {
   const { user } = useAuthStore();
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<'today' | 'tomorrow' | 'history'>('today');
+  const [tab, setTab] = useState<'today' | 'tomorrow' | 'calendar' | 'history'>('today');
   const [showForm, setShowForm] = useState(false);
   const [formDate, setFormDate] = useState(getToday());
   const [activeBranch, setActiveBranch] = useState(0);
-  const [, ] = useState('');
-  const [, ] = useState('');
-  const [, ] = useState('');
+  const [calendarOpen, setCalendarOpen] = useState(false);
+
+  // 캘린더 선택 날짜
+  const [selectedDate, setSelectedDate] = useState<Date>(() => {
+    const t = getToday().split('-').map(Number);
+    return new Date(t[0], t[1] - 1, t[2]);
+  });
+  const selectedDateStr = toDateStr(selectedDate);
+
+  // 전체이력 상태
   const [historyBranch, setHistoryBranch] = useState(0);
   const [historyDept, setHistoryDept] = useState('');
   const [historyMonth, setHistoryMonth] = useState(() => {
     const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
     return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
   });
-  const [, ] = useState<JournalEntry[] | null>(null);
-  const [, ] = useState('');
-  const [, ] = useState('');
 
   const today = getToday();
   const tomorrow = getTomorrow();
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref';
+
+  // 현재 탭에서 보여줄 날짜
+  const activeDate = tab === 'today' ? today : tab === 'tomorrow' ? tomorrow : tab === 'calendar' ? selectedDateStr : '';
+  const isCalendarTodayOrTomorrow = tab === 'calendar' && (selectedDateStr === today || selectedDateStr === tomorrow);
+  const isCalendarFuture = tab === 'calendar' && selectedDateStr > tomorrow;
+  const canAddSchedule = tab === 'today' || tab === 'tomorrow' || isCalendarTodayOrTomorrow || isCalendarFuture;
 
   const load = () => {
     setLoading(true);
     let params: { date?: string; range?: string } = {};
     if (tab === 'today') params = { date: today };
     else if (tab === 'tomorrow') params = { date: tomorrow };
+    else if (tab === 'calendar') params = { date: selectedDateStr };
     else params = { range: 'all' };
 
     Promise.all([api.journal.list(params), api.journal.members()])
@@ -59,7 +86,7 @@ export default function Journal() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, [tab]);
+  useEffect(() => { load(); }, [tab, selectedDateStr]);
 
   const handleDelete = async (id: string) => { await api.journal.delete(id); load(); };
   const handleToggleComplete = async (id: string, completed: boolean, failReason?: string) => {
@@ -69,7 +96,6 @@ export default function Journal() {
 
   const openForm = (date: string) => { setFormDate(date); setShowForm(true); };
 
-  // Group members by branch, then department
   const branches = [...new Set(members.map((m) => m.branch).filter(Boolean))].sort((a, b) => {
     if (a === '의정부') return -1;
     if (b === '의정부') return 1;
@@ -77,24 +103,18 @@ export default function Journal() {
   });
   if (branches.length === 0 && members.length > 0) branches.push('');
 
-  // For CEO+ slide navigation
   const currentBranch = isCeoPlus ? branches[activeBranch] : (user?.branch || '');
 
   const renderBranchView = (branch: string) => {
     const branchMembers = members.filter((m) => m.branch === branch || (!branch && !m.branch));
     const departments = [...new Set(branchMembers.map((m) => m.department).filter(Boolean))].sort();
-
-    // Members without department (admin, ceo, etc.)
     const noDeptMembers = branchMembers.filter((m) => !m.department);
 
     return (
       <div className="journal-branch-view" key={branch}>
-        {/* Non-CEO: show branch label */}
         {!isCeoPlus && user?.role === 'admin' && (
           <div className="journal-branch-label">{branch} 지사</div>
         )}
-
-        {/* No department members */}
         {noDeptMembers.length > 0 && user?.role === 'master' && (
           <div className="journal-dept-section">
             <div className="journal-dept-label">경영진</div>
@@ -103,8 +123,6 @@ export default function Journal() {
             </div>
           </div>
         )}
-
-        {/* Department sections */}
         {departments.map((dept) => {
           const deptMembers = branchMembers.filter((m) => m.department === dept);
           return (
@@ -123,12 +141,11 @@ export default function Journal() {
   const renderMemberCard = (member: Member) => {
     const memberEntries = entries.filter((e) => e.user_id === member.id);
     const hasEntries = memberEntries.length > 0;
-    const dateStr = tab === 'today' ? today : tab === 'tomorrow' ? tomorrow : '';
-    const entryDate = dateStr || (hasEntries ? memberEntries[0].target_date : '');
+    const dateStr = activeDate || (hasEntries ? memberEntries[0].target_date : '');
     const isMine = member.id === user?.id;
     const isReadonly = !isMine && !['master', 'ceo', 'cc_ref'].includes(user?.role || '')
       ? true
-      : !isEditable(entryDate, user?.role);
+      : !isEditable(dateStr, user?.role);
 
     if (hasEntries) {
       return (
@@ -148,7 +165,6 @@ export default function Journal() {
       );
     }
 
-    // Empty card - 미입력
     return (
       <div key={member.id} className="journal-card journal-card-empty">
         <div className="journal-card-date">&nbsp;</div>
@@ -161,11 +177,21 @@ export default function Journal() {
     );
   };
 
+  // 캘린더에서 날짜 선택 시
+  const handleCalendarSelect = (date: Date | null) => {
+    if (!date) return;
+    setSelectedDate(date);
+    setTab('calendar');
+    setCalendarOpen(false);
+  };
+
+  const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+
   return (
     <div className="page">
       <div className="page-header">
         <h2><CalendarDays size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} />컨설턴트 일지</h2>
-        {isCeoPlus && branches.length > 1 && (
+        {isCeoPlus && branches.length > 1 && tab !== 'history' && (
           <div className="journal-branch-header">
             <button className="journal-slide-btn" onClick={() => setActiveBranch((p) => (p - 1 + branches.length) % branches.length)}>
               <ChevronLeft size={20} />
@@ -193,22 +219,52 @@ export default function Journal() {
           <span className="journal-tab-label">내일</span>
           <span className="journal-tab-date">{tomorrow}</span>
         </button>
+        {tab === 'calendar' && (
+          <button className={`journal-tab active`}>
+            <span className="journal-tab-label">{selectedDateStr}</span>
+            <span className="journal-tab-date">({dayNames[selectedDate.getDay()]})</span>
+          </button>
+        )}
         <button className={`journal-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
           <span className="journal-tab-label">전체 이력</span>
         </button>
-        {tab !== 'history' && (
-          <button className="btn btn-primary btn-sm" style={{ marginLeft: 'auto' }}
-            onClick={() => openForm(tab === 'today' ? today : tomorrow)}>
-            <Plus size={16} /> 일정 추가
+
+        {/* 달력 접기 버튼 */}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center', position: 'relative' }}>
+          {canAddSchedule && (
+            <button className="btn btn-primary btn-sm"
+              onClick={() => openForm(activeDate)}>
+              <Plus size={16} /> 일정 추가
+            </button>
+          )}
+          <button className="journal-cal-toggle" onClick={() => setCalendarOpen(!calendarOpen)}>
+            <Calendar size={14} />
+            <span>달력</span>
+            {calendarOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
-        )}
+          {calendarOpen && (
+            <div className="journal-calendar-dropdown">
+              <DatePicker
+                selected={selectedDate}
+                onChange={handleCalendarSelect}
+                inline
+                locale="ko-custom"
+                dateFormat="yyyy-MM-dd"
+              />
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* 캘린더 탭 날짜 힌트 */}
+      {tab === 'calendar' && !isCalendarTodayOrTomorrow && !isCalendarFuture && (
+        <div className="journal-cal-hint past" style={{ marginBottom: 12 }}>과거 일지 열람 — 낙찰가만 수정 가능</div>
+      )}
 
       {loading ? (
         <div className="page-loading">로딩중...</div>
       ) : tab === 'history' ? (
         <div className="journal-history">
-          {/* 지사 슬라이드 (ceo+) */}
           {isCeoPlus && branches.length > 1 && (
             <div className="journal-branch-header" style={{ marginBottom: 12 }}>
               <button className="journal-slide-btn" onClick={() => setHistoryBranch((p) => (p - 1 + branches.length) % branches.length)}>
@@ -221,7 +277,6 @@ export default function Journal() {
             </div>
           )}
 
-          {/* 월 네비게이션 + 팀 탭 */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <button className="btn btn-sm" onClick={() => {
@@ -252,7 +307,6 @@ export default function Journal() {
             </div>
           </div>
 
-          {/* 색상 가이드 */}
           <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', fontSize: '0.72rem', color: '#5f6368' }}>
             {[['입찰', '#1a73e8'], ['임장', '#188038'], ['미팅', '#e65100'], ['사무', '#7b1fa2'], ['브리핑자료제출', '#0d47a1'], ['개인', '#9aa0a6']].map(([label, color]) => (
               <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -262,10 +316,8 @@ export default function Journal() {
             ))}
           </div>
 
-          {/* 월간 테이블 */}
           {(() => {
             const hBranch = isCeoPlus && branches.length > 1 ? branches[historyBranch] : (user?.branch || '');
-            // const isCC = user?.role === 'cc_ref';
             const canSeeAll = user?.role === 'master';
             let deptMembers = members.filter(m => m.branch === hBranch && (historyDept === '' || m.department === historyDept));
 
@@ -279,16 +331,14 @@ export default function Journal() {
               if (day !== 0 && day !== 6) bizDays.push(d);
             }
 
-            // 팀별 그룹 (경영진은 cc_ref 이상만)
             const deptGroups: Record<string, typeof deptMembers> = {};
             deptMembers.forEach(m => {
               const dept = m.department || '경영진';
-              if (dept === '경영진' && !canSeeAll) return; // 경영진은 cc참조자 이상만
+              if (dept === '경영진' && !canSeeAll) return;
               if (!deptGroups[dept]) deptGroups[dept] = [];
               deptGroups[dept].push(m);
             });
 
-            // 팀장을 선두로 정렬
             const roleOrder: Record<string, number> = { master: 1, ceo: 2, cc_ref: 2, admin: 3, manager: 4, member: 5 };
             Object.values(deptGroups).forEach(arr => {
               arr.sort((a, b) => (roleOrder[a.role] || 9) - (roleOrder[b.role] || 9));
@@ -342,7 +392,6 @@ export default function Journal() {
                                         ))}
                                       </div>
                                       <span style={{ fontSize: '0.6rem', color: '#5f6368' }}>{count}</span>
-                                      {/* 호버 팝업 */}
                                       <div className="journal-hover-popup">
                                         <div style={{ fontWeight: 600, marginBottom: 4 }}>{m.name} — {dateStr}</div>
                                         {dayEntries.map(entry => {
@@ -377,7 +426,7 @@ export default function Journal() {
           })()}
         </div>
       ) : (
-        /* Today / Tomorrow view - all members */
+        /* Today / Tomorrow / Calendar view */
         isCeoPlus && branches.length > 1 ? (
           renderBranchView(currentBranch)
         ) : (

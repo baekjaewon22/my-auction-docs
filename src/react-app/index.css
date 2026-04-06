@@ -900,6 +900,18 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   background: var(--gray-50);
 }
 
+/* 취소된 문서 카드 */
+.doc-card-cancelled {
+  opacity: 0.5; filter: grayscale(1); pointer-events: auto;
+  position: relative;
+}
+.doc-card-cancelled::after {
+  content: '취소됨'; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%) rotate(-15deg);
+  font-size: 1.2rem; font-weight: 800; color: rgba(0,0,0,0.12);
+  pointer-events: none;
+}
+
 /* ========================= */
 /* Status Badges             */
 /* ========================= */
@@ -930,6 +942,12 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .status-rejected {
   background: var(--danger-light);
   color: var(--danger);
+}
+.status-cancelled {
+  background: #e8eaed; color: #80868b;
+}
+.status-cancel-req {
+  background: #fff8e1; color: #e65100;
 }
 
 /* ========================= */
@@ -1979,6 +1997,40 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 /* ========================= */
 /* Journal                   */
 /* ========================= */
+/* 일지 캘린더 드롭다운 */
+.journal-cal-toggle {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: 1px solid var(--gray-200); border-radius: 8px;
+  background: #fff; cursor: pointer; font-size: 0.78rem; font-weight: 600;
+  color: var(--gray-600); transition: all 0.15s; white-space: nowrap;
+}
+.journal-cal-toggle:hover { border-color: var(--primary); color: var(--primary); }
+.journal-calendar-dropdown {
+  position: absolute; top: 100%; right: 0; z-index: 100;
+  margin-top: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15); border-radius: 10px;
+  background: #fff; border: 1px solid var(--gray-200);
+}
+.journal-calendar-dropdown .react-datepicker {
+  border: none !important; border-radius: 10px !important;
+  font-size: 0.82rem !important;
+}
+.journal-calendar-dropdown .react-datepicker__header {
+  background: #f8f9fa !important; border-bottom: 1px solid var(--gray-200) !important;
+  border-radius: 10px 10px 0 0 !important;
+}
+.journal-calendar-dropdown .react-datepicker__day--selected {
+  background: var(--primary) !important; border-radius: 50% !important;
+}
+.journal-calendar-dropdown .react-datepicker__day--today {
+  font-weight: 800 !important; color: var(--primary) !important;
+}
+.journal-calendar-dropdown .react-datepicker__day--today.react-datepicker__day--selected {
+  color: #fff !important;
+}
+.journal-cal-hint { font-size: 0.72rem; color: #888; text-align: center; padding: 4px; }
+.journal-cal-hint.past { color: #e65100; background: #fff8e1; border-radius: 6px; }
+
 .journal-tabs {
   display: flex;
   gap: 8px;
@@ -3211,6 +3263,11 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   color: #d93025;
   font-weight: 600;
 }
+.missing-alert-badge {
+  display: inline-block; background: #d93025; color: #fff;
+  font-size: 0.65rem; font-weight: 700; padding: 1px 7px;
+  border-radius: 10px; margin-left: 6px; vertical-align: middle;
+}
 
 .missing-alert-more {
   text-align: center;
@@ -3326,6 +3383,11 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .archive-doc-item:hover {
   box-shadow: var(--shadow);
   border-color: var(--primary);
+}
+
+.archive-doc-check {
+  width: 16px; height: 16px; flex-shrink: 0; cursor: pointer;
+  accent-color: var(--primary);
 }
 
 .archive-doc-icon {
@@ -3858,4 +3920,98 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
     from { opacity: 0; transform: translateY(-6px); }
     to { opacity: 1; transform: translateY(0); }
   }
+}
+
+/* ========================= 회의록 ========================= */
+.minutes-upload-form {
+  background: #f8f9fa; border: 1px solid var(--gray-200); border-radius: var(--radius);
+  padding: 16px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 10px;
+}
+.minutes-upload-form .form-group { margin-bottom: 0; }
+.minutes-upload-form input[type="file"] {
+  padding: 8px; border: 1px dashed var(--gray-300); border-radius: 6px;
+  background: #fff; width: 100%; font-size: 0.8rem;
+}
+
+.minutes-list { display: flex; flex-direction: column; gap: 8px; }
+.minutes-card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; background: #fff;
+  border: 1px solid var(--gray-100); border-radius: var(--radius);
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.minutes-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  transform: translateY(-1px);
+}
+.minutes-card-icon {
+  flex-shrink: 0; width: 44px; height: 44px; border-radius: 10px;
+  background: #fef2f2; color: #d93025;
+  display: flex; align-items: center; justify-content: center;
+}
+.minutes-card-body { flex: 1; min-width: 0; }
+.minutes-card-title { font-weight: 700; font-size: 0.88rem; color: #1a1a2e; margin-bottom: 2px; }
+.minutes-card-desc { font-size: 0.75rem; color: var(--gray-500); margin-bottom: 4px; }
+.minutes-card-meta {
+  display: flex; gap: 12px; font-size: 0.7rem; color: var(--gray-400); flex-wrap: wrap;
+}
+.minutes-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* PDF 뷰어 */
+.minutes-viewer-page { display: flex; flex-direction: column; height: calc(100vh - 80px); }
+.minutes-pdf-container {
+  flex: 1; border: 1px solid var(--gray-200); border-radius: var(--radius);
+  overflow: hidden; background: #525659; min-height: 400px;
+}
+.minutes-pdf-frame {
+  width: 100%; height: 100%; border: none; display: block;
+}
+.minutes-pdf-loading {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; color: #ccc; font-size: 0.9rem;
+}
+
+@media (max-width: 768px) {
+  .minutes-card { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .minutes-card-actions { width: 100%; justify-content: flex-end; }
+  .minutes-viewer-page { height: calc(100vh - 60px); }
+  .minutes-pdf-container { min-height: 300px; }
+}
+
+/* ========================= 수수료 관리 ========================= */
+.commission-table-wrap { overflow-x: auto; }
+.commission-table {
+  width: 100%; border-collapse: collapse; font-size: 0.82rem;
+}
+.commission-table th {
+  text-align: left; padding: 10px 12px; background: #f8f9fa;
+  border-bottom: 2px solid var(--gray-200); font-weight: 700;
+  font-size: 0.75rem; color: var(--gray-600); white-space: nowrap;
+}
+.commission-table td {
+  padding: 10px 12px; border-bottom: 1px solid var(--gray-100);
+  vertical-align: middle;
+}
+.commission-table tbody tr:hover { background: #f8faff; }
+.commission-completed { opacity: 0.5; }
+.commission-completed td { text-decoration: line-through; color: #999; }
+.commission-completed td:last-child { text-decoration: none; }
+.commission-dday {
+  font-weight: 700; font-size: 0.78rem; color: #188038;
+  padding: 2px 8px; border-radius: 8px; background: #e8f5e9;
+}
+.commission-dday.warn { color: #e65100; background: #fff3e0; }
+.commission-dday.danger { color: #d93025; background: #fce8e6; }
+.commission-status-pending {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.72rem; color: #e65100; font-weight: 600;
+}
+.commission-status-done {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.72rem; color: #188038; font-weight: 600;
+}
+
+@media (max-width: 768px) {
+  .commission-table { font-size: 0.75rem; }
+  .commission-table th, .commission-table td { padding: 8px 6px; }
 }

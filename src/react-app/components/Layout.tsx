@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign
 } from 'lucide-react';
 
 export default function Layout() {
@@ -93,6 +93,18 @@ export default function Layout() {
         {canApproveUsers && (
           <Link to="/users" className={`nav-item ${isActive('/users') ? 'active' : ''}`} title="사용자 관리" onClick={() => setMobileOpen(false)}>
             <UserCog size={18} /> {!collapsed && '사용자 관리'}
+          </Link>
+        )}
+
+        {canApproveUsers && (
+          <Link to="/commissions" className={`nav-item ${isActive('/commissions') ? 'active' : ''}`} title="수수료 관리" onClick={() => setMobileOpen(false)}>
+            <DollarSign size={18} /> {!collapsed && '수수료 관리'}
+          </Link>
+        )}
+
+        {['master', 'ceo', 'cc_ref'].includes(role) && (
+          <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
+            <BookOpen size={18} /> {!collapsed && '회의록'}
           </Link>
         )}
       </nav>

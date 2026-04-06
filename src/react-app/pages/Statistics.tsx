@@ -180,7 +180,10 @@ function calcBidStats(bidEntries: JournalEntry[]) {
       const a = parseCurrency(d.bidPrice);
       const w = parseCurrency(d.winPrice);
       const s = parseCurrency(d.suggestedPrice);
-      if (w > 0) { if (a >= w) win++; else lose++; } else pending++;
+      // bidWon 플래그 또는 낙찰가 기준으로 판정
+      if (d.bidWon) { win++; }
+      else if (w > 0) { if (a >= w) win++; else lose++; }
+      else { pending++; }
       if (s > 0 && a > 0 && (s - a) / s >= 0.05) dev5++;
     } catch { /* */ }
   });

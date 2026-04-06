@@ -20,16 +20,24 @@ interface Props {
 }
 
 export default function JournalCard({ entries, userName, userRole, positionTitle, date, readonly, currentUserRole, onDelete, onToggleComplete, onUpdate }: Props) {
-  const canEditBidFields = entries.some(e => e.activity_type === '입찰') && (
-    !readonly || ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUserRole || '')
-  );
+  // 시간순 정렬
+  const sortedEntries = [...entries].sort((a, b) => {
+    try {
+      const da = JSON.parse(a.data), db = JSON.parse(b.data);
+      return (da.timeFrom || '99:99').localeCompare(db.timeFrom || '99:99');
+    } catch { return 0; }
+  });
+
+  const hasBidEntry = sortedEntries.some(e => e.activity_type === '입찰');
+  const canEditBidFields = hasBidEntry;
+  const isMaster = currentUserRole === 'master';
   const [showPopup, setShowPopup] = useState(false);
   const [failId, setFailId] = useState<string | null>(null);
   const [failReason, setFailReason] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editData, setEditData] = useState<Record<string, any>>({});
 
-  const types = [...new Set(entries.map((e) => e.activity_type))];
+  const types = [...new Set(sortedEntries.map((e) => e.activity_type))];
   const roleLabel = positionTitle || (userRole ? ROLE_LABELS[userRole as Role] || '' : '');
 
   const parseData = (data: string) => {
@@ -71,6 +79,19 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     if (newWon) updated.winPrice = d.bidPrice || '';
     try {
       await api.journal.update(entry.id, { data: updated });
+      // 수수료 자동 생성/삭제
+      if (newWon) {
+        await api.commissions.create({
+          journal_entry_id: entry.id,
+          user_id: entry.user_id,
+          user_name: userName,
+          client_name: d.bidder || d.client || '',
+          case_no: d.caseNo || '',
+          win_price: updated.winPrice || '',
+        });
+      } else {
+        await api.commissions.deleteByEntry(entry.id);
+      }
       onUpdate?.();
     } catch (err: any) { alert(err.message); }
   };
@@ -127,7 +148,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
             </div>
 
             <div className="journal-popup-body">
-              {entries.map((entry) => {
+              {sortedEntries.map((entry) => {
                 const d = parseData(entry.data);
                 const isEditing = editingId === entry.id;
 
@@ -143,18 +164,18 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           {d.briefingSubmit && <span className="journal-field-badge briefing-badge">브리핑</span>}
                         </div>
                       )}
-                      {!readonly && (
+                      {(!readonly || isMaster) && (
                         <div className="journal-entry-actions">
-                          {!isEditing && <button className="btn-icon" title="수정" onClick={() => startEdit(entry)}><Pencil size={14} /></button>}
+                          {(!readonly || isMaster) && !isEditing && <button className="btn-icon" title="수정" onClick={() => startEdit(entry)}><Pencil size={14} /></button>}
                           {isEditing && <button className="btn-icon success" title="저장" onClick={() => saveEdit(entry)}><Save size={14} /></button>}
                           {isEditing && <button className="btn-icon" title="취소" onClick={cancelEdit}><X size={14} /></button>}
-                          {entry.activity_type === '임장' && !isEditing && (
+                          {entry.activity_type === '임장' && !isEditing && !readonly && (
                             <>
                               <button className="btn-icon success" title="완료" onClick={() => onToggleComplete?.(entry.id, true)}><CheckCircle size={16} /></button>
                               <button className="btn-icon danger" title="미완료" onClick={() => setFailId(entry.id)}><XCircle size={16} /></button>
                             </>
                           )}
-                          {!isEditing && <button className="btn-icon danger" title="삭제" onClick={() => { if (confirm('삭제하시겠습니까?')) onDelete?.(entry.id); }}><Trash2 size={14} /></button>}
+                          {(!readonly || isMaster) && !isEditing && <button className="btn-icon danger" title="삭제" onClick={() => { if (confirm('삭제하시겠습니까?')) onDelete?.(entry.id); }}><Trash2 size={14} /></button>}
                         </div>
                       )}
                     </div>
@@ -188,7 +209,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                             </div>
                             {d.bidProxy && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#7b1fa2' }}>대리입찰</span><span style={{ color: '#7b1fa2' }}>대리입찰</span></div>}
                             {d.deviationReason && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#d93025' }}>차이사유</span><span style={{ color: '#d93025' }}>{d.deviationReason}</span></div>}
-                            {(!readonly || canEditBidFields) && (
+                            {canEditBidFields && (
                               <button
                                 type="button"
                                 className={`btn btn-sm journal-bid-won-btn ${d.bidWon ? 'active' : ''}`}
@@ -197,7 +218,13 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                                 <Trophy size={13} /> {d.bidWon ? '낙찰 취소' : '낙찰'}
                               </button>
                             )}
-                            {canEditBidFields && readonly && (
+                            {canEditBidFields && !d.winPrice && (
+                              <button type="button" className="btn btn-sm" style={{ marginTop: 4 }}
+                                onClick={() => startEdit(entry)}>
+                                <Pencil size={11} /> 낙찰가 입력
+                              </button>
+                            )}
+                            {isMaster && canEditBidFields && d.winPrice && (
                               <button type="button" className="btn btn-sm" style={{ marginTop: 4 }}
                                 onClick={() => startEdit(entry)}>
                                 <Pencil size={11} /> 입찰가/낙찰가 수정
@@ -215,6 +242,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                             <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>장소</label><input value={ed('place')} onChange={(e) => setEd('place', e.target.value)} /></div>
+                            <FieldCheckEdit ed={ed} setEd={setEd} />
                           </div>
                         ) : (
                           <>
@@ -236,6 +264,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                             <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>유형</label><input value={ed('meetingType')} onChange={(e) => setEd('meetingType', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>장소</label><input value={ed('place')} onChange={(e) => setEd('place', e.target.value)} /></div>
+                            <FieldCheckEdit ed={ed} setEd={setEd} />
                           </div>
                         ) : (
                           <>
@@ -254,6 +283,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <div className="journal-edit-form">
                             <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>유형</label><input value={ed('officeType')} onChange={(e) => setEd('officeType', e.target.value)} /></div>
+                            <FieldCheckEdit ed={ed} setEd={setEd} />
                           </div>
                         ) : (
                           <>
@@ -304,6 +334,23 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
   );
 }
 
+// 현장출근/퇴근 체크박스 (수정 폼 공용)
+function FieldCheckEdit({ ed, setEd }: { ed: (k: string) => any; setEd: (k: string, v: any) => void }) {
+  return (
+    <div className="journal-edit-row">
+      <label>현장</label>
+      <div className="field-check-group" style={{ display: 'flex', gap: 12 }}>
+        <label className={`field-check-label ${ed('fieldCheckIn') ? 'checked' : ''}`} style={{ cursor: 'pointer' }}>
+          <input type="checkbox" checked={!!ed('fieldCheckIn')} onChange={(e) => setEd('fieldCheckIn', e.target.checked)} /> 현장출근
+        </label>
+        <label className={`field-check-label ${ed('fieldCheckOut') ? 'checked' : ''}`} style={{ cursor: 'pointer' }}>
+          <input type="checkbox" checked={!!ed('fieldCheckOut')} onChange={(e) => setEd('fieldCheckOut', e.target.checked)} /> 현장퇴근
+        </label>
+      </div>
+    </div>
+  );
+}
+
 // 입찰 수정 폼 (5% 차이 사유 포함)
 function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd: (k: string, v: any) => void; fmtCurrency: (v: string) => string }) {
   const s = Number((ed('suggestedPrice') || '').replace(/[^0-9]/g, ''));
@@ -325,6 +372,7 @@ function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd
         </div>
       )}
       <div className="journal-edit-row"><label>낙찰가</label><input value={ed('winPrice')} onChange={(e) => setEd('winPrice', fmtCurrency(e.target.value))} /></div>
+      <FieldCheckEdit ed={ed} setEd={setEd} />
     </div>
   );
 }

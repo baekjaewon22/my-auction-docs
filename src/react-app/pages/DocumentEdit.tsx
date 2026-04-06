@@ -34,6 +34,8 @@ export default function DocumentEdit() {
   const [rejectReason, setRejectReason] = useState('');
   const [showReject, setShowReject] = useState(false);
   const [approvalSteps, setApprovalSteps] = useState<ApprovalStep[]>([]);
+  const [showCancelRequest, setShowCancelRequest] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const editor = useEditor({
@@ -171,6 +173,22 @@ export default function DocumentEdit() {
 
   const handleApprove = async () => {
     if (!id) return;
+    // 승인 전 서명 필수 확인
+    const alreadySigned = signatures.some(s => s.user_id === user?.id);
+    if (!alreadySigned) {
+      // 저장된 서명이 있으면 자동 서명 후 승인
+      if (hasSavedSignature()) {
+        try {
+          await quickSign(id, 'approver', handleSignComplete);
+        } catch {
+          alert('서명 처리 중 오류가 발생했습니다.');
+          return;
+        }
+      } else {
+        alert('승인 전 결재란에서 서명을 먼저 완료해주세요.');
+        return;
+      }
+    }
     const result = await api.documents.approve(id) as any;
     if (result.final) {
       alert('문서가 최종 승인되었습니다.');
@@ -184,6 +202,16 @@ export default function DocumentEdit() {
     if (!id) return;
     await api.documents.reject(id, rejectReason);
     window.location.reload();
+  };
+
+  const handleCancelRequest = async () => {
+    if (!id || !cancelReason.trim()) { alert('취소 사유를 입력하세요.'); return; }
+    if (!confirm('이 문서의 취소를 신청하시겠습니까?')) return;
+    try {
+      await api.documents.cancelRequest(id, cancelReason.trim());
+      alert('취소 신청이 완료되었습니다. 관리자 승인 후 취소됩니다.');
+      window.location.reload();
+    } catch (err: any) { alert(err.message); }
   };
 
   // PDF 출력
@@ -366,12 +394,31 @@ export default function DocumentEdit() {
               <button className="btn btn-danger btn-sm" onClick={() => setShowReject(true)}>반려</button>
             </>
           )}
+
+          {/* 취소 신청: 본인 문서 + 승인/제출 상태 + 아직 취소신청 안 한 경우 */}
+          {doc && !doc.cancelled && !doc.cancel_requested && (doc.status === 'approved' || doc.status === 'submitted') && doc.author_id === user?.id && (
+            <button className="btn btn-sm" style={{ color: '#d93025', borderColor: '#d93025' }} onClick={() => setShowCancelRequest(true)}>취소 신청</button>
+          )}
         </div>
       </div>
 
       {/* Reject reason banner */}
       {doc.status === 'rejected' && doc.reject_reason && (
         <div className="alert alert-error">반려 사유: {doc.reject_reason}</div>
+      )}
+
+      {/* 취소 완료 배너 */}
+      {doc.cancelled === 1 && (
+        <div className="alert" style={{ background: '#f1f3f4', color: '#5f6368', borderColor: '#dadce0' }}>
+          이 문서는 취소 처리되었습니다. {doc.cancel_reason && <>사유: {doc.cancel_reason}</>}
+        </div>
+      )}
+
+      {/* 취소 신청 중 배너 */}
+      {doc.cancel_requested === 1 && !doc.cancelled && (
+        <div className="alert" style={{ background: '#fff8e1', color: '#e65100', borderColor: '#ffcc02' }}>
+          취소 신청 중입니다. 사유: {doc.cancel_reason || '없음'}
+        </div>
       )}
 
       {/* Reject modal */}
@@ -391,6 +438,31 @@ export default function DocumentEdit() {
             <div className="modal-actions">
               <button className="btn" onClick={() => setShowReject(false)}>취소</button>
               <button className="btn btn-danger" onClick={handleReject}>반려</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cancel request modal */}
+      {showCancelRequest && (
+        <div className="modal-overlay" onClick={() => setShowCancelRequest(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>문서 취소 신청</h3>
+            <p style={{ fontSize: '0.8rem', color: '#666', margin: '0 0 12px' }}>
+              관리자가 승인하면 이 문서는 취소 처리됩니다.
+            </p>
+            <div className="form-group">
+              <label>취소 사유 *</label>
+              <textarea
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="취소 사유를 입력하세요"
+                rows={3}
+              />
+            </div>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setShowCancelRequest(false)}>닫기</button>
+              <button className="btn btn-danger" onClick={handleCancelRequest}>취소 신청</button>
             </div>
           </div>
         </div>

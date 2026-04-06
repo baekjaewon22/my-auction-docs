@@ -62,13 +62,21 @@ export default function DocumentList() {
       ) : (
         <div className="doc-card-grid">
           {documents.map((doc) => {
+            const isCancelled = doc.cancelled === 1;
+            const isCancelRequested = doc.cancel_requested === 1 && !isCancelled;
             const cfg = statusConfig[doc.status];
             const Icon = cfg?.icon || FileText;
             return (
-              <Link to={'/documents/' + doc.id} key={doc.id} className="doc-card">
+              <Link to={'/documents/' + doc.id} key={doc.id} className={`doc-card ${isCancelled ? 'doc-card-cancelled' : ''}`}>
                 <div className="doc-card-header">
-                  <span className={`status-badge ${cfg?.className}`}>{cfg?.label}</span>
-                  {(doc.status !== 'approved' || user?.role === 'master') && (
+                  {isCancelled ? (
+                    <span className="status-badge status-cancelled">취소됨</span>
+                  ) : isCancelRequested ? (
+                    <span className="status-badge status-cancel-req">취소신청</span>
+                  ) : (
+                    <span className={`status-badge ${cfg?.className}`}>{cfg?.label}</span>
+                  )}
+                  {!isCancelled && (doc.status !== 'approved' || user?.role === 'master') && (
                     <button className="doc-card-delete" onClick={(e) => handleDelete(doc.id, e)} title="삭제">
                       <X size={14} />
                     </button>

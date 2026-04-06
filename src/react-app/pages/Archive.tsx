@@ -33,6 +33,18 @@ export default function ArchivePage() {
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'admin';
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
 
+  // 다운로드 체크 (localStorage)
+  const [checked, setChecked] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('archive_checked') || '{}'); } catch { return {}; }
+  });
+  const toggleCheck = (id: string) => {
+    setChecked(prev => {
+      const next = { ...prev, [id]: !prev[id] };
+      localStorage.setItem('archive_checked', JSON.stringify(next));
+      return next;
+    });
+  };
+
   useEffect(() => {
     setLoading(true);
     api.documents.list('approved')
@@ -137,6 +149,14 @@ export default function ArchivePage() {
           <div className="archive-doc-list">
             {grouped[month].map((doc) => (
               <Link to={'/documents/' + doc.id} key={doc.id} className="archive-doc-item">
+                <input
+                  type="checkbox"
+                  checked={!!checked[doc.id]}
+                  onClick={(e) => { e.stopPropagation(); e.preventDefault(); toggleCheck(doc.id); }}
+                  readOnly
+                  className="archive-doc-check"
+                  title="다운로드 체크"
+                />
                 <div className="archive-doc-icon">
                   {doc.status === 'approved' ? <FileCheck size={18} color="#188038" /> : <FileText size={18} color="#9aa0a6" />}
                 </div>

@@ -184,7 +184,7 @@ export function isEditable(entryDate: string, userRole?: string): boolean {
   const tomorrow = getTomorrow();
   const hour = getKSTHour();
 
-  if (entryDate === today) return hour < 16;
+  if (entryDate === today) return hour < 18;
   if (entryDate === tomorrow) return true;
   return false;
 }

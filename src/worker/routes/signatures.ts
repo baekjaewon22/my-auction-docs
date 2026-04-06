@@ -66,4 +66,41 @@ signatures.get('/document/:documentId', async (c) => {
   return c.json({ signatures: result.results });
 });
 
+// POST /api/signatures/backfill - 승인 완료했지만 서명 없는 건에 서명 강제 삽입 (master only)
+signatures.post('/backfill', async (c) => {
+  const user = c.get('user');
+  if (user.role !== 'master') return c.json({ error: '마스터만 가능합니다.' }, 403);
+
+  const db = c.env.DB;
+
+  // 승인된 step 중 서명이 없는 건 찾기
+  const missing = await db.prepare(
+    `SELECT DISTINCT s.approver_id, s.document_id
+     FROM approval_steps s
+     WHERE s.status = 'approved'
+       AND NOT EXISTS (
+         SELECT 1 FROM signatures sig
+         WHERE sig.document_id = s.document_id AND sig.user_id = s.approver_id
+       )`
+  ).all<{ approver_id: string; document_id: string }>();
+
+  let count = 0;
+  for (const row of missing.results) {
+    // 해당 사용자의 저장된 서명 가져오기
+    const userRow = await db.prepare(
+      'SELECT saved_signature FROM users WHERE id = ?'
+    ).bind(row.approver_id).first<{ saved_signature: string }>();
+
+    if (!userRow || !userRow.saved_signature) continue;
+
+    const id = crypto.randomUUID();
+    await db.prepare(
+      "INSERT INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent) VALUES (?, ?, ?, ?, 'backfill', 'backfill')"
+    ).bind(id, row.document_id, row.approver_id, userRow.saved_signature).run();
+    count++;
+  }
+
+  return c.json({ success: true, backfilled: count, total_missing: missing.results.length });
+});
+
 export default signatures;

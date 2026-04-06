@@ -54,6 +54,18 @@ documents.use('*', authMiddleware);
 // manager: same branch + same department only
 // member: own documents only
 
+// GET /api/documents/cancel-requests — 취소 신청 목록 (관리자용) — /:id 보다 먼저 정의
+documents.get('/cancel-requests', requireRole('master', 'ceo', 'cc_ref', 'admin'), async (c) => {
+  const db = c.env.DB;
+  const result = await db.prepare(
+    `SELECT d.*, u.name as author_name FROM documents d
+     LEFT JOIN users u ON d.author_id = u.id
+     WHERE d.cancel_requested = 1 AND d.cancelled = 0
+     ORDER BY d.updated_at DESC`
+  ).all();
+  return c.json({ documents: result.results });
+});
+
 // GET /api/documents
 documents.get('/', async (c) => {
   const user = c.get('user');
@@ -433,6 +445,62 @@ documents.get('/:id/logs', async (c) => {
     'SELECT dl.*, u.name as user_name FROM document_logs dl LEFT JOIN users u ON dl.user_id = u.id WHERE dl.document_id = ? ORDER BY dl.created_at DESC'
   ).bind(id).all();
   return c.json({ logs: result.results });
+});
+
+// POST /api/documents/:id/cancel-request — 취소 신청 (작성자)
+documents.post('/:id/cancel-request', async (c) => {
+  const id = c.req.param('id');
+  const user = c.get('user');
+  const db = c.env.DB;
+  const { reason } = await c.req.json<{ reason?: string }>();
+
+  const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
+  if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (doc.author_id !== user.sub && user.role !== 'master') {
+    return c.json({ error: '본인 문서만 취소 신청할 수 있습니다.' }, 403);
+  }
+  if (doc.status !== 'approved' && doc.status !== 'submitted') {
+    return c.json({ error: '제출 또는 승인된 문서만 취소 신청 가능합니다.' }, 400);
+  }
+
+  await db.prepare(
+    "UPDATE documents SET cancel_requested = 1, cancel_reason = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(reason || '', id).run();
+
+  await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
+    .bind(crypto.randomUUID(), id, user.sub, 'cancel_requested', `취소 신청. 사유: ${reason || '없음'}`).run();
+
+  return c.json({ success: true });
+});
+
+// POST /api/documents/:id/cancel-approve — 취소 승인 (관리자)
+documents.post('/:id/cancel-approve', requireRole('master', 'ceo', 'cc_ref', 'admin'), async (c) => {
+  const id = c.req.param('id');
+  const user = c.get('user');
+  const db = c.env.DB;
+
+  const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
+  if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (!doc.cancel_requested) {
+    return c.json({ error: '취소 신청된 문서가 아닙니다.' }, 400);
+  }
+
+  await db.prepare(
+    "UPDATE documents SET cancelled = 1, cancel_requested = 0, updated_at = datetime('now') WHERE id = ?"
+  ).bind(id).run();
+
+  // 연차/반차 문서였고 승인 완료 상태였으면 연차 복원
+  if (doc.status === 'approved' && (doc.title.includes('연차') || doc.title.includes('반차'))) {
+    const days = doc.title.includes('반차') ? 0.5 : 1;
+    await db.prepare(
+      'UPDATE annual_leave SET used_days = MAX(0, used_days - ?) WHERE user_id = ?'
+    ).bind(days, doc.author_id).run();
+  }
+
+  await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
+    .bind(crypto.randomUUID(), id, user.sub, 'cancelled', `취소 승인 처리. 사유: ${doc.cancel_reason || '없음'}`).run();
+
+  return c.json({ success: true });
 });
 
 export default documents;

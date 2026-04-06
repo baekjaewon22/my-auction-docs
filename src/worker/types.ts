@@ -51,6 +51,9 @@ export interface Document {
   department: string;
   status: DocStatus;
   reject_reason: string | null;
+  cancel_requested: number;
+  cancel_reason: string;
+  cancelled: number;
   created_at: string;
   updated_at: string;
 }
