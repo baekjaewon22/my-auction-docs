@@ -6,14 +6,16 @@ const users = new Hono<AuthEnv>();
 users.use('*', authMiddleware);
 
 // GET /api/users
-users.get('/', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+users.get('/', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_asst', 'manager'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
-  let query = 'SELECT id, email, name, phone, role, team_id, branch, department, position_title, approved, created_at FROM users WHERE approved = 1';
+  let query = 'SELECT id, email, name, phone, role, team_id, branch, department, position_title, card_number, hire_date, approved, created_at FROM users WHERE approved = 1';
   const params: string[] = [];
 
-  if (user.role === 'admin' && user.branch === '의정부') {
+  if (user.role === 'accountant' || user.role === 'accountant_asst') {
+    // 총무: 전체 열람 가능 (회계 관리 목적)
+  } else if (user.role === 'admin' && user.branch === '의정부') {
     // 의정부 관리자: 전체 열람 가능
   } else if (user.role === 'admin') {
     query += ' AND branch = ?';
@@ -82,7 +84,7 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   const { role, branch, department } = await c.req.json<{ role?: string; branch?: string; department?: string }>();
   const db = c.env.DB;
 
-  if (role && !['master', 'ceo', 'cc_ref', 'admin', 'manager', 'member'].includes(role)) {
+  if (role && !['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'member'].includes(role)) {
     return c.json({ error: '유효하지 않은 역할입니다.' }, 400);
   }
 
@@ -138,7 +140,7 @@ users.delete('/:id', requireRole('master', 'ceo', 'admin'), async (c) => {
     return c.json({ error: '본인 지사 사용자만 삭제할 수 있습니다.' }, 403);
   }
 
-  const hierarchy: Record<string, number> = { master: 1, ceo: 2, admin: 3, manager: 4, member: 5 };
+  const hierarchy: Record<string, number> = { master: 1, ceo: 2, admin: 3, accountant: 3, accountant_asst: 4, manager: 4, member: 5 };
   const myLevel = hierarchy[currentUser.role] || 99;
   const targetLevel = hierarchy[target.role] || 99;
 

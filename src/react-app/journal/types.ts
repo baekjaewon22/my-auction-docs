@@ -28,7 +28,7 @@ export const ACTIVITY_COLORS: Record<ActivityType, string> = {
   '개인': '#9aa0a6',
 };
 
-export const MEETING_SUBTYPES = ['브리핑', '계약서작성', '기타'] as const;
+export const MEETING_SUBTYPES = ['브리핑', '관리고객 미팅', '기타'] as const;
 export const OFFICE_SUBTYPES = ['고객관리', '자료작성', '기타'] as const;
 
 // 시간 선택 옵션 (09:00 ~ 18:00, 30분 단위)
@@ -172,7 +172,7 @@ export function getKSTHour(): number {
 
 /**
  * 일지 수정 가능 여부 판단
- * - 당일건: 16시 전까지 수정 가능
+ * - 당일건: 18시 전까지 수정 가능
  * - 익일건: 언제든 수정 가능
  * - 과거: 수정 불가 (ceo/cc_ref/master는 가능)
  */

@@ -1,4 +1,4 @@
-export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'manager' | 'member';
+export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'accountant' | 'accountant_asst' | 'manager' | 'member';
 export type DocStatus = 'draft' | 'submitted' | 'approved' | 'rejected';
 
 export const BRANCHES = ['의정부', '서초'] as const;
@@ -15,6 +15,7 @@ export interface User {
   branch: string;
   department: string;
   position_title: string;
+  hire_date: string;
   approved: number;
   created_at: string;
   updated_at: string;

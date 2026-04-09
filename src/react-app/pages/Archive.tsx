@@ -6,7 +6,7 @@ import { BRANCHES } from '../types';
 import type { Document } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { useDepartments } from '../hooks/useDepartments';
-import { Archive, FileCheck, FileText, Search, Trash2 } from 'lucide-react';
+import { Archive, FileCheck, FileText, Search, Trash2, MapPin } from 'lucide-react';
 
 const BRANCH_OPTS = toOptions(BRANCHES);
 
@@ -30,6 +30,19 @@ export default function ArchivePage() {
   const [filterStatus, setFilterStatus] = useState('approved');
   const [searchText, setSearchText] = useState('');
 
+  // 외근 보고서에서 외근 일자 추출
+  const extractOutingDate = (content: string): string | null => {
+    if (!content) return null;
+    // "외근 일자 : 2026년 4월 3일" 또는 "외근 일자 : 2026 년 4 월 3일" 등 다양한 형태
+    const text = content.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+    const m = text.match(/외근\s*일자\s*[:\s]*(\d{2,4})\s*년?\s*(\d{1,2})\s*월?\s*(\d{1,2})\s*일/);
+    if (m) {
+      const year = m[1].length === 2 ? '20' + m[1] : m[1];
+      return `${year}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    }
+    return null;
+  };
+
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'admin';
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
 
@@ -48,7 +61,10 @@ export default function ArchivePage() {
   useEffect(() => {
     setLoading(true);
     api.documents.list('approved')
-      .then((res) => setDocuments(res.documents))
+      .then((res) => {
+        // 취소된 문서도 포함 (cancelled=1인 approved 문서)
+        setDocuments(res.documents);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -147,8 +163,10 @@ export default function ArchivePage() {
             <span className="archive-month-count">{grouped[month].length}건</span>
           </div>
           <div className="archive-doc-list">
-            {grouped[month].map((doc) => (
-              <Link to={'/documents/' + doc.id} key={doc.id} className="archive-doc-item">
+            {grouped[month].map((doc) => {
+              const isCancelled = doc.cancelled === 1;
+              return (
+              <Link to={'/documents/' + doc.id} key={doc.id} className={`archive-doc-item ${isCancelled ? 'archive-doc-cancelled' : ''}`}>
                 <input
                   type="checkbox"
                   checked={!!checked[doc.id]}
@@ -158,7 +176,7 @@ export default function ArchivePage() {
                   title="다운로드 체크"
                 />
                 <div className="archive-doc-icon">
-                  {doc.status === 'approved' ? <FileCheck size={18} color="#188038" /> : <FileText size={18} color="#9aa0a6" />}
+                  {isCancelled ? <FileText size={18} color="#bdc1c6" /> : doc.status === 'approved' ? <FileCheck size={18} color="#188038" /> : <FileText size={18} color="#9aa0a6" />}
                 </div>
                 <div className="archive-doc-info">
                   <div className="archive-doc-title">{doc.title}</div>
@@ -167,12 +185,20 @@ export default function ArchivePage() {
                     {doc.branch && <span>{doc.branch}</span>}
                     {doc.department && <span>{doc.department}</span>}
                     <span>{new Date(doc.created_at).toLocaleDateString('ko-KR')}</span>
+                    {doc.title.includes('외근') && (() => {
+                      const outDate = extractOutingDate(doc.content);
+                      return outDate ? <span style={{ color: '#1a73e8', fontWeight: 600 }}><MapPin size={10} style={{ verticalAlign: 'middle' }} /> 외근일 {outDate}</span> : null;
+                    })()}
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span className={`status-badge ${statusConfig[doc.status]?.className}`}>
-                    {statusConfig[doc.status]?.label}
-                  </span>
+                  {isCancelled ? (
+                    <span className="status-badge status-cancelled">취소</span>
+                  ) : (
+                    <span className={`status-badge ${statusConfig[doc.status]?.className}`}>
+                      {statusConfig[doc.status]?.label}
+                    </span>
+                  )}
                   {isCeoPlus && (doc.status !== 'approved' || user?.role === 'master') && (
                     <button className="btn btn-sm btn-danger" style={{ padding: '2px 6px' }} onClick={(e) => handleDelete(doc.id, e)} title="삭제">
                       <Trash2 size={12} />
@@ -180,7 +206,8 @@ export default function ArchivePage() {
                   )}
                 </div>
               </Link>
-            ))}
+              );
+            })}
           </div>
         </section>
       ))}

@@ -1,4 +1,4 @@
-export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'manager' | 'member';
+export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'accountant' | 'accountant_asst' | 'manager' | 'member';
 export type DocStatus = 'draft' | 'submitted' | 'approved' | 'rejected';
 
 export const BRANCHES = ['의정부', '서초'] as const;
@@ -9,12 +9,14 @@ export const ROLE_LABELS: Record<Role, string> = {
   ceo: '대표',
   cc_ref: 'CC참조자',
   admin: '관리자',
+  accountant: '총무담당',
+  accountant_asst: '총무보조',
   manager: '팀장',
   member: '팀원',
 };
 
 // UI에서 표시할 역할 (master 제외)
-export const VISIBLE_ROLES: Role[] = ['ceo', 'cc_ref', 'admin', 'manager', 'member'];
+export const VISIBLE_ROLES: Role[] = ['ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'member'];
 
 export interface User {
   id: string;
@@ -27,6 +29,8 @@ export interface User {
   branch: string;
   department: string;
   position_title: string;
+  card_number?: string;
+  hire_date?: string;
   created_at?: string;
 }
 
@@ -115,4 +119,145 @@ export interface ApprovalCC {
   cc_user_id: string;
   cc_user_name?: string;
   created_at: string;
+}
+
+export interface UserAccounting {
+  id: string;
+  user_id: string;
+  user_name?: string;
+  branch?: string;
+  department?: string;
+  role?: string;
+  position_title?: string;
+  salary: number;
+  standard_sales: number;
+  grade: '' | 'M1' | 'M2' | 'M3' | 'M4';
+  position_allowance: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type SalesStatus = 'pending' | 'confirmed' | 'refund_requested' | 'refunded';
+
+export interface SalesRecord {
+  id: string;
+  user_id: string;
+  user_name?: string;
+  position_title?: string;
+  type: '계약' | '낙찰' | '중개' | '기타';
+  type_detail: string;
+  client_name: string;
+  depositor_name: string;
+  depositor_different: number;
+  amount: number;
+  contract_date: string;
+  status: SalesStatus;
+  journal_entry_id: string | null;
+  deposit_date: string;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  confirmed_by_name?: string;
+  refund_requested_at: string | null;
+  refund_approved_at: string | null;
+  refund_approved_by: string | null;
+  refund_approved_by_name?: string;
+  direction: 'income' | 'expense';
+  payment_method: string;
+  memo: string;
+  branch: string;
+  department: string;
+  // [6-1] 수수료 계산
+  appraisal_price: number;
+  winning_price: number;
+  appraisal_rate: number;
+  winning_rate: number;
+  commission_amount: number;
+  // [6-2] 계약서 제출
+  contract_submitted: number;
+  contract_not_submitted: number;
+  contract_not_reason: string;
+  contract_not_approved: number;
+  contract_not_approved_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DepositNotice {
+  id: string;
+  depositor: string;
+  amount: number;
+  deposit_date: string;
+  d_day_date: string;
+  created_by: string;
+  created_by_name?: string;
+  claimed_by: string | null;
+  claimed_by_name?: string;
+  claimed_at: string | null;
+  sales_record_id: string | null;
+  status: 'pending' | 'claimed' | 'approved';
+  approved_by: string | null;
+  approved_by_name?: string;
+  approved_at: string | null;
+  created_at: string;
+}
+
+export type LeaveRequestType = '연차' | '월차' | '반차' | '시간차' | '특별휴가';
+export type LeaveRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled' | 'cancel_requested';
+
+export interface LeaveRequest {
+  id: string;
+  user_id: string;
+  user_name?: string;
+  leave_type: LeaveRequestType;
+  start_date: string;
+  end_date: string;
+  hours: number;
+  days: number;
+  reason: string;
+  status: LeaveRequestStatus;
+  approved_by: string | null;
+  approved_at: string | null;
+  reject_reason: string | null;
+  branch: string;
+  department: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LeaveBalance {
+  total_days: number;
+  used_days: number;
+  monthly_days: number;
+  monthly_used: number;
+  leave_type: 'monthly' | 'annual';
+  hire_date: string;
+  months_since_hire: number;
+  annual_remaining: number;
+  monthly_remaining: number;
+  total_remaining: number;
+  salary: number;
+  refund_amount: number;
+  entitlement: {
+    type: 'monthly' | 'annual';
+    totalAnnual: number;
+    totalMonthly: number;
+  };
+  promotion_alert: boolean;
+}
+
+export interface SalesEvaluation {
+  id: string;
+  user_id: string;
+  user_name?: string;
+  branch?: string;
+  department?: string;
+  period_start: string;
+  period_end: string;
+  standard_sales: number;
+  total_sales: number;
+  met_target: number;
+  consecutive_misses: number;
+  salary?: number;
+  grade?: string;
+  created_at?: string;
 }

@@ -17,7 +17,11 @@ import ArchivePage from './pages/Archive';
 import Statistics from './pages/Statistics';
 import OrgChart from './pages/OrgChart';
 import MeetingMinutes from './pages/MeetingMinutes';
-import Commissions from './pages/Commissions';
+// import Commissions from './pages/Commissions'; // 매출확인으로 통합됨
+import Accounting from './pages/Accounting';
+import Sales from './pages/Sales';
+import Payroll from './pages/Payroll';
+import LeavePage from './pages/Leave';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore();
@@ -56,6 +60,19 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 function CeoRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref'];
+  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function NonAccountingRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  if (!user || ['accountant', 'accountant_asst'].includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function AccountingRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
@@ -126,7 +143,7 @@ export default function App() {
           <Route path="documents" element={<DocumentList />} />
           <Route path="documents/:id" element={<DocumentEdit />} />
           <Route path="templates" element={<TemplateList />} />
-          <Route path="journal" element={<Journal />} />
+          <Route path="journal" element={<NonAccountingRoute><Journal /></NonAccountingRoute>} />
           <Route path="archive" element={<ArchivePage />} />
           <Route
             path="statistics"
@@ -177,7 +194,25 @@ export default function App() {
               </ApproverRoute>
             }
           />
-          <Route path="commissions" element={<PrivateRoute><Commissions /></PrivateRoute>} />
+          {/* commissions 라우트 제거 — 매출확인으로 통합 */}
+          <Route path="sales" element={<PrivateRoute><Sales /></PrivateRoute>} />
+          <Route path="leave" element={<PrivateRoute><LeavePage /></PrivateRoute>} />
+          <Route
+            path="payroll"
+            element={
+              <AccountingRoute>
+                <Payroll />
+              </AccountingRoute>
+            }
+          />
+          <Route
+            path="accounting"
+            element={
+              <AccountingRoute>
+                <Accounting />
+              </AccountingRoute>
+            }
+          />
           <Route
             path="minutes"
             element={

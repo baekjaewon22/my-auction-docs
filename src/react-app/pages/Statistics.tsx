@@ -7,9 +7,10 @@ import type { JournalEntry } from '../journal/types';
 import { ACTIVITY_COLORS, type ActivityType } from '../journal/types';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  PieChart, Pie, Cell,
+  PieChart, Pie, Cell, LineChart, Line,
 } from 'recharts';
-import { BarChart3, TrendingUp, AlertTriangle, UserCheck, ChevronLeft, ChevronRight } from 'lucide-react';
+import { BarChart3, TrendingUp, AlertTriangle, UserCheck, ChevronLeft, ChevronRight, DollarSign } from 'lucide-react';
+import type { SalesRecord } from '../types';
 import Select from '../components/Select';
 
 interface Member {
@@ -32,13 +33,18 @@ export default function Statistics() {
   const [filterDept, setFilterDept] = useState('');
   const [filterUser, setFilterUser] = useState('');
   const [filterMonth, setFilterMonth] = useState('');
-  const tabs = ['입찰 분석', '근태 분석', '이상 감지'];
+  const [salesRecords, setSalesRecords] = useState<SalesRecord[]>([]);
+  const tabs = ['입찰 분석', '근태 분석', '이상 감지', '매출/환불'];
 
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || (user?.role === 'admin' && user?.branch === '의정부');
 
   useEffect(() => {
-    Promise.all([api.journal.list({ range: 'all' }), api.journal.members()])
-      .then(([eRes, mRes]) => { setEntries(eRes.entries); setMembers(mRes.members); })
+    Promise.all([
+      api.journal.list({ range: 'all' }),
+      api.journal.members(),
+      api.sales.stats({ month: filterMonth || undefined, branch: filterBranch || undefined, department: filterDept || undefined, user_id: filterUser || undefined }).catch(() => ({ records: [] })),
+    ])
+      .then(([eRes, mRes, sRes]) => { setEntries(eRes.entries); setMembers(mRes.members); setSalesRecords(sRes.records || []); })
       .finally(() => setLoading(false));
   }, []);
 
@@ -152,6 +158,7 @@ export default function Statistics() {
             {i === 0 && <TrendingUp size={16} />}
             {i === 1 && <UserCheck size={16} />}
             {i === 2 && <AlertTriangle size={16} />}
+            {i === 3 && <DollarSign size={16} />}
             {t}
           </button>
         ))}
@@ -164,6 +171,7 @@ export default function Statistics() {
         {tab === 0 && <BidAnalysis entries={filteredEntries} members={filteredMembers} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries} allMembers={members} />}
         {tab === 1 && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries} allMembers={members} />}
         {tab === 2 && <AnomalyDetection entries={filteredEntries} members={filteredMembers} />}
+        {tab === 3 && <SalesAnalysis records={salesRecords} members={filteredMembers} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
       </div>
     </div>
   );
@@ -579,6 +587,46 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
           </table>
         </div>
       </div>
+
+      {/* 현장 출퇴근율 (입찰 제외) */}
+      <div className="stats-chart-card">
+        <h4>현장 출퇴근율 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>임장·미팅 기준, 입찰 제외</span></h4>
+        <div className="table-wrapper">
+          <table className="data-table">
+            <thead><tr><th>담당자</th><th>팀</th><th>임장+미팅</th><th>현장출근</th><th>현장출근율</th><th>현장퇴근</th><th>현장퇴근율</th></tr></thead>
+            <tbody>
+              {members.map((m) => {
+                // 입찰 제외, 임장+미팅만 대상
+                const fieldEntries = entries.filter((e) => e.user_id === m.id && (e.activity_type === '임장' || e.activity_type === '미팅'));
+                if (fieldEntries.length === 0) return null;
+                let checkInCount = 0;
+                let checkOutCount = 0;
+                fieldEntries.forEach((e) => {
+                  try {
+                    const d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+                    if (d.fieldCheckIn) checkInCount++;
+                    if (d.fieldCheckOut) checkOutCount++;
+                  } catch { /* ignore */ }
+                });
+                const total = fieldEntries.length;
+                const inRate = (checkInCount / total * 100);
+                const outRate = (checkOutCount / total * 100);
+                return (
+                  <tr key={m.id}>
+                    <td><strong>{m.name}</strong></td>
+                    <td>{m.department || '-'}</td>
+                    <td>{total}건</td>
+                    <td>{checkInCount}건</td>
+                    <td style={{ fontWeight: 700, color: inRate >= 80 ? '#188038' : inRate >= 50 ? '#e65100' : '#d93025' }}>{inRate.toFixed(0)}%</td>
+                    <td>{checkOutCount}건</td>
+                    <td style={{ fontWeight: 700, color: outRate >= 80 ? '#188038' : outRate >= 50 ? '#e65100' : '#d93025' }}>{outRate.toFixed(0)}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -605,10 +653,11 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
 
   const caseMap: Record<string, CasePipeline> = {};
 
-  // 임장 사건번호
+  // 임장 사건번호 (기타=사전답사 등 제외)
   entries.filter((e) => e.activity_type === '임장').forEach((e) => {
     try {
       const d = JSON.parse(e.data);
+      if (d.inspClientType === '기타') return;
       const caseNo = d.caseNo || '';
       if (!caseNo) return;
       const key = `${e.user_id}_${caseNo}`;
@@ -821,6 +870,133 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
             </div>
           </>
         ) : (<div className="empty-state">모든 인원이 일지를 작성했습니다.</div>)}
+      </div>
+    </div>
+  );
+}
+
+// ━━━━ 매출/환불 통계 ━━━━
+function SalesAnalysis({ records, viewLevel }: {
+  records: SalesRecord[];
+  members: { id: string; name: string; role: string; branch: string; department: string }[];
+  viewLevel: string;
+}) {
+  const confirmed = records.filter(r => r.status === 'confirmed');
+  const refunded = records.filter(r => r.status === 'refunded');
+  const pending = records.filter(r => r.status === 'pending');
+  const totalConfirmed = confirmed.reduce((s, r) => s + r.amount, 0);
+  const totalRefunded = refunded.reduce((s, r) => s + r.amount, 0);
+  const totalPending = pending.reduce((s, r) => s + r.amount, 0);
+  const contractCount = records.filter(r => r.type === '계약' && r.status !== 'refunded').length;
+
+  // 담당자별 or 팀별 or 지사별 집계
+  const groupBy = viewLevel === 'person' ? 'person'
+    : viewLevel === 'team' ? 'department'
+    : viewLevel === 'branch' ? 'branch' : 'branch';
+
+  const grouped: Record<string, { confirmed: number; refunded: number; pending: number; count: number }> = {};
+  records.forEach(r => {
+    const key = groupBy === 'person' ? (r.user_name || r.user_id)
+      : groupBy === 'department' ? (r.department || '미지정')
+      : (r.branch || '미지정');
+    if (!grouped[key]) grouped[key] = { confirmed: 0, refunded: 0, pending: 0, count: 0 };
+    grouped[key].count++;
+    if (r.status === 'confirmed') grouped[key].confirmed += r.amount;
+    else if (r.status === 'refunded') grouped[key].refunded += r.amount;
+    else if (r.status === 'pending') grouped[key].pending += r.amount;
+  });
+
+  const chartData = Object.entries(grouped).map(([name, v]) => ({
+    name, 확정매출: v.confirmed, 환불: v.refunded, 대기: v.pending,
+  }));
+
+  // 매출추이 (일별 누적 실선그래프)
+  const dailyMap: Record<string, { confirmed: number; refunded: number }> = {};
+  records.forEach(r => {
+    const d = r.contract_date?.slice(0, 10);
+    if (!d) return;
+    if (!dailyMap[d]) dailyMap[d] = { confirmed: 0, refunded: 0 };
+    if (r.status === 'confirmed') dailyMap[d].confirmed += r.amount;
+    else if (r.status === 'refunded') dailyMap[d].refunded += r.amount;
+  });
+  const sortedDays = Object.keys(dailyMap).sort();
+  let cumConfirmed = 0;
+  let cumRefunded = 0;
+  const trendData = sortedDays.map(d => {
+    cumConfirmed += dailyMap[d].confirmed;
+    cumRefunded += dailyMap[d].refunded;
+    return { date: d.slice(5), 누적매출: cumConfirmed, 누적환불: cumRefunded, 순매출: cumConfirmed - cumRefunded };
+  });
+
+  return (
+    <div>
+      {/* 요약 카드 */}
+      <div className="stats-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
+        <div className="stat-card"><div className="stat-number" style={{ color: '#1a73e8' }}>{contractCount}</div><div className="stat-label">계약 건수</div></div>
+        <div className="stat-card stat-approved"><div className="stat-number">{totalConfirmed.toLocaleString()}</div><div className="stat-label">확정매출</div></div>
+        <div className="stat-card stat-submitted"><div className="stat-number">{totalPending.toLocaleString()}</div><div className="stat-label">입금대기</div></div>
+        <div className="stat-card stat-rejected"><div className="stat-number">{totalRefunded.toLocaleString()}</div><div className="stat-label">환불</div></div>
+      </div>
+
+      {/* 차트 */}
+      {chartData.length > 0 && (
+        <div className="card" style={{ padding: 20, marginBottom: 20 }}>
+          <h4 style={{ marginBottom: 16 }}>{groupBy === 'person' ? '담당자별' : groupBy === 'department' ? '팀별' : '지사별'} 매출 현황</h4>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => (v / 10000).toFixed(0) + '만'} />
+              <Tooltip formatter={(v: any) => (Number(v) || 0).toLocaleString() + '원'} />
+              <Legend />
+              <Bar dataKey="확정매출" fill="#188038" />
+              <Bar dataKey="환불" fill="#d93025" />
+              <Bar dataKey="대기" fill="#e65100" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* 매출추이 (실선그래프) */}
+      {trendData.length > 1 && (
+        <div className="card" style={{ padding: 20, marginBottom: 20 }}>
+          <h4 style={{ marginBottom: 16 }}>매출추이</h4>
+          <ResponsiveContainer width="100%" height={280}>
+            <LineChart data={trendData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" fontSize={11} />
+              <YAxis fontSize={11} tickFormatter={(v) => (v / 10000).toFixed(0) + '만'} />
+              <Tooltip formatter={(v: any) => (Number(v) || 0).toLocaleString() + '원'} />
+              <Legend />
+              <Line type="monotone" dataKey="누적매출" stroke="#188038" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="순매출" stroke="#1a73e8" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="누적환불" stroke="#d93025" strokeWidth={1} strokeDasharray="5 5" dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* 상세 테이블 */}
+      <div className="card" style={{ padding: 20 }}>
+        <h4 style={{ marginBottom: 12 }}>상세 내역</h4>
+        <div className="table-wrapper">
+          <table className="data-table">
+            <thead>
+              <tr><th>{groupBy === 'person' ? '담당자' : groupBy === 'department' ? '팀' : '지사'}</th><th>건수</th><th>확정매출</th><th>환불</th><th>대기</th></tr>
+            </thead>
+            <tbody>
+              {Object.entries(grouped).sort((a, b) => b[1].confirmed - a[1].confirmed).map(([name, v]) => (
+                <tr key={name}>
+                  <td><strong>{name}</strong></td>
+                  <td>{v.count}</td>
+                  <td style={{ color: '#188038', fontWeight: 600 }}>{v.confirmed.toLocaleString()}원</td>
+                  <td style={{ color: '#d93025' }}>{v.refunded.toLocaleString()}원</td>
+                  <td style={{ color: '#e65100' }}>{v.pending.toLocaleString()}원</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

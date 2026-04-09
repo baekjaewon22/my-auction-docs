@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { Template } from '../types';
@@ -47,14 +47,37 @@ export default function TemplateList() {
   const [favorites, setFavorites] = useState<string[]>(getFavorites());
   const { user } = useAuthStore();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const highlightId = searchParams.get('highlight');
+  const highlightRef = useRef<HTMLDivElement>(null);
   const isAdmin = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   const load = () => {
     setLoading(true);
-    api.templates.list().then((res) => setTemplates(res.templates)).finally(() => setLoading(false));
+    api.templates.list().then((res) => {
+      setTemplates(res.templates);
+      // highlight 파라미터가 있으면 해당 템플릿의 카테고리로 자동 필터
+      if (highlightId) {
+        const t = res.templates.find(tp => tp.id === highlightId);
+        if (t?.category) setActiveCategory(t.category);
+      }
+    }).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
+
+  // highlight된 템플릿으로 스크롤
+  useEffect(() => {
+    if (highlightId && highlightRef.current && !loading) {
+      highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // 3초 후 highlight 파라미터 제거
+      const timer = setTimeout(() => {
+        searchParams.delete('highlight');
+        setSearchParams(searchParams, { replace: true });
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [highlightId, loading]);
 
   const handleFav = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -105,8 +128,11 @@ export default function TemplateList() {
 
   const renderCard = (t: Template) => {
     const isFav = favorites.includes(t.id);
+    const isHighlighted = t.id === highlightId;
     return (
-      <div key={t.id} className="template-card">
+      <div key={t.id} ref={isHighlighted ? highlightRef : undefined}
+        className="template-card"
+        style={isHighlighted ? { boxShadow: '0 0 0 2px #1a73e8', background: '#e8f0fe' } : undefined}>
         <button className={`template-fav-btn ${isFav ? 'active' : ''}`} onClick={(e) => handleFav(t.id, e)} title={isFav ? '즐겨찾기 해제' : '즐겨찾기 추가'}>
           <Star size={14} fill={isFav ? '#f9ab00' : 'none'} />
         </button>

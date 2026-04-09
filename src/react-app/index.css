@@ -3385,6 +3385,15 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border-color: var(--primary);
 }
 
+.archive-doc-cancelled {
+  background: #f5f5f5 !important; opacity: 0.6;
+}
+.archive-doc-cancelled .archive-doc-title {
+  text-decoration: line-through; color: #9aa0a6 !important;
+}
+.archive-doc-cancelled .archive-doc-meta span { color: #bdc1c6 !important; }
+.archive-doc-cancelled:hover { border-color: #dadce0; box-shadow: none; }
+
 .archive-doc-check {
   width: 16px; height: 16px; flex-shrink: 0; cursor: pointer;
   accent-color: var(--primary);
@@ -4014,4 +4023,299 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 @media (max-width: 768px) {
   .commission-table { font-size: 0.75rem; }
   .commission-table th, .commission-table td { padding: 8px 6px; }
+}
+
+/* ========================= */
+/* Accounting (회계장부)      */
+/* ========================= */
+.form-input {
+  padding: 8px 12px;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.15s;
+  background: #fff;
+}
+.form-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.15);
+}
+.form-input:disabled {
+  background: var(--gray-100);
+  color: var(--gray-500);
+  cursor: not-allowed;
+}
+.clickable-row:hover {
+  background: var(--gray-50) !important;
+}
+.role-badge.role-accountant {
+  background: #e8eaf6;
+  color: #283593;
+}
+.role-badge.role-accountant_asst {
+  background: #e0f2f1;
+  color: #00695c;
+}
+.form-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #3c4043;
+}
+
+/* ========================= */
+/* Payroll (급여정산)         */
+/* ========================= */
+.payroll-sheet {
+  background: #fff;
+  border: 1px solid #dadce0;
+  border-radius: 12px;
+  padding: 32px;
+  max-width: 800px;
+  font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.payroll-header {
+  text-align: center;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 3px double #1a1a2e;
+}
+.payroll-title {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: #1a1a2e;
+  letter-spacing: 4px;
+}
+.payroll-period {
+  font-size: 0.9rem;
+  color: #5f6368;
+  margin-top: 4px;
+}
+.payroll-info-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+.payroll-info-cell {
+  padding: 10px 14px;
+  border-right: 1px solid #dadce0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.payroll-info-cell:last-child { border-right: none; }
+.payroll-info-cell.highlight { background: #e8f0fe; }
+.payroll-info-label {
+  font-size: 0.7rem;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.payroll-info-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+.payroll-info-value.accent { color: #1a73e8; font-size: 1.1rem; }
+
+/* 매출 테이블 */
+.payroll-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-bottom: 16px;
+}
+.payroll-table th {
+  background: #1a1a2e;
+  color: #fff;
+  padding: 8px 10px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.payroll-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #f0f0f0;
+  color: #3c4043;
+}
+.payroll-table tr.stripe td { background: #fafbfc; }
+.payroll-table .num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 500; }
+.payroll-table .sub { color: #9aa0a6; font-size: 0.78rem; }
+.payroll-table.compact { font-size: 0.8rem; }
+.payroll-table.compact th { padding: 6px 10px; }
+.payroll-table.compact td { padding: 5px 10px; }
+.payroll-table.refund td { color: #d93025; }
+
+.payroll-total-row {
+  background: #f8f9fa !important;
+  border-top: 2px solid #1a1a2e;
+}
+.payroll-total-row td {
+  font-weight: 700 !important;
+  color: #1a1a2e !important;
+  padding: 10px !important;
+}
+
+.payroll-depositor {
+  color: #e65100;
+  font-size: 0.75rem;
+  margin-left: 4px;
+}
+.payroll-type {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.payroll-type-계약 { background: #e8f0fe; color: #1a73e8; }
+.payroll-type-낙찰 { background: #e8f5e9; color: #188038; }
+.payroll-type-중개 { background: #fff3e0; color: #e65100; }
+.payroll-type-기타 { background: #f3e5f5; color: #7b1fa2; }
+.payroll-type-detail { font-size: 0.72rem; color: #9aa0a6; margin-left: 4px; }
+
+/* 상여금 박스 */
+.payroll-section-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin: 20px 0 10px;
+  padding: 6px 12px;
+  background: #f8f9fa;
+  border-left: 4px solid #1a73e8;
+  border-radius: 0 6px 6px 0;
+}
+.payroll-section-title.refund { border-left-color: #d93025; color: #d93025; }
+
+.payroll-bonus-box {
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.payroll-bonus-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 0.85rem;
+  color: #3c4043;
+}
+.payroll-bonus-row:last-child { border-bottom: none; }
+.payroll-bonus-row .num { font-weight: 600; font-variant-numeric: tabular-nums; }
+.payroll-bonus-row .accent { color: #1a73e8; }
+.payroll-bonus-row.total {
+  background: #e8f0fe;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.payroll-bonus-row.grand-total {
+  background: #1a1a2e;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.95rem;
+  padding: 10px 16px;
+}
+.payroll-bonus-row.grand-total .num { color: #fff; }
+
+.payroll-bonus-detail {
+  padding: 10px 16px;
+  background: #fafbfc;
+  border-bottom: 1px solid #f0f0f0;
+}
+.payroll-bonus-tier-title {
+  font-size: 0.72rem;
+  color: #9aa0a6;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.payroll-bonus-tier {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 0.8rem;
+  color: #5f6368;
+}
+.payroll-bonus-tier .tier-label { font-weight: 500; }
+.payroll-bonus-tier .tier-calc { color: #9aa0a6; }
+.payroll-bonus-tier .tier-result { font-weight: 600; color: #188038; min-width: 80px; text-align: right; }
+
+/* 하단 서명란 */
+.payroll-footer {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #dadce0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+.payroll-footer-date { font-size: 0.8rem; color: #9aa0a6; }
+.payroll-footer-company { font-size: 1rem; font-weight: 700; color: #1a1a2e; }
+
+/* 회사 이익 정리 시트 */
+.payroll-summary-sheet { max-width: 800px; }
+.payroll-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.payroll-summary-card {
+  border-radius: 10px;
+  padding: 16px;
+  border: 1px solid #dadce0;
+}
+.payroll-summary-card.blue { background: #e8f0fe; border-color: #a8c7fa; }
+.payroll-summary-card.orange { background: #fff3e0; border-color: #ffd699; }
+.payroll-summary-card.green { background: #e8f5e9; border-color: #a8dab5; }
+.payroll-summary-card.red { background: #fce4ec; border-color: #f8bbd0; }
+.payroll-summary-card-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #5f6368;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+.payroll-summary-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 0.82rem;
+  color: #3c4043;
+}
+.payroll-summary-item.bold { font-weight: 700; padding: 6px 0; border-top: 1px solid rgba(0,0,0,0.1); margin-top: 4px; }
+.payroll-summary-item.grand { font-weight: 800; font-size: 1rem; padding: 8px 0; border-top: 2px solid rgba(0,0,0,0.15); margin-top: 4px; }
+.payroll-summary-item .num { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.payroll-bonus-ref {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: #fafbfc;
+  border-radius: 8px;
+  border: 1px solid #e8eaed;
+}
+.payroll-bonus-ref-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #9aa0a6;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+@media (max-width: 768px) {
+  .payroll-sheet { padding: 16px; }
+  .payroll-info-row { grid-template-columns: repeat(2, 1fr); }
+  .payroll-summary-grid { grid-template-columns: 1fr; }
+  .payroll-title { font-size: 1.1rem; letter-spacing: 2px; }
 }

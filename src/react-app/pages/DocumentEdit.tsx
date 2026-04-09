@@ -133,7 +133,7 @@ export default function DocumentEdit() {
       api.documents.get(id),
       api.documents.logs(id),
       api.signatures.getByDocument(id),
-      api.documents.steps(id),
+      api.documents.steps(id).catch(() => ({ steps: [] })),
     ]).then(([docRes, logRes, sigRes, stepsRes]) => {
       const d = docRes.document;
       setDoc(d);
@@ -148,7 +148,7 @@ export default function DocumentEdit() {
           (d.status === 'submitted' && ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || ''));
         editor.setEditable(canEdit);
       }
-    }).catch(() => navigate('/documents'));
+    }).catch((err) => { console.error('문서 로딩 실패:', err); navigate('/documents'); });
   }, [id, editor]);
 
   const handleTitleBlur = () => {

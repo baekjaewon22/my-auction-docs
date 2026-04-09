@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck
 } from 'lucide-react';
 
 export default function Layout() {
@@ -24,6 +24,8 @@ export default function Layout() {
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(role);
   const canApproveUsers = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canManage = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
+  const isAccountingOnly = ['accountant', 'accountant_asst'].includes(role);
 
   const sidebarContent = (
     <>
@@ -54,11 +56,22 @@ export default function Layout() {
         <Link to="/templates" className={`nav-item ${isActive('/templates') ? 'active' : ''}`} title="템플릿" onClick={() => setMobileOpen(false)}>
           <ClipboardList size={18} /> {!collapsed && '템플릿'}
         </Link>
-        <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
-          <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
-        </Link>
+        {!isAccountingOnly && (
+          <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
+            <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
+          </Link>
+        )}
         <Link to="/archive" className={`nav-item ${isActive('/archive') ? 'active' : ''}`} title="문서 보관함" onClick={() => setMobileOpen(false)}>
           <Archive size={18} /> {!collapsed && '문서 보관함'}
+        </Link>
+
+        <div className="nav-divider" />
+        {!collapsed && <span className="nav-label">마이페이지</span>}
+        <Link to="/sales" className={`nav-item ${isActive('/sales') ? 'active' : ''}`} title="업무성과" onClick={() => setMobileOpen(false)}>
+          <DollarSign size={18} /> {!collapsed && '업무성과'}
+        </Link>
+        <Link to="/leave" className={`nav-item ${isActive('/leave') ? 'active' : ''}`} title="연차관리" onClick={() => setMobileOpen(false)}>
+          <CalendarCheck size={18} /> {!collapsed && '연차관리'}
         </Link>
 
         {canApprove && (
@@ -96,10 +109,17 @@ export default function Layout() {
           </Link>
         )}
 
-        {canApproveUsers && (
-          <Link to="/commissions" className={`nav-item ${isActive('/commissions') ? 'active' : ''}`} title="수수료 관리" onClick={() => setMobileOpen(false)}>
-            <DollarSign size={18} /> {!collapsed && '수수료 관리'}
-          </Link>
+        {canAccounting && (
+          <>
+            <div className="nav-divider" />
+            {!collapsed && <span className="nav-label">회계</span>}
+            <Link to="/accounting" className={`nav-item ${isActive('/accounting') ? 'active' : ''}`} title="회계장부" onClick={() => setMobileOpen(false)}>
+              <BookOpenCheck size={18} /> {!collapsed && '회계장부'}
+            </Link>
+            <Link to="/payroll" className={`nav-item ${isActive('/payroll') ? 'active' : ''}`} title="급여정산" onClick={() => setMobileOpen(false)}>
+              <Receipt size={18} /> {!collapsed && '급여정산'}
+            </Link>
+          </>
         )}
 
         {['master', 'ceo', 'cc_ref'].includes(role) && (

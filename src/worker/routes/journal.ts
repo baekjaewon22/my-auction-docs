@@ -18,12 +18,6 @@ function isOffDay(d: Date): boolean {
   return day === 0 || day === 6 || HOLIDAYS_2026.includes(fmtDate(d));
 }
 
-function nextBizDay(d: Date): Date {
-  let r = new Date(d.getTime());
-  while (isOffDay(r)) r = new Date(r.getTime() + 86400000);
-  return r;
-}
-
 function prevBizDay(d: Date): Date {
   let r = new Date(d.getTime());
   while (isOffDay(r)) r = new Date(r.getTime() - 86400000);
@@ -33,13 +27,6 @@ function prevBizDay(d: Date): Date {
 function getKSTToday(): string {
   const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
   return isOffDay(kst) ? fmtDate(prevBizDay(kst)) : fmtDate(kst);
-}
-
-function getKSTTomorrow(): string {
-  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  if (isOffDay(kst)) return fmtDate(nextBizDay(kst));
-  const tmr = new Date(kst.getTime() + 86400000);
-  return fmtDate(nextBizDay(tmr));
 }
 
 interface JournalEntry {
@@ -149,15 +136,15 @@ journal.post('/', async (c) => {
   }
 
   const today = getKSTToday();
-  const tomorrow = getKSTTomorrow();
-  if (body.target_date !== today && body.target_date !== tomorrow) {
-    return c.json({ error: '오늘 또는 내일 일정만 등록할 수 있습니다.' }, 400);
+  // 과거 날짜 등록 불가 (master/ceo/cc_ref 제외)
+  if (body.target_date < today && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
+    return c.json({ error: '과거 날짜에는 일정을 등록할 수 없습니다.' }, 400);
   }
-  // 오늘 일정은 16시 이후 등록 불가 (ceo/cc_ref/master 제외)
+  // 오늘 일정은 18시 이후 등록 불가 (ceo/cc_ref/master 제외)
   if (body.target_date === today && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
     const hour = new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCHours();
-    if (hour >= 16) {
-      return c.json({ error: '오늘 일정은 16시 이후 등록할 수 없습니다.' }, 400);
+    if (hour >= 18) {
+      return c.json({ error: '오늘 일정은 18시 이후 등록할 수 없습니다.' }, 400);
     }
   }
 
@@ -202,12 +189,12 @@ journal.put('/:id', async (c) => {
       }
     } else if (entry.target_date === today) {
       const hour = new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCHours();
-      if (hour >= 16) {
-        // 오늘 16시 이후: 입찰 낙찰가/입찰가만 허용
+      if (hour >= 18) {
+        // 오늘 18시 이후: 입찰 낙찰가/입찰가만 허용
         if (isBidEntry && (body.bid_field_only || isAdminPlus)) {
           // 허용
         } else {
-          return c.json({ error: '오늘 일정은 16시 이후 수정할 수 없습니다.' }, 400);
+          return c.json({ error: '오늘 일정은 18시 이후 수정할 수 없습니다.' }, 400);
         }
       }
     }

@@ -314,6 +314,14 @@ export default function Journal() {
                 {label}
               </span>
             ))}
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4, borderLeft: '1px solid #dadce0', paddingLeft: 12 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#188038', display: 'inline-block', border: '1px solid #ccc' }} />
+              현장출근
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#d93025', display: 'inline-block', border: '1px solid #ccc' }} />
+              현장퇴근
+            </span>
           </div>
 
           {(() => {
@@ -384,16 +392,29 @@ export default function Journal() {
 
                               return (
                                 <td key={d} className="journal-month-cell" style={{ textAlign: 'center', padding: 2, position: 'relative' }}>
-                                  {count > 0 ? (
+                                  {count > 0 ? (() => {
+                                    // 현장출퇴근 여부 확인
+                                    const hasCheckIn = dayEntries.some(e => { try { return JSON.parse(e.data).fieldCheckIn; } catch { return false; } });
+                                    const hasCheckOut = dayEntries.some(e => { try { return JSON.parse(e.data).fieldCheckOut; } catch { return false; } });
+                                    return (
                                     <div className="journal-month-dot-wrap">
-                                      <div style={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
+                                      <div style={{ display: 'flex', gap: 1, justifyContent: 'center', alignItems: 'center' }}>
+                                        {hasCheckIn && <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#188038', display: 'inline-block', border: '1px solid #fff' }} title="현장출근" />}
                                         {types.slice(0, 3).map((t, i) => (
                                           <span key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: typeColors[t] || '#999', display: 'inline-block' }} />
                                         ))}
+                                        {hasCheckOut && <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#d93025', display: 'inline-block', border: '1px solid #fff' }} title="현장퇴근" />}
                                       </div>
                                       <span style={{ fontSize: '0.6rem', color: '#5f6368' }}>{count}</span>
                                       <div className="journal-hover-popup">
                                         <div style={{ fontWeight: 600, marginBottom: 4 }}>{m.name} — {dateStr}</div>
+                                        {/* 현장출퇴근 표시 */}
+                                        {(hasCheckIn || hasCheckOut) && (
+                                          <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+                                            {hasCheckIn && <span style={{ padding: '1px 6px', borderRadius: 8, fontSize: '0.6rem', fontWeight: 600, background: '#e8f5e9', color: '#188038' }}>현장출근</span>}
+                                            {hasCheckOut && <span style={{ padding: '1px 6px', borderRadius: 8, fontSize: '0.6rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>현장퇴근</span>}
+                                          </div>
+                                        )}
                                         {dayEntries.map(entry => {
                                           const ed = (() => { try { return JSON.parse(entry.data); } catch { return {}; } })();
                                           return (
@@ -407,8 +428,9 @@ export default function Journal() {
                                           );
                                         })}
                                       </div>
-                                    </div>
-                                  ) : (
+                                    </div>);
+                                    })()
+                                  : (
                                     <span style={{ color: '#e0e0e0', fontSize: '0.65rem' }}>-</span>
                                   )}
                                 </td>

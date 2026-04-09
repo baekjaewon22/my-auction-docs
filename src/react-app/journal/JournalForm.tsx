@@ -49,6 +49,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [, setBriefingSubmit] = useState(false);
   const [briefingYear, setBriefingYear] = useState('2026');
   const [briefingCaseNo, setBriefingCaseNo] = useState('');
+  const [briefingItemNo, setBriefingItemNo] = useState('');
   const [briefingCourt, setBriefingCourt] = useState('');
 
   // 입찰
@@ -62,6 +63,8 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [bidWon, setBidWon] = useState(false);
   const [bidProxy, setBidProxy] = useState(false); // 대리입찰
   const [bidDeviationReason, setBidDeviationReason] = useState('');
+  const [bidItemNo, setBidItemNo] = useState('');
+  const [bidBidderName, setBidBidderName] = useState(''); // 입찰자명 (고객명과 다를 때)
   const [showDeviationWarning, setShowDeviationWarning] = useState(false);
 
   useEffect(() => {
@@ -74,12 +77,48 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     }
   }, [bidSuggestedPrice, bidPrice]);
 
+  // [3-1] 현장출근 자동 활성화: 입찰/미팅/임장 09:00 시작 → 자동 체크 (대리입찰 제외)
+  useEffect(() => {
+    const isFieldType = ['입찰', '미팅', '임장'].includes(activityType);
+    if (isFieldType && timeFrom === '09:00') {
+      // 대리입찰이면 비활성화
+      if (activityType === '입찰' && bidProxy) {
+        setFieldCheckIn(false);
+      } else {
+        setFieldCheckIn(true);
+      }
+    }
+  }, [timeFrom, activityType, bidProxy]);
+
+  // [3-2] 현장퇴근 자동 활성화: 입찰/미팅/임장 18:00 종결 → 자동 체크
+  useEffect(() => {
+    const isFieldType = ['입찰', '미팅', '임장'].includes(activityType);
+    if (isFieldType && timeTo === '18:00') {
+      if (activityType === '입찰' && bidProxy) {
+        setFieldCheckOut(false);
+      } else {
+        setFieldCheckOut(true);
+      }
+    }
+  }, [timeTo, activityType, bidProxy]);
+
+  // 대리입찰 체크 시 현장출퇴근 해제
+  useEffect(() => {
+    if (bidProxy && activityType === '입찰') {
+      setFieldCheckIn(false);
+      setFieldCheckOut(false);
+    }
+  }, [bidProxy]);
+
   // 임장
   const [inspYear, setInspYear] = useState('2026');
   const [inspCaseNo, setInspCaseNo] = useState('');
   const [inspCourt, setInspCourt] = useState('');
+  const [inspItemNo, setInspItemNo] = useState('');
   const [inspPlace, setInspPlace] = useState('');
+  const [inspClientType, setInspClientType] = useState<'고객명' | '기타'>('고객명');
   const [inspClient, setInspClient] = useState('');
+  const [inspEtcReason, setInspEtcReason] = useState('');
 
   // 브리핑 고객명
   const [briefingClient, setBriefingClient] = useState('');
@@ -91,6 +130,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [meetingClient, setMeetingClient] = useState('');
   const [meetingCaseYear, setMeetingCaseYear] = useState('2026');
   const [meetingCaseNo, setMeetingCaseNo] = useState('');
+  const [meetingItemNo, setMeetingItemNo] = useState('');
 
   // 사무
   const [officeType, setOfficeType] = useState('고객관리');
@@ -106,16 +146,19 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
   // 현재 폼 내용으로 TaskItem 생성
   const buildTask = (): TaskItem | null => {
+    if (activityType === '입찰' && !bidCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '입찰' && !bidCourt) { alert('법원을 선택해주세요.'); return null; }
-    if (activityType === '입찰' && !bidBidder.trim()) { alert('고객명을 입력해주세요.'); return null; }
+    if (activityType === '입찰' && !bidBidder.trim()) { alert('계약자명을 입력해주세요.'); return null; }
+    if (activityType === '임장' && !inspCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '임장' && !inspCourt) { alert('법원을 선택해주세요.'); return null; }
-    if (activityType === '임장' && !inspClient.trim()) { alert('고객명을 입력해주세요.'); return null; }
-    if (activityType === '미팅' && !meetingClient.trim()) { alert('고객명을 입력해주세요.'); return null; }
+    if (activityType === '임장' && inspClientType === '고객명' && !inspClient.trim()) { alert('계약자명을 입력해주세요.'); return null; }
+    if (activityType === '임장' && inspClientType === '기타' && !inspEtcReason.trim()) { alert('사유를 입력해주세요.'); return null; }
+    if (activityType === '미팅' && !meetingClient.trim()) { alert('계약자명을 입력해주세요.'); return null; }
     if (activityType === '미팅' && !meetingPlace.trim()) { alert('장소를 입력해주세요.'); return null; }
     if (activityType === '미팅' && meetingType === '브리핑' && !meetingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '브리핑자료제출' && !briefingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '브리핑자료제출' && !briefingCourt) { alert('법원을 선택해주세요.'); return null; }
-    if (activityType === '브리핑자료제출' && !briefingClient.trim()) { alert('고객명을 입력해주세요.'); return null; }
+    if (activityType === '브리핑자료제출' && !briefingClient.trim()) { alert('계약자명을 입력해주세요.'); return null; }
     if (activityType === '입찰' && showDeviationWarning && !bidDeviationReason.trim()) {
       alert('제시입찰가 대비 실제입찰가가 5% 이상 낮습니다. 사유를 입력해주세요.');
       return null;
@@ -126,23 +169,26 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     let label = '';
 
     switch (activityType) {
-      case '입찰':
-        data = { ...data, caseNo: `${bidYear}타경${bidCaseNo}`, bidder: bidBidder, court: bidCourt,
+      case '입찰': {
+        const actualBidder = bidBidderName.trim() || bidBidder;
+        data = { ...data, caseNo: `${bidYear}타경${bidCaseNo}`, itemNo: bidItemNo, bidder: actualBidder, client: bidBidder, court: bidCourt,
           suggestedPrice: bidSuggestedPrice, bidPrice, winPrice: bidWon ? bidPrice : bidWinPrice,
           bidWon, bidProxy, deviationReason: bidDeviationReason };
         subtype = `${bidYear}타경${bidCaseNo}`;
-        label = `입찰 — ${subtype}${bidProxy ? ' (대리)' : ''}`;
+        label = `입찰 — ${subtype}${bidItemNo ? ` | ${bidItemNo}` : ''} | ${bidBidder}${actualBidder !== bidBidder ? `(입찰자:${actualBidder})` : ''}${bidProxy ? ' (대리)' : ''}`;
         break;
+      }
       case '임장':
-        data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, court: inspCourt, place: inspPlace, client: inspClient };
+        data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, itemNo: inspItemNo, court: inspCourt, place: inspPlace,
+          client: inspClientType === '고객명' ? inspClient : '', inspClientType, inspEtcReason: inspClientType === '기타' ? inspEtcReason : '' };
         subtype = `${inspYear}타경${inspCaseNo}`;
-        label = `임장 — ${subtype}`;
+        label = `임장 — ${subtype}${inspItemNo ? ` | ${inspItemNo}` : ''} | ${inspClientType === '고객명' ? inspClient : inspEtcReason}`;
         break;
       case '미팅':
         data = { ...data, meetingType, etcReason: meetingEtc, place: meetingPlace, client: meetingClient,
-          ...(meetingType === '브리핑' ? { caseNo: `${meetingCaseYear}타경${meetingCaseNo}` } : {}) };
+          ...(meetingType === '브리핑' ? { caseNo: `${meetingCaseYear}타경${meetingCaseNo}`, itemNo: meetingItemNo } : {}) };
         subtype = meetingType === '기타' ? meetingEtc : meetingType;
-        label = `미팅 — ${subtype}`;
+        label = `미팅(${subtype}) — ${meetingClient}${meetingType === '브리핑' ? ` | ${meetingCaseYear}타경${meetingCaseNo}${meetingItemNo ? ` | ${meetingItemNo}` : ''}` : ''}`;
         break;
       case '사무':
         data = { ...data, officeType, etcReason: officeEtc };
@@ -151,9 +197,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
         break;
       case '브리핑자료제출': {
         const caseNo = `${briefingYear}타경${briefingCaseNo}`;
-        data = { briefingSubmit: true, briefingCaseNo: caseNo, briefingCourt, client: briefingClient };
+        data = { briefingSubmit: true, briefingCaseNo: caseNo, itemNo: briefingItemNo, briefingCourt, client: briefingClient };
         subtype = '브리핑자료 제출';
-        label = `브리핑 — ${caseNo}`;
+        label = `브리핑 — ${caseNo}${briefingItemNo ? ` | ${briefingItemNo}` : ''} | ${briefingClient}`;
         break;
       }
       case '개인':
@@ -178,13 +224,13 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
   // 필드 초기화 (공통 필드는 유지)
   const resetFields = () => {
-    setBidCaseNo(''); setBidBidder(''); setBidSuggestedPrice(''); setBidPrice('');
+    setBidCaseNo(''); setBidItemNo(''); setBidBidder(''); setBidBidderName(''); setBidSuggestedPrice(''); setBidPrice('');
     setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidDeviationReason('');
-    setInspCaseNo(''); setInspPlace(''); setInspClient('');
-    setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo('');
+    setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient('');
+    setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo(''); setMeetingItemNo('');
     setOfficeEtc('');
     setPersonalReason('');
-    setBriefingSubmit(false); setBriefingCaseNo(''); setBriefingCourt(''); setBriefingClient('');
+    setBriefingSubmit(false); setBriefingCaseNo(''); setBriefingItemNo(''); setBriefingCourt(''); setBriefingClient('');
   };
 
   const removeTask = (idx: number) => {
@@ -291,9 +337,19 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                     <input type="text" value={bidCaseNo} onChange={(e) => setBidCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
                   </div>
                 </div>
+                <div className="form-group" style={{ flex: 'none', width: 72 }}>
+                  <label>물건번호</label>
+                  <input type="text" value={bidItemNo} onChange={(e) => setBidItemNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="" className="case-no-input" maxLength={3} style={{ width: 52, textAlign: 'center' }} />
+                </div>
+              </div>
+              <div className="form-row form-row-inline">
                 <div className="form-group" style={{ flex: 1 }}>
-                  <label>고객명</label>
-                  <input type="text" value={bidBidder} onChange={(e) => setBidBidder(e.target.value)} placeholder="고객명" required />
+                  <label>계약자명 *</label>
+                  <input type="text" value={bidBidder} onChange={(e) => setBidBidder(e.target.value)} placeholder="계약자명" required />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>입찰자명 <span style={{ color: '#9aa0a6', fontWeight: 400, fontSize: '0.7rem' }}>계약자와 다를 때</span></label>
+                  <input type="text" value={bidBidderName} onChange={(e) => setBidBidderName(e.target.value)} placeholder={bidBidder || '미입력 시 계약자명'} />
                 </div>
               </div>
               <div className="form-group">
@@ -349,9 +405,25 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                     <input type="text" value={inspCaseNo} onChange={(e) => setInspCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" required className="case-no-input" maxLength={6} />
                   </div>
                 </div>
+                <div className="form-group" style={{ flex: 'none', width: 72 }}>
+                  <label>물건번호</label>
+                  <input type="text" value={inspItemNo} onChange={(e) => setInspItemNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="" className="case-no-input" maxLength={3} style={{ width: 52, textAlign: 'center' }} />
+                </div>
+              </div>
+              <div className="form-row form-row-inline">
+                <div className="form-group" style={{ flex: 'none', minWidth: 70 }}>
+                  <label>구분</label>
+                  <select value={inspClientType} onChange={(e) => setInspClientType(e.target.value as any)} style={{ padding: '5px 6px', borderRadius: 6, border: '1px solid #dadce0', fontSize: '0.78rem' }}>
+                    <option value="고객명">계약자명</option>
+                    <option value="기타">기타</option>
+                  </select>
+                </div>
                 <div className="form-group" style={{ flex: 1 }}>
-                  <label>고객명</label>
-                  <input type="text" value={inspClient} onChange={(e) => setInspClient(e.target.value)} placeholder="고객명" />
+                  {inspClientType === '고객명' ? (
+                    <><label>계약자명 *</label><input type="text" value={inspClient} onChange={(e) => setInspClient(e.target.value)} placeholder="계약자명" /></>
+                  ) : (
+                    <><label>사유 *</label><input type="text" value={inspEtcReason} onChange={(e) => setInspEtcReason(e.target.value)} placeholder="ex) 사전답사" /></>
+                  )}
                 </div>
               </div>
               <div className="form-group">
@@ -375,17 +447,25 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
               {meetingType === '기타' && (
                 <div className="form-group"><label>사유</label><input type="text" value={meetingEtc} onChange={(e) => setMeetingEtc(e.target.value)} required /></div>
               )}
-              {meetingType === '브리핑' && (
-                <div className="form-group">
-                  <label>사건번호</label>
-                  <div className="case-no-inline">
-                    <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === meetingCaseYear)} onChange={(o: any) => setMeetingCaseYear(o.value)} />
-                    <span className="case-no-fixed">타경</span>
-                    <input type="text" value={meetingCaseNo} onChange={(e) => setMeetingCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" className="case-no-input" maxLength={6} />
+              {meetingType === '브리핑' ? (
+                <div className="form-row form-row-inline">
+                  <div className="form-group" style={{ flex: 'none' }}>
+                    <label>사건번호</label>
+                    <div className="case-no-inline">
+                      <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === meetingCaseYear)} onChange={(o: any) => setMeetingCaseYear(o.value)} />
+                      <span className="case-no-fixed">타경</span>
+                      <input type="text" value={meetingCaseNo} onChange={(e) => setMeetingCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" className="case-no-input" maxLength={6} />
+                    </div>
                   </div>
+                  <div className="form-group" style={{ flex: 'none', width: 72 }}>
+                    <label>물건번호</label>
+                    <input type="text" value={meetingItemNo} onChange={(e) => setMeetingItemNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="" className="case-no-input" maxLength={3} style={{ width: 52, textAlign: 'center' }} />
+                  </div>
+                  <div className="form-group" style={{ flex: 1 }}><label>계약자명 *</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="계약자명" required /></div>
                 </div>
+              ) : (
+                <div className="form-group"><label>계약자명 *</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="계약자명" required /></div>
               )}
-              <div className="form-group"><label>고객명 *</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="고객명" required /></div>
               <div className="form-group"><label>장소</label><input type="text" value={meetingPlace} onChange={(e) => setMeetingPlace(e.target.value)} required /></div>
             </>
           )}
@@ -406,21 +486,27 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
           {/* === 브리핑 (독립 탭) === */}
           {activityType === '브리핑자료제출' && (
             <>
-              <div className="form-group">
-                <label>사건번호</label>
-                <div className="case-no-inline">
-                  <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === briefingYear)} onChange={(o: any) => setBriefingYear(o.value)} />
-                  <span className="case-no-fixed">타경</span>
-                  <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" className="case-no-input" maxLength={6} />
+              <div className="form-row form-row-inline">
+                <div className="form-group" style={{ flex: 'none' }}>
+                  <label>사건번호</label>
+                  <div className="case-no-inline">
+                    <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === briefingYear)} onChange={(o: any) => setBriefingYear(o.value)} />
+                    <span className="case-no-fixed">타경</span>
+                    <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" className="case-no-input" maxLength={6} />
+                  </div>
+                </div>
+                <div className="form-group" style={{ flex: 'none', width: 72 }}>
+                  <label>물건번호</label>
+                  <input type="text" value={briefingItemNo} onChange={(e) => setBriefingItemNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="" className="case-no-input" maxLength={3} style={{ width: 52, textAlign: 'center' }} />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>계약자명</label>
+                  <input type="text" value={briefingClient} onChange={(e) => setBriefingClient(e.target.value)} placeholder="계약자명" />
                 </div>
               </div>
               <div className="form-group">
                 <label>법원</label>
                 <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === briefingCourt) || null} onChange={(o: any) => setBriefingCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
-              </div>
-              <div className="form-group">
-                <label>고객명</label>
-                <input type="text" value={briefingClient} onChange={(e) => setBriefingClient(e.target.value)} placeholder="고객명" />
               </div>
             </>
           )}

@@ -167,8 +167,28 @@ export const api = {
     me: () => request<{ leave: any }>('/leave/me'),
     init: (userId: string, totalDays: number) =>
       request('/leave/init', { method: 'POST', body: JSON.stringify({ user_id: userId, total_days: totalDays }) }),
-    update: (userId: string, data: { total_days?: number; used_days?: number }) =>
+    update: (userId: string, data: { total_days?: number; used_days?: number; monthly_days?: number; monthly_used?: number; leave_type?: string }) =>
       request('/leave/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
+    // 휴가 신청
+    createRequest: (data: { leave_type: string; start_date: string; end_date: string; hours?: number; reason: string }) =>
+      request('/leave/request', { method: 'POST', body: JSON.stringify(data) }),
+    listRequests: (params?: { status?: string; month?: string }) =>
+      request<{ requests: any[] }>('/leave/requests' + (params ? '?' + new URLSearchParams(params as any).toString() : '')),
+    approveRequest: (id: string) =>
+      request('/leave/requests/' + id + '/approve', { method: 'POST' }),
+    rejectRequest: (id: string, reason: string) =>
+      request('/leave/requests/' + id + '/reject', { method: 'POST', body: JSON.stringify({ reason }) }),
+    cancelRequest: (id: string) =>
+      request('/leave/requests/' + id + '/cancel', { method: 'POST' }),
+    cancelApprove: (id: string) =>
+      request('/leave/requests/' + id + '/cancel-approve', { method: 'POST' }),
+    // 환급
+    refund: (userId: string) => request<any>('/leave/refund/' + userId),
+    // 알림
+    alerts: () => request<{ alerts: any[] }>('/leave/alerts'),
+    // 입사일
+    setHireDate: (userId: string, hireDate: string) =>
+      request('/leave/hire-date/' + userId, { method: 'PUT', body: JSON.stringify({ hire_date: hireDate }) }),
   },
 
   minutes: {
@@ -200,6 +220,116 @@ export const api = {
     create: (data: { journal_entry_id: string; user_id: string; user_name: string; client_name: string; case_no: string; win_price: string }) =>
       request('/commissions', { method: 'POST', body: JSON.stringify(data) }),
     deleteByEntry: (entryId: string) => request('/commissions/by-entry/' + entryId, { method: 'DELETE' }),
+  },
+
+  sales: {
+    list: (params?: { month?: string; user_id?: string }) => {
+      const q = new URLSearchParams();
+      if (params?.month) q.set('month', params.month);
+      if (params?.user_id) q.set('user_id', params.user_id);
+      const qs = q.toString();
+      return request<{ records: import('./types').SalesRecord[] }>('/sales' + (qs ? '?' + qs : ''));
+    },
+    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string }) =>
+      request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string }) =>
+      request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      request('/sales/' + id, { method: 'DELETE' }),
+    updatePaymentMethod: (id: string, payment_method: string) =>
+      request('/sales/' + id + '/payment-method', { method: 'PUT', body: JSON.stringify({ payment_method }) }),
+    confirm: (id: string, deposit_date?: string) =>
+      request('/sales/' + id + '/confirm', { method: 'POST', body: JSON.stringify({ deposit_date }) }),
+    refundRequest: (id: string) =>
+      request('/sales/' + id + '/refund-request', { method: 'POST' }),
+    refundApprove: (id: string) =>
+      request('/sales/' + id + '/refund-approve', { method: 'POST' }),
+    updateMemo: (id: string, memo: string) =>
+      request('/sales/' + id + '/memo', { method: 'PUT', body: JSON.stringify({ memo }) }),
+    dashboardPending: () =>
+      request<{ records: import('./types').SalesRecord[] }>('/sales/dashboard/pending'),
+    dashboardRefundRequests: () =>
+      request<{ records: import('./types').SalesRecord[] }>('/sales/dashboard/refund-requests'),
+    stats: (params?: { month?: string; branch?: string; department?: string; user_id?: string }) => {
+      const q = new URLSearchParams();
+      if (params?.month) q.set('month', params.month);
+      if (params?.branch) q.set('branch', params.branch);
+      if (params?.department) q.set('department', params.department);
+      if (params?.user_id) q.set('user_id', params.user_id);
+      const qs = q.toString();
+      return request<{ records: import('./types').SalesRecord[] }>('/sales/stats' + (qs ? '?' + qs : ''));
+    },
+    deposits: () => request<{ deposits: import('./types').DepositNotice[] }>('/sales/deposits'),
+    createDeposit: (data: { depositor: string; amount: number; deposit_date: string }) =>
+      request<{ success: boolean; id: string }>('/sales/deposits', { method: 'POST', body: JSON.stringify(data) }),
+    claimDeposit: (id: string, data: { type: string; type_detail?: string; client_name: string; contract_date?: string }) =>
+      request('/sales/deposits/' + id + '/claim', { method: 'POST', body: JSON.stringify(data) }),
+    approveDeposit: (id: string) =>
+      request('/sales/deposits/' + id + '/approve', { method: 'POST' }),
+    createAccountingEntry: (data: { amount: number; content: string; date: string; assignee_id: string; direction?: string }) =>
+      request<{ success: boolean; id: string }>('/sales/accounting-entry', { method: 'POST', body: JSON.stringify(data) }),
+    contractCheck: (id: string, data: { contract_submitted?: number; contract_not_submitted?: number; contract_not_reason?: string }) =>
+      request('/sales/' + id + '/contract-check', { method: 'PUT', body: JSON.stringify(data) }),
+    contractNotApprove: (id: string) =>
+      request('/sales/' + id + '/contract-not-approve', { method: 'PUT' }),
+    bulkImport: (records: any[]) =>
+      request<{ success: boolean; count: number }>('/sales/bulk-import', { method: 'POST', body: JSON.stringify({ records }) }),
+  },
+
+  card: {
+    updateUserCard: (userId: string, card_number: string) =>
+      request('/card/user/' + userId, { method: 'PUT', body: JSON.stringify({ card_number }) }),
+    upload: (rows: { card_number: string; transaction_date: string; merchant_name: string; amount: number; description: string }[]) =>
+      request<{ success: boolean; inserted: number; batch_id: string }>('/card/upload', { method: 'POST', body: JSON.stringify({ rows }) }),
+    transactions: (params?: { month?: string; branch?: string; user_id?: string }) => {
+      const q = new URLSearchParams();
+      if (params?.month) q.set('month', params.month);
+      if (params?.branch) q.set('branch', params.branch);
+      if (params?.user_id) q.set('user_id', params.user_id);
+      const qs = q.toString();
+      return request<{ transactions: any[] }>('/card/transactions' + (qs ? '?' + qs : ''));
+    },
+    summary: (month?: string) => {
+      const q = month ? '?month=' + month : '';
+      return request<{ by_branch: any[]; by_user: any[] }>('/card/summary' + q);
+    },
+    userTotal: (userId: string, month?: string) => {
+      const q = month ? '?month=' + month : '';
+      return request<{ total: number }>('/card/user-total/' + userId + q);
+    },
+    deleteTransaction: (id: string) =>
+      request('/card/transaction/' + id, { method: 'DELETE' }),
+    deleteBatch: (batchId: string) =>
+      request('/card/batch/' + batchId, { method: 'DELETE' }),
+  },
+
+  payroll: {
+    get: (userId: string, month?: string) => {
+      const q = month ? '?month=' + month : '';
+      return request<any>('/payroll/' + userId + q);
+    },
+    branchSummary: (month?: string, branch?: string) => {
+      const q = new URLSearchParams();
+      if (month) q.set('month', month);
+      if (branch) q.set('branch', branch);
+      const qs = q.toString();
+      return request<any>('/payroll/branch/summary' + (qs ? '?' + qs : ''));
+    },
+  },
+
+  accounting: {
+    list: () => request<{ accounts: import('./types').UserAccounting[] }>('/accounting'),
+    get: (userId: string) => request<{ account: import('./types').UserAccounting | null }>('/accounting/' + userId),
+    update: (userId: string, data: { salary?: number; grade?: string; position_allowance?: number }) =>
+      request<{ success: boolean; salary: number; standard_sales: number; grade: string }>('/accounting/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
+    updateGrade: (userId: string, grade: string) =>
+      request('/accounting/' + userId + '/grade', { method: 'PUT', body: JSON.stringify({ grade }) }),
+    evaluations: (userId: string) =>
+      request<{ evaluations: import('./types').SalesEvaluation[] }>('/accounting/evaluations/' + userId),
+    evaluate: (periodStart: string, periodEnd: string) =>
+      request<{ success: boolean; results: any[] }>('/accounting/evaluate', { method: 'POST', body: JSON.stringify({ period_start: periodStart, period_end: periodEnd }) }),
+    alerts: () =>
+      request<{ alerts: import('./types').SalesEvaluation[]; demotion_candidates: import('./types').SalesEvaluation[]; current_period_alerts: import('./types').SalesEvaluation[]; current_period: { start: string; end: string } }>('/accounting/alerts/dashboard'),
   },
 
   journal: {

@@ -65,7 +65,12 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
 
   const saveEdit = async (entry: JournalEntry) => {
     try {
-      await api.journal.update(entry.id, { data: editData });
+      // 사건번호 변경 시 activity_subtype도 갱신
+      const updatePayload: { data: Record<string, any>; activity_subtype?: string } = { data: editData };
+      if (editData.caseNo && (entry.activity_type === '입찰' || entry.activity_type === '임장')) {
+        updatePayload.activity_subtype = editData.caseNo;
+      }
+      await api.journal.update(entry.id, updatePayload);
       setEditingId(null);
       onUpdate?.();
     } catch (err: any) { alert(err.message); }
@@ -89,6 +94,19 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
           case_no: d.caseNo || '',
           win_price: updated.winPrice || '',
         });
+        // 매출확인 리스트에도 자동 추가
+        const winAmount = Number((updated.winPrice || '').replace(/[^0-9]/g, '')) || 0;
+        if (winAmount > 0) {
+          try {
+            await api.sales.create({
+              type: '낙찰',
+              client_name: d.bidder || d.client || '',
+              amount: winAmount,
+              contract_date: entry.target_date,
+              journal_entry_id: entry.id,
+            });
+          } catch { /* 이미 존재할 수 있음 */ }
+        }
       } else {
         await api.commissions.deleteByEntry(entry.id);
       }

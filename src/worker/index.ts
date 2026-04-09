@@ -13,6 +13,10 @@ import org from './routes/org';
 import alimtalkRoute from './routes/alimtalk';
 import minutes from './routes/minutes';
 import commissions from './routes/commissions';
+import accounting from './routes/accounting';
+import salesRoute from './routes/sales';
+import payrollRoute from './routes/payroll';
+import cardRoute from './routes/card';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -38,6 +42,10 @@ app.route('/api/org', org);
 app.route('/api/alimtalk', alimtalkRoute);
 app.route('/api/minutes', minutes);
 app.route('/api/commissions', commissions);
+app.route('/api/accounting', accounting);
+app.route('/api/sales', salesRoute);
+app.route('/api/payroll', payrollRoute);
+app.route('/api/card', cardRoute);
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
