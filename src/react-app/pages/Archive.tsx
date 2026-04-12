@@ -2,13 +2,11 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
-import { BRANCHES } from '../types';
 import type { Document } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { useDepartments } from '../hooks/useDepartments';
+import { useBranches } from '../hooks/useBranches';
 import { Archive, FileCheck, FileText, Search, Trash2, MapPin } from 'lucide-react';
-
-const BRANCH_OPTS = toOptions(BRANCHES);
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   draft: { label: '작성중', className: 'status-draft' },
@@ -20,7 +18,9 @@ const statusConfig: Record<string, { label: string; className: string }> = {
 export default function ArchivePage() {
   const { user } = useAuthStore();
   const { departments } = useDepartments();
+  const { branches } = useBranches();
   const DEPT_OPTS = toOptions(departments);
+  const BRANCH_OPTS = branches.map(b => ({ value: b, label: b }));
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterMonth, setFilterMonth] = useState('');
@@ -58,19 +58,23 @@ export default function ArchivePage() {
     });
   };
 
+  const [statusTab, setStatusTab] = useState<'all' | 'approved' | 'cancelled'>('approved');
+
   useEffect(() => {
     setLoading(true);
     api.documents.list('approved')
       .then((res) => {
-        // 취소된 문서도 포함 (cancelled=1인 approved 문서)
         setDocuments(res.documents);
       })
       .finally(() => setLoading(false));
   }, []);
 
-  // 필터 적용
+  // 상태 탭 필터
   let filtered = documents;
-  if (filterStatus) filtered = filtered.filter((d) => d.status === filterStatus);
+  if (statusTab === 'approved') filtered = filtered.filter(d => d.status === 'approved' && d.cancelled !== 1);
+  else if (statusTab === 'cancelled') filtered = filtered.filter(d => d.cancelled === 1);
+  // 'all'은 전체
+  if (filterStatus && statusTab === 'all') filtered = filtered.filter((d) => d.status === filterStatus);
   if (filterMonth) filtered = filtered.filter((d) => d.created_at.startsWith(filterMonth));
   if (filterBranch) filtered = filtered.filter((d) => d.branch === filterBranch);
   if (filterDept) filtered = filtered.filter((d) => d.department === filterDept);
@@ -85,13 +89,14 @@ export default function ArchivePage() {
   const authors = [...new Set(documents.map((d) => d.author_name).filter(Boolean))].sort();
   const authorOpts = authors.map((a) => ({ value: a!, label: a! }));
 
-  // 월별 그룹핑
-  const grouped = filtered.reduce<Record<string, Document[]>>((acc, d) => {
-    const m = d.created_at.slice(0, 7);
-    if (!acc[m]) acc[m] = [];
-    acc[m].push(d);
-    return acc;
-  }, {});
+  // 페이지네이션
+  const PAGE_SIZE = 20;
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // 필터 변경 시 1페이지로 리셋
+  useEffect(() => { setPage(1); }, [statusTab, filterMonth, filterBranch, filterDept, filterAuthor, searchText]);
 
   const resetFilters = () => {
     setFilterMonth('');
@@ -118,7 +123,19 @@ export default function ArchivePage() {
     <div className="page">
       <div className="page-header">
         <h2><Archive size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 문서 보관함</h2>
-        <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>총 {filtered.length}건</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {(['all', 'approved', 'cancelled'] as const).map(tab => {
+            const labels = { all: '전체', approved: '승인', cancelled: '취소' };
+            const count = tab === 'all' ? documents.length : tab === 'approved' ? documents.filter(d => d.status === 'approved' && d.cancelled !== 1).length : documents.filter(d => d.cancelled === 1).length;
+            return (
+              <button key={tab} className={`btn btn-sm ${statusTab === tab ? 'btn-primary' : ''}`}
+                style={statusTab !== tab ? { border: '1px solid #dadce0', background: '#fff' } : {}}
+                onClick={() => setStatusTab(tab)}>
+                {labels[tab]} <span style={{ fontSize: '0.7rem', opacity: 0.8 }}>({count})</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* 필터 */}
@@ -155,65 +172,105 @@ export default function ArchivePage() {
         )}
       </div>
 
-      {/* 문서 목록 - 월별 그룹 */}
-      {Object.keys(grouped).sort((a, b) => b.localeCompare(a)).map((month) => (
-        <section key={month} className="archive-month-section">
-          <div className="archive-month-header">
-            <span className="archive-month-label">{month}</span>
-            <span className="archive-month-count">{grouped[month].length}건</span>
-          </div>
-          <div className="archive-doc-list">
-            {grouped[month].map((doc) => {
-              const isCancelled = doc.cancelled === 1;
-              return (
-              <Link to={'/documents/' + doc.id} key={doc.id} className={`archive-doc-item ${isCancelled ? 'archive-doc-cancelled' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={!!checked[doc.id]}
-                  onClick={(e) => { e.stopPropagation(); e.preventDefault(); toggleCheck(doc.id); }}
-                  readOnly
-                  className="archive-doc-check"
-                  title="다운로드 체크"
-                />
-                <div className="archive-doc-icon">
-                  {isCancelled ? <FileText size={18} color="#bdc1c6" /> : doc.status === 'approved' ? <FileCheck size={18} color="#188038" /> : <FileText size={18} color="#9aa0a6" />}
+      {/* 페이지 정보 */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, fontSize: '0.8rem', color: '#9aa0a6' }}>
+        <span>총 {filtered.length}건 중 {(page - 1) * PAGE_SIZE + 1}~{Math.min(page * PAGE_SIZE, filtered.length)}건</span>
+        <span>{page} / {totalPages} 페이지</span>
+      </div>
+
+      {/* 문서 목록 - 월별 그룹 + 페이지네이션 */}
+      {(() => {
+        const pagedGrouped = paged.reduce<Record<string, Document[]>>((acc, d) => {
+          const m = d.created_at.slice(0, 7);
+          if (!acc[m]) acc[m] = [];
+          acc[m].push(d);
+          return acc;
+        }, {});
+        return Object.keys(pagedGrouped).sort((a, b) => b.localeCompare(a)).map(month => (
+          <section key={month} className="archive-month-section">
+            <div className="archive-month-header">
+              <span className="archive-month-label">{month}</span>
+              <span className="archive-month-count">{pagedGrouped[month].length}건</span>
+            </div>
+            <div className="archive-doc-list">
+        {pagedGrouped[month].map((doc) => {
+          const isCancelled = doc.cancelled === 1;
+          return (
+            <Link to={'/documents/' + doc.id} key={doc.id} className={`archive-doc-item ${isCancelled ? 'archive-doc-cancelled' : ''}`}>
+              <input
+                type="checkbox"
+                checked={!!checked[doc.id]}
+                onClick={(e) => { e.stopPropagation(); e.preventDefault(); toggleCheck(doc.id); }}
+                readOnly
+                className="archive-doc-check"
+                title="다운로드 체크"
+              />
+              <div className="archive-doc-icon">
+                {isCancelled ? <FileText size={18} color="#bdc1c6" /> : doc.status === 'approved' ? <FileCheck size={18} color="#188038" /> : <FileText size={18} color="#9aa0a6" />}
+              </div>
+              <div className="archive-doc-info">
+                <div className="archive-doc-title">{doc.title}</div>
+                <div className="archive-doc-meta">
+                  {doc.author_name && <span>{doc.author_name}</span>}
+                  {doc.branch && <span>{doc.branch}</span>}
+                  {doc.department && <span>{doc.department}</span>}
+                  <span>{new Date(doc.created_at).toLocaleDateString('ko-KR')}</span>
+                  {doc.title.includes('외근') && (() => {
+                    const outDate = extractOutingDate(doc.content);
+                    return outDate ? <span style={{ color: '#1a73e8', fontWeight: 600 }}><MapPin size={10} style={{ verticalAlign: 'middle' }} /> 외근일 {outDate}</span> : null;
+                  })()}
                 </div>
-                <div className="archive-doc-info">
-                  <div className="archive-doc-title">{doc.title}</div>
-                  <div className="archive-doc-meta">
-                    {doc.author_name && <span>{doc.author_name}</span>}
-                    {doc.branch && <span>{doc.branch}</span>}
-                    {doc.department && <span>{doc.department}</span>}
-                    <span>{new Date(doc.created_at).toLocaleDateString('ko-KR')}</span>
-                    {doc.title.includes('외근') && (() => {
-                      const outDate = extractOutingDate(doc.content);
-                      return outDate ? <span style={{ color: '#1a73e8', fontWeight: 600 }}><MapPin size={10} style={{ verticalAlign: 'middle' }} /> 외근일 {outDate}</span> : null;
-                    })()}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {isCancelled ? (
-                    <span className="status-badge status-cancelled">취소</span>
-                  ) : (
-                    <span className={`status-badge ${statusConfig[doc.status]?.className}`}>
-                      {statusConfig[doc.status]?.label}
-                    </span>
-                  )}
-                  {isCeoPlus && (doc.status !== 'approved' || user?.role === 'master') && (
-                    <button className="btn btn-sm btn-danger" style={{ padding: '2px 6px' }} onClick={(e) => handleDelete(doc.id, e)} title="삭제">
-                      <Trash2 size={12} />
-                    </button>
-                  )}
-                </div>
-              </Link>
-              );
-            })}
-          </div>
-        </section>
-      ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {isCancelled ? (
+                  <span className="status-badge status-cancelled">취소</span>
+                ) : (
+                  <span className={`status-badge ${statusConfig[doc.status]?.className}`}>
+                    {statusConfig[doc.status]?.label}
+                  </span>
+                )}
+                {isCeoPlus && (doc.status !== 'approved' || user?.role === 'master') && (
+                  <button className="btn btn-sm btn-danger" style={{ padding: '2px 6px' }} onClick={(e) => handleDelete(doc.id, e)} title="삭제">
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            </Link>
+          );
+        })}
+            </div>
+          </section>
+        ));
+      })()}
 
       {filtered.length === 0 && (
         <div className="empty-state">조건에 맞는 문서가 없습니다.</div>
+      )}
+
+      {/* 페이지네이션 */}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 4, marginTop: 20, paddingBottom: 20 }}>
+          <button className="btn btn-sm" disabled={page <= 1} onClick={() => setPage(1)} style={{ opacity: page <= 1 ? 0.4 : 1 }}>«</button>
+          <button className="btn btn-sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)} style={{ opacity: page <= 1 ? 0.4 : 1 }}>‹</button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1)
+            .filter(p => p === 1 || p === totalPages || Math.abs(p - page) <= 2)
+            .reduce<(number | string)[]>((acc, p, idx, arr) => {
+              if (idx > 0 && p - (arr[idx - 1] as number) > 1) acc.push('...');
+              acc.push(p);
+              return acc;
+            }, [])
+            .map((p, i) => typeof p === 'string' ? (
+              <span key={`dot-${i}`} style={{ padding: '0 4px', color: '#9aa0a6' }}>···</span>
+            ) : (
+              <button key={p} className={`btn btn-sm ${p === page ? 'btn-primary' : ''}`}
+                style={p !== page ? { border: '1px solid #dadce0', background: '#fff', minWidth: 32 } : { minWidth: 32 }}
+                onClick={() => setPage(p)}>
+                {p}
+              </button>
+            ))}
+          <button className="btn btn-sm" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} style={{ opacity: page >= totalPages ? 0.4 : 1 }}>›</button>
+          <button className="btn btn-sm" disabled={page >= totalPages} onClick={() => setPage(totalPages)} style={{ opacity: page >= totalPages ? 0.4 : 1 }}>»</button>
+        </div>
       )}
     </div>
   );

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User, UserAccounting, SalesEvaluation, SalesRecord } from '../types';
-import { ROLE_LABELS, BRANCHES } from '../types';
+import { ROLE_LABELS } from '../types';
+import { useBranches } from '../hooks/useBranches';
 import type { Role } from '../types';
 import Select from '../components/Select';
 import {
@@ -55,6 +56,7 @@ function getEvaluationPeriods(count: number = 3) {
 
 export default function Accounting() {
   const { user: currentUser } = useAuthStore();
+  const { branches: BRANCHES } = useBranches();
   const [mainTab, setMainTab] = useState<'sales' | 'staff' | 'card'>('sales');
 
   // ━━ 공통 ━━
@@ -86,6 +88,13 @@ export default function Accounting() {
 
   // ━━ 카드사용내역 탭 ━━
   const [cardTxns, setCardTxns] = useState<any[]>([]);
+  const [cardSelected, setCardSelected] = useState<Set<string>>(new Set());
+  const toggleCardSelect = (id: string) => setCardSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const handleCardBulkDelete = async () => {
+    if (cardSelected.size === 0) return;
+    if (!confirm(`${cardSelected.size}건을 삭제하시겠습니까?`)) return;
+    try { await api.card.bulkDelete([...cardSelected]); setCardSelected(new Set()); loadCard(); } catch (err: any) { alert(err.message); }
+  };
   const [cardSummary, setCardSummary] = useState<{ by_branch: any[]; by_user: any[] }>({ by_branch: [], by_user: [] });
   const [cardMonth, setCardMonth] = useState('');
   const [cardFilterBranch, setCardFilterBranch] = useState('');
@@ -103,6 +112,7 @@ export default function Accounting() {
   const [salaryInput, setSalaryInput] = useState('');
   const [gradeInput, setGradeInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [salesSearchTerm, setSalesSearchTerm] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -260,10 +270,10 @@ export default function Accounting() {
   };
 
   const handleAddEntry = async () => {
-    if (!entryAmount || !entryAssignee) { alert('금액과 담당자를 입력하세요.'); return; }
+    if (!entryAmount) { alert('금액을 입력하세요.'); return; }
     try {
       await api.sales.createAccountingEntry({
-        amount: Number(entryAmount), content: entryContent, date: entryDate, assignee_id: entryAssignee, direction: entryDirection,
+        amount: Number(entryAmount), content: entryContent, date: entryDate, assignee_id: entryAssignee || '__all__', direction: entryDirection,
       });
       setShowEntryForm(false); setEntryAmount(''); setEntryContent(''); setEntryAssignee(''); setEntryDirection('income');
       loadSales();
@@ -330,7 +340,11 @@ export default function Accounting() {
   const getAccountForUser = (userId: string) => accounts.find(a => a.user_id === userId);
 
   // 매출 통계 + 수입/지출 필터
-  const displaySales = filterDirection ? allSales.filter(r => r.direction === filterDirection) : allSales;
+  const displaySales = (filterDirection ? allSales.filter(r => r.direction === filterDirection) : allSales).filter(r => {
+    if (!salesSearchTerm) return true;
+    const q = salesSearchTerm.toLowerCase();
+    return (r.client_name || '').toLowerCase().includes(q) || (r.user_name || '').toLowerCase().includes(q) || (r.type_detail || '').toLowerCase().includes(q) || (r.memo || '').toLowerCase().includes(q);
+  });
   const contractCount = displaySales.filter(r => r.type === '계약' && r.status !== 'refunded').length;
   const pendingTotal = displaySales.filter(r => r.status === 'pending').reduce((s, r) => s + r.amount, 0);
   const incomeTotal = allSales.filter(r => r.direction !== 'expense' && r.status === 'confirmed').reduce((s, r) => s + r.amount, 0);
@@ -529,6 +543,8 @@ export default function Accounting() {
               <button className={`filter-btn ${filterDirection === 'income' ? 'active' : ''}`} onClick={() => setFilterDirection('income')} style={{ padding: '3px 10px', fontSize: '0.75rem', color: filterDirection === 'income' ? '#fff' : '#188038' }}>+수입</button>
               <button className={`filter-btn ${filterDirection === 'expense' ? 'active' : ''}`} onClick={() => setFilterDirection('expense')} style={{ padding: '3px 10px', fontSize: '0.75rem', color: filterDirection === 'expense' ? '#fff' : '#d93025' }}>-지출</button>
             </div>
+            <input className="form-input" placeholder="계약자명, 담당자 검색" value={salesSearchTerm} onChange={(e) => setSalesSearchTerm(e.target.value)}
+              style={{ width: 180, fontSize: '0.82rem', padding: '5px 10px' }} />
             <div style={{ display: 'flex', gap: 14, marginLeft: 'auto', fontSize: '0.82rem', flexWrap: 'wrap' }}>
               <span>+수입 <strong style={{ color: '#188038' }}>{formatCurrency(incomeTotal)}</strong></span>
               <span>-지출 <strong style={{ color: '#d93025' }}>{formatCurrency(expenseTotal)}</strong></span>
@@ -777,6 +793,7 @@ export default function Accounting() {
             <table className="data-table" style={{ fontSize: '0.82rem' }}>
               <thead>
                 <tr>
+                  {canApprove && <th style={{ width: 32 }}><input type="checkbox" checked={cardSelected.size > 0 && cardSelected.size === cardTxns.length} onChange={() => { if (cardSelected.size === cardTxns.length) setCardSelected(new Set()); else setCardSelected(new Set(cardTxns.map((t: any) => t.id))); }} /></th>}
                   <th style={{ width: '10%' }}>일자</th>
                   <th style={{ width: '12%' }}>카드번호</th>
                   <th style={{ width: '12%' }}>담당자</th>
@@ -786,10 +803,20 @@ export default function Accounting() {
                   <th style={{ width: '12%' }}>비고</th>
                   {canModify && <th style={{ width: '5%' }}></th>}
                 </tr>
+                {cardSelected.size > 0 && canApprove && (
+                  <tr><td colSpan={canModify ? 10 : 9} style={{ background: '#fce4ec', padding: '6px 12px' }}>
+                    <button className="btn btn-sm btn-danger" onClick={handleCardBulkDelete}>{cardSelected.size}건 선택 삭제</button>
+                    <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => setCardSelected(new Set())}>선택 해제</button>
+                  </td></tr>
+                )}
               </thead>
               <tbody>
-                {cardTxns.map((t: any, i: number) => (
-                  <tr key={t.id} style={{ background: i % 2 === 1 ? '#fafbfc' : undefined }}>
+                {cardTxns.map((t: any, i: number) => {
+                  const amt = Number(t.amount || 0);
+                  const isRefund = amt < 0;
+                  return (
+                  <tr key={t.id} style={{ background: isRefund ? '#f0fdf4' : i % 2 === 1 ? '#fafbfc' : undefined }}>
+                    {canApprove && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={cardSelected.has(t.id)} onChange={() => toggleCardSelect(t.id)} /></td>}
                     <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{t.transaction_date}</td>
                     <td style={{ fontSize: '0.72rem', fontFamily: 'monospace', color: '#5f6368' }}>
                       {t.card_number ? '****' + String(t.card_number).slice(-4) : '-'}
@@ -807,8 +834,8 @@ export default function Accounting() {
                       </span>
                     </td>
                     <td style={{ color: '#3c4043' }}>{t.merchant_name || '-'}</td>
-                    <td style={{ fontWeight: 600, color: '#d93025', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                      -{Number(t.amount || 0).toLocaleString()}원
+                    <td style={{ fontWeight: 600, color: isRefund ? '#188038' : '#d93025', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {isRefund ? '+' : '-'}{Math.abs(amt).toLocaleString()}원
                     </td>
                     <td style={{ fontSize: '0.72rem', color: '#9aa0a6' }}>{t.description || '-'}</td>
                     {canModify && (
@@ -825,9 +852,10 @@ export default function Accounting() {
                       </td>
                     )}
                   </tr>
-                ))}
+                  );
+                })}
                 {cardTxns.length === 0 && (
-                  <tr><td colSpan={canModify ? 8 : 7} style={{ textAlign: 'center', color: '#9aa0a6', padding: 40 }}>
+                  <tr><td colSpan={canApprove ? (canModify ? 10 : 9) : (canModify ? 8 : 7)} style={{ textAlign: 'center', color: '#9aa0a6', padding: 40 }}>
                     {cardMonth ? `${cardMonth} 카드사용 내역이 없습니다.` : '카드사용 내역이 없습니다. 엑셀을 업로드하세요.'}
                   </td></tr>
                 )}

@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User } from '../types';
-import { BRANCHES } from '../types';
+import { useBranches } from '../hooks/useBranches';
 import Select from '../components/Select';
 import { Receipt, Camera } from 'lucide-react';
 
@@ -17,6 +17,7 @@ function fromMoneyDisplay(val: string): string {
 
 export default function Payroll() {
   useAuthStore();
+  const { branches: BRANCHES } = useBranches();
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('');
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
@@ -29,6 +30,8 @@ export default function Payroll() {
   const [deduction, setDeduction] = useState('0');
   const [extraPay, setExtraPay] = useState('0');
   const [extraLabel, setExtraLabel] = useState('');
+  const [extraDeduction, setExtraDeduction] = useState('0');
+  const [extraDeductionLabel, setExtraDeductionLabel] = useState('');
   const [cardUsage, setCardUsage] = useState(0);
 
   // 지사별 합산
@@ -100,7 +103,7 @@ export default function Payroll() {
   };
 
   // 지사 필터 적용
-  const filteredUsers = filterBranch ? users.filter(u => u.branch === filterBranch) : users;
+  const filteredUsers = (filterBranch ? users.filter(u => u.branch === filterBranch) : users).filter(u => u.role !== 'master');
   const userOpts = filteredUsers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''} · ${u.branch || ''})` }));
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
 
@@ -109,9 +112,10 @@ export default function Payroll() {
   // 공제/기타 반영 계산
   const deductionNum = Number(deduction) || 0;
   const extraPayNum = Number(extraPay) || 0;
+  const extraDeductionNum = Number(extraDeduction) || 0;
   const unpaidDeduction = s?.unpaid_leave_deduction || 0;
   const basePay = s ? s.salary + s.position_allowance : 0;
-  const afterDeduction = basePay - deductionNum - unpaidDeduction;
+  const afterDeduction = basePay - deductionNum - unpaidDeduction - extraDeductionNum;
   const totalPay = s ? afterDeduction + s.bonus + extraPayNum : 0;
 
   return (
@@ -168,6 +172,167 @@ export default function Payroll() {
           </div>
 
           <div ref={printRef} className="payroll-sheet">
+            {data.accounting.pay_type === 'commission' ? (
+              /* ━━━ 비율제 정산표 ━━━ */
+              <>
+                <div className="payroll-header">
+                  <div className="payroll-title">수 익 정 산</div>
+                  <div className="payroll-period">{data?.period_label || selectedMonth.replace('-', '년 ')}월</div>
+                </div>
+
+                <div className="payroll-info-row">
+                  <div className="payroll-info-cell">
+                    <span className="payroll-info-label">담당자</span>
+                    <span className="payroll-info-value">{data.user.name}</span>
+                  </div>
+                  <div className="payroll-info-cell">
+                    <span className="payroll-info-label">소속</span>
+                    <span className="payroll-info-value">{data.user.branch} · {data.user.department}</span>
+                  </div>
+                  <div className="payroll-info-cell">
+                    <span className="payroll-info-label">정산유형</span>
+                    <span className="payroll-info-value accent">비율제 ({data.accounting.commission_rate}%)</span>
+                  </div>
+                  <div className="payroll-info-cell highlight">
+                    <span className="payroll-info-label">확정매출 건</span>
+                    <span className="payroll-info-value accent">{s.contract_count}건</span>
+                  </div>
+                </div>
+
+                {/* 매출 목록 */}
+                <table className="payroll-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '12%' }}>날짜</th>
+                      <th style={{ width: '22%' }}>고객명 (입금자명)</th>
+                      <th style={{ width: '14%' }}>매출항목</th>
+                      <th style={{ width: '18%', textAlign: 'right' }}>매출액</th>
+                      <th style={{ width: '16%', textAlign: 'right' }}>공급가액</th>
+                      <th style={{ width: '14%', textAlign: 'right' }}>부가세</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.records.length === 0 ? (
+                      <tr><td colSpan={6} style={{ textAlign: 'center', color: '#9aa0a6', padding: 32 }}>해당 기간 확정매출 내역이 없습니다.</td></tr>
+                    ) : (
+                      <>
+                        {data.records.map((r: any, i: number) => (
+                          <tr key={r.id} className={i % 2 === 1 ? 'stripe' : ''}>
+                            <td>{r.contract_date?.slice(5)}</td>
+                            <td>{r.client_name}{r.depositor_different === 1 && r.depositor_name && <span className="payroll-depositor">({r.depositor_name})</span>}</td>
+                            <td><span className={`payroll-type payroll-type-${r.type}`}>{r.type}</span></td>
+                            <td className="num">{fmtWon(r.amount)}</td>
+                            <td className="num sub">{fmtWon(r.supply_amount)}</td>
+                            <td className="num sub">{fmtWon(r.vat_amount)}</td>
+                          </tr>
+                        ))}
+                        <tr className="payroll-total-row">
+                          <td colSpan={3}>합계 ({data.records.length}건)</td>
+                          <td className="num">{fmtWon(s.total_sales)}</td>
+                          <td className="num">{fmtWon(s.total_supply)}</td>
+                          <td className="num">{fmtWon(s.total_vat)}</td>
+                        </tr>
+                      </>
+                    )}
+                  </tbody>
+                </table>
+
+                {/* 환불 내역 */}
+                {data.refunded_records?.length > 0 && (
+                  <>
+                    <div className="payroll-section-title refund">환불 내역</div>
+                    <table className="payroll-table refund">
+                      <tbody>
+                        {data.refunded_records.map((r: any) => (
+                          <tr key={r.id}>
+                            <td style={{ width: '12%' }}>{r.contract_date?.slice(5)}</td>
+                            <td style={{ width: '22%' }}>{r.client_name}</td>
+                            <td style={{ width: '14%' }}>{r.type}</td>
+                            <td className="num" style={{ width: '18%', color: '#d93025' }}>-{fmtWon(r.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+
+                {/* 비율제 정산 */}
+                {(() => {
+                  const rate = data.accounting.commission_rate || 0;
+                  const netSales = s.total_supply - Math.round((data.refunded_records || []).reduce((sum: number, r: any) => sum + Math.round(r.amount / 1.1), 0));
+                  const commissionAmount = Math.round(netSales * rate / 100);
+                  const tax33 = Math.round(commissionAmount * 0.033);
+                  const finalPay = commissionAmount - tax33;
+                  const companyRevenue = netSales - commissionAmount;
+                  return (
+                    <>
+                      <div className="payroll-section-title">수익 정산</div>
+                      <div className="payroll-bonus-box">
+                        <div className="payroll-bonus-row">
+                          <span>총 매출액 (부가세 포함)</span>
+                          <span className="num">{fmtWon(s.total_sales - s.total_refund)}</span>
+                        </div>
+                        <div className="payroll-bonus-row">
+                          <span>부가세</span>
+                          <span className="num" style={{ color: '#9aa0a6' }}>{fmtWon(s.total_sales - s.total_refund - netSales)}</span>
+                        </div>
+                        <div className="payroll-bonus-row" style={{ fontWeight: 700 }}>
+                          <span>매출 금액 (부가세 제외)</span>
+                          <span className="num">{fmtWon(netSales)}</span>
+                        </div>
+                      </div>
+
+                      <div className="payroll-section-title">담당자 정산</div>
+                      <div className="payroll-bonus-box">
+                        <div className="payroll-bonus-row">
+                          <span>수입 금액 (매출 × {rate}%)</span>
+                          <span className="num" style={{ fontWeight: 700, color: '#1a73e8' }}>{fmtWon(commissionAmount)}</span>
+                        </div>
+                        <div className="payroll-bonus-row" style={{ color: '#d93025' }}>
+                          <span>원천세 (3.3%)</span>
+                          <span className="num">-{fmtWon(tax33)}</span>
+                        </div>
+                        <div className="payroll-bonus-row grand-total">
+                          <span>실 지급액</span>
+                          <span className="num">{fmtWon(finalPay)}</span>
+                        </div>
+                      </div>
+
+                      <div className="payroll-section-title">회사 수익</div>
+                      <div className="payroll-bonus-box">
+                        <div className="payroll-bonus-row">
+                          <span>매출 금액 (부가세 제외)</span>
+                          <span className="num">{fmtWon(netSales)}</span>
+                        </div>
+                        <div className="payroll-bonus-row" style={{ color: '#d93025' }}>
+                          <span>담당자 수입 ({rate}%)</span>
+                          <span className="num">-{fmtWon(commissionAmount)}</span>
+                        </div>
+                        <div className="payroll-bonus-row grand-total" style={{ color: companyRevenue >= 0 ? '#188038' : '#d93025' }}>
+                          <span>회사 매출</span>
+                          <span className="num">{fmtWon(companyRevenue)}</span>
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
+
+                {/* 법인카드 */}
+                {cardUsage > 0 && (
+                  <div style={{ marginTop: 12, padding: '10px 16px', background: '#fff3e0', borderRadius: 8, border: '1px solid #ffd699', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.85rem', color: '#e65100' }}>법인카드 사용금액</span>
+                    <span style={{ fontSize: '0.95rem', fontWeight: 700, color: '#e65100' }}>{fmtWon(cardUsage)}</span>
+                  </div>
+                )}
+
+                <div className="payroll-footer">
+                  <div className="payroll-footer-date">{data?.period_label || selectedMonth.replace('-', '년 ')}월 수익정산</div>
+                  <div className="payroll-footer-company">마이옥션</div>
+                </div>
+              </>
+            ) : (
+              /* ━━━ 급여제 정산표 (기존) ━━━ */
+              <>
             <div className="payroll-header">
               <div className="payroll-title">급 여 정 산</div>
               <div className="payroll-period">{data?.period_label || selectedMonth.replace('-', '년 ')}월</div>
@@ -187,13 +352,17 @@ export default function Payroll() {
                 <span className="payroll-info-label">직급</span>
                 <span className="payroll-info-value">{data.accounting.grade || '-'}</span>
               </div>
+              {!data.is_hq && (
               <div className="payroll-info-cell highlight">
                 <span className="payroll-info-label">해당 월 계약 건</span>
                 <span className="payroll-info-value accent">{s.contract_count}건</span>
               </div>
+              )}
             </div>
 
-            {/* 매출 목록 테이블 */}
+            {/* 매출 목록 테이블 — 본사관리 제외 */}
+            {!data.is_hq && (
+            <>
             <table className="payroll-table">
               <thead>
                 <tr>
@@ -253,7 +422,12 @@ export default function Payroll() {
               </>
             )}
 
-            {/* 상여금 (구간별 누진) */}
+            </>
+            )}
+
+            {/* 상여금 (구간별 누진) — 본사관리 제외 */}
+            {!data.is_hq && (
+            <>
             <div className="payroll-section-title">성과금</div>
             <div className="payroll-bonus-box">
               <div className="payroll-bonus-row">
@@ -277,6 +451,8 @@ export default function Payroll() {
                 <span className="num accent">{fmtWon(s.bonus)}</span>
               </div>
             </div>
+            </>
+            )}
 
             {/* 급여 정산 */}
             <div className="payroll-section-title">급여 정산</div>
@@ -303,10 +479,18 @@ export default function Payroll() {
                   <span className="num">-{fmtWon(unpaidDeduction)}</span>
                 </div>
               )}
+              {extraDeductionNum > 0 && (
+                <div className="payroll-bonus-row" style={{ color: '#d93025' }}>
+                  <span>{extraDeductionLabel || '추가 공제'}</span>
+                  <span className="num">-{fmtWon(extraDeductionNum)}</span>
+                </div>
+              )}
+              {!data.is_hq && (
               <div className="payroll-bonus-row">
                 <span>성과금</span>
                 <span className="num">{fmtWon(s.bonus)}</span>
               </div>
+              )}
               {extraPayNum > 0 && (
                 <div className="payroll-bonus-row">
                   <span>{extraLabel || '기타'}</span>
@@ -331,6 +515,8 @@ export default function Payroll() {
               <div className="payroll-footer-date">{data?.period_label || selectedMonth.replace('-', '년 ')}월 급여정산</div>
               <div className="payroll-footer-company">마이옥션</div>
             </div>
+              </>
+            )}
           </div>
 
           {/* 수동 입력 (PNG 영역 밖) */}
@@ -352,9 +538,19 @@ export default function Payroll() {
                 <input className="form-input" value={toMoneyDisplay(extraPay)}
                   onChange={(e) => setExtraPay(fromMoneyDisplay(e.target.value))} style={{ width: '100%' }} placeholder="0" />
               </div>
+              <div>
+                <label className="form-label">추가 공제 명목</label>
+                <input className="form-input" value={extraDeductionLabel}
+                  onChange={(e) => setExtraDeductionLabel(e.target.value)} style={{ width: '100%' }} placeholder="예: 선지급금 회수 등" />
+              </div>
+              <div>
+                <label className="form-label">추가 공제 금액</label>
+                <input className="form-input" value={toMoneyDisplay(extraDeduction)}
+                  onChange={(e) => setExtraDeduction(fromMoneyDisplay(e.target.value))} style={{ width: '100%' }} placeholder="0" />
+              </div>
             </div>
             <div style={{ marginTop: 10, fontSize: '0.78rem', color: '#9aa0a6' }}>
-              총지급액 = ((기본급여 + 직급수당) - 공제합계) + 상여금 + 기타
+              총지급액 = ((기본급여 + 직급수당) - 공제합계 - 추가공제) + 상여금 + 기타
             </div>
           </div>
         </>

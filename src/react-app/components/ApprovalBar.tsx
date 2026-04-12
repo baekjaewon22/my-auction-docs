@@ -40,8 +40,8 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
       const isMyTurn = step.status === 'pending' && prevAllApproved &&
         step.approver_id === currentUserId && docStatus === 'submitted';
 
-      // master/ceo/cc_ref만 순서 무관 서명 가능 (admin은 결재선 순서 따름)
-      const isSuperApprover = (currentUserRole === 'master' || currentUserRole === 'ceo' || currentUserRole === 'cc_ref') &&
+      // 권한자는 순서 무관 대리 서명 가능
+      const isSuperApprover = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUserRole || '') &&
         step.status === 'pending' && docStatus === 'submitted';
 
       slots.push({

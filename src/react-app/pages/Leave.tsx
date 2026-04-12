@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
-import type { LeaveRequest, LeaveRequestType } from '../types';
+import type { LeaveRequest, User } from '../types';
+import Select from '../components/Select';
 import {
-  CalendarCheck, Plus, X, CheckCircle, XCircle, Clock, AlertTriangle,
-  Calculator, Calendar, FileText, ExternalLink
+  CalendarCheck, Plus, X, CheckCircle, XCircle, AlertTriangle,
+  Calculator, Calendar, FileText, ExternalLink, Eye
 } from 'lucide-react';
 
 type FormLeaveType = '연차/월차' | '반차' | '시간차' | '특별휴가';
@@ -61,7 +62,7 @@ export default function Leave() {
   const [formType, setFormType] = useState<FormLeaveType>('연차/월차');
   const [formStartDate, setFormStartDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [formEndDate, setFormEndDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [formReason, setFormReason] = useState('');
+  const [, setFormReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   // 시간차 폼
@@ -79,6 +80,34 @@ export default function Leave() {
   const role = user?.role || 'member';
   const isApprover = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(role);
   const canViewSensitive = ['master', 'ceo', 'cc_ref'].includes(role);
+  const canViewOthers = ['master', 'ceo', 'admin', 'accountant'].includes(role);
+  const canViewHourly = ['master', 'ceo', 'admin'].includes(role);
+
+  // 담당자 열람 기능
+  const [members, setMembers] = useState<User[]>([]);
+  const [viewUserId, setViewUserId] = useState<string | null>(null);
+  const [viewBalance, setViewBalance] = useState<any>(null);
+  const [viewRequests, setViewRequests] = useState<LeaveRequest[]>([]);
+  const [viewLoading, setViewLoading] = useState(false);
+
+  useEffect(() => {
+    if (canViewOthers) {
+      api.users.list().then(res => setMembers((res.users || []).filter((u: User) => u.role !== 'master' && u.id !== user?.id))).catch(() => {});
+    }
+  }, []);
+
+  const loadViewUser = async (userId: string) => {
+    setViewLoading(true);
+    try {
+      const [balRes, reqRes] = await Promise.all([
+        api.leave.userLeave(userId),
+        api.leave.listRequests({ user_id: userId } as any),
+      ]);
+      setViewBalance(balRes.leave);
+      setViewRequests(reqRes.requests?.filter((r: any) => r.user_id === userId) || []);
+    } catch (err: any) { console.error(err); }
+    finally { setViewLoading(false); }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -103,9 +132,25 @@ export default function Leave() {
 
   useEffect(() => { load(); }, []);
 
-  // 고정 문서 바로가기 ID
-  const ANNUAL_LEAVE_DOC_ID = '346ee7fb-7703-4eca-a39c-9871022faa1a';
-  const HALF_DAY_DOC_ID = '48a71fad-6805-4591-b00f-b62dd9b1205b';
+  // 템플릿 바로가기: 템플릿으로 새 문서 생성 후 편집 페이지로 이동
+  const handleTemplateShortcut = async (templateId: string, title: string) => {
+    try {
+      const res = await api.documents.create({ title, template_id: templateId });
+      if (res.document?.id) {
+        navigate('/documents/' + res.document.id);
+      } else {
+        alert('문서 생성에 실패했습니다.');
+      }
+    } catch (err: any) { alert(err.message); }
+  };
+
+  // 템플릿 매칭
+  const [templates, setTemplates] = useState<{ id: string; title: string }[]>([]);
+  useEffect(() => {
+    api.templates.list().then(res => setTemplates(res.templates)).catch(() => {});
+  }, []);
+  const annualTemplate = templates.find(t => (t.title.includes('연차') || t.title.includes('휴가')) && !t.title.includes('반차'));
+  const halfDayTemplate = templates.find(t => t.title.includes('반차'));
 
   const handleSubmit = async () => {
     // 특별휴가만 사유 검증
@@ -138,7 +183,7 @@ export default function Leave() {
     }
 
     // 차감일수
-    let days = previewDays();
+    const _days = previewDays(); void _days;
 
     setSubmitting(true);
     try {
@@ -207,10 +252,109 @@ export default function Leave() {
     <div className="page">
       <div className="page-header">
         <h2><CalendarCheck size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 연차 관리</h2>
-        <button className="btn btn-primary" onClick={() => setShowForm(true)}>
-          <Plus size={14} /> 휴가 신청
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {canViewOthers && (
+            <div style={{ minWidth: 200 }}>
+              <Select
+                options={[{ value: '', label: '내 연차' }, ...members.map(m => ({ value: m.id, label: `${m.name} (${m.department || m.branch || ''})` }))]}
+                value={viewUserId ? { value: viewUserId, label: members.find(m => m.id === viewUserId)?.name || '' } : { value: '', label: '내 연차' }}
+                onChange={(o: any) => {
+                  const id = o?.value || null;
+                  setViewUserId(id);
+                  if (id) loadViewUser(id);
+                  else { setViewBalance(null); setViewRequests([]); }
+                }}
+                placeholder="담당자 선택..."
+                size="sm"
+                isSearchable
+              />
+            </div>
+          )}
+          <button className="btn btn-primary" onClick={() => setShowForm(true)}>
+            <Plus size={14} /> 휴가 신청
+          </button>
+        </div>
       </div>
+
+      {/* 담당자 연차 열람 모드 */}
+      {viewUserId && canViewOthers && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <Eye size={18} color="#7b1fa2" />
+            <span style={{ fontWeight: 700, color: '#7b1fa2', fontSize: '1rem' }}>
+              {members.find(m => m.id === viewUserId)?.name} 연차 현황
+            </span>
+          </div>
+
+          {viewLoading ? (
+            <div style={{ padding: 20, textAlign: 'center', color: '#9aa0a6' }}>로딩중...</div>
+          ) : viewBalance ? (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+                {viewBalance.entitlement?.type === 'annual' ? (
+                  <>
+                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #7b1fa2' }}>
+                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>연차 총일수</div>
+                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#7b1fa2' }}>{viewBalance.total_days}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
+                    </div>
+                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #d93025' }}>
+                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>사용일수</div>
+                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#d93025' }}>{viewBalance.used_days}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
+                    </div>
+                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #188038' }}>
+                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>잔여일수</div>
+                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#188038' }}>{viewBalance.annual_remaining}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #7b1fa2' }}>
+                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>월차 총일수</div>
+                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#7b1fa2' }}>{viewBalance.monthly_days}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
+                    </div>
+                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #d93025' }}>
+                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>사용일수</div>
+                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#d93025' }}>{viewBalance.monthly_used}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
+                    </div>
+                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #188038' }}>
+                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>잔여일수</div>
+                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#188038' }}>{viewBalance.monthly_remaining}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
+                    </div>
+                  </>
+                )}
+                <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #5f6368' }}>
+                  <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>입사기준일</div>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#5f6368' }}>{viewBalance.hire_date || '-'}</div>
+                </div>
+              </div>
+
+              {/* 열람 대상 휴가 내역 */}
+              {viewRequests.length > 0 && (
+                <div className="card" style={{ padding: 16 }}>
+                  <h4 style={{ margin: '0 0 12px', fontSize: '0.9rem' }}>휴가 신청 내역</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {viewRequests.filter(req => canViewHourly || req.leave_type !== '시간차').map(req => {
+                      const st = STATUS_MAP[req.status] || STATUS_MAP.pending;
+                      return (
+                        <div key={req.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', background: '#fafafa', borderRadius: 8, fontSize: '0.82rem' }}>
+                          <span style={{ background: getTypeColor(req.leave_type), color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.72rem', fontWeight: 600 }}>{req.leave_type}</span>
+                          <span style={{ color: '#202124' }}>{req.start_date}{req.start_date !== req.end_date ? ` ~ ${req.end_date}` : ''}</span>
+                          <span style={{ color: '#5f6368' }}>({req.days}일)</span>
+                          <span style={{ background: st.bg, color: st.color, padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem', fontWeight: 600 }}>{st.label}</span>
+                          {req.reason && <span style={{ color: '#9aa0a6', fontSize: '0.75rem', flex: 1, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{req.reason}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {viewRequests.length === 0 && (
+                <div style={{ textAlign: 'center', color: '#9aa0a6', fontSize: '0.85rem', padding: 20 }}>휴가 신청 내역이 없습니다.</div>
+              )}
+            </>
+          ) : null}
+        </div>
+      )}
 
       {/* 잔여 현황 카드 */}
       {balance && (
@@ -281,6 +425,15 @@ export default function Leave() {
         </div>
       )}
 
+      {/* 근무시간 안내 */}
+      <div style={{ marginBottom: 16, padding: '10px 14px', background: '#f8f9fa', borderRadius: 6, borderLeft: '3px solid #dadce0' }}>
+        <p style={{ margin: 0, fontSize: '0.7rem', color: '#9aa0a6', lineHeight: 1.6 }}>
+          임직원 여러분께 근무시간 관련하여 안내드립니다.
+          본 회사는 정규 업무시간 외 추가 근무에 대해 별도의 연장근무수당을 지급하지 않고 있습니다. 이에 따라, 정해진 업무시간을 준수하여 주시기 바랍니다.
+          다만, 담당 업무의 성과 향상을 위해 자율적으로 추가 근무를 하시는 부분에 대해서는 각자의 판단에 맡기겠습니다.
+        </p>
+      </div>
+
       {/* 탭 */}
       <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e8eaed', marginBottom: 20 }}>
         <button onClick={() => setTab('my')} style={{ padding: '10px 20px', fontWeight: tab === 'my' ? 700 : 400, color: tab === 'my' ? '#1a73e8' : '#5f6368', background: 'none', border: 'none', borderBottomWidth: 2, borderBottomStyle: 'solid', borderBottomColor: tab === 'my' ? '#1a73e8' : 'transparent', cursor: 'pointer', fontSize: '0.9rem' }}>
@@ -314,7 +467,7 @@ export default function Leave() {
               <div style={{ marginBottom: 16 }}>
                 <label className="form-label">휴가 유형</label>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-                  {FORM_LEAVE_TYPES.map(t => (
+                  {FORM_LEAVE_TYPES.filter(t => canViewHourly || t.value !== '시간차').map(t => (
                     <button key={t.value} type="button" onClick={() => { setFormType(t.value); setSpecialSubtype('특별유급휴가'); setSpecialItem(0); setSpecialEtcReason(''); }}
                       style={{ padding: '10px 6px', borderRadius: 8, border: formType === t.value ? `2px solid ${t.color}` : '1px solid #dadce0', background: formType === t.value ? t.color + '10' : '#fff', cursor: 'pointer', textAlign: 'center' }}>
                       <div style={{ fontWeight: 600, fontSize: '0.85rem', color: formType === t.value ? t.color : '#202124' }}>{t.label}</div>
@@ -417,14 +570,18 @@ export default function Leave() {
           {/* 템플릿 바로가기 버튼 */}
           <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
             <button className="btn"
-              onClick={() => navigate('/documents/' + ANNUAL_LEAVE_DOC_ID)}
+              onClick={() => annualTemplate
+                ? handleTemplateShortcut(annualTemplate.id, annualTemplate.title)
+                : navigate('/templates')}
               style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, border: '1px solid #1a73e8', color: '#1a73e8', background: '#eff6ff' }}>
-              <FileText size={15} /> 연차휴가신청서 바로가기 <ExternalLink size={12} />
+              <FileText size={15} /> 연차휴가신청서 작성 <ExternalLink size={12} />
             </button>
             <button className="btn"
-              onClick={() => navigate('/documents/' + HALF_DAY_DOC_ID)}
+              onClick={() => halfDayTemplate
+                ? handleTemplateShortcut(halfDayTemplate.id, halfDayTemplate.title)
+                : navigate('/templates')}
               style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, border: '1px solid #e65100', color: '#e65100', background: '#fff8f0' }}>
-              <FileText size={15} /> 반차신청서 바로가기 <ExternalLink size={12} />
+              <FileText size={15} /> 반차신청서 작성 <ExternalLink size={12} />
             </button>
           </div>
 
@@ -434,7 +591,7 @@ export default function Leave() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {requests.map(req => {
+              {requests.filter(req => canViewHourly || req.leave_type !== '시간차').map(req => {
                 const st = STATUS_MAP[req.status];
                 const typeColor = getTypeColor(req.leave_type);
                 const canCancel = req.status === 'pending' || req.status === 'approved';
@@ -458,6 +615,13 @@ export default function Leave() {
                             {req.status === 'approved' ? '취소요청' : '취소'}
                           </button>
                         )}
+                        {role === 'master' && (
+                          <button className="btn btn-sm btn-danger" onClick={async () => {
+                            if (!confirm(`이 휴가 신청을 삭제하시겠습니까?\n${req.status === 'approved' ? '승인된 건이므로 차감된 연차가 복원됩니다.' : ''}`)) return;
+                            try { await api.leave.deleteRequest(req.id); load(); }
+                            catch (err: any) { alert(err.message); }
+                          }} style={{ fontSize: '0.7rem', padding: '2px 6px' }}>삭제</button>
+                        )}
                       </div>
                     </div>
                     {req.reason && <div style={{ marginTop: 6, fontSize: '0.82rem', color: '#5f6368' }}>{req.reason}</div>}
@@ -479,7 +643,7 @@ export default function Leave() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {pendingRequests.map(req => {
+              {pendingRequests.filter(req => canViewHourly || req.leave_type !== '시간차').map(req => {
                 const typeColor = getTypeColor(req.leave_type);
                 const isRejecting = rejectingId === req.id;
                 return (
@@ -513,6 +677,13 @@ export default function Leave() {
                               <XCircle size={13} /> 반려
                             </button>
                           </>
+                        )}
+                        {role === 'master' && (
+                          <button className="btn btn-sm" onClick={async () => {
+                            if (!confirm('이 신청을 삭제하시겠습니까?')) return;
+                            try { await api.leave.deleteRequest(req.id); load(); }
+                            catch (err: any) { alert(err.message); }
+                          }} style={{ fontSize: '0.7rem', padding: '2px 6px', color: '#9aa0a6' }}>삭제</button>
                         )}
                       </div>
                     </div>

@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart
 } from 'lucide-react';
 
 export default function Layout() {
@@ -21,11 +21,12 @@ export default function Layout() {
   const navTo = (path: string) => { navigate(path); setMobileOpen(false); };
 
   const role = (user?.role || 'member') as Role;
-  const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(role);
-  const canApproveUsers = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-  const canManage = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-  const canAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
-  const isAccountingOnly = ['accountant', 'accountant_asst'].includes(role);
+  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(role);
+  const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canAccounting = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
+  const isAccountingOnly = !isFreelancer && ['accountant', 'accountant_asst'].includes(role);
 
   const sidebarContent = (
     <>
@@ -50,29 +51,40 @@ export default function Layout() {
         <Link to="/dashboard" className={`nav-item ${isActive('/dashboard') ? 'active' : ''}`} title="대시보드" onClick={() => setMobileOpen(false)}>
           <LayoutDashboard size={18} /> {!collapsed && '대시보드'}
         </Link>
-        <Link to="/documents" className={`nav-item ${isActive('/documents') ? 'active' : ''}`} title="내 문서" onClick={() => setMobileOpen(false)}>
-          <FileText size={18} /> {!collapsed && '내 문서'}
-        </Link>
-        <Link to="/templates" className={`nav-item ${isActive('/templates') ? 'active' : ''}`} title="템플릿" onClick={() => setMobileOpen(false)}>
-          <ClipboardList size={18} /> {!collapsed && '템플릿'}
-        </Link>
-        {!isAccountingOnly && (
+
+        {!isFreelancer && <div className="nav-divider" />}
+        {!isFreelancer && !collapsed && <span className="nav-label">마이페이지</span>}
+        {!isAccountingOnly && !isFreelancer && (
           <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
             <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
           </Link>
         )}
-        <Link to="/archive" className={`nav-item ${isActive('/archive') ? 'active' : ''}`} title="문서 보관함" onClick={() => setMobileOpen(false)}>
-          <Archive size={18} /> {!collapsed && '문서 보관함'}
-        </Link>
-
-        <div className="nav-divider" />
-        {!collapsed && <span className="nav-label">마이페이지</span>}
         <Link to="/sales" className={`nav-item ${isActive('/sales') ? 'active' : ''}`} title="업무성과" onClick={() => setMobileOpen(false)}>
           <DollarSign size={18} /> {!collapsed && '업무성과'}
         </Link>
-        <Link to="/leave" className={`nav-item ${isActive('/leave') ? 'active' : ''}`} title="연차관리" onClick={() => setMobileOpen(false)}>
-          <CalendarCheck size={18} /> {!collapsed && '연차관리'}
-        </Link>
+        {!isFreelancer && (
+          <Link to="/leave" className={`nav-item ${isActive('/leave') ? 'active' : ''}`} title="연차관리" onClick={() => setMobileOpen(false)}>
+            <CalendarCheck size={18} /> {!collapsed && '연차관리'}
+          </Link>
+        )}
+
+        {!isFreelancer && <div className="nav-divider" />}
+        {!isFreelancer && !collapsed && <span className="nav-label">문서</span>}
+        {!isFreelancer && (
+          <Link to="/documents" className={`nav-item ${isActive('/documents') ? 'active' : ''}`} title="내 문서" onClick={() => setMobileOpen(false)}>
+            <FileText size={18} /> {!collapsed && '내 문서'}
+          </Link>
+        )}
+        {!isFreelancer && (
+          <Link to="/templates" className={`nav-item ${isActive('/templates') ? 'active' : ''}`} title="템플릿" onClick={() => setMobileOpen(false)}>
+            <ClipboardList size={18} /> {!collapsed && '템플릿'}
+          </Link>
+        )}
+        {!isFreelancer && (
+          <Link to="/archive" className={`nav-item ${isActive('/archive') ? 'active' : ''}`} title="문서 보관함" onClick={() => setMobileOpen(false)}>
+            <Archive size={18} /> {!collapsed && '문서 보관함'}
+          </Link>
+        )}
 
         {canApprove && (
           <>
@@ -92,8 +104,8 @@ export default function Layout() {
         )}
 
         {canManage && (
-          <Link to="/teams" className={`nav-item ${isActive('/teams') ? 'active' : ''}`} title="팀 관리" onClick={() => setMobileOpen(false)}>
-            <Users size={18} /> {!collapsed && '팀 관리'}
+          <Link to="/teams" className={`nav-item ${isActive('/teams') ? 'active' : ''}`} title="부서관리" onClick={() => setMobileOpen(false)}>
+            <Users size={18} /> {!collapsed && '부서관리'}
           </Link>
         )}
 
@@ -119,10 +131,13 @@ export default function Layout() {
             <Link to="/payroll" className={`nav-item ${isActive('/payroll') ? 'active' : ''}`} title="급여정산" onClick={() => setMobileOpen(false)}>
               <Receipt size={18} /> {!collapsed && '급여정산'}
             </Link>
+            <Link to="/finance-analytics" className={`nav-item ${isActive('/finance-analytics') ? 'active' : ''}`} title="회계분석" onClick={() => setMobileOpen(false)}>
+              <PieChart size={18} /> {!collapsed && '회계분석'}
+            </Link>
           </>
         )}
 
-        {['master', 'ceo', 'cc_ref'].includes(role) && (
+        {['master', 'ceo', 'cc_ref', 'admin'].includes(role) && (
           <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
             <BookOpen size={18} /> {!collapsed && '회의록'}
           </Link>

@@ -39,7 +39,7 @@ accounting.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
 // PUT /api/accounting/:userId - 직원 회계 정보 생성/수정 (급여, 직급)
 accounting.put('/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'), async (c) => {
   const userId = c.req.param('userId');
-  const { salary, grade, position_allowance } = await c.req.json<{ salary?: number; grade?: string; position_allowance?: number }>();
+  const { salary, grade, position_allowance, pay_type, commission_rate } = await c.req.json<{ salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number }>();
   const db = c.env.DB;
 
   // 사용자 존재 확인
@@ -56,22 +56,24 @@ accounting.put('/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'acco
   const newSalary = salary !== undefined ? salary : (existing as any)?.salary || 0;
   const newGrade = grade !== undefined ? grade : (existing as any)?.grade || '';
   const newAllowance = position_allowance !== undefined ? position_allowance : (existing as any)?.position_allowance || 0;
+  const newPayType = pay_type !== undefined ? pay_type : (existing as any)?.pay_type || 'salary';
+  const newCommRate = commission_rate !== undefined ? commission_rate : (existing as any)?.commission_rate || 0;
   const standardSales = Math.round(newSalary * 1.3 * 4);
 
   if (existing) {
     await db.prepare(`
-      UPDATE user_accounting SET salary = ?, standard_sales = ?, grade = ?, position_allowance = ?, updated_at = datetime('now')
+      UPDATE user_accounting SET salary = ?, standard_sales = ?, grade = ?, position_allowance = ?, pay_type = ?, commission_rate = ?, updated_at = datetime('now')
       WHERE user_id = ?
-    `).bind(newSalary, standardSales, newGrade, newAllowance, userId).run();
+    `).bind(newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate, userId).run();
   } else {
     const id = crypto.randomUUID();
     await db.prepare(`
-      INSERT INTO user_accounting (id, user_id, salary, standard_sales, grade, position_allowance)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(id, userId, newSalary, standardSales, newGrade, newAllowance).run();
+      INSERT INTO user_accounting (id, user_id, salary, standard_sales, grade, position_allowance, pay_type, commission_rate)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, userId, newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate).run();
   }
 
-  return c.json({ success: true, salary: newSalary, standard_sales: standardSales, grade: newGrade, position_allowance: newAllowance });
+  return c.json({ success: true, salary: newSalary, standard_sales: standardSales, grade: newGrade, position_allowance: newAllowance, pay_type: newPayType, commission_rate: newCommRate });
 });
 
 // PUT /api/accounting/:userId/grade - 직급 강등 (관리자급 이상만)

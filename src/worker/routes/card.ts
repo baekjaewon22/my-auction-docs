@@ -71,7 +71,7 @@ card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
     `).bind(
       id, row.card_number || rawCard, userId, branch, category,
       row.merchant_name || '', row.transaction_date || '',
-      Math.abs(row.amount || 0), row.description || '', batchId
+      row.amount || 0, row.description || '', batchId
     ).run();
     inserted++;
   }
@@ -166,6 +166,17 @@ card.delete('/batch/:batchId', requireRole(...EDIT_ROLES), async (c) => {
   const db = c.env.DB;
   await db.prepare('DELETE FROM card_transactions WHERE upload_batch = ?').bind(batchId).run();
   return c.json({ success: true });
+});
+
+// POST /api/card/bulk-delete — 다중 삭제
+card.post('/bulk-delete', requireRole(...EDIT_ROLES), async (c) => {
+  const { ids } = await c.req.json<{ ids: string[] }>();
+  const db = c.env.DB;
+  if (!ids || ids.length === 0) return c.json({ error: '삭제할 항목이 없습니다.' }, 400);
+  for (const id of ids) {
+    await db.prepare('DELETE FROM card_transactions WHERE id = ?').bind(id).run();
+  }
+  return c.json({ success: true, count: ids.length });
 });
 
 export default card;

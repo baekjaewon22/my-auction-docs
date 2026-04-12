@@ -27,12 +27,14 @@ signatures.post('/', async (c) => {
     return c.json({ error: '반려된 문서는 서명할 수 없습니다. 내용 수정 후 다시 서명해주세요.' }, 400);
   }
 
-  // Check if already signed by this user
-  const existing = await db.prepare(
-    'SELECT id FROM signatures WHERE document_id = ? AND user_id = ?'
-  ).bind(document_id, user.sub).first();
+  // Check if already signed by this user (권한자는 대리 승인용 2회 서명 허용)
+  const existingCount = await db.prepare(
+    'SELECT COUNT(*) as cnt FROM signatures WHERE document_id = ? AND user_id = ?'
+  ).bind(document_id, user.sub).first<{ cnt: number }>();
 
-  if (existing) {
+  const isSuperApprover = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role);
+  const maxSigns = isSuperApprover ? 10 : 1;
+  if (existingCount && existingCount.cnt >= maxSigns) {
     return c.json({ error: '이미 서명한 문서입니다.' }, 409);
   }
 

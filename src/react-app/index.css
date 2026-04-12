@@ -3867,6 +3867,16 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .oc-add-input:focus { border-color: #1a73e8; outline: none; box-shadow: 0 0 0 2px #e8f0fe; }
 .oc-add-sel { padding: 3px 6px; border: 1px solid var(--gray-200); border-radius: 4px; font-size: 0.68rem; max-width: 150px; }
 
+/* ========================= */
+/* Property Report Mobile    */
+/* ========================= */
+@media (max-width: 900px) {
+  .pr-scroll-wrap {
+    padding: 4px 0 !important;
+    justify-content: center !important;
+  }
+}
+
 /* 칩 (풀) */
 .oc-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; background: #fff; border: 1px solid var(--gray-100); border-radius: 10px; cursor: grab; user-select: none; transition: all 0.15s ease; font-size: 0.68rem; }
 .oc-chip:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.08); transform: translateY(-1px); }

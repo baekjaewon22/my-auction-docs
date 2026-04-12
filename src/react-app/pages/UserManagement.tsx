@@ -2,14 +2,15 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User, SalesEvaluation } from '../types';
-import { ROLE_LABELS, VISIBLE_ROLES, BRANCHES } from '../types';
+import { ROLE_LABELS, VISIBLE_ROLES } from '../types';
+import { useBranches } from '../hooks/useBranches';
 import type { Role } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingUp, AlertTriangle, ArrowDownCircle } from 'lucide-react';
 
 import { useDepartments } from '../hooks/useDepartments';
 const ROLE_OPTS = VISIBLE_ROLES.map((v) => ({ value: v, label: ROLE_LABELS[v] }));
-const BRANCH_OPTS = BRANCHES.map((b) => ({ value: b, label: b }));
+// BRANCH_OPTS는 컴포넌트 내부에서 동적 생성
 const POSITION_TITLES = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴'];
 const POSITION_OPTS = POSITION_TITLES.map((p) => ({ value: p, label: p }));
 
@@ -28,12 +29,15 @@ function fromMoneyDisplay(val: string): string {
 export default function UserManagement() {
   const { user: currentUser } = useAuthStore();
   const { departments: deptList } = useDepartments();
+  const { branches: branchList } = useBranches();
   const DEPT_OPTS = toOptions(deptList);
+  const BRANCH_OPTS = branchList.map(b => ({ value: b, label: b }));
   const [tab, setTab] = useState<'approved' | 'pending'>('approved');
   const [users, setUsers] = useState<User[]>([]);
   const [pendingUsers, setPendingUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingDepts, setPendingDepts] = useState<Record<string, string>>({});
+  const [userSearchTerm, setUserSearchTerm] = useState('');
 
   // 상세페이지 관련
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -42,6 +46,8 @@ export default function UserManagement() {
   const [posAllowanceInput, setPosAllowanceInput] = useState('');
   const [cardNumberInput, setCardNumberInput] = useState('');
   const [hireDateInput, setHireDateInput] = useState('');
+  const [payType, setPayType] = useState<'salary' | 'commission'>('salary');
+  const [commissionRate, setCommissionRate] = useState('');
   const [evaluations, setEvaluations] = useState<SalesEvaluation[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -128,12 +134,16 @@ export default function UserManagement() {
       setGradeInput(acc?.grade || '');
       setPosAllowanceInput(acc?.position_allowance?.toString() || '0');
       setCardNumberInput(u.card_number || '');
+      setPayType(acc?.pay_type || 'salary');
+      setCommissionRate(acc?.commission_rate?.toString() || '');
       setEvaluations(evalRes.evaluations);
     } catch {
       setSalaryInput('');
       setGradeInput('');
       setPosAllowanceInput('0');
       setCardNumberInput('');
+      setPayType('salary');
+      setCommissionRate('');
       setEvaluations([]);
     }
   };
@@ -143,9 +153,11 @@ export default function UserManagement() {
     setSaving(true);
     try {
       await api.accounting.update(selectedUser.id, {
-        salary: Number(salaryInput) || 0,
-        grade: gradeInput,
+        salary: payType === 'commission' ? 0 : (Number(salaryInput) || 0),
+        grade: payType === 'commission' ? '' : gradeInput,
         position_allowance: Number(posAllowanceInput) || 0,
+        pay_type: payType,
+        commission_rate: Number(commissionRate) || 0,
       });
       // 카드번호도 저장
       await api.card.updateUserCard(selectedUser.id, cardNumberInput);
@@ -267,88 +279,95 @@ export default function UserManagement() {
         {/* 회계 정보 카드 (회계 열람 가능자만) */}
         {canViewAccounting && (
           <div className="card" style={{ marginBottom: 20, padding: 20 }}>
-            <h3 style={{ marginTop: 0, marginBottom: 16, fontSize: '1rem', color: '#1a1a2e' }}>급여 및 직급 설정</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 20 }}>
-
-              {/* 급여 */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>급여 (월급)</label>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <input
-                    className="form-input"
-                    value={toMoneyDisplay(salaryInput)}
-                    onChange={(e) => setSalaryInput(fromMoneyDisplay(e.target.value))}
-                    placeholder="급여 입력"
-                    disabled={!canEditAccounting}
-                    style={{ flex: 1 }}
-                  />
-                  <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>원</span>
-                </div>
-              </div>
-
-              {/* 기준매출 산출 */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>기준매출 (급여 x 1.3 x 4)</label>
-                <div style={{
-                  padding: '10px 14px',
-                  background: calculatedStandardSales > 0 ? '#e8f5e9' : '#f5f5f5',
-                  borderRadius: 8,
-                  fontSize: '1.1rem',
-                  fontWeight: 700,
-                  color: calculatedStandardSales > 0 ? '#188038' : '#9aa0a6',
-                }}>
-                  {calculatedStandardSales > 0 ? formatCurrency(calculatedStandardSales) : '-'}
-                </div>
-                {calculatedStandardSales > 0 && (
-                  <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginTop: 4 }}>
-                    2개월간 달성해야 하는 금액 조건
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: '1rem', color: '#1a1a2e' }}>
+                {payType === 'commission' ? '비율제 설정' : '급여 및 직급 설정'}
+              </h3>
+              {canEditAccounting && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: '0.78rem', color: payType === 'salary' ? '#1a73e8' : '#9aa0a6', fontWeight: payType === 'salary' ? 700 : 400 }}>급여제</span>
+                  <div onClick={() => setPayType(payType === 'salary' ? 'commission' : 'salary')}
+                    style={{ width: 44, height: 24, borderRadius: 12, background: payType === 'commission' ? '#7b1fa2' : '#dadce0', cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}>
+                    <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', position: 'absolute', top: 2, left: payType === 'commission' ? 22 : 2, transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }} />
                   </div>
-                )}
-              </div>
-
-              {/* 직급 선택 */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>직급단계</label>
-                <select
-                  className="form-input"
-                  value={gradeInput}
-                  onChange={(e) => setGradeInput(e.target.value)}
-                  disabled={!canEditAccounting}
-                  style={{ width: '100%' }}
-                >
-                  <option value="">미지정</option>
-                  {GRADE_OPTIONS.map((g) => (
-                    <option key={g} value={g}>{g}</option>
-                  ))}
-                </select>
-                <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginTop: 4 }}>
-                  직급단계는 역할/보직과 별개입니다
+                  <span style={{ fontSize: '0.78rem', color: payType === 'commission' ? '#7b1fa2' : '#9aa0a6', fontWeight: payType === 'commission' ? 700 : 400 }}>비율제</span>
                 </div>
-              </div>
-
-              {/* 직급수당 */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>직급수당</label>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <input className="form-input" value={toMoneyDisplay(posAllowanceInput)}
-                    onChange={(e) => setPosAllowanceInput(fromMoneyDisplay(e.target.value))}
-                    disabled={!canEditAccounting} style={{ flex: 1 }} placeholder="0" />
-                  <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>원</span>
-                </div>
-              </div>
-
-              {/* 법인카드 번호 */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>법인카드 번호</label>
-                <input className="form-input" value={cardNumberInput}
-                  onChange={(e) => setCardNumberInput(e.target.value)}
-                  disabled={!canEditAccounting} style={{ width: '100%' }}
-                  placeholder="뒤 4자리 (예: 5900)" />
-                <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 4 }}>
-                  카드번호 뒤 4자리 입력 → 엑셀 업로드 시 자동 매칭
-                </div>
-              </div>
+              )}
             </div>
+
+            {payType === 'salary' ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 20 }}>
+                {/* 급여 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>급여 (월급)</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input className="form-input" value={toMoneyDisplay(salaryInput)}
+                      onChange={(e) => setSalaryInput(fromMoneyDisplay(e.target.value))}
+                      placeholder="급여 입력" disabled={!canEditAccounting} style={{ flex: 1 }} />
+                    <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>원</span>
+                  </div>
+                </div>
+                {/* 기준매출 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>기준매출 (급여 x 1.3 x 4)</label>
+                  <div style={{ padding: '10px 14px', background: calculatedStandardSales > 0 ? '#e8f5e9' : '#f5f5f5', borderRadius: 8, fontSize: '1.1rem', fontWeight: 700, color: calculatedStandardSales > 0 ? '#188038' : '#9aa0a6' }}>
+                    {calculatedStandardSales > 0 ? formatCurrency(calculatedStandardSales) : '-'}
+                  </div>
+                </div>
+                {/* 직급 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>직급단계</label>
+                  <select className="form-input" value={gradeInput} onChange={(e) => setGradeInput(e.target.value)} disabled={!canEditAccounting} style={{ width: '100%' }}>
+                    <option value="">미지정</option>
+                    {GRADE_OPTIONS.map((g) => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </div>
+                {/* 직급수당 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>직급수당</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input className="form-input" value={toMoneyDisplay(posAllowanceInput)}
+                      onChange={(e) => setPosAllowanceInput(fromMoneyDisplay(e.target.value))}
+                      disabled={!canEditAccounting} style={{ flex: 1 }} placeholder="0" />
+                    <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>원</span>
+                  </div>
+                </div>
+                {/* 법인카드 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>법인카드 번호</label>
+                  <input className="form-input" value={cardNumberInput} onChange={(e) => setCardNumberInput(e.target.value)}
+                    disabled={!canEditAccounting} style={{ width: '100%' }} placeholder="뒤 4자리 (예: 5900)" />
+                </div>
+              </div>
+            ) : (
+              /* 비율제 */
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 20 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#7b1fa2' }}>비율 (%)</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input className="form-input" type="number" step="0.1" min="0" max="100"
+                      value={commissionRate} onChange={(e) => setCommissionRate(e.target.value)}
+                      disabled={!canEditAccounting} style={{ flex: 1 }} placeholder="예: 30" />
+                    <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>%</span>
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 4 }}>매출 대비 지급 비율</div>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>직급수당</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input className="form-input" value={toMoneyDisplay(posAllowanceInput)}
+                      onChange={(e) => setPosAllowanceInput(fromMoneyDisplay(e.target.value))}
+                      disabled={!canEditAccounting} style={{ flex: 1 }} placeholder="0" />
+                    <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>원</span>
+                  </div>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>법인카드 번호</label>
+                  <input className="form-input" value={cardNumberInput} onChange={(e) => setCardNumberInput(e.target.value)}
+                    disabled={!canEditAccounting} style={{ width: '100%' }} placeholder="뒤 4자리 (예: 5900)" />
+                </div>
+              </div>
+            )}
 
             {canEditAccounting && (
               <div style={{ marginTop: 16 }}>
@@ -467,15 +486,21 @@ export default function UserManagement() {
         <h2><UserCog size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 사용자 관리</h2>
       </div>
 
-      {/* Tabs */}
-      <div className="filter-bar" style={{ marginBottom: 20 }}>
-        <button className={`filter-btn ${tab === 'approved' ? 'active' : ''}`} onClick={() => setTab('approved')}>
-          승인된 사용자 ({users.length})
-        </button>
-        {canManagePending && (
-          <button className={`filter-btn ${tab === 'pending' ? 'active' : ''}`} onClick={() => setTab('pending')}>
-            가입 대기 {pendingUsers.length > 0 && <span className="pending-badge">{pendingUsers.length}</span>}
+      {/* Tabs + 검색 */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 8 }}>
+        <div className="filter-bar" style={{ marginBottom: 0 }}>
+          <button className={`filter-btn ${tab === 'approved' ? 'active' : ''}`} onClick={() => setTab('approved')}>
+            승인된 사용자 ({users.length})
           </button>
+          {canManagePending && (
+            <button className={`filter-btn ${tab === 'pending' ? 'active' : ''}`} onClick={() => setTab('pending')}>
+              가입 대기 {pendingUsers.length > 0 && <span className="pending-badge">{pendingUsers.length}</span>}
+            </button>
+          )}
+        </div>
+        {tab === 'approved' && (
+          <input className="form-input" placeholder="이름, 이메일, 지사, 팀 검색" value={userSearchTerm} onChange={(e) => setUserSearchTerm(e.target.value)}
+            style={{ width: 220, fontSize: '0.82rem', padding: '6px 10px' }} />
         )}
       </div>
 
@@ -487,7 +512,11 @@ export default function UserManagement() {
               <tr><th>이름</th><th>이메일</th><th>역할</th><th>보직</th><th>지사</th><th>팀</th><th>가입일</th><th></th></tr>
             </thead>
             <tbody>
-              {users.filter((u) => u.role !== 'master' || currentUser?.role === 'master').map((u) => {
+              {users.filter((u) => u.role !== 'master' || currentUser?.role === 'master').filter(u => {
+                if (!userSearchTerm) return true;
+                const q = userSearchTerm.toLowerCase();
+                return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) || (u.branch || '').toLowerCase().includes(q) || (u.department || '').toLowerCase().includes(q) || (u.position_title || '').toLowerCase().includes(q);
+              }).map((u) => {
                 const isSameBranch = currentUser?.role !== 'admin' || u.branch === currentUser?.branch;
                 const canEdit = availableRoles.length > 0 && u.id !== currentUser?.id && isSameBranch;
                 const targetLevel = hierarchy[u.role] || 99;
@@ -496,7 +525,7 @@ export default function UserManagement() {
                 const canChangeRole = canEdit && !isHigher;
                 return (
                   <tr key={u.id} onClick={() => handleSelectUser(u)} className="clickable-row" style={{ cursor: 'pointer' }}>
-                    <td><strong>{u.name}</strong></td>
+                    <td><strong>{u.name}</strong>{(u as any).login_type === 'freelancer' && <span style={{ marginLeft: 6, fontSize: '0.65rem', background: '#7b1fa2', color: '#fff', padding: '1px 6px', borderRadius: 8 }}>프리랜서</span>}</td>
                     <td style={{ fontSize: '0.75rem' }}>{u.email}</td>
                     <td onClick={(e) => e.stopPropagation()}>
                       {canChangeRole ? (
@@ -559,7 +588,7 @@ export default function UserManagement() {
               <tbody>
                 {pendingUsers.map((u) => (
                   <tr key={u.id}>
-                    <td><strong>{u.name}</strong></td>
+                    <td><strong>{u.name}</strong>{(u as any).login_type === 'freelancer' && <span style={{ marginLeft: 6, fontSize: '0.65rem', background: '#7b1fa2', color: '#fff', padding: '1px 6px', borderRadius: 8 }}>프리랜서</span>}</td>
                     <td>{u.phone || '-'}</td>
                     <td>{u.email}</td>
                     <td>{u.branch || '-'}</td>

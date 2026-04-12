@@ -1,17 +1,18 @@
 import { useState, useRef } from 'react';
 import { useAuthStore } from '../store';
 import { api } from '../api';
-import { ROLE_LABELS, BRANCHES } from '../types';
+import { ROLE_LABELS } from '../types';
+import type { Role } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { useDepartments } from '../hooks/useDepartments';
+import { useBranches } from '../hooks/useBranches';
 import { Trash2, Pencil } from 'lucide-react';
 
 const SIG_KEY = 'myauction_saved_signature';
 
-const BRANCH_OPTS = toOptions(BRANCHES);
-import type { Role } from '../types';
-
 export default function Profile() {
+  const { branches } = useBranches();
+  const BRANCH_OPTS = toOptions(branches);
   const { user, loadUser } = useAuthStore();
   const { departments } = useDepartments();
   const DEPT_OPTS = toOptions(departments);
@@ -24,6 +25,7 @@ export default function Profile() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [savedSig, setSavedSig] = useState<string | null>(() => localStorage.getItem(SIG_KEY));
+  const [apiKey, setApiKey] = useState('');
   const [showSigCanvas, setShowSigCanvas] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef(false);
@@ -92,10 +94,9 @@ export default function Profile() {
     setSaving(true);
     setMessage('');
     try {
-      const data: { phone?: string; branch?: string; department?: string; position_title?: string; password?: string } = {
-        phone, branch, department, position_title: positionTitle,
-      };
+      const data: any = { phone, branch, department, position_title: positionTitle };
       if (password) data.password = password;
+      if (apiKey) data.api_key = apiKey;
 
       await api.users.update(user.id, data);
       await loadUser();
@@ -187,6 +188,17 @@ export default function Profile() {
             </div>
           </div>
         </div>
+
+        {/* API 키 (대표/마스터만) */}
+        {user && ['master', 'ceo'].includes(user.role) && (
+          <div className="profile-section">
+            <h3>API 키 설정</h3>
+            <div className="form-group">
+              <label>Claude API Key <span style={{ fontSize: '0.72rem', color: '#9aa0a6' }}>회의록 자동 변환에 사용</span></label>
+              <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-ant-..." />
+            </div>
+          </div>
+        )}
 
         <div className="profile-section">
           <h3>서명 관리</h3>

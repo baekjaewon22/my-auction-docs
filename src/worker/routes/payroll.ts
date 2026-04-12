@@ -30,7 +30,7 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
   const accounting = await db.prepare(
-    'SELECT salary, standard_sales, grade, position_allowance FROM user_accounting WHERE user_id = ?'
+    'SELECT salary, standard_sales, grade, position_allowance, pay_type, commission_rate FROM user_accounting WHERE user_id = ?'
   ).bind(userId).first<any>();
 
   // 2개월 구간의 매출 조회
@@ -65,11 +65,13 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   // 무급휴가 공제: 월급 ÷ 209h × 8 × 무급휴가 일수
   const unpaidLeaveDeduction = salary > 0 ? Math.round((salary / 209) * 8 * unpaidLeaveDays) : 0;
 
-  // 상여금 계산 (구간별 누진)
-  // 0 ~ 501만원 미만: 20%, 501만원 이상 ~ 1501만원 미만: 25%, 1501만원 이상: 30%
-  const excess = Math.max(totalSales - standardSales, 0);
+  // 본사관리 인원은 실적 기반 성과금 없음
+  const isHQ = user.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
+
+  // 상여금 계산 (구간별 누진) — 본사관리 인원은 건너뜀
+  const excess = isHQ ? 0 : Math.max(totalSales - standardSales, 0);
   let bonus = 0;
-  if (excess > 0) {
+  if (!isHQ && excess > 0) {
     if (excess < 5010000) {
       bonus = Math.round(excess * 0.20);
     } else if (excess < 15010000) {
@@ -88,7 +90,8 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
 
   return c.json({
     user,
-    accounting: accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0 },
+    accounting: accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0, pay_type: 'salary', commission_rate: 0 },
+    is_hq: isHQ,
     month,
     period_start: periodStart,
     period_end: periodEnd,

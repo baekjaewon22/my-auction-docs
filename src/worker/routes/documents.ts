@@ -13,10 +13,11 @@ async function buildApprovalChain(db: D1Database, authorId: string): Promise<str
   const author = await db.prepare('SELECT role FROM users WHERE id = ?').bind(authorId).first<{ role: string }>();
   if (!author) return [];
 
-  // 2) 위로 올라가며 승인자 수집 (본인 제외, 최대 2명)
+  // 2) 위로 올라가며 승인자 수집 (본인 제외)
+  // 팀원→팀장→지사장→대표, 팀장→지사장→대표, 관리자→대표
   const chain: string[] = [];
   let currentParentId = userNode.parent_id;
-  const maxSteps = author.role === 'manager' ? 1 : 2; // 팀장은 1단계, 나머지 2단계
+  const maxSteps = author.role === 'admin' ? 1 : author.role === 'manager' ? 2 : 3;
 
   while (currentParentId && chain.length < maxSteps) {
     const parentNode = await db.prepare(
@@ -304,12 +305,12 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
   ).bind(id, user.sub).first<{ id: string; step_order: number }>();
 
   if (!myStep) {
-    // 결재선에 없어도 master/ceo는 최종 승인 가능
-    if (user.role === 'master' || user.role === 'ceo' || user.role === 'cc_ref') {
-      // 모든 pending 단계를 승인 처리
+    // 결재선에 없어도 권한자는 대리 승인 가능
+    if (['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role)) {
+      // 모든 pending 단계를 승인 처리 (대리 서명자 기록)
       await db.prepare(
-        "UPDATE approval_steps SET status = 'approved', signed_at = datetime('now') WHERE document_id = ? AND status = 'pending'"
-      ).bind(id).run();
+        "UPDATE approval_steps SET status = 'approved', signed_at = datetime('now'), comment = ? WHERE document_id = ? AND status = 'pending'"
+      ).bind('proxy:' + user.sub, id).run();
     } else {
       return c.json({ error: '현재 승인 차례가 아니거나 결재선에 포함되지 않았습니다.' }, 403);
     }
@@ -432,7 +433,7 @@ documents.get('/:id/steps', async (c) => {
   const id = c.req.param('id');
   const db = c.env.DB;
   const result = await db.prepare(
-    'SELECT s.*, u.name as approver_name FROM approval_steps s LEFT JOIN users u ON s.approver_id = u.id WHERE s.document_id = ? ORDER BY s.step_order'
+    'SELECT s.*, u.name as approver_name, u.position_title as approver_title FROM approval_steps s LEFT JOIN users u ON s.approver_id = u.id WHERE s.document_id = ? ORDER BY s.step_order'
   ).bind(id).all();
   return c.json({ steps: result.results });
 });

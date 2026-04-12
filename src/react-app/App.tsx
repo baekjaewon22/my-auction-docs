@@ -22,6 +22,8 @@ import Accounting from './pages/Accounting';
 import Sales from './pages/Sales';
 import Payroll from './pages/Payroll';
 import LeavePage from './pages/Leave';
+import PropertyReport from './pages/PropertyReport';
+import FinanceAnalytics from './pages/FinanceAnalytics';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore();
@@ -57,12 +59,6 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function CeoRoute({ children }: { children: React.ReactNode }) {
-  const { user } = useAuthStore();
-  const allowed = ['master', 'ceo', 'cc_ref'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
-  return <>{children}</>;
-}
 
 function NonAccountingRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
@@ -83,23 +79,25 @@ function useSingleTab() {
 
   useEffect(() => {
     const channel = new BroadcastChannel('myauction_tab');
-    const tabId = Date.now().toString();
+    const tabId = Date.now().toString() + Math.random();
+    let ready = false;
 
-    // 새 탭이 열리면 기존 탭에게 알림
-    channel.postMessage({ type: 'new_tab', tabId });
+    // 잠시 대기 후 새 탭 알림 (새로고침 시 이전 채널이 닫힐 시간 확보)
+    const timer = setTimeout(() => {
+      ready = true;
+      channel.postMessage({ type: 'new_tab', tabId });
+    }, 300);
 
     channel.onmessage = (e) => {
-      if (e.data.type === 'new_tab' && e.data.tabId !== tabId) {
-        // 다른 탭이 열렸으니 그 탭에 응답
+      if (e.data.type === 'new_tab' && e.data.tabId !== tabId && ready) {
         channel.postMessage({ type: 'already_open', tabId });
       }
       if (e.data.type === 'already_open' && e.data.tabId !== tabId) {
-        // 이미 열려있는 탭이 있음 → 이 탭이 중복
         setIsDuplicate(true);
       }
     };
 
-    return () => channel.close();
+    return () => { clearTimeout(timer); channel.close(); };
   }, []);
 
   return isDuplicate;
@@ -142,6 +140,8 @@ export default function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="documents" element={<DocumentList />} />
           <Route path="documents/:id" element={<DocumentEdit />} />
+          <Route path="property-report" element={<PropertyReport />} />
+          <Route path="property-report/:id" element={<PropertyReport />} />
           <Route path="templates" element={<TemplateList />} />
           <Route path="journal" element={<NonAccountingRoute><Journal /></NonAccountingRoute>} />
           <Route path="archive" element={<ArchivePage />} />
@@ -214,11 +214,19 @@ export default function App() {
             }
           />
           <Route
+            path="finance-analytics"
+            element={
+              <AccountingRoute>
+                <FinanceAnalytics />
+              </AccountingRoute>
+            }
+          />
+          <Route
             path="minutes"
             element={
-              <CeoRoute>
+              <AdminRoute>
                 <MeetingMinutes />
-              </CeoRoute>
+              </AdminRoute>
             }
           />
         </Route>

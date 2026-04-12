@@ -85,7 +85,7 @@ const smallStyles: StylesConfig<any, false, GroupBase<any>> = {
   }),
 };
 
-interface SelectProps extends Omit<Props<any, false, GroupBase<any>>, 'styles'> {
+interface SelectProps extends Omit<Props<any, boolean, GroupBase<any>>, 'styles'> {
   size?: 'default' | 'sm';
 }
 

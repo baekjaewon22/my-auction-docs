@@ -4,7 +4,7 @@ import { useAuthStore } from '../store';
 import { api } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 
@@ -30,8 +30,69 @@ interface ScheduleGapAlert {
   gaps: string[]; // ["09:00~10:00", "14:00~15:30"]
 }
 
+function FreelancerDashboard() {
+  const { user } = useAuthStore();
+  const [mySales, setMySales] = useState<SalesRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.sales.list({}).then(res => {
+      setMySales((res.records || []).filter((r: SalesRecord) => r.user_id === user?.id));
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div className="page-loading">로딩중...</div>;
+
+  const totalAmount = mySales.filter(r => r.status === 'confirmed').reduce((s, r) => s + r.amount, 0);
+  const pendingCount = mySales.filter(r => r.status === 'pending').length;
+  const confirmedCount = mySales.filter(r => r.status === 'confirmed').length;
+
+  return (
+    <div className="page dashboard-page">
+      <div className="page-header">
+        <h2>대시보드</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <p className="greeting">안녕하세요, <strong>{user?.name}</strong>님!</p>
+          <a href="http://crm.my-auction.co.kr/login.php" target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+            마이옥션CRM+ <ExternalLink size={12} />
+          </a>
+        </div>
+      </div>
+
+      <div className="stats-grid">
+        <div className="stat-card"><DollarSign size={28} className="stat-icon" /><div className="stat-number">{mySales.length}</div><div className="stat-label">전체 매출</div></div>
+        <div className="stat-card stat-submitted"><Clock size={28} className="stat-icon" /><div className="stat-number">{pendingCount}</div><div className="stat-label">입금대기</div></div>
+        <div className="stat-card stat-approved"><FileCheck size={28} className="stat-icon" /><div className="stat-number">{confirmedCount}</div><div className="stat-label">확정</div></div>
+        <div className="stat-card" style={{ borderTop: '3px solid #7b1fa2' }}><TrendingDown size={28} className="stat-icon" style={{ color: '#7b1fa2' }} /><div className="stat-number" style={{ color: '#7b1fa2' }}>{totalAmount.toLocaleString()}</div><div className="stat-label">확정 매출액</div></div>
+      </div>
+
+      {mySales.length > 0 && (
+        <section className="section">
+          <h3 className="section-title"><DollarSign size={18} /> 최근 매출</h3>
+          <div className="doc-list">
+            {mySales.slice(0, 10).map(r => (
+              <Link key={r.id} to="/sales" className="doc-item">
+                <div className="doc-item-header">
+                  <span className={`doc-status status-${r.status === 'confirmed' ? 'approved' : r.status === 'pending' ? 'submitted' : 'draft'}`}>
+                    {r.status === 'confirmed' ? '확정' : r.status === 'pending' ? '대기' : r.status}
+                  </span>
+                  <span className="doc-date">{r.contract_date}</span>
+                </div>
+                <div className="doc-title">{r.type} · {r.client_name} · {r.amount.toLocaleString()}원</div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const { user } = useAuthStore();
+  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  if (isFreelancer) return <FreelancerDashboard />;
+
   const [documents, setDocuments] = useState<Document[]>([]);
   const [alerts, setAlerts] = useState<MissingAlert[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<(Document & { steps?: ApprovalStep[] })[]>([]);
@@ -43,12 +104,16 @@ export default function Dashboard() {
   const [depositNotices, setDepositNotices] = useState<DepositNotice[]>([]);
   const [scheduleGaps, setScheduleGaps] = useState<ScheduleGapAlert[]>([]);
   const [contractAlerts, setContractAlerts] = useState<SalesRecord[]>([]);
+  const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '');
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
   const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
 
   useEffect(() => {
+    // 삭제된 알림 목록 로드
+    api.journal.dismissedAlerts().then(res => setDismissedKeys(new Set(res.keys))).catch(() => {});
+
     const promises: Promise<any>[] = [
       api.documents.list(),
       api.journal.list({ range: 'month' }),
@@ -259,15 +324,27 @@ export default function Dashboard() {
       )}
 
       {/* 일정 공백 알림 */}
-      {scheduleGaps.length > 0 && (
+      {(() => {
+        const filteredGaps = scheduleGaps.filter(g => !dismissedKeys.has(`gap_${g.userName}_${g.date}`));
+        if (filteredGaps.length === 0) return null;
+        return (
         <section className="section">
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Clock size={18} color="#e65100" /> 일정 공백 알림
-            <span className="missing-alert-count">{scheduleGaps.length}건</span>
+            <span className="missing-alert-count">{filteredGaps.length}건</span>
+            {user?.role === 'master' && (
+              <button className="btn btn-sm" style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#9aa0a6' }}
+                onClick={async () => {
+                  if (!confirm(`${filteredGaps.length}건을 모두 삭제하시겠습니까?`)) return;
+                  const keys = filteredGaps.map(g => ({ alert_type: 'schedule_gap', alert_key: `gap_${g.userName}_${g.date}` }));
+                  await api.journal.dismissAlertsBulk(keys);
+                  setDismissedKeys(prev => { const n = new Set(prev); keys.forEach(k => n.add(k.alert_key)); return n; });
+                }}>모두 닫기</button>
+            )}
           </h3>
           <div className="missing-alert-list">
-            {scheduleGaps.slice(0, 10).map((g, i) => (
-              <div key={i} className="missing-alert-item" style={{ borderLeft: '3px solid #e65100' }}>
+            {filteredGaps.slice(0, 10).map((g, i) => (
+              <div key={i} className="missing-alert-item" style={{ borderLeft: '3px solid #e65100', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div className="missing-alert-text">
                   <strong>{g.userName}</strong>
                   <span className="missing-alert-date">{g.date}</span>
@@ -275,11 +352,22 @@ export default function Dashboard() {
                     공백: {g.gaps.join(', ')}
                   </span>
                 </div>
+                {user?.role === 'master' && (
+                  <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#bdc1c6', padding: 2 }}
+                    onClick={async () => {
+                      const key = `gap_${g.userName}_${g.date}`;
+                      await api.journal.dismissAlert('schedule_gap', key);
+                      setDismissedKeys(prev => new Set(prev).add(key));
+                    }}>
+                    <X size={14} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
         </section>
-      )}
+        );
+      })()}
 
       {/* 계약서 확인 대기 알림 */}
       {contractAlerts.length > 0 && (

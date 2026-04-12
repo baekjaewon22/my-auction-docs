@@ -17,18 +17,23 @@ const CATEGORY_ICONS: Record<string, typeof CalendarDays> = {
 
 const CATEGORY_ORDER = ['근태/휴가', '인사/채용', '경비/비용', '업무/보고'];
 const FAV_KEY = 'myauction_fav_templates';
-const FAV_INIT_KEY = 'myauction_fav_initialized';
-const DEFAULT_FAVS = ['tpl-att-001', 'tpl-att-002', 'tpl-att-003', 'tpl-work-002', 'tpl-work-007'];
+const FAV_VER_KEY = 'myauction_fav_ver';
+const FAV_VERSION = '2'; // 버전 올리면 기존 사용자에게도 새 즐겨찾기 추가
+const DEFAULT_FAVS = ['tpl-work-008', 'tpl-att-001', 'tpl-att-002', 'tpl-att-003', 'tpl-work-002', 'tpl-work-007'];
 
 function getFavorites(): string[] {
   try {
-    if (!localStorage.getItem(FAV_INIT_KEY)) {
-      localStorage.setItem(FAV_KEY, JSON.stringify(DEFAULT_FAVS));
-      localStorage.setItem(FAV_INIT_KEY, '1');
-      return [...DEFAULT_FAVS];
+    const ver = localStorage.getItem(FAV_VER_KEY) || '0';
+    if (ver < FAV_VERSION) {
+      // 기존 즐겨찾기에 새 항목만 추가
+      const existing = JSON.parse(localStorage.getItem(FAV_KEY) || '[]') as string[];
+      const merged = [...new Set([...DEFAULT_FAVS, ...existing])];
+      localStorage.setItem(FAV_KEY, JSON.stringify(merged));
+      localStorage.setItem(FAV_VER_KEY, FAV_VERSION);
+      return merged;
     }
     return JSON.parse(localStorage.getItem(FAV_KEY) || '[]');
-  } catch { return []; }
+  } catch { return [...DEFAULT_FAVS]; }
 }
 
 function toggleFavorite(id: string): string[] {
@@ -103,6 +108,11 @@ export default function TemplateList() {
   const favTemplates = templates.filter((t) => favorites.includes(t.id));
 
   const handleNewDoc = async (templateId: string) => {
+    // 물건분석보고서는 전용 페이지로 이동
+    if (templateId === 'tpl-work-008') {
+      navigate('/property-report');
+      return;
+    }
     const template = templates.find((t) => t.id === templateId);
     const { document } = await api.documents.create({
       title: template?.title || '새 문서',

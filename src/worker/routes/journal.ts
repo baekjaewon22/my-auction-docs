@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireRole } from '../middleware/auth';
 
 // KST (한국 시간) 기준 날짜
 const HOLIDAYS_2026 = [
@@ -98,7 +98,7 @@ journal.get('/members', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
-  let query = 'SELECT id, name, role, branch, department, position_title FROM users WHERE approved = 1';
+  let query = "SELECT id, name, role, branch, department, position_title FROM users WHERE approved = 1 AND role != 'master'";
   const params: string[] = [];
 
   if (user.role === 'member') {
@@ -223,6 +223,37 @@ journal.delete('/:id', async (c) => {
 
   await db.prepare('DELETE FROM journal_entries WHERE id = ?').bind(id).run();
   return c.json({ success: true });
+});
+
+// POST /api/journal/dismiss-alert — 알림 삭제 (마스터 전용)
+journal.post('/dismiss-alert', requireRole('master'), async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const { alert_type, alert_key } = await c.req.json<{ alert_type: string; alert_key: string }>();
+  const id = crypto.randomUUID();
+  await db.prepare('INSERT OR IGNORE INTO dismissed_alerts (id, alert_type, alert_key, dismissed_by) VALUES (?, ?, ?, ?)')
+    .bind(id, alert_type, alert_key, user.sub).run();
+  return c.json({ success: true });
+});
+
+// POST /api/journal/dismiss-alerts-bulk — 알림 일괄 삭제
+journal.post('/dismiss-alerts-bulk', requireRole('master'), async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const { keys } = await c.req.json<{ keys: { alert_type: string; alert_key: string }[] }>();
+  for (const k of keys) {
+    const id = crypto.randomUUID();
+    await db.prepare('INSERT OR IGNORE INTO dismissed_alerts (id, alert_type, alert_key, dismissed_by) VALUES (?, ?, ?, ?)')
+      .bind(id, k.alert_type, k.alert_key, user.sub).run();
+  }
+  return c.json({ success: true, count: keys.length });
+});
+
+// GET /api/journal/dismissed-alerts — 삭제된 알림 목록
+journal.get('/dismissed-alerts', async (c) => {
+  const db = c.env.DB;
+  const result = await db.prepare('SELECT alert_key FROM dismissed_alerts').all();
+  return c.json({ keys: (result.results || []).map((r: any) => r.alert_key) });
 });
 
 export default journal;

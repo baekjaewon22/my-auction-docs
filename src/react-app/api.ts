@@ -1,7 +1,7 @@
 const BASE = '/api';
 
 function getToken(): string | null {
-  return sessionStorage.getItem('token');
+  return localStorage.getItem('token');
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -17,8 +17,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { ...options, headers });
 
   if (res.status === 401) {
-    sessionStorage.removeItem('token');
-    window.location.href = '/login';
+    localStorage.removeItem('token');
+    // /auth/me는 loadUser에서 처리하므로 리다이렉트하지 않음
+    if (!path.includes('/auth/me')) {
+      window.location.href = '/login';
+    }
     throw new Error('Unauthorized');
   }
 
@@ -37,15 +40,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 // Auth
 export const api = {
   auth: {
-    login: (email: string, password: string) =>
+    login: (email: string, password: string, login_type?: string) =>
       request<{ token: string; user: import('./types').User }>('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, login_type }),
       }),
-    register: (email: string, password: string, name: string, phone: string, branch?: string) =>
+    register: (email: string, password: string, name: string, phone: string, branch?: string, login_type?: string) =>
       request<{ message: string }>('/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ email, password, name, phone, branch }),
+        body: JSON.stringify({ email, password, name, phone, branch, login_type }),
       }),
     me: () => request<{ user: import('./types').User }>('/auth/me'),
   },
@@ -162,9 +165,16 @@ export const api = {
     delete: (id: string) => request('/departments/' + id, { method: 'DELETE' }),
   },
 
+  branches: {
+    list: () => request<{ branches: { id: string; name: string; sort_order: number }[] }>('/branches'),
+    create: (name: string) => request('/branches', { method: 'POST', body: JSON.stringify({ name }) }),
+    delete: (id: string) => request('/branches/' + id, { method: 'DELETE' }),
+  },
+
   leave: {
     list: () => request<{ leaves: any[] }>('/leave'),
     me: () => request<{ leave: any }>('/leave/me'),
+    userLeave: (userId: string) => request<{ leave: any }>('/leave/user/' + userId),
     init: (userId: string, totalDays: number) =>
       request('/leave/init', { method: 'POST', body: JSON.stringify({ user_id: userId, total_days: totalDays }) }),
     update: (userId: string, data: { total_days?: number; used_days?: number; monthly_days?: number; monthly_used?: number; leave_type?: string }) =>
@@ -182,6 +192,8 @@ export const api = {
       request('/leave/requests/' + id + '/cancel', { method: 'POST' }),
     cancelApprove: (id: string) =>
       request('/leave/requests/' + id + '/cancel-approve', { method: 'POST' }),
+    deleteRequest: (id: string) =>
+      request('/leave/requests/' + id, { method: 'DELETE' }),
     // 환급
     refund: (userId: string) => request<any>('/leave/refund/' + userId),
     // 알림
@@ -210,6 +222,13 @@ export const api = {
     },
     downloadUrl: (id: string) => `/api/minutes/${id}/download`,
     delete: (id: string) => request('/minutes/' + id, { method: 'DELETE' }),
+    get: (id: string) => request<{ minute: any; shares: any[] }>('/minutes/' + id),
+    convertTxt: (data: { title: string; raw_text: string; share_with?: string[] }) =>
+      request<{ success: boolean; id: string; converted: string }>('/minutes/convert-txt', { method: 'POST', body: JSON.stringify(data) }),
+    share: (id: string, user_ids: string[]) =>
+      request('/minutes/' + id + '/share', { method: 'POST', body: JSON.stringify({ user_ids }) }),
+    sharedWithMe: () => request<{ minutes: any[] }>('/minutes/shared/me'),
+    markRead: (id: string) => request('/minutes/shared/' + id + '/read', { method: 'PUT' }),
   },
 
   commissions: {
@@ -220,6 +239,10 @@ export const api = {
     create: (data: { journal_entry_id: string; user_id: string; user_name: string; client_name: string; case_no: string; win_price: string }) =>
       request('/commissions', { method: 'POST', body: JSON.stringify(data) }),
     deleteByEntry: (entryId: string) => request('/commissions/by-entry/' + entryId, { method: 'DELETE' }),
+  },
+
+  analytics: {
+    summary: (months?: number) => request<any>('/analytics/summary' + (months ? '?months=' + months : '')),
   },
 
   sales: {
@@ -236,6 +259,8 @@ export const api = {
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       request('/sales/' + id, { method: 'DELETE' }),
+    deleteByEntry: (entryId: string) =>
+      request('/sales/by-entry/' + entryId, { method: 'DELETE' }),
     updatePaymentMethod: (id: string, payment_method: string) =>
       request('/sales/' + id + '/payment-method', { method: 'PUT', body: JSON.stringify({ payment_method }) }),
     confirm: (id: string, deposit_date?: string) =>
@@ -268,7 +293,7 @@ export const api = {
       request('/sales/deposits/' + id + '/approve', { method: 'POST' }),
     createAccountingEntry: (data: { amount: number; content: string; date: string; assignee_id: string; direction?: string }) =>
       request<{ success: boolean; id: string }>('/sales/accounting-entry', { method: 'POST', body: JSON.stringify(data) }),
-    contractCheck: (id: string, data: { contract_submitted?: number; contract_not_submitted?: number; contract_not_reason?: string }) =>
+    contractCheck: (id: string, data: { contract_submitted?: number; contract_not_submitted?: number; contract_not_reason?: string; contract_not_approved?: number }) =>
       request('/sales/' + id + '/contract-check', { method: 'PUT', body: JSON.stringify(data) }),
     contractNotApprove: (id: string) =>
       request('/sales/' + id + '/contract-not-approve', { method: 'PUT' }),
@@ -301,6 +326,8 @@ export const api = {
       request('/card/transaction/' + id, { method: 'DELETE' }),
     deleteBatch: (batchId: string) =>
       request('/card/batch/' + batchId, { method: 'DELETE' }),
+    bulkDelete: (ids: string[]) =>
+      request<{ success: boolean; count: number }>('/card/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
   },
 
   payroll: {
@@ -320,7 +347,7 @@ export const api = {
   accounting: {
     list: () => request<{ accounts: import('./types').UserAccounting[] }>('/accounting'),
     get: (userId: string) => request<{ account: import('./types').UserAccounting | null }>('/accounting/' + userId),
-    update: (userId: string, data: { salary?: number; grade?: string; position_allowance?: number }) =>
+    update: (userId: string, data: { salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number }) =>
       request<{ success: boolean; salary: number; standard_sales: number; grade: string }>('/accounting/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
     updateGrade: (userId: string, grade: string) =>
       request('/accounting/' + userId + '/grade', { method: 'PUT', body: JSON.stringify({ grade }) }),
@@ -348,5 +375,11 @@ export const api = {
       request('/journal/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       request('/journal/' + id, { method: 'DELETE' }),
+    dismissAlert: (alert_type: string, alert_key: string) =>
+      request('/journal/dismiss-alert', { method: 'POST', body: JSON.stringify({ alert_type, alert_key }) }),
+    dismissAlertsBulk: (keys: { alert_type: string; alert_key: string }[]) =>
+      request('/journal/dismiss-alerts-bulk', { method: 'POST', body: JSON.stringify({ keys }) }),
+    dismissedAlerts: () =>
+      request<{ keys: string[] }>('/journal/dismissed-alerts'),
   },
 };

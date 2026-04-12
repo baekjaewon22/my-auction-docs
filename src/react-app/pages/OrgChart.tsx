@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useRef, useLayoutEffect } from 'react
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User, ApprovalCC } from '../types';
-import { ROLE_LABELS, BRANCHES } from '../types';
+import { ROLE_LABELS } from '../types';
+import { useBranches } from '../hooks/useBranches';
 import type { Role } from '../types';
 import { Users, Plus, Trash2, Settings, UserMinus, Pencil, Shield, ChevronRight, ChevronDown } from 'lucide-react';
 import Select from '../components/Select';
@@ -89,10 +90,10 @@ function flatToTree(flat: { id: string; label: string; user_id: string | null; p
   return roots;
 }
 
-const BRANCH_OPTS = BRANCHES.map(b => ({ value: b, label: b }));
-
 export default function OrgChart() {
   const { user: currentUser } = useAuthStore();
+  const { branches: branchList } = useBranches();
+  const BRANCH_OPTS = branchList.map(b => ({ value: b, label: b }));
   const { departments: deptList } = useDepartments();
   const DEPT_OPTS = deptList.map(d => ({ value: d, label: d }));
   const [users, setUsers] = useState<User[]>([]);

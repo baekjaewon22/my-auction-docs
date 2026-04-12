@@ -120,6 +120,52 @@ leave.get('/me', async (c) => {
   });
 });
 
+// ───── 특정 유저 연차 조회 (관리자+) ─────
+leave.get('/user/:userId', requireRole('master', 'ceo', 'admin', 'accountant'), async (c) => {
+  const userId = c.req.param('userId');
+  const db = c.env.DB;
+
+  const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
+  const userInfo = await db.prepare('SELECT hire_date, created_at, name FROM users WHERE id = ?').bind(userId).first<any>();
+  const accounting = await db.prepare('SELECT salary FROM user_accounting WHERE user_id = ?').bind(userId).first<any>();
+
+  if (!userInfo) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
+
+  const hireDate = userInfo?.hire_date || userInfo?.created_at || '';
+  const entitlement = calculateLeaveEntitlement(hireDate);
+  const salary = accounting?.salary || 0;
+
+  const data = leaveInfo || {
+    total_days: entitlement.totalAnnual,
+    used_days: 0,
+    monthly_days: entitlement.totalMonthly,
+    monthly_used: 0,
+    leave_type: entitlement.type,
+  };
+
+  const annualRemaining = (data.total_days || 0) - (data.used_days || 0);
+  const monthlyRemaining = (data.monthly_days || 0) - (data.monthly_used || 0);
+  const totalRemaining = annualRemaining + monthlyRemaining;
+  const refundAmount = calculateRefund(salary, totalRemaining);
+  const months = getMonthsSinceHire(hireDate);
+  const promotionAlert = months >= 6 && months < 12;
+
+  return c.json({
+    leave: {
+      ...data,
+      hire_date: hireDate,
+      months_since_hire: months,
+      annual_remaining: annualRemaining,
+      monthly_remaining: monthlyRemaining,
+      total_remaining: totalRemaining,
+      salary,
+      refund_amount: refundAmount,
+      entitlement,
+      promotion_alert: promotionAlert,
+    },
+  });
+});
+
 // ───── 연차 초기화 (관리자+) ─────
 leave.post('/init', requireRole('master', 'ceo', 'admin'), async (c) => {
   const { user_id, total_days } = await c.req.json<{ user_id: string; total_days: number }>();
@@ -164,18 +210,28 @@ leave.post('/deduct', requireRole('master', 'ceo', 'admin', 'manager'), async (c
   const { user_id, days } = await c.req.json<{ user_id: string; days: number }>();
   const db = c.env.DB;
 
+  const reqUser = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(user_id).first<any>();
+  const hireDate = reqUser?.hire_date || reqUser?.created_at || '';
+  const entitlement = calculateLeaveEntitlement(hireDate);
+
   let existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(user_id).first<any>();
   if (!existing) {
-    await db.prepare('INSERT INTO annual_leave (id, user_id, total_days, used_days) VALUES (?, ?, 15, 0)')
-      .bind(crypto.randomUUID(), user_id).run();
-    existing = { total_days: 15, used_days: 0 };
+    await db.prepare(`INSERT INTO annual_leave (id, user_id, total_days, used_days, leave_type, monthly_days, monthly_used) VALUES (?, ?, ?, 0, ?, ?, 0)`)
+      .bind(crypto.randomUUID(), user_id, entitlement.totalAnnual, entitlement.type, entitlement.totalMonthly).run();
+    existing = { total_days: entitlement.totalAnnual, used_days: 0, monthly_days: entitlement.totalMonthly, monthly_used: 0, leave_type: entitlement.type };
   }
 
-  const newUsed = existing.used_days + days;
-  await db.prepare("UPDATE annual_leave SET used_days = ?, updated_at = datetime('now') WHERE user_id = ?")
-    .bind(newUsed, user_id).run();
-
-  return c.json({ success: true, used_days: newUsed, remaining: existing.total_days - newUsed });
+  const leaveType = existing.leave_type || entitlement.type;
+  if (leaveType === 'monthly') {
+    await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
+      .bind(days, user_id).run();
+    return c.json({ success: true, used_days: existing.monthly_used + days, remaining: existing.monthly_days - existing.monthly_used - days });
+  } else {
+    const newUsed = existing.used_days + days;
+    await db.prepare("UPDATE annual_leave SET used_days = ?, updated_at = datetime('now') WHERE user_id = ?")
+      .bind(newUsed, user_id).run();
+    return c.json({ success: true, used_days: newUsed, remaining: existing.total_days - newUsed });
+  }
 });
 
 // ───── 휴가 신청 ─────
@@ -248,14 +304,19 @@ leave.get('/requests', async (c) => {
   const db = c.env.DB;
   const status = c.req.query('status') || '';
   const month = c.req.query('month') || '';
+  const filterUserId = c.req.query('user_id') || '';
 
-  const isAdmin = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user.role);
+  const isAdmin = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user.role);
 
   let query = `SELECT lr.*, u.name as user_name FROM leave_requests lr
     LEFT JOIN users u ON lr.user_id = u.id WHERE 1=1`;
   const params: any[] = [];
 
-  if (!isAdmin) {
+  // 특정 유저 필터 (관리자+ 전용)
+  if (filterUserId && isAdmin) {
+    query += ' AND lr.user_id = ?';
+    params.push(filterUserId);
+  } else if (!isAdmin) {
     query += ' AND lr.user_id = ?';
     params.push(user.sub);
   } else if (user.role === 'manager') {
@@ -298,20 +359,32 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
 
   // 특별휴가는 연차 차감 없음
   if (req.leave_type !== '특별휴가') {
+    // 입사일 기반 월차/연차 판별
+    const reqUser = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(req.user_id).first<any>();
+    const hireDate = reqUser?.hire_date || reqUser?.created_at || '';
+    const entitlement = calculateLeaveEntitlement(hireDate);
+
     let existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(req.user_id).first<any>();
     if (!existing) {
-      await db.prepare('INSERT INTO annual_leave (id, user_id, total_days, used_days) VALUES (?, ?, 15, 0)')
-        .bind(crypto.randomUUID(), req.user_id).run();
-      existing = { total_days: 15, used_days: 0, monthly_days: 0, monthly_used: 0 };
+      await db.prepare(`INSERT INTO annual_leave (id, user_id, total_days, used_days, leave_type, monthly_days, monthly_used) VALUES (?, ?, ?, 0, ?, ?, 0)`)
+        .bind(crypto.randomUUID(), req.user_id, entitlement.totalAnnual, entitlement.type, entitlement.totalMonthly).run();
+      existing = { total_days: entitlement.totalAnnual, used_days: 0, monthly_days: entitlement.totalMonthly, monthly_used: 0, leave_type: entitlement.type };
     }
 
-    if (req.leave_type === '월차') {
+    const leaveType = existing.leave_type || entitlement.type;
+    if (leaveType === 'monthly') {
+      // 월차 타입 → monthly_used에서 차감 (연차, 반차, 시간차, 월차 모두)
       await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
         .bind(req.days, req.user_id).run();
     } else {
-      // 연차, 반차, 시간차 모두 연차에서 차감
-      await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
-        .bind(req.days, req.user_id).run();
+      // 연차 타입
+      if (req.leave_type === '월차') {
+        await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
+          .bind(req.days, req.user_id).run();
+      } else {
+        await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
+          .bind(req.days, req.user_id).run();
+      }
     }
   }
 
@@ -489,6 +562,29 @@ leave.put('/hire-date/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 
   }
 
   return c.json({ success: true, entitlement });
+});
+
+// ───── 휴가 신청 삭제 (마스터 전용) ─────
+leave.delete('/requests/:id', requireRole('master'), async (c) => {
+  const id = c.req.param('id');
+  const db = c.env.DB;
+
+  const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(id).first<any>();
+  if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
+
+  // 승인된 건이면 차감된 연차 복원
+  if (req.status === 'approved' && req.leave_type !== '특별휴가') {
+    if (req.leave_type === '월차') {
+      await db.prepare("UPDATE annual_leave SET monthly_used = MAX(0, monthly_used - ?), updated_at = datetime('now') WHERE user_id = ?")
+        .bind(req.days, req.user_id).run();
+    } else {
+      await db.prepare("UPDATE annual_leave SET used_days = MAX(0, used_days - ?), updated_at = datetime('now') WHERE user_id = ?")
+        .bind(req.days, req.user_id).run();
+    }
+  }
+
+  await db.prepare('DELETE FROM leave_requests WHERE id = ?').bind(id).run();
+  return c.json({ success: true });
 });
 
 export default leave;

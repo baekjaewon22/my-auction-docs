@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { SalesRecord, DepositNotice } from '../types';
-import { BRANCHES } from '../types';
+import { useBranches } from '../hooks/useBranches';
 import Select from '../components/Select';
 import {
   DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity
@@ -28,6 +28,11 @@ function getDateLabel(type: string): string {
   return '계약서 작성일';
 }
 
+function getDocLabel(type: string): string {
+  if (type === '낙찰') return '물건분석보고서';
+  return '계약서';
+}
+
 function formatCurrency(n: number): string {
   return n.toLocaleString('ko-KR') + '원';
 }
@@ -41,6 +46,7 @@ function fromMoneyDisplay(val: string): string {
 
 export default function Sales() {
   const { user: currentUser } = useAuthStore();
+  const { branches: BRANCHES } = useBranches();
   const [records, setRecords] = useState<SalesRecord[]>([]);
   const [deposits, setDeposits] = useState<DepositNotice[]>([]);
   const [members, setMembers] = useState<{ id: string; name: string; role: string; branch: string; department: string }[]>([]);
@@ -65,6 +71,7 @@ export default function Sales() {
   const [formDepositorName, setFormDepositorName] = useState('');
   const [formAmount, setFormAmount] = useState('');
   const [formContractDate, setFormContractDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [formPhone, setFormPhone] = useState('');
   // [6-1] 수수료 계산 (계약 타입만) - 감정가%, 낙찰가%
   const [formAppraisalRate, setFormAppraisalRate] = useState('');
   const [formWinningRate, setFormWinningRate] = useState('');
@@ -73,6 +80,23 @@ export default function Sales() {
   const [depDepositor, setDepDepositor] = useState('');
   const [depAmount, setDepAmount] = useState('');
   const [depDate, setDepDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+  // 다중선택 삭제
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const toggleSelect = (id: string) => setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelectAll = () => {
+    if (selectedIds.size === records.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(records.map(r => r.id)));
+  };
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`${selectedIds.size}건을 삭제하시겠습니까?`)) return;
+    try {
+      for (const id of selectedIds) await api.sales.delete(id);
+      setSelectedIds(new Set());
+      load();
+    } catch (err: any) { alert(err.message); }
+  };
 
   // 정렬
   const [sortKey, setSortKey] = useState<string>('contract_date');
@@ -90,7 +114,9 @@ export default function Sales() {
   // [6-3] 활동내역
   const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'upload'>('list');
   const [activityEntries, setActivityEntries] = useState<JournalEntry[]>([]);
+  const [activityBranch, setActivityBranch] = useState('');
   const [activityUser, setActivityUser] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedClient, setSelectedClient] = useState<string | null>(null);
   const [activityPage, setActivityPage] = useState(0);
   const ACTIVITY_PAGE_SIZE = 20;
@@ -101,20 +127,22 @@ export default function Sales() {
   const canModifyAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canApproveAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(role); // 최종승인
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-  const showUserFilter = isAdminPlus || isAccountant;
+  const isManager = role === 'manager';
+  const showUserFilter = isAdminPlus || isAccountant || isManager;
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const promises: Promise<any>[] = [
-        api.sales.list({ month: filterMonth, user_id: filterUser || undefined }),
-      ];
-      if (canModifyAccounting || isAccountant) promises.push(api.sales.deposits());
-      if (showUserFilter) promises.push(api.journal.members());
-      const [salesRes, depRes, memRes] = await Promise.all(promises);
+      const salesRes = await api.sales.list({ month: filterMonth, user_id: filterUser || undefined });
       setRecords(salesRes.records);
-      if (depRes) setDeposits(depRes.deposits);
-      if (memRes) setMembers(memRes.members);
+      if (canModifyAccounting || isAccountant) {
+        const depRes = await api.sales.deposits();
+        setDeposits(depRes.deposits || []);
+      }
+      if (showUserFilter) {
+        const memRes = await api.journal.members();
+        setMembers(memRes.members || []);
+      }
     } catch (err: any) { console.error(err); }
     finally { if (!silent) setLoading(false); }
   };
@@ -126,6 +154,7 @@ export default function Sales() {
     setFormDepositorDiff(false); setFormDepositorName('');
     setFormAmount(''); setFormContractDate(new Date().toISOString().slice(0, 10));
     setFormAppraisalRate(''); setFormWinningRate('');
+    setFormPhone('');
     setShowAddForm(false);
   };
 
@@ -145,6 +174,7 @@ export default function Sales() {
         ...(formType === '계약' ? {
           appraisal_rate: Number(formAppraisalRate),
           winning_rate: Number(formWinningRate),
+          client_phone: formPhone,
         } : {}),
       });
       resetForm(); load();
@@ -195,7 +225,7 @@ export default function Sales() {
   };
   useEffect(() => { if (salesTab === 'activity') loadActivity(activityUser || undefined); }, [salesTab, activityUser]);
 
-  const filteredMembers = filterBranch ? members.filter(m => m.branch === filterBranch) : members;
+  const filteredMembers = (filterBranch ? members.filter(m => m.branch === filterBranch) : members).filter(m => m.role !== 'master');
   const memberOpts = filteredMembers.map(m => ({ value: m.id, label: `${m.name} (${m.department})` }));
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
 
@@ -254,25 +284,39 @@ export default function Sales() {
         )}
       </div>
 
-      {/* 탭 */}
-      <div className="filter-bar" style={{ marginBottom: 16 }}>
-        <button className={`filter-btn ${salesTab === 'list' ? 'active' : ''}`} onClick={() => setSalesTab('list')}>매출내역</button>
-        <button className={`filter-btn ${salesTab === 'activity' ? 'active' : ''}`} onClick={() => setSalesTab('activity')}>
-          <Activity size={14} style={{ marginRight: 4 }} /> 활동내역
-        </button>
-        {canModifyAccounting && (
-          <button className={`filter-btn ${salesTab === 'upload' ? 'active' : ''}`} onClick={() => setSalesTab('upload')}>
-            <Upload size={14} style={{ marginRight: 4 }} /> 엑셀 업로드
-          </button>
+      {/* 탭 + 검색 */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+        <div className="filter-bar" style={{ marginBottom: 0 }}>
+          <button className={`filter-btn ${salesTab === 'list' ? 'active' : ''}`} onClick={() => setSalesTab('list')}>매출내역</button>
+          {(isAdminPlus || isAccountant) && (
+            <button className={`filter-btn ${salesTab === 'activity' ? 'active' : ''}`} onClick={() => setSalesTab('activity')}>
+              <Activity size={14} style={{ marginRight: 4 }} /> 활동내역
+            </button>
+          )}
+          {canModifyAccounting && (
+            <button className={`filter-btn ${salesTab === 'upload' ? 'active' : ''}`} onClick={() => setSalesTab('upload')}>
+              <Upload size={14} style={{ marginRight: 4 }} /> 엑셀 업로드
+            </button>
+          )}
+        </div>
+        {(salesTab === 'list' || salesTab === 'activity') && (
+          <input className="form-input" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="계약자명, 담당자 검색" style={{ width: 200, fontSize: '0.82rem', padding: '6px 10px' }} />
         )}
       </div>
 
       {/* ━━━ 활동내역 탭 [6-3] ━━━ */}
       {salesTab === 'activity' && (() => {
-        // 담당자 필터 적용된 계약자 목록
-        const userSales = activityUser ? allRecords.filter(r => r.user_id === activityUser) : allRecords;
-        const userJournals = activityUser ? activityEntries.filter(e => e.user_id === activityUser) : activityEntries;
-        const clientList = [...new Set(userSales.map(r => r.client_name).filter(Boolean))].map(name => {
+        // 지사+담당자 필터 적용된 계약자 목록
+        let userSales = allRecords;
+        let userJournals = activityEntries;
+        if (activityBranch) { userSales = userSales.filter(r => r.branch === activityBranch); userJournals = userJournals.filter(e => e.branch === activityBranch); }
+        if (activityUser) { userSales = userSales.filter(r => r.user_id === activityUser); userJournals = userJournals.filter(e => e.user_id === activityUser); }
+        // 검색 필터
+        const sq = searchQuery.toLowerCase();
+        const clientList = [...new Set(userSales.map(r => r.client_name).filter(Boolean))]
+          .filter(name => !sq || name.toLowerCase().includes(sq) || userSales.some(r => r.client_name === name && (r.user_name || '').toLowerCase().includes(sq)))
+          .map(name => {
           const sales = userSales.filter(r => r.client_name === name);
           const journals = userJournals.filter(e => { try { const d = JSON.parse(e.data); return d.client === name || d.bidder === name || d.meetingClient === name; } catch { return false; } });
           const allDates = [...sales.map(r => r.contract_date), ...journals.map(e => e.target_date)].filter(Boolean).sort();
@@ -352,13 +396,27 @@ export default function Sales() {
         // 리스트 뷰
         return (
           <div>
-            {/* 담당자 선택 */}
-            <div style={{ marginBottom: 16, maxWidth: 300 }}>
-              <label className="form-label">담당자</label>
-              <Select options={[{ value: '', label: '전체 담당자' }, ...memberOpts]}
-                value={memberOpts.find(o => o.value === activityUser) || { value: '', label: '전체 담당자' }}
-                onChange={(o: any) => { setActivityUser(o?.value || ''); setActivityPage(0); }}
-                placeholder="담당자 선택" isSearchable />
+            {/* 지사 + 담당자 선택 */}
+            <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 140 }}>
+                <label className="form-label">지사</label>
+                <Select size="sm" options={[{ value: '', label: '전체 지사' }, ...branchOpts]}
+                  value={branchOpts.find(o => o.value === activityBranch) || { value: '', label: '전체 지사' }}
+                  onChange={(o: any) => { setActivityBranch(o?.value || ''); setActivityUser(''); setActivityPage(0); }}
+                  placeholder="지사" isClearable />
+              </div>
+              <div style={{ minWidth: 260 }}>
+                <label className="form-label">담당자</label>
+                {(() => {
+                  const opts = activityBranch ? memberOpts.filter(o => members.find(m => m.id === o.value && m.branch === activityBranch)) : memberOpts;
+                  return (
+                    <Select options={[{ value: '', label: '전체 담당자' }, ...opts]}
+                      value={opts.find(o => o.value === activityUser) || { value: '', label: '전체 담당자' }}
+                      onChange={(o: any) => { setActivityUser(o?.value || ''); setActivityPage(0); }}
+                      placeholder="담당자 선택" isSearchable />
+                  );
+                })()}
+              </div>
             </div>
 
             {/* 계약자 리스트 테이블 */}
@@ -502,6 +560,10 @@ export default function Sales() {
             )}
             <div><label className="form-label">계약자명</label>
               <input className="form-input" value={formClientName} onChange={(e) => setFormClientName(e.target.value)} style={{ width: '100%' }} placeholder="계약자명" /></div>
+            {formType === '계약' && (
+              <div><label className="form-label">전화번호 <span style={{ fontSize: '0.7rem', color: '#9aa0a6', fontWeight: 400 }}>동명이인 방지</span></label>
+                <input className="form-input" value={formPhone} onChange={(e) => setFormPhone(e.target.value)} style={{ width: '100%' }} placeholder="010-0000-0000" /></div>
+            )}
             <div>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 입금자명
@@ -615,6 +677,7 @@ export default function Sales() {
         <table className="data-table">
           <thead>
             <tr>
+              {canApproveAccounting && <th style={{ width: 32 }}><input type="checkbox" checked={selectedIds.size > 0 && selectedIds.size === records.length} onChange={toggleSelectAll} /></th>}
               {[
                 { key: 'contract_date', label: '일자' },
                 { key: 'user_name', label: '담당자' },
@@ -622,7 +685,7 @@ export default function Sales() {
                 { key: 'client_name', label: '계약자명' },
                 { key: 'amount', label: '금액' },
                 { key: 'deposit_date', label: '입금일' },
-                { key: 'contract_submitted', label: '계약서' },
+                { key: 'contract_submitted', label: '계약서/물건보고서' },
                 { key: 'status', label: '상태' },
               ].map(col => (
                 <th key={col.key} onClick={() => toggleSort(col.key)} style={{ cursor: 'pointer', userSelect: 'none' }}>
@@ -631,9 +694,19 @@ export default function Sales() {
               ))}
               <th>액션</th>
             </tr>
+            {selectedIds.size > 0 && canApproveAccounting && (
+              <tr><td colSpan={10} style={{ background: '#fce4ec', padding: '6px 12px' }}>
+                <button className="btn btn-sm btn-danger" onClick={handleBulkDelete}>{selectedIds.size}건 선택 삭제</button>
+                <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => setSelectedIds(new Set())}>선택 해제</button>
+              </td></tr>
+            )}
           </thead>
           <tbody>
-            {[...records].sort((a: any, b: any) => {
+            {[...records].filter(r => {
+              if (!searchQuery) return true;
+              const q = searchQuery.toLowerCase();
+              return (r.client_name || '').toLowerCase().includes(q) || (r.user_name || '').toLowerCase().includes(q);
+            }).sort((a: any, b: any) => {
               const av = a[sortKey] ?? '';
               const bv = b[sortKey] ?? '';
               const cmp = typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv));
@@ -644,7 +717,8 @@ export default function Sales() {
               const isConfirming = confirmingId === r.id;
               return (
                 <tr key={r.id} onClick={() => setDetailRecord(r)} className="clickable-row"
-                  style={{ cursor: 'pointer', ...(isRefunded ? { opacity: 0.5, textDecoration: 'line-through', background: '#fafafa' } : {}) }}>
+                  style={{ cursor: 'pointer', ...(isRefunded ? { opacity: 0.5, textDecoration: 'line-through', background: '#fafafa' } : r.type === '낙찰' ? { background: '#f3f0ff' } : r.type === '계약' ? { background: '#f0f7ff' } : {}) }}>
+                  {canApproveAccounting && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} /></td>}
                   <td style={{ fontSize: '0.8rem' }}>{r.contract_date}</td>
                   <td>{r.user_name}</td>
                   <td><span style={{ fontSize: '0.8rem' }}>{r.type}</span>{r.type === '기타' && r.type_detail && <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}> ({r.type_detail})</span>}</td>
@@ -655,12 +729,14 @@ export default function Sales() {
                   <td style={{ fontWeight: 600 }}>{formatCurrency(r.amount)}</td>
                   <td style={{ fontSize: '0.78rem', color: r.deposit_date ? '#188038' : '#9aa0a6' }}>{r.deposit_date || '-'}</td>
                   <td onClick={(e) => e.stopPropagation()} style={{ textAlign: 'center' }}>
-                    {r.contract_submitted && r.contract_not_approved ? (
+                    {r.type !== '계약' && r.type !== '낙찰' ? (
+                      <span style={{ color: '#9aa0a6', fontSize: '0.7rem' }}>-</span>
+                    ) : r.contract_submitted && r.contract_not_approved ? (
                       <div style={{ textAlign: 'center' }}>
-                        <span style={{ color: '#188038', fontSize: '0.75rem', fontWeight: 600 }}>제출</span>
+                        <span style={{ color: '#188038', fontSize: '0.75rem', fontWeight: 600 }}>등록</span>
                         {(isAccountant || isMaster) && (
                           <div><button style={{ fontSize: '0.55rem', color: '#9aa0a6', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
-                            onClick={(e) => { e.preventDefault(); if (confirm('계약서 제출 상태를 취소하시겠습니까?')) api.sales.contractCheck(r.id, { contract_submitted: 0, contract_not_submitted: 0, contract_not_reason: '', contract_not_approved: 0 }).then(() => load(true)); }}>취소</button></div>
+                            onClick={(e) => { e.preventDefault(); if (confirm(`${getDocLabel(r.type)} 제출 상태를 취소하시겠습니까?`)) api.sales.contractCheck(r.id, { contract_submitted: 0, contract_not_submitted: 0, contract_not_reason: '', contract_not_approved: 0 }).then(() => load(true)); }}>취소</button></div>
                         )}
                       </div>
                     ) : r.contract_submitted && !r.contract_not_approved ? (
@@ -668,7 +744,7 @@ export default function Sales() {
                         <span style={{ color: '#1a73e8', fontSize: '0.72rem', fontWeight: 600 }}>확인 대기</span>
                         {canApproveAccounting && (
                           <button className="btn btn-sm" style={{ fontSize: '0.6rem', padding: '1px 4px', marginTop: 2, color: '#188038' }}
-                            onClick={(e) => { e.preventDefault(); if (confirm('계약서 제출을 확인하시겠습니까?')) api.sales.contractNotApprove(r.id).then(() => load(true)); }}>
+                            onClick={(e) => { e.preventDefault(); if (confirm('마이옥션 CRM+에 등록된지 확인하셨나요?')) api.sales.contractNotApprove(r.id).then(() => load(true)); }}>
                             확인
                           </button>
                         )}
@@ -678,7 +754,7 @@ export default function Sales() {
                         <span style={{ color: '#e65100', fontSize: '0.72rem', fontWeight: 600 }}>미제출</span>
                         {(isAccountant || isMaster) && (
                           <div><button style={{ fontSize: '0.55rem', color: '#9aa0a6', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
-                            onClick={(e) => { e.preventDefault(); if (confirm('미제출 승인을 취소하시겠습니까?')) api.sales.contractCheck(r.id, { contract_submitted: 0, contract_not_submitted: 0, contract_not_reason: '', contract_not_approved: 0 }).then(() => load(true)); }}>취소</button></div>
+                            onClick={(e) => { e.preventDefault(); if (confirm(`${getDocLabel(r.type)} 미제출 승인을 취소하시겠습니까?`)) api.sales.contractCheck(r.id, { contract_submitted: 0, contract_not_submitted: 0, contract_not_reason: '', contract_not_approved: 0 }).then(() => load(true)); }}>취소</button></div>
                         )}
                       </div>
                     ) : r.contract_not_submitted ? (
@@ -699,7 +775,7 @@ export default function Sales() {
                     ) : (
                       <div style={{ display: 'flex', gap: 2, justifyContent: 'center' }}>
                         <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '1px 5px' }}
-                          onClick={(e) => { e.preventDefault(); if (confirm('계약서를 제출하시겠습니까?')) api.sales.contractCheck(r.id, { contract_submitted: 1 }).then(() => load(true)); }}>제출</button>
+                          onClick={(e) => { e.preventDefault(); if (confirm(`마이옥션 CRM+에 ${r.type === '낙찰' ? '물건분석 보고서를' : '컨설팅계약서를'} 업로드 하셨습니까?\n업로드 한 경우에만 확인을 눌러주세요.`)) api.sales.contractCheck(r.id, { contract_submitted: 1 }).then(() => load(true)); }}>등록</button>
                         <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '1px 5px', color: '#d93025' }}
                           onClick={(e) => {
                             e.preventDefault();
@@ -732,7 +808,7 @@ export default function Sales() {
                 </tr>
               );
             })}
-            {records.length === 0 && <tr><td colSpan={9} className="empty-state">매출 내역이 없습니다.</td></tr>}
+            {records.length === 0 && <tr><td colSpan={canApproveAccounting ? 11 : 10} className="empty-state">매출 내역이 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -761,19 +837,19 @@ export default function Sales() {
                     <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>낙찰가 %</span><div style={{ fontWeight: 600 }}>{detailRecord.winning_rate}%</div></div>
                   </>
                 )}
-                {/* 계약서 제출 상태 */}
-                <div>
-                  <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>계약서</span>
+                {/* 서류 제출 상태 */}
+                {(detailRecord.type === '계약' || detailRecord.type === '낙찰') && <div>
+                  <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>{getDocLabel(detailRecord.type)}</span>
                   <div>
                     {detailRecord.contract_submitted && detailRecord.contract_not_approved ? (
-                      <span style={{ color: '#188038', fontWeight: 600 }}>제출</span>
+                      <span style={{ color: '#188038', fontWeight: 600 }}>등록</span>
                     ) : detailRecord.contract_submitted ? (
                       <div>
                         <span style={{ color: '#1a73e8', fontWeight: 600 }}>확인 대기</span>
                         {canApproveAccounting && (
                           <button className="btn btn-sm btn-primary" style={{ marginTop: 6, fontSize: '0.75rem' }}
-                            onClick={() => { api.sales.contractNotApprove(detailRecord.id).then(() => { setDetailRecord(null); load(); }); }}>
-                            제출 확인
+                            onClick={() => { if (confirm('마이옥션 CRM+에 등록된지 확인하셨나요?')) api.sales.contractNotApprove(detailRecord.id).then(() => { setDetailRecord(null); load(); }); }}>
+                            등록 확인
                           </button>
                         )}
                       </div>
@@ -798,7 +874,7 @@ export default function Sales() {
                       <span style={{ color: '#9aa0a6' }}>미확인</span>
                     )}
                   </div>
-                </div>
+                </div>}
                 {detailRecord.depositor_different === 1 && detailRecord.depositor_name && (
                   <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>입금자</span><div style={{ color: '#e65100' }}>{detailRecord.depositor_name}</div></div>
                 )}
@@ -806,9 +882,40 @@ export default function Sales() {
                   <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>입금일</span><div style={{ color: '#188038' }}>{detailRecord.deposit_date}</div></div>
                 )}
               </div>
+              {/* 수정 영역 (본인 pending건 또는 회계/마스터) */}
+              {((detailRecord.user_id === currentUser?.id && detailRecord.status === 'pending') || canApproveAccounting) && (
+                <div style={{ borderTop: '1px solid #e8eaed', paddingTop: 12, marginBottom: 12 }}>
+                  <div style={{ fontSize: '0.78rem', color: '#3c4043', fontWeight: 600, marginBottom: 8 }}>내역 수정</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div>
+                      <label className="form-label" style={{ fontSize: '0.72rem' }}>금액 (부가세포함)</label>
+                      <input className="form-input" defaultValue={detailRecord.amount ? detailRecord.amount.toLocaleString() : ''}
+                        style={{ width: '100%', fontSize: '0.82rem' }} placeholder="금액 입력"
+                        onBlur={async (e) => {
+                          const val = Number(e.target.value.replace(/[^0-9]/g, '')) || 0;
+                          if (val !== detailRecord.amount) {
+                            try { await api.sales.update(detailRecord.id, { amount: val }); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
+                          }
+                        }} />
+                    </div>
+                    <div>
+                      <label className="form-label" style={{ fontSize: '0.72rem' }}>입금자명</label>
+                      <input className="form-input" defaultValue={detailRecord.depositor_name || ''}
+                        style={{ width: '100%', fontSize: '0.82rem' }} placeholder="입금자명 (계약자와 다를 때)"
+                        onBlur={async (e) => {
+                          const val = e.target.value.trim();
+                          if (val !== (detailRecord.depositor_name || '')) {
+                            try { await api.sales.update(detailRecord.id, { depositor_name: val, depositor_different: val ? true : false }); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
+                          }
+                        }} />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* 환불신청 버튼 (본인 건 + 확정매출만) */}
               {detailRecord.status === 'confirmed' && detailRecord.user_id === currentUser?.id && (
-                <button className="btn btn-sm btn-danger" style={{ fontSize: '0.78rem' }}
+                <button className="btn btn-sm btn-danger" style={{ fontSize: '0.78rem', marginBottom: 12 }}
                   onClick={async () => {
                     if (!confirm('환불을 신청하시겠습니까?\n회계 승인 후 처리됩니다.')) return;
                     try { await api.sales.refundRequest(detailRecord.id); setDetailRecord(null); load(); }
@@ -817,6 +924,24 @@ export default function Sales() {
                   <RotateCcw size={12} /> 환불신청
                 </button>
               )}
+              {/* 메모 */}
+              <div style={{ borderTop: '1px solid #e8eaed', paddingTop: 12 }}>
+                <div style={{ fontSize: '0.78rem', color: '#9aa0a6', marginBottom: 6 }}>메모</div>
+                <textarea
+                  className="form-input"
+                  defaultValue={detailRecord.memo || ''}
+                  placeholder="메모 입력..."
+                  rows={2}
+                  style={{ width: '100%', resize: 'vertical', fontSize: '0.82rem' }}
+                  onBlur={async (e) => {
+                    const val = e.target.value.trim();
+                    if (val !== (detailRecord.memo || '')) {
+                      try { await api.sales.updateMemo(detailRecord.id, val); load(true); }
+                      catch { /* */ }
+                    }
+                  }}
+                />
+              </div>
             </div>
           </div>
         </div>

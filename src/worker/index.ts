@@ -9,6 +9,7 @@ import users from './routes/users';
 import journal from './routes/journal';
 import leave from './routes/leave';
 import departmentsRoute from './routes/departments';
+import branchesRoute from './routes/branches';
 import org from './routes/org';
 import alimtalkRoute from './routes/alimtalk';
 import minutes from './routes/minutes';
@@ -17,6 +18,7 @@ import accounting from './routes/accounting';
 import salesRoute from './routes/sales';
 import payrollRoute from './routes/payroll';
 import cardRoute from './routes/card';
+import analyticsRoute from './routes/analytics';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -38,6 +40,7 @@ app.route('/api/users', users);
 app.route('/api/journal', journal);
 app.route('/api/leave', leave);
 app.route('/api/departments', departmentsRoute);
+app.route('/api/branches', branchesRoute);
 app.route('/api/org', org);
 app.route('/api/alimtalk', alimtalkRoute);
 app.route('/api/minutes', minutes);
@@ -46,6 +49,7 @@ app.route('/api/accounting', accounting);
 app.route('/api/sales', salesRoute);
 app.route('/api/payroll', payrollRoute);
 app.route('/api/card', cardRoute);
+app.route('/api/analytics', analyticsRoute);
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));

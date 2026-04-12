@@ -31,6 +31,7 @@ export interface User {
   position_title: string;
   card_number?: string;
   hire_date?: string;
+  login_type?: 'employee' | 'freelancer';
   created_at?: string;
 }
 
@@ -133,6 +134,8 @@ export interface UserAccounting {
   standard_sales: number;
   grade: '' | 'M1' | 'M2' | 'M3' | 'M4';
   position_allowance: number;
+  pay_type?: 'salary' | 'commission';
+  commission_rate?: number;
   created_at?: string;
   updated_at?: string;
 }

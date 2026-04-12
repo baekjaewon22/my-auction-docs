@@ -220,81 +220,87 @@ export default function DocumentEdit() {
     const editorEl = document.querySelector('.editor-area');
     if (!editorEl) return;
 
-    // Build PDF content with signature header
+    const htmlContent = editor?.getHTML() || '';
+    const isPropertyReport = htmlContent.includes('property-report') || htmlContent.includes('물건분석 보고서');
+
+    // Build PDF content
     const pdfContainer = document.createElement('div');
-    pdfContainer.style.cssText = 'font-family: "Segoe UI", sans-serif; color: #202124;';
 
-    // 우측 상단 결재란
-    const sigHeader = document.createElement('div');
-    sigHeader.style.cssText = 'display: flex; justify-content: flex-end; margin-bottom: 20px;';
+    if (isPropertyReport) {
+      // 물건분석보고서: 자체 레이아웃 사용 (결재란/제목 내장)
+      pdfContainer.style.cssText = 'font-family: "맑은 고딕", "Malgun Gothic", sans-serif; color: #1a1a1a;';
+      pdfContainer.innerHTML = htmlContent;
+    } else {
+      pdfContainer.style.cssText = 'font-family: "Segoe UI", sans-serif; color: #202124;';
 
-    const sigTable = document.createElement('table');
-    sigTable.style.cssText = 'border-collapse: collapse; font-size: 10px;';
+      // 우측 상단 결재란
+      const sigHeader = document.createElement('div');
+      sigHeader.style.cssText = 'display: flex; justify-content: flex-end; margin-bottom: 20px;';
 
-    // 동적 결재선: 작성자 + approval_steps
-    const pdfSlots: { label: string; sig?: Signature }[] = [
-      { label: '작성자', sig: signatures[0] },
-    ];
-    for (const step of approvalSteps) {
-      const stepSig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1);
-      pdfSlots.push({ label: step.approver_name || `승인 ${step.step_order}`, sig: stepSig });
-    }
-    // 결재선 없으면 기존 고정 슬롯
-    if (approvalSteps.length === 0) {
-      pdfSlots.push({ label: '승인자', sig: signatures[1] });
-    }
+      const sigTable = document.createElement('table');
+      sigTable.style.cssText = 'border-collapse: collapse; font-size: 10px;';
 
-    const headerRow = document.createElement('tr');
-    pdfSlots.forEach((slot) => {
-      const th = document.createElement('th');
-      th.style.cssText = 'border: 1px solid #999; padding: 4px 12px; background: #f5f5f5; font-size: 10px; width: 70px; text-align: center;';
-      th.textContent = slot.label;
-      headerRow.appendChild(th);
-    });
-    sigTable.appendChild(headerRow);
-
-    const dataRow = document.createElement('tr');
-    pdfSlots.forEach((slot) => {
-      const td = document.createElement('td');
-      td.style.cssText = 'border: 1px solid #999; padding: 4px; height: 50px; width: 70px; text-align: center; vertical-align: middle;';
-      const sig = slot.sig;
-      if (sig) {
-        const img = document.createElement('img');
-        img.src = sig.signature_data;
-        img.style.cssText = 'width: 55px; height: 28px; object-fit: contain;';
-        td.appendChild(img);
-        const name = document.createElement('div');
-        name.style.cssText = 'font-size: 8px; color: #666; margin-top: 2px;';
-        name.textContent = sig.user_name || '';
-        td.appendChild(name);
+      const pdfSlots: { label: string; sig?: Signature }[] = [
+        { label: '작성자', sig: signatures[0] },
+      ];
+      for (const step of approvalSteps) {
+        const stepSig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1);
+        pdfSlots.push({ label: step.approver_name || `승인 ${step.step_order}`, sig: stepSig });
       }
-      dataRow.appendChild(td);
-    });
-    sigTable.appendChild(dataRow);
-    sigHeader.appendChild(sigTable);
-    pdfContainer.appendChild(sigHeader);
+      if (approvalSteps.length === 0) {
+        pdfSlots.push({ label: '승인자', sig: signatures[1] });
+      }
 
-    // 문서 제목
-    const titleEl = document.createElement('h2');
-    titleEl.style.cssText = 'text-align: center; margin-bottom: 16px; font-size: 18px;';
-    titleEl.textContent = title;
-    pdfContainer.appendChild(titleEl);
+      const headerRow = document.createElement('tr');
+      pdfSlots.forEach((slot) => {
+        const th = document.createElement('th');
+        th.style.cssText = 'border: 1px solid #999; padding: 4px 12px; background: #f5f5f5; font-size: 10px; width: 70px; text-align: center;';
+        th.textContent = slot.label;
+        headerRow.appendChild(th);
+      });
+      sigTable.appendChild(headerRow);
 
-    // 문서 본문
-    const content = document.createElement('div');
-    content.innerHTML = editor?.getHTML() || '';
-    content.style.cssText = 'font-size: 12px; line-height: 1.6;';
-    pdfContainer.appendChild(content);
+      const dataRow = document.createElement('tr');
+      pdfSlots.forEach((slot) => {
+        const td = document.createElement('td');
+        td.style.cssText = 'border: 1px solid #999; padding: 4px; height: 50px; width: 70px; text-align: center; vertical-align: middle;';
+        const sig = slot.sig;
+        if (sig) {
+          const img = document.createElement('img');
+          img.src = sig.signature_data;
+          img.style.cssText = 'width: 55px; height: 28px; object-fit: contain;';
+          td.appendChild(img);
+          const name = document.createElement('div');
+          name.style.cssText = 'font-size: 8px; color: #666; margin-top: 2px;';
+          name.textContent = sig.user_name || '';
+          td.appendChild(name);
+        }
+        dataRow.appendChild(td);
+      });
+      sigTable.appendChild(dataRow);
+      sigHeader.appendChild(sigTable);
+      pdfContainer.appendChild(sigHeader);
+
+      const titleEl = document.createElement('h2');
+      titleEl.style.cssText = 'text-align: center; margin-bottom: 16px; font-size: 18px;';
+      titleEl.textContent = title;
+      pdfContainer.appendChild(titleEl);
+
+      const content = document.createElement('div');
+      content.innerHTML = htmlContent;
+      content.style.cssText = 'font-size: 12px; line-height: 1.6;';
+      pdfContainer.appendChild(content);
+    }
 
     document.body.appendChild(pdfContainer);
 
     await (html2pdf().set as any)({
-      margin: [15, 15, 15, 15],
+      margin: isPropertyReport ? [0, 0, 0, 0] : [15, 15, 15, 15],
       filename: `${title || '문서'}.pdf`,
-      image: { type: 'jpeg', quality: 0.95 },
+      image: { type: 'jpeg', quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true },
       jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+      pagebreak: { mode: ['css', 'legacy'] },
     }).from(pdfContainer).save();
 
     document.body.removeChild(pdfContainer);

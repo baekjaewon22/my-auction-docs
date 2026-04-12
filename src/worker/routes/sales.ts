@@ -79,6 +79,7 @@ sales.post('/', async (c) => {
     amount: number; contract_date?: string; journal_entry_id?: string;
     direction?: string;
     appraisal_rate?: number; winning_rate?: number;
+    client_phone?: string;
   }>();
 
   if (!['계약', '낙찰', '중개', '기타'].includes(body.type)) {
@@ -98,9 +99,9 @@ sales.post('/', async (c) => {
   ).run();
 
   // 계약조건 기록 (별도 UPDATE — 컬럼 호환성)
-  if (body.appraisal_rate || body.winning_rate) {
-    await db.prepare("UPDATE sales_records SET appraisal_rate = ?, winning_rate = ? WHERE id = ?")
-      .bind(body.appraisal_rate || 0, body.winning_rate || 0, id).run();
+  if (body.appraisal_rate || body.winning_rate || body.client_phone) {
+    await db.prepare("UPDATE sales_records SET appraisal_rate = ?, winning_rate = ?, client_phone = ? WHERE id = ?")
+      .bind(body.appraisal_rate || 0, body.winning_rate || 0, body.client_phone || '', id).run();
   }
 
   return c.json({ success: true, id });
@@ -207,7 +208,6 @@ sales.post('/:id/refund-approve', requireRole(...EDIT_ACCOUNTING_ROLES), async (
 // PUT /api/sales/:id/contract-check — 계약서 제출 체크
 sales.put('/:id/contract-check', async (c) => {
   const id = c.req.param('id');
-  const user = c.get('user');
   const db = c.env.DB;
   const body = await c.req.json<{
     contract_submitted?: number;
@@ -249,6 +249,14 @@ sales.put('/:id/memo', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   await db.prepare("UPDATE sales_records SET memo = ?, updated_at = datetime('now') WHERE id = ?")
     .bind(memo || '', id).run();
 
+  return c.json({ success: true });
+});
+
+// DELETE /api/sales/by-entry/:entryId — 낙찰 취소 시 매출 삭제
+sales.delete('/by-entry/:entryId', async (c) => {
+  const entryId = c.req.param('entryId');
+  const db = c.env.DB;
+  await db.prepare("DELETE FROM sales_records WHERE journal_entry_id = ? AND status = 'pending'").bind(entryId).run();
   return c.json({ success: true });
 });
 

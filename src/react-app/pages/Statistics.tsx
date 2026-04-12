@@ -12,10 +12,14 @@ import {
 import { BarChart3, TrendingUp, AlertTriangle, UserCheck, ChevronLeft, ChevronRight, DollarSign } from 'lucide-react';
 import type { SalesRecord } from '../types';
 import Select from '../components/Select';
+import { useBranches } from '../hooks/useBranches';
 
 interface Member {
   id: string; name: string; role: string; branch: string; department: string;
 }
+
+// 본사관리 인원 판별 (실적 통계 제외 대상)
+const isHQStaff = (m: Member) => m.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(m.role);
 
 function parseCurrency(val: string): number {
   return Number((val || '').replace(/[^0-9]/g, '')) || 0;
@@ -25,6 +29,7 @@ const COLORS = ['#1a73e8', '#e65100', '#188038', '#7b1fa2', '#f9ab00', '#d93025'
 
 export default function Statistics() {
   const { user } = useAuthStore();
+  const { branches } = useBranches();
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,12 +53,14 @@ export default function Statistics() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Available branches/depts/users for filters
-  const branches = [...new Set(members.map((m) => m.branch).filter(Boolean))].sort();
+  // Available branches/depts/users for filters — 지사 목록은 DB 기준
+  const branchNames = branches.map((b: any) => typeof b === 'string' ? b : b.name).filter((b: string) => b !== '본사 관리');
   const filteredDepts = [...new Set(
     members.filter((m) => !filterBranch || m.branch === filterBranch).map((m) => m.department).filter(Boolean)
   )].sort();
   const filteredUsers = members.filter((m) =>
+    m.role !== 'master' &&
+    branchNames.includes(m.branch) &&
     (!filterBranch || m.branch === filterBranch) &&
     (!filterDept || m.department === filterDept)
   );
@@ -64,6 +71,8 @@ export default function Statistics() {
 
   // Apply filters
   const filteredMembers = members.filter((m) =>
+    m.role !== 'master' &&
+    branchNames.includes(m.branch) &&
     (!filterBranch || m.branch === filterBranch) &&
     (!filterDept || m.department === filterDept) &&
     (!filterUser || m.id === filterUser)
@@ -84,7 +93,7 @@ export default function Statistics() {
         <h2><BarChart3 size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} />통계</h2>
         {/* Filters */}
         <div className="stats-filters">
-          {isCeoPlus && branches.length > 0 && (
+          {isCeoPlus && branchNames.length > 0 && (
             <div className="stats-branch-slide">
               <button
                 className={`stats-branch-btn ${filterBranch === '' ? 'active' : ''}`}
@@ -92,7 +101,7 @@ export default function Statistics() {
               >
                 전체
               </button>
-              {branches.map((b) => (
+              {branchNames.map((b: string) => (
                 <button
                   key={b}
                   className={`stats-branch-btn ${filterBranch === b ? 'active' : ''}`}
@@ -168,10 +177,10 @@ export default function Statistics() {
       </div>
 
       <div className="stats-content">
-        {tab === 0 && <BidAnalysis entries={filteredEntries} members={filteredMembers} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries} allMembers={members} />}
-        {tab === 1 && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries} allMembers={members} />}
-        {tab === 2 && <AnomalyDetection entries={filteredEntries} members={filteredMembers} />}
-        {tab === 3 && <SalesAnalysis records={salesRecords} members={filteredMembers} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
+        {tab === 0 && <BidAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
+        {tab === 1 && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
+        {tab === 2 && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
+        {tab === 3 && <SalesAnalysis records={salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
       </div>
     </div>
   );
