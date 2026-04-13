@@ -5,7 +5,7 @@ import type { SalesRecord, DepositNotice } from '../types';
 import { useBranches } from '../hooks/useBranches';
 import Select from '../components/Select';
 import {
-  DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity
+  DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity, ChevronDown, ChevronUp
 } from 'lucide-react';
 import type { JournalEntry } from '../journal/types';
 
@@ -105,6 +105,10 @@ export default function Sales() {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDir('desc'); }
   };
+
+  // 모바일 펼쳐보기
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpand = (id: string) => setExpandedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   // 클레임 폼
   const [claimingId, setClaimingId] = useState<string | null>(null);
@@ -672,8 +676,8 @@ export default function Sales() {
         </div>
       )}
 
-      {/* 매출 목록 */}
-      <div className="table-wrapper">
+      {/* 매출 목록 (데스크톱) */}
+      <div className="table-wrapper sales-desktop-table">
         <table className="data-table">
           <thead>
             <tr>
@@ -811,6 +815,108 @@ export default function Sales() {
             {records.length === 0 && <tr><td colSpan={canApproveAccounting ? 11 : 10} className="empty-state">매출 내역이 없습니다.</td></tr>}
           </tbody>
         </table>
+      </div>
+
+      {/* 매출 목록 (모바일 카드) */}
+      <div className="sales-mobile-cards">
+        {(() => {
+          const sorted = [...records].filter(r => {
+            if (!searchQuery) return true;
+            const q = searchQuery.toLowerCase();
+            return (r.client_name || '').toLowerCase().includes(q) || (r.user_name || '').toLowerCase().includes(q);
+          }).sort((a: any, b: any) => {
+            const av = a[sortKey] ?? '';
+            const bv = b[sortKey] ?? '';
+            const cmp = typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv));
+            return sortDir === 'asc' ? cmp : -cmp;
+          });
+          if (sorted.length === 0) return <div className="empty-state">매출 내역이 없습니다.</div>;
+          return sorted.map((r) => {
+            const st = STATUS_LABELS[r.status];
+            const isRefunded = r.status === 'refunded';
+            const expanded = expandedIds.has(r.id);
+            return (
+              <div key={r.id} className="sales-card" style={isRefunded ? { opacity: 0.5 } : r.type === '낙찰' ? { borderLeft: '3px solid #7c4dff' } : r.type === '계약' ? { borderLeft: '3px solid #1a73e8' } : {}}>
+                <div className="sales-card-header" onClick={() => toggleExpand(r.id)}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <span style={{ fontWeight: 700, fontSize: '0.92rem' }}>{r.client_name}</span>
+                      <span style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: 8, background: st.bg, color: st.color, fontWeight: 600 }}>{st.label}</span>
+                      <span style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: 8, background: '#f3f4f6', color: '#5f6368' }}>{r.type}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: '0.78rem', color: '#5f6368' }}>
+                      <span style={{ fontWeight: 700, color: '#1a2744', fontSize: '0.88rem' }}>{formatCurrency(r.amount)}</span>
+                      <span>{r.contract_date}</span>
+                      <span>{r.user_name}</span>
+                    </div>
+                  </div>
+                  <div style={{ color: '#9aa0a6', flexShrink: 0 }}>
+                    {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                  </div>
+                </div>
+                {expanded && (
+                  <div className="sales-card-body">
+                    {r.depositor_different === 1 && r.depositor_name && (
+                      <div className="sales-card-row">
+                        <span className="sales-card-label">입금자</span>
+                        <span style={{ color: '#e65100' }}>{r.depositor_name}</span>
+                      </div>
+                    )}
+                    <div className="sales-card-row">
+                      <span className="sales-card-label">입금일</span>
+                      <span style={{ color: r.deposit_date ? '#188038' : '#9aa0a6' }}>{r.deposit_date || '-'}</span>
+                    </div>
+                    {r.type === '계약' && (r.appraisal_rate > 0 || r.winning_rate > 0) && (
+                      <div className="sales-card-row">
+                        <span className="sales-card-label">감정가/낙찰가</span>
+                        <span>{r.appraisal_rate}% / {r.winning_rate}%</span>
+                      </div>
+                    )}
+                    {(r.type === '계약' || r.type === '낙찰') && (
+                      <div className="sales-card-row">
+                        <span className="sales-card-label">{getDocLabel(r.type)}</span>
+                        <span>
+                          {r.contract_submitted && r.contract_not_approved ? (
+                            <span style={{ color: '#188038', fontWeight: 600 }}>등록</span>
+                          ) : r.contract_submitted ? (
+                            <span style={{ color: '#1a73e8', fontWeight: 600 }}>확인 대기</span>
+                          ) : r.contract_not_submitted && r.contract_not_approved ? (
+                            <span style={{ color: '#e65100', fontWeight: 600 }}>미제출</span>
+                          ) : r.contract_not_submitted ? (
+                            <span style={{ color: '#d93025', fontWeight: 600 }}>미작성</span>
+                          ) : (
+                            <span style={{ color: '#9aa0a6' }}>미확인</span>
+                          )}
+                        </span>
+                      </div>
+                    )}
+                    {r.type === '기타' && r.type_detail && (
+                      <div className="sales-card-row">
+                        <span className="sales-card-label">상세</span>
+                        <span>{r.type_detail}</span>
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                      <button className="btn btn-sm" onClick={() => setDetailRecord(r)} style={{ fontSize: '0.75rem' }}>상세보기</button>
+                      {r.status === 'pending' && canApproveAccounting && (
+                        <button className="btn btn-sm btn-success" style={{ fontSize: '0.75rem' }} onClick={() => { setConfirmingId(r.id); setConfirmDepositDate(new Date().toISOString().slice(0, 10)); }}>
+                          <CheckCircle size={12} /> 입금확인
+                        </button>
+                      )}
+                    </div>
+                    {confirmingId === r.id && (
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 6 }}>
+                        <input type="date" className="form-input" value={confirmDepositDate} onChange={(e) => setConfirmDepositDate(e.target.value)} style={{ fontSize: '0.78rem', padding: '4px 6px', flex: 1 }} />
+                        <button className="btn btn-sm btn-success" onClick={() => handleConfirm(r.id)}>확인</button>
+                        <button className="btn btn-sm" onClick={() => setConfirmingId(null)}>취소</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          });
+        })()}
       </div>
       </>}
 

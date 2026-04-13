@@ -70,6 +70,9 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
       if (editData.caseNo && (entry.activity_type === '입찰' || entry.activity_type === '임장')) {
         updatePayload.activity_subtype = editData.caseNo;
       }
+      if (editData.briefingCaseNo && entry.activity_type === '브리핑자료제출') {
+        updatePayload.activity_subtype = editData.briefingCaseNo;
+      }
       await api.journal.update(entry.id, updatePayload);
       setEditingId(null);
       onUpdate?.();
@@ -323,12 +326,21 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       )}
 
                       {/* === 브리핑 (독립 타입) === */}
-                      {entry.activity_type === '브리핑자료제출' && !isEditing && (
-                        <>
-                          <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.briefingCaseNo)}</div>
-                          {d.briefingCourt && <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.briefingCourt}</span></div>}
-                          {d.client && <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.client)}</div>}
-                        </>
+                      {entry.activity_type === '브리핑자료제출' && (
+                        isEditing ? (
+                          <div className="journal-edit-form">
+                            <div className="journal-edit-row"><label>사건번호</label><input value={ed('briefingCaseNo')} onChange={(e) => setEd('briefingCaseNo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>물건번호</label><input value={ed('briefingItemNo')} onChange={(e) => setEd('briefingItemNo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>고객명</label><input value={ed('client')} onChange={(e) => setEd('client', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>법원</label><input value={ed('briefingCourt')} onChange={(e) => setEd('briefingCourt', e.target.value)} /></div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.briefingCaseNo)}</div>
+                            {d.briefingCourt && <div className="journal-detail-row"><span className="journal-detail-label">법원</span><span>{d.briefingCourt}</span></div>}
+                            {d.client && <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.client)}</div>}
+                          </>
+                        )
                       )}
 
                       {/* 브리핑 (다른 타입 하위 체크박스) */}

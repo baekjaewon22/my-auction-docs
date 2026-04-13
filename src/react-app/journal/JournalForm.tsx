@@ -499,10 +499,10 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                   <label>물건번호</label>
                   <input type="text" value={briefingItemNo} onChange={(e) => setBriefingItemNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="" className="case-no-input" maxLength={3} style={{ width: 52, textAlign: 'center' }} />
                 </div>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label>계약자명</label>
-                  <input type="text" value={briefingClient} onChange={(e) => setBriefingClient(e.target.value)} placeholder="계약자명" />
-                </div>
+              </div>
+              <div className="form-group">
+                <label>계약자명</label>
+                <input type="text" value={briefingClient} onChange={(e) => setBriefingClient(e.target.value)} placeholder="계약자명" />
               </div>
               <div className="form-group">
                 <label>법원</label>

@@ -261,7 +261,18 @@ documents.post('/:id/submit', async (c) => {
   if (doc.status !== 'draft' && doc.status !== 'rejected') return c.json({ error: '작성중 또는 반려된 문서만 제출할 수 있습니다.' }, 400);
 
   // 결재선 자동 생성
-  const chain = await buildApprovalChain(db, user.sub);
+  let chain = await buildApprovalChain(db, user.sub);
+
+  // 외근 보고서는 대표(CEO) 결재 불필요 — 결재선에서 CEO 제외
+  const NO_CEO_TEMPLATES = ['tpl-work-007'];
+  if (doc.template_id && NO_CEO_TEMPLATES.includes(doc.template_id)) {
+    const ceoIds: string[] = [];
+    for (const uid of chain) {
+      const u = await db.prepare('SELECT role FROM users WHERE id = ?').bind(uid).first<{ role: string }>();
+      if (u?.role === 'ceo') ceoIds.push(uid);
+    }
+    chain = chain.filter(uid => !ceoIds.includes(uid));
+  }
 
   // 기존 결재선 삭제 (반려 후 재제출 대응)
   await db.prepare('DELETE FROM approval_steps WHERE document_id = ?').bind(id).run();

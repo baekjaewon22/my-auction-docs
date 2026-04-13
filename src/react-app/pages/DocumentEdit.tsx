@@ -136,6 +136,11 @@ export default function DocumentEdit() {
       api.documents.steps(id).catch(() => ({ steps: [] })),
     ]).then(([docRes, logRes, sigRes, stepsRes]) => {
       const d = docRes.document;
+      // 물건분석보고서는 전용 페이지로 리다이렉트
+      if (d.template_id === 'tpl-work-008') {
+        navigate(`/property-report/${d.id}`, { replace: true });
+        return;
+      }
       setDoc(d);
       setTitle(d.title);
       setLogs(logRes.logs);

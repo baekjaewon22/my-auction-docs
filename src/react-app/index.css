@@ -3627,13 +3627,63 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .login-card { margin: 12px; max-width: calc(100vw - 24px); }
   .login-form { padding: 20px; }
   .form-row { flex-direction: column; gap: 0; }
-  .form-row.form-row-inline { flex-direction: row; gap: 8px; }
+  .form-row.form-row-inline { flex-direction: row; gap: 8px; flex-wrap: wrap; }
+  .form-row.form-row-inline > .form-group { min-width: 0; }
+  .form-row.form-row-inline > .form-group input,
+  .form-row.form-row-inline > .form-group select { max-width: 100%; box-sizing: border-box; }
 
   .profile-card { padding: 16px; }
   .journal-branch-header { flex-wrap: wrap; justify-content: center; }
   .doc-list .doc-item { flex-direction: column; align-items: flex-start; gap: 8px; }
   .org-layout { flex-direction: column; }
   .org-pool { width: 100%; max-height: 300px; }
+
+  /* 업무성과 모바일: 테이블 숨기고 카드 표시 */
+  .sales-desktop-table { display: none !important; }
+  .sales-mobile-cards { display: flex !important; }
+}
+
+/* ========================= */
+/* 업무성과 모바일 카드        */
+/* ========================= */
+.sales-mobile-cards { display: none; flex-direction: column; gap: 8px; }
+.sales-card {
+  background: #fff;
+  border: 1px solid var(--gray-100);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.sales-card-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  cursor: pointer;
+  gap: 8px;
+}
+.sales-card-header:active { background: var(--gray-50); }
+.sales-card-body {
+  padding: 0 14px 12px;
+  border-top: 1px solid var(--gray-50);
+  animation: salesCardOpen 0.2s ease;
+}
+@keyframes salesCardOpen {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 500px; }
+}
+.sales-card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 0.82rem;
+  border-bottom: 1px solid #f5f5f5;
+}
+.sales-card-row:last-of-type { border-bottom: none; }
+.sales-card-label {
+  color: #9aa0a6;
+  font-size: 0.78rem;
+  flex-shrink: 0;
+  min-width: 80px;
 }
 
 /* ========================= */
