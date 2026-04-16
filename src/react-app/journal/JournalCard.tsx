@@ -28,8 +28,6 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     } catch { return 0; }
   });
 
-  const hasBidEntry = sortedEntries.some(e => e.activity_type === '입찰');
-  const canEditBidFields = hasBidEntry;
   const isMaster = currentUserRole === 'master';
   const [showPopup, setShowPopup] = useState(false);
   const [failId, setFailId] = useState<string | null>(null);
@@ -97,7 +95,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
           case_no: d.caseNo || '',
           win_price: updated.winPrice || '',
         });
-        // 매출확인 리스트에도 자동 추가 (금액/입금자명은 추후 직접 입력)
+        // 매출확인 리스트에도 자동 추가
         try {
           const winAmount = Number((updated.winPrice || '').replace(/[^0-9]/g, '')) || 0;
           await api.sales.create({
@@ -107,7 +105,10 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
             contract_date: entry.target_date,
             journal_entry_id: entry.id,
           });
-        } catch { /* 이미 존재할 수 있음 */ }
+        } catch (salesErr: any) {
+          console.error('매출 자동등록 실패:', salesErr);
+          alert('낙찰은 처리되었으나 업무성과 자동등록에 실패했습니다. 수동으로 등록해주세요.');
+        }
       } else {
         await api.commissions.deleteByEntry(entry.id);
         // 매출 내역도 삭제
@@ -148,6 +149,20 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
             <span key={t} className="journal-type-tag" style={{ backgroundColor: ACTIVITY_COLORS[t as ActivityType] + '18', color: ACTIVITY_COLORS[t as ActivityType], borderColor: ACTIVITY_COLORS[t as ActivityType] + '40' }}>{t}</span>
           ))}
         </div>
+        {(() => {
+          const places = sortedEntries
+            .filter(e => e.activity_type === '임장' || e.activity_type === '미팅')
+            .map(e => { const d = parseData(e.data); return d.place || d.court || ''; })
+            .filter(Boolean);
+          const unique = [...new Set(places)];
+          if (unique.length === 0) return null;
+          return (
+            <div className="journal-card-places">
+              <MapPin size={10} />
+              <span>{unique.join(', ')}</span>
+            </div>
+          );
+        })()}
         <div className="journal-card-bottom">
           <span className="journal-card-count">{entries.length}건</span>
           {entries.some((e) => e.activity_type === '입찰' && parseData(e.data).bidWon) && (
@@ -230,22 +245,21 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                             </div>
                             {d.bidProxy && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#7b1fa2' }}>대리입찰</span><span style={{ color: '#7b1fa2' }}>대리입찰</span></div>}
                             {d.deviationReason && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#d93025' }}>차이사유</span><span style={{ color: '#d93025' }}>{d.deviationReason}</span></div>}
-                            {canEditBidFields && (
-                              <button
-                                type="button"
-                                className={`btn btn-sm journal-bid-won-btn ${d.bidWon ? 'active' : ''}`}
-                                onClick={() => toggleBidWon(entry)}
-                              >
-                                <Trophy size={13} /> {d.bidWon ? '낙찰 취소' : '낙찰'}
-                              </button>
-                            )}
-                            {canEditBidFields && !d.winPrice && (
+                            {/* 낙찰/입찰가/낙찰가 버튼 — 과거 일정이어도 항상 가능 */}
+                            <button
+                              type="button"
+                              className={`btn btn-sm journal-bid-won-btn ${d.bidWon ? 'active' : ''}`}
+                              onClick={() => toggleBidWon(entry)}
+                            >
+                              <Trophy size={13} /> {d.bidWon ? '낙찰 취소' : '낙찰'}
+                            </button>
+                            {!d.winPrice && (
                               <button type="button" className="btn btn-sm" style={{ marginTop: 4 }}
                                 onClick={() => startEdit(entry)}>
                                 <Pencil size={11} /> 낙찰가 입력
                               </button>
                             )}
-                            {isMaster && canEditBidFields && d.winPrice && (
+                            {d.winPrice && (
                               <button type="button" className="btn btn-sm" style={{ marginTop: 4 }}
                                 onClick={() => startEdit(entry)}>
                                 <Pencil size={11} /> 입찰가/낙찰가 수정

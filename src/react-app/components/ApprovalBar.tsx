@@ -7,7 +7,7 @@ interface Props {
   currentUserRole?: string;
   docStatus: string;
   authorName?: string;
-  onSign: (type: 'author' | 'approver') => void;
+  onSign: (type: 'author' | 'approver', approverRole?: string) => void;
 }
 
 export default function ApprovalBar({ signatures, approvalSteps, currentUserId, currentUserRole, docStatus, authorName, onSign }: Props) {
@@ -16,7 +16,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
   const authorSigned = signatures.some(s => s.user_id === currentUserId);
 
   // 동적 결재선: 작성자 + approval_steps
-  const slots: { label: string; name?: string; status: 'empty' | 'signed' | 'approved' | 'rejected' | 'pending'; signature?: Signature; canSign: boolean }[] = [];
+  const slots: { label: string; name?: string; status: 'empty' | 'signed' | 'approved' | 'rejected' | 'pending'; signature?: Signature; canSign: boolean; approverRole?: string }[] = [];
 
   // 1) 작성자 슬롯
   slots.push({
@@ -28,10 +28,21 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
   });
 
   // 2) 결재선 단계별 슬롯
+  const usedSigIds = new Set<string>();
+  if (signatures.length > 0 && authorSig) usedSigIds.add((authorSig as any).id || '');
   if (approvalSteps.length > 0) {
     for (const step of approvalSteps) {
-      // 해당 step의 서명 찾기 (signatures에서 step의 approver_id 매칭)
-      const stepSig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1);
+      // 해당 step의 서명 찾기
+      let stepSig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1 && !usedSigIds.has((s as any).id || ''));
+      // 대리 승인: CEO step이면 직인 매칭
+      if (!stepSig && step.status === 'approved' && (step as any).approver_role === 'ceo') {
+        stepSig = signatures.find(s => s.signature_data === '/LNCstemp.png' && !usedSigIds.has((s as any).id || ''));
+      }
+      // 그래도 없으면 남은 서명 중 순서대로
+      if (!stepSig && step.status === 'approved') {
+        stepSig = signatures.find(s => signatures.indexOf(s) >= 1 && !usedSigIds.has((s as any).id || ''));
+      }
+      if (stepSig) usedSigIds.add((stepSig as any).id || '');
 
       // 내 차례인지 확인: 앞 단계가 모두 approved이고 이 단계가 pending이면
       const prevAllApproved = approvalSteps
@@ -50,6 +61,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
         status: step.status === 'approved' ? 'approved' : step.status === 'rejected' ? 'rejected' : 'pending',
         signature: stepSig || undefined,
         canSign: isMyTurn || isSuperApprover,
+        approverRole: (step as any).approver_role || undefined,
       });
     }
   } else if (docStatus !== 'draft') {
@@ -93,7 +105,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
               ) : (
                 <div className="approval-slot-empty">
                   {slot.canSign && (
-                    <button className="approval-sign-btn" onClick={() => onSign(idx === 0 ? 'author' : 'approver')}>
+                    <button className="approval-sign-btn" onClick={() => onSign(idx === 0 ? 'author' : 'approver', slot.approverRole)}>
                       서명
                     </button>
                   )}

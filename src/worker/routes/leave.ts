@@ -48,13 +48,13 @@ function calculateRefund(salary: number, remainingDays: number): number {
 }
 
 // ───── 연차 목록 (관리자+) ─────
-leave.get('/', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+leave.get('/', requireRole('master', 'ceo', 'admin', 'manager', 'accountant', 'accountant_asst', 'director'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
   let query = `SELECT al.*, u.name as user_name, u.branch, u.department, u.role as user_role,
     u.hire_date, u.created_at as user_created_at
-    FROM annual_leave al LEFT JOIN users u ON al.user_id = u.id WHERE 1=1`;
+    FROM annual_leave al LEFT JOIN users u ON al.user_id = u.id WHERE u.login_type != 'freelancer' AND u.role != 'freelancer'`;
   const params: string[] = [];
 
   if (user.role === 'admin' && user.branch !== '의정부') {
@@ -121,7 +121,7 @@ leave.get('/me', async (c) => {
 });
 
 // ───── 특정 유저 연차 조회 (관리자+) ─────
-leave.get('/user/:userId', requireRole('master', 'ceo', 'admin', 'accountant'), async (c) => {
+leave.get('/user/:userId', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const userId = c.req.param('userId');
   const db = c.env.DB;
 
@@ -480,7 +480,7 @@ leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'admin',
 });
 
 // ───── 환급 계산 (관리자+) ─────
-leave.get('/refund/:userId', requireRole('master', 'ceo', 'admin', 'accountant'), async (c) => {
+leave.get('/refund/:userId', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const userId = c.req.param('userId');
   const db = c.env.DB;
 
@@ -538,7 +538,7 @@ leave.get('/alerts', requireRole('master', 'ceo', 'admin', 'manager'), async (c)
 });
 
 // ───── 입사일 설정 (관리자+) ─────
-leave.put('/hire-date/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'), async (c) => {
+leave.put('/hire-date/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const userId = c.req.param('userId');
   const { hire_date } = await c.req.json<{ hire_date: string }>();
   const db = c.env.DB;
@@ -585,6 +585,32 @@ leave.delete('/requests/:id', requireRole('master'), async (c) => {
 
   await db.prepare('DELETE FROM leave_requests WHERE id = ?').bind(id).run();
   return c.json({ success: true });
+});
+
+// ───── 총무 휴가 알림 (대시보드) ─────
+// GET /api/leave/accountant-leaves — 현재~향후 7일 내 총무 휴가 조회
+leave.get('/accountant-leaves', async (c) => {
+  const db = c.env.DB;
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST
+  const today = now.toISOString().slice(0, 10);
+  // 하루 전부터 공지
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  // 7일 후
+  const future = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const result = await db.prepare(`
+    SELECT lr.id, lr.user_id, lr.leave_type, lr.start_date, lr.end_date, lr.days, lr.reason,
+      u.name, u.branch, u.department, u.position_title
+    FROM leave_requests lr
+    JOIN users u ON u.id = lr.user_id
+    WHERE u.role IN ('accountant', 'accountant_asst')
+      AND lr.status = 'approved'
+      AND lr.end_date >= ?
+      AND lr.start_date <= ?
+    ORDER BY lr.start_date ASC
+  `).bind(yesterday, future).all();
+
+  return c.json({ leaves: result.results || [] });
 });
 
 export default leave;

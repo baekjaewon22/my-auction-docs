@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv, Role } from '../types';
 import { authMiddleware, requireRole, verifyToken } from '../middleware/auth';
+import { sendAlimtalkByTemplate } from '../alimtalk';
 
 // txt → 회의록 기본 포맷팅 (API 키 없을 때)
 function formatAsMinutes(title: string, raw: string): string {
@@ -305,13 +306,29 @@ minutes.post('/:id/share', async (c) => {
   const id = c.req.param('id');
   const { user_ids } = await c.req.json<{ user_ids: string[] }>();
 
+  const minute = await db.prepare('SELECT title, created_at FROM meeting_minutes WHERE id = ?').bind(id).first<{ title: string; created_at: string }>();
+  const newSharedPhones: string[] = [];
+
   for (const uid of user_ids) {
     const existing = await db.prepare('SELECT id FROM minutes_shares WHERE minutes_id = ? AND shared_with = ?').bind(id, uid).first();
     if (existing) continue;
     const shareId = crypto.randomUUID();
     await db.prepare('INSERT INTO minutes_shares (id, minutes_id, shared_with, shared_by) VALUES (?, ?, ?, ?)')
       .bind(shareId, id, uid, user.sub).run();
+    const sharedUser = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(uid).first<{ phone: string }>();
+    if (sharedUser?.phone) newSharedPhones.push(sharedUser.phone);
   }
+
+  // 알림톡: 회의록 공유 → 공유 대상에게 MINUTES_SHARED
+  if (newSharedPhones.length > 0 && minute) {
+    const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+      c.env as unknown as Record<string, unknown>, 'MINUTES_SHARED',
+      { author_name: user.name, title: minute.title, date: today },
+      newSharedPhones,
+    ).catch(() => {}));
+  }
+
   return c.json({ success: true });
 });
 

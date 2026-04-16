@@ -50,6 +50,18 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ email, password, name, phone, branch, login_type }),
       }),
+    forgotSend: (email: string, name: string, phone: string) =>
+      request<{ success: boolean; message: string }>('/auth/forgot-password/send', {
+        method: 'POST', body: JSON.stringify({ email, name, phone }),
+      }),
+    forgotVerify: (phone: string, code: string) =>
+      request<{ success: boolean; reset_token: string }>('/auth/forgot-password/verify', {
+        method: 'POST', body: JSON.stringify({ phone, code }),
+      }),
+    forgotReset: (reset_token: string, new_password: string) =>
+      request<{ success: boolean; message: string }>('/auth/forgot-password/reset', {
+        method: 'POST', body: JSON.stringify({ reset_token, new_password }),
+      }),
     me: () => request<{ user: import('./types').User }>('/auth/me'),
   },
 
@@ -70,6 +82,10 @@ export const api = {
       request('/users/' + id + '/signature', { method: 'PUT', body: JSON.stringify({ signature_data }) }),
     deleteSignature: (id: string) =>
       request('/users/' + id + '/signature', { method: 'DELETE' }),
+    getAlimtalkSettings: (id: string) =>
+      request<{ branches: string }>('/users/' + id + '/alimtalk-settings'),
+    updateAlimtalkSettings: (id: string, branches: string) =>
+      request('/users/' + id + '/alimtalk-settings', { method: 'PUT', body: JSON.stringify({ branches }) }),
   },
 
   teams: {
@@ -201,6 +217,8 @@ export const api = {
     // 입사일
     setHireDate: (userId: string, hireDate: string) =>
       request('/leave/hire-date/' + userId, { method: 'PUT', body: JSON.stringify({ hire_date: hireDate }) }),
+    accountantLeaves: () =>
+      request<{ leaves: any[] }>('/leave/accountant-leaves'),
   },
 
   minutes: {
@@ -231,6 +249,20 @@ export const api = {
     markRead: (id: string) => request('/minutes/shared/' + id + '/read', { method: 'PUT' }),
   },
 
+  adminNotes: {
+    list: () => request<{ notes: any[] }>('/admin-notes'),
+    get: (id: string) => request<{ note: any; comments: any[] }>('/admin-notes/' + id),
+    create: (data: { title: string; content: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string }) =>
+      request<{ success: boolean; id: string }>('/admin-notes', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: { title?: string; content?: string; pinned?: boolean }) =>
+      request('/admin-notes/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) => request('/admin-notes/' + id, { method: 'DELETE' }),
+    addComment: (noteId: string, content: string, is_anonymous?: boolean) =>
+      request('/admin-notes/' + noteId + '/comments', { method: 'POST', body: JSON.stringify({ content, is_anonymous }) }),
+    deleteComment: (commentId: string) =>
+      request('/admin-notes/comments/' + commentId, { method: 'DELETE' }),
+  },
+
   commissions: {
     list: () => request<{ commissions: any[] }>('/commissions'),
     pendingCount: () => request<{ count: number }>('/commissions/pending-count'),
@@ -246,16 +278,17 @@ export const api = {
   },
 
   sales: {
-    list: (params?: { month?: string; user_id?: string }) => {
+    list: (params?: { month?: string; user_id?: string; date_mode?: string }) => {
       const q = new URLSearchParams();
       if (params?.month) q.set('month', params.month);
       if (params?.user_id) q.set('user_id', params.user_id);
+      if (params?.date_mode) q.set('date_mode', params.date_mode);
       const qs = q.toString();
       return request<{ records: import('./types').SalesRecord[] }>('/sales' + (qs ? '?' + qs : ''));
     },
-    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string }) =>
+    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string }) =>
+    update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       request('/sales/' + id, { method: 'DELETE' }),
@@ -265,6 +298,8 @@ export const api = {
       request('/sales/' + id + '/payment-method', { method: 'PUT', body: JSON.stringify({ payment_method }) }),
     confirm: (id: string, deposit_date?: string) =>
       request('/sales/' + id + '/confirm', { method: 'POST', body: JSON.stringify({ deposit_date }) }),
+    unconfirm: (id: string) =>
+      request('/sales/' + id + '/unconfirm', { method: 'POST' }),
     refundRequest: (id: string) =>
       request('/sales/' + id + '/refund-request', { method: 'POST' }),
     refundApprove: (id: string) =>
@@ -275,6 +310,8 @@ export const api = {
       request<{ records: import('./types').SalesRecord[] }>('/sales/dashboard/pending'),
     dashboardRefundRequests: () =>
       request<{ records: import('./types').SalesRecord[] }>('/sales/dashboard/refund-requests'),
+    dashboardRefundImpacts: () =>
+      request<{ impacts: any[] }>('/sales/dashboard/refund-impacts'),
     stats: (params?: { month?: string; branch?: string; department?: string; user_id?: string }) => {
       const q = new URLSearchParams();
       if (params?.month) q.set('month', params.month);
@@ -299,6 +336,19 @@ export const api = {
       request('/sales/' + id + '/contract-not-approve', { method: 'PUT' }),
     bulkImport: (records: any[]) =>
       request<{ success: boolean; count: number }>('/sales/bulk-import', { method: 'POST', body: JSON.stringify({ records }) }),
+    // 총무 메모
+    memos: (params?: { related_type?: string; related_id?: string }) => {
+      const q = new URLSearchParams();
+      if (params?.related_type) q.set('related_type', params.related_type);
+      if (params?.related_id) q.set('related_id', params.related_id);
+      return request<{ memos: any[] }>('/sales/memos?' + q.toString());
+    },
+    createAdminMemo: (data: { related_type: string; related_id: string; content: string }) =>
+      request<{ success: boolean; id: string }>('/sales/memos', { method: 'POST', body: JSON.stringify(data) }),
+    updateAdminMemo: (id: string, content: string) =>
+      request<{ success: boolean }>('/sales/memos/' + id, { method: 'PUT', body: JSON.stringify({ content }) }),
+    deleteAdminMemo: (id: string) =>
+      request<{ success: boolean }>('/sales/memos/' + id, { method: 'DELETE' }),
   },
 
   card: {
@@ -328,6 +378,8 @@ export const api = {
       request('/card/batch/' + batchId, { method: 'DELETE' }),
     bulkDelete: (ids: string[]) =>
       request<{ success: boolean; count: number }>('/card/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
+    rematch: () =>
+      request<{ success: boolean; total: number; updated: number }>('/card/rematch', { method: 'POST' }),
   },
 
   payroll: {
@@ -342,6 +394,11 @@ export const api = {
       const qs = q.toString();
       return request<any>('/payroll/branch/summary' + (qs ? '?' + qs : ''));
     },
+    getSave: (userId: string, period: string) =>
+      request<{ save: any }>('/payroll/save/' + userId + '?period=' + encodeURIComponent(period)),
+    save: (data: { user_id: string; period: string; pay_type: string; data: Record<string, unknown> }) =>
+      request('/payroll/save', { method: 'POST', body: JSON.stringify(data) }),
+    lock: () => request('/payroll/lock', { method: 'POST' }),
   },
 
   accounting: {
@@ -357,6 +414,14 @@ export const api = {
       request<{ success: boolean; results: any[] }>('/accounting/evaluate', { method: 'POST', body: JSON.stringify({ period_start: periodStart, period_end: periodEnd }) }),
     alerts: () =>
       request<{ alerts: import('./types').SalesEvaluation[]; demotion_candidates: import('./types').SalesEvaluation[]; current_period_alerts: import('./types').SalesEvaluation[]; current_period: { start: string; end: string } }>('/accounting/alerts/dashboard'),
+    uploadBank: (rows: any[]) =>
+      request<{ success: boolean; total: number; inserted: number; dupSales: number; dupStaging: number; skipped: string[] }>('/accounting/upload-bank', { method: 'POST', body: JSON.stringify({ rows }) }),
+    staging: (month?: string) =>
+      request<{ items: any[] }>('/accounting/staging' + (month ? '?month=' + month : '')),
+    stagingToSales: (id: string, data: { type: string; user_id?: string; type_detail?: string }) =>
+      request<{ success: boolean; sales_id: string }>('/accounting/staging/' + id + '/to-sales', { method: 'POST', body: JSON.stringify(data) }),
+    stagingDelete: (id: string) =>
+      request('/accounting/staging/' + id, { method: 'DELETE' }),
   },
 
   journal: {
@@ -381,5 +446,23 @@ export const api = {
       request('/journal/dismiss-alerts-bulk', { method: 'POST', body: JSON.stringify({ keys }) }),
     dismissedAlerts: () =>
       request<{ keys: string[] }>('/journal/dismissed-alerts'),
+    checkCaseNo: (caseNo: string, court?: string) => {
+      const q = new URLSearchParams({ case_no: caseNo });
+      if (court) q.set('court', court);
+      return request<{ exists: boolean; entries: { id: string; user_id: string; user_name: string; target_date: string; court: string }[] }>('/journal/check-case-no?' + q.toString());
+    },
+    duplicateInspections: (all?: boolean) =>
+      request<{ duplicates: { case_no: string; court: string; branch: string; user_names: string; user_count: number; first_date: string; last_date: string }[] }>('/journal/duplicate-inspections' + (all ? '?all=true' : '')),
+  },
+
+  alimtalk: {
+    logs: (params?: { template?: string; search?: string; limit?: number }) => {
+      const q = new URLSearchParams();
+      if (params?.template) q.set('template', params.template);
+      if (params?.search) q.set('search', params.search);
+      if (params?.limit) q.set('limit', String(params.limit));
+      return request<{ logs: any[] }>('/alimtalk/logs' + (q.toString() ? '?' + q.toString() : ''));
+    },
+    status: () => request<{ configured: boolean; templates: any[]; categories: any[] }>('/alimtalk/status'),
   },
 };

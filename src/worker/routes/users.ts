@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv, User } from '../types';
 import { authMiddleware, requireRole, hashPassword } from '../middleware/auth';
+import { sendAlimtalkByTemplate } from '../alimtalk';
 
 const users = new Hono<AuthEnv>();
 users.use('*', authMiddleware);
@@ -65,6 +66,15 @@ users.post('/:id/approve', requireRole('master', 'ceo', 'admin'), async (c) => {
     "UPDATE users SET approved = 1, department = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(department || '', id).run();
 
+  // 알림톡: 가입 승인 → 신규회원에게 SIGNUP_APPROVED
+  if (existing.phone) {
+    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+      c.env as unknown as Record<string, unknown>, 'SIGNUP_APPROVED',
+      { user_name: existing.name, branch: existing.branch || '', department: department || existing.department || '', position_title: existing.position_title || '' },
+      [existing.phone],
+    ).catch(() => {}));
+  }
+
   return c.json({ success: true });
 });
 
@@ -84,7 +94,7 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   const { role, branch, department } = await c.req.json<{ role?: string; branch?: string; department?: string }>();
   const db = c.env.DB;
 
-  if (role && !['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'member'].includes(role)) {
+  if (role && !['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst', 'manager', 'member'].includes(role)) {
     return c.json({ error: '유효하지 않은 역할입니다.' }, 400);
   }
 
@@ -215,6 +225,28 @@ users.delete('/:id/signature', async (c) => {
   const db = c.env.DB;
   await db.prepare("UPDATE users SET saved_signature = '', updated_at = datetime('now') WHERE id = ?")
     .bind(id).run();
+  return c.json({ success: true });
+});
+
+// GET /api/users/:id/alimtalk-settings — 알림톡 수신 설정 조회
+users.get('/:id/alimtalk-settings', async (c) => {
+  const id = c.req.param('id');
+  const db = c.env.DB;
+  const row = await db.prepare('SELECT alimtalk_branches FROM users WHERE id = ?').bind(id).first<{ alimtalk_branches: string }>();
+  return c.json({ branches: row?.alimtalk_branches || '' });
+});
+
+// PUT /api/users/:id/alimtalk-settings — 알림톡 수신 설정 저장
+users.put('/:id/alimtalk-settings', async (c) => {
+  const id = c.req.param('id');
+  const currentUser = c.get('user');
+  // 본인 또는 관리자만
+  if (currentUser.sub !== id && !['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser.role)) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
+  }
+  const { branches } = await c.req.json<{ branches: string }>();
+  await c.env.DB.prepare("UPDATE users SET alimtalk_branches = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(branches || '', id).run();
   return c.json({ success: true });
 });
 

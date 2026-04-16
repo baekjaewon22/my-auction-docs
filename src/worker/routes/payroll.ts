@@ -8,21 +8,27 @@ payroll.use('*', authMiddleware);
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 
 // GET /api/payroll/:userId?month=YYYY-MM
-// month가 속한 2개월 구간을 자동 계산 (3-4월, 5-6월, 7-8월...)
+// 급여제: 1개월 정산 + 성과금은 2개월 기준
+// 비율제: 1개월 정산
+// 매출 기준: 카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date
 payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const userId = c.req.param('userId');
   const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
   const db = c.env.DB;
 
-  // 2개월 구간 계산: 홀수월 시작 (1-2, 3-4, 5-6, 7-8, 9-10, 11-12)
   const [yearStr, monthStr] = month.split('-');
   const y = Number(yearStr);
   const m = Number(monthStr);
-  const periodStartMonth = m % 2 === 0 ? m - 1 : m;
-  const periodEndMonth = periodStartMonth + 1;
-  const periodStart = `${y}-${String(periodStartMonth).padStart(2, '0')}-01`;
-  const lastDay = new Date(y, periodEndMonth, 0).getDate();
-  const periodEnd = `${y}-${String(periodEndMonth).padStart(2, '0')}-${lastDay}`;
+
+  // 1개월 구간 (급여/비율 공통)
+  const monthStart = `${month}-01`;
+  const monthEnd = `${month}-${new Date(y, m, 0).getDate()}`;
+
+  // 2개월 구간 (성과금 계산용 — 급여제만)
+  const bonusPeriodStartMonth = m % 2 === 0 ? m - 1 : m;
+  const bonusPeriodEndMonth = bonusPeriodStartMonth + 1;
+  const bonusPeriodStart = `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}-01`;
+  const bonusPeriodEnd = `${y}-${String(bonusPeriodEndMonth).padStart(2, '0')}-${new Date(y, bonusPeriodEndMonth, 0).getDate()}`;
 
   const user = await db.prepare(
     'SELECT id, name, branch, department, position_title, role FROM users WHERE id = ?'
@@ -33,18 +39,46 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
     'SELECT salary, standard_sales, grade, position_allowance, pay_type, commission_rate FROM user_accounting WHERE user_id = ?'
   ).bind(userId).first<any>();
 
-  // 2개월 구간의 매출 조회
-  const salesResult = await db.prepare(`
+  // 2026년 1~2월은 전원 프리랜서(비율 50%) — 강제 적용
+  const isJanFeb2026 = y === 2026 && m <= 2;
+  const isCommission = isJanFeb2026 ? true : (accounting?.pay_type === 'commission');
+  const effectiveRate = isJanFeb2026 ? 50 : (accounting?.commission_rate || 0);
+
+  // 매출 조회: 1개월 기준 (카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date)
+  const salesQuery = `
     SELECT id, type, type_detail, client_name, depositor_name, depositor_different,
-      amount, contract_date, deposit_date, status, confirmed_at, memo
+      amount, contract_date, deposit_date, status, confirmed_at, memo,
+      payment_type, card_deposit_date, proxy_cost
     FROM sales_records
     WHERE user_id = ? AND status IN ('confirmed', 'refunded')
-      AND contract_date >= ? AND contract_date <= ?
+      AND (
+        (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
+        OR (payment_type != '카드' AND payment_type != '' AND deposit_date >= ? AND deposit_date <= ?)
+        OR ((payment_type = '' OR payment_type IS NULL) AND contract_date >= ? AND contract_date <= ?)
+      )
     ORDER BY contract_date ASC
-  `).bind(userId, periodStart, periodEnd).all();
+  `;
+  const salesResult = await db.prepare(salesQuery)
+    .bind(userId, monthStart, monthEnd, monthStart, monthEnd, monthStart, monthEnd).all();
 
   const records = salesResult.results as any[];
-  const contractCount = records.filter((r: any) => r.type === '계약' && r.status === 'confirmed').length;
+  // 계약건수: 급여제는 2개월 기준, 비율제는 1개월 기준
+  let contractCount: number;
+  if (!isCommission) {
+    // 2개월 기준 계약건수 별도 조회
+    const ccResult = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM sales_records
+      WHERE user_id = ? AND type = '계약' AND status = 'confirmed'
+        AND (
+          (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
+          OR (payment_type != '카드' AND payment_type != '' AND deposit_date >= ? AND deposit_date <= ?)
+          OR ((payment_type = '' OR payment_type IS NULL) AND contract_date >= ? AND contract_date <= ?)
+        )
+    `).bind(userId, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd).first<any>();
+    contractCount = ccResult?.cnt || 0;
+  } else {
+    contractCount = records.filter((r: any) => r.type === '계약' && r.status === 'confirmed').length;
+  }
   const confirmedRecords = records.filter((r: any) => r.status === 'confirmed');
   const totalSales = confirmedRecords.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
   const refundedRecords = records.filter((r: any) => r.status === 'refunded');
@@ -54,30 +88,41 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const standardSales = accounting?.standard_sales || 0;
   const positionAllowance = accounting?.position_allowance || 0;
 
-  // 무급휴가 공제 계산: 해당 구간 내 승인된 무급휴가(특별휴가-기타) 조회
+  // 무급휴가 공제 계산: 해당 월 내 승인된 무급휴가(특별휴가-기타) 조회
   const unpaidLeaveResult = await db.prepare(`
     SELECT COALESCE(SUM(days), 0) as total_days FROM leave_requests
     WHERE user_id = ? AND status = 'approved'
       AND leave_type = '특별휴가' AND instr(reason, '기타') > 0
       AND start_date >= ? AND start_date <= ?
-  `).bind(userId, periodStart, periodEnd).first<any>();
+  `).bind(userId, monthStart, monthEnd).first<any>();
   const unpaidLeaveDays = unpaidLeaveResult?.total_days || 0;
-  // 무급휴가 공제: 월급 ÷ 209h × 8 × 무급휴가 일수
   const unpaidLeaveDeduction = salary > 0 ? Math.round((salary / 209) * 8 * unpaidLeaveDays) : 0;
 
   // 본사관리 인원은 실적 기반 성과금 없음
   const isHQ = user.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
 
-  // 상여금 계산 (구간별 누진) — 본사관리 인원은 건너뜀
-  const excess = isHQ ? 0 : Math.max(totalSales - standardSales, 0);
+  // 성과금: 2개월 매출 기준 (급여제만, 비율제는 성과금 없음)
   let bonus = 0;
-  if (!isHQ && excess > 0) {
-    if (excess < 5010000) {
-      bonus = Math.round(excess * 0.20);
-    } else if (excess < 15010000) {
-      bonus = Math.round(5010000 * 0.20 + (excess - 5010000) * 0.25);
-    } else {
-      bonus = Math.round(5010000 * 0.20 + 10000000 * 0.25 + (excess - 15010000) * 0.30);
+  let bonusTotalSales = totalSales;
+  let bonusExcess = 0;
+  const isPayoutMonth = m % 2 === 0; // 짝수월 = 성과금 지급월
+
+  if (!isCommission && !isHQ && isPayoutMonth) {
+    // 2개월 매출 조회 (성과금 계산용)
+    const bonusSalesResult = await db.prepare(salesQuery)
+      .bind(userId, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd).all();
+    const bonusConfirmed = (bonusSalesResult.results as any[]).filter((r: any) => r.status === 'confirmed');
+    bonusTotalSales = bonusConfirmed.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
+    bonusExcess = Math.max(bonusTotalSales - standardSales, 0);
+
+    if (bonusExcess > 0) {
+      if (bonusExcess < 5010000) {
+        bonus = Math.round(bonusExcess * 0.20);
+      } else if (bonusExcess < 15010000) {
+        bonus = Math.round(5010000 * 0.20 + (bonusExcess - 5010000) * 0.25);
+      } else {
+        bonus = Math.round(5010000 * 0.20 + 10000000 * 0.25 + (bonusExcess - 15010000) * 0.30);
+      }
     }
   }
 
@@ -88,16 +133,44 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
     return { ...r, supply_amount: supply, vat_amount: vat };
   });
 
+  // 이전 기간 환불 건 조회: 현재 정산월에 환불 승인된 + 이전 기간 매출 건
+  const prevRefunds = await db.prepare(`
+    SELECT id, type, client_name, amount, contract_date, deposit_date, card_deposit_date, payment_type, refund_approved_at
+    FROM sales_records
+    WHERE user_id = ? AND status = 'refunded'
+      AND refund_approved_at >= ? AND refund_approved_at <= ?
+  `).bind(userId, monthStart, monthEnd + ' 23:59:59').all();
+  const refundRecoveries = (prevRefunds.results as any[]).filter((r: any) => {
+    // 원래 매출이 이전 기간인지 확인
+    const sd = r.payment_type === '카드' && r.card_deposit_date ? r.card_deposit_date
+      : r.deposit_date ? r.deposit_date : r.contract_date;
+    return sd && sd < monthStart;
+  }).map((r: any) => {
+    const supply = Math.round(r.amount / 1.1);
+    let recovery = 0;
+    if (isCommission) {
+      const comm = Math.round(supply * effectiveRate / 100);
+      recovery = Math.round(comm * (1 - 0.033));
+    }
+    return { ...r, supply_amount: supply, recovery_amount: recovery };
+  });
+
   return c.json({
     user,
-    accounting: accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0, pay_type: 'salary', commission_rate: 0 },
+    accounting: isJanFeb2026
+      ? { ...(accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0 }), pay_type: 'commission', commission_rate: 50 }
+      : (accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0, pay_type: 'salary', commission_rate: 0 }),
     is_hq: isHQ,
+    is_commission: isCommission,
     month,
-    period_start: periodStart,
-    period_end: periodEnd,
-    period_label: `${y}년 ${periodStartMonth}~${periodEndMonth}월`,
+    period_start: monthStart,
+    period_end: monthEnd,
+    period_label: `${y}년 ${m}월`,
+    bonus_period_label: isPayoutMonth ? `${y}년 ${bonusPeriodStartMonth}~${bonusPeriodEndMonth}월` : null,
+    is_payout_month: isPayoutMonth,
     records: recordsWithVat,
     refunded_records: refundedRecords,
+    refund_recoveries: refundRecoveries,
     summary: {
       contract_count: contractCount,
       total_sales: totalSales,
@@ -106,12 +179,12 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
       total_refund: totalRefund,
       net_sales: totalSales - totalRefund,
       standard_sales: standardSales,
-      excess,
+      bonus_total_sales: bonusTotalSales,
+      bonus_excess: bonusExcess,
+      excess: bonusExcess,
       bonus,
       salary,
       position_allowance: positionAllowance,
-      // 총지급액 = ((기본급+직급수당)-공제합계) + 상여금 + 기타
-      // 공제/기타는 프론트에서 입력하므로 여기서는 base만
       base_pay: salary + positionAllowance,
       unpaid_leave_days: unpaidLeaveDays,
       unpaid_leave_deduction: unpaidLeaveDeduction,
@@ -178,6 +251,57 @@ payroll.get('/branch/summary', requireRole(...ACCOUNTING_ROLES), async (c) => {
   }
 
   return c.json({ month, branches: Object.values(branches) });
+});
+
+// ━━━ 급여정산 저장/조회 ━━━
+
+// GET /api/payroll/save/:userId?period=xxx
+payroll.get('/save/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const userId = c.req.param('userId');
+  const period = c.req.query('period') || '';
+  const db = c.env.DB;
+  const row = await db.prepare('SELECT * FROM payroll_saves WHERE user_id = ? AND period = ?').bind(userId, period).first();
+  return c.json({ save: row || null });
+});
+
+// POST /api/payroll/save — 저장
+payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const { user_id, period, pay_type, data: saveData } = await c.req.json<{
+    user_id: string; period: string; pay_type: string; data: Record<string, unknown>;
+  }>();
+
+  // 잠금 체크: 익달 5일 이후면 수정 불가
+  const existing = await db.prepare('SELECT locked FROM payroll_saves WHERE user_id = ? AND period = ?').bind(user_id, period).first<any>();
+  if (existing?.locked) return c.json({ error: '해당 기간 정산은 잠금 상태입니다. (익달 5일 이후 수정 불가)' }, 400);
+
+  const id = crypto.randomUUID();
+  await db.prepare(`
+    INSERT INTO payroll_saves (id, user_id, period, pay_type, data, created_by)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, period) DO UPDATE SET
+      data = excluded.data, pay_type = excluded.pay_type, updated_at = datetime('now')
+  `).bind(id, user_id, period, pay_type, JSON.stringify(saveData), user.sub).run();
+
+  return c.json({ success: true });
+});
+
+// POST /api/payroll/lock — 자동 잠금 (cron 또는 수동)
+payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
+  const db = c.env.DB;
+  // 현재 달 기준: 전달 정산을 잠금 (5일 이후)
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST
+  if (now.getUTCDate() < 5) return c.json({ message: '아직 5일 전입니다.' });
+
+  const prevMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() - 1, 1);
+  const periodPattern = `${prevMonth.getUTCFullYear()}-${String(prevMonth.getUTCMonth() + 1).padStart(2, '0')}%`;
+
+  const result = await db.prepare(
+    "UPDATE payroll_saves SET locked = 1 WHERE period LIKE ? AND locked = 0"
+  ).bind(periodPattern).run();
+
+  return c.json({ success: true, locked: result.meta?.changes || 0 });
 });
 
 export default payroll;

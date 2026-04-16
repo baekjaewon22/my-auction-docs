@@ -39,7 +39,11 @@ export default function Statistics() {
   const [filterUser, setFilterUser] = useState('');
   const [filterMonth, setFilterMonth] = useState('');
   const [salesRecords, setSalesRecords] = useState<SalesRecord[]>([]);
-  const tabs = ['입찰 분석', '근태 분석', '이상 감지', '매출/환불'];
+  const isDirector = user?.role === 'director';
+  const isSalesVisible = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || (user?.role === 'admin' && user?.branch === '의정부') || isDirector;
+  const tabs = isDirector
+    ? ['매출/환불']
+    : (isSalesVisible ? ['입찰 분석', '브리핑 분석', '근태 분석', '이상 감지', '매출/환불'] : ['입찰 분석', '브리핑 분석', '근태 분석', '이상 감지']);
 
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || (user?.role === 'admin' && user?.branch === '의정부');
 
@@ -177,10 +181,11 @@ export default function Statistics() {
       </div>
 
       <div className="stats-content">
-        {tab === 0 && <BidAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
-        {tab === 1 && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
-        {tab === 2 && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
-        {tab === 3 && <SalesAnalysis records={salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
+        {tabs[tab] === '입찰 분석' && <BidAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
+        {tabs[tab] === '브리핑 분석' && <BriefingAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
+        {tabs[tab] === '근태 분석' && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
+        {tabs[tab] === '이상 감지' && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
+        {tabs[tab] === '매출/환불' && <SalesAnalysis records={isDirector ? salesRecords.filter(r => r.branch === '대전' || r.branch === '부산') : salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
       </div>
     </div>
   );
@@ -890,12 +895,14 @@ function SalesAnalysis({ records, viewLevel }: {
   members: { id: string; name: string; role: string; branch: string; department: string }[];
   viewLevel: string;
 }) {
+  // 공급가액 기준 (÷1.1)
+  const toSupply = (amount: number) => Math.round(amount / 1.1);
   const confirmed = records.filter(r => r.status === 'confirmed');
   const refunded = records.filter(r => r.status === 'refunded');
   const pending = records.filter(r => r.status === 'pending');
-  const totalConfirmed = confirmed.reduce((s, r) => s + r.amount, 0);
-  const totalRefunded = refunded.reduce((s, r) => s + r.amount, 0);
-  const totalPending = pending.reduce((s, r) => s + r.amount, 0);
+  const totalConfirmed = confirmed.reduce((s, r) => s + toSupply(r.amount), 0);
+  const totalRefunded = refunded.reduce((s, r) => s + toSupply(r.amount), 0);
+  const totalPending = pending.reduce((s, r) => s + toSupply(r.amount), 0);
   const contractCount = records.filter(r => r.type === '계약' && r.status !== 'refunded').length;
 
   // 담당자별 or 팀별 or 지사별 집계
@@ -910,9 +917,9 @@ function SalesAnalysis({ records, viewLevel }: {
       : (r.branch || '미지정');
     if (!grouped[key]) grouped[key] = { confirmed: 0, refunded: 0, pending: 0, count: 0 };
     grouped[key].count++;
-    if (r.status === 'confirmed') grouped[key].confirmed += r.amount;
-    else if (r.status === 'refunded') grouped[key].refunded += r.amount;
-    else if (r.status === 'pending') grouped[key].pending += r.amount;
+    if (r.status === 'confirmed') grouped[key].confirmed += toSupply(r.amount);
+    else if (r.status === 'refunded') grouped[key].refunded += toSupply(r.amount);
+    else if (r.status === 'pending') grouped[key].pending += toSupply(r.amount);
   });
 
   const chartData = Object.entries(grouped).map(([name, v]) => ({
@@ -925,8 +932,8 @@ function SalesAnalysis({ records, viewLevel }: {
     const d = r.contract_date?.slice(0, 10);
     if (!d) return;
     if (!dailyMap[d]) dailyMap[d] = { confirmed: 0, refunded: 0 };
-    if (r.status === 'confirmed') dailyMap[d].confirmed += r.amount;
-    else if (r.status === 'refunded') dailyMap[d].refunded += r.amount;
+    if (r.status === 'confirmed') dailyMap[d].confirmed += toSupply(r.amount);
+    else if (r.status === 'refunded') dailyMap[d].refunded += toSupply(r.amount);
   });
   const sortedDays = Object.keys(dailyMap).sort();
   let cumConfirmed = 0;
@@ -946,6 +953,54 @@ function SalesAnalysis({ records, viewLevel }: {
         <div className="stat-card stat-submitted"><div className="stat-number">{totalPending.toLocaleString()}</div><div className="stat-label">입금대기</div></div>
         <div className="stat-card stat-rejected"><div className="stat-number">{totalRefunded.toLocaleString()}</div><div className="stat-label">환불</div></div>
       </div>
+
+      {/* 지사별 매출 카테고리 원형그래프 */}
+      {(() => {
+        const branchOrder = ['의정부', '서초', '대전', '부산'];
+        const typeColors: Record<string, string> = {
+          '계약': '#1a73e8', '낙찰': '#7c4dff', '중개': '#188038',
+          '권리분석보증서': '#e65100', '매수신청대리': '#d93025', '기타': '#9aa0a6',
+        };
+        const branchPies = branchOrder.map(branch => {
+          const branchConfirmed = confirmed.filter(r => r.branch === branch);
+          const typeMap: Record<string, number> = {};
+          branchConfirmed.forEach(r => {
+            const t = r.type || '기타';
+            typeMap[t] = (typeMap[t] || 0) + toSupply(r.amount);
+          });
+          const data = Object.entries(typeMap).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+          const total = data.reduce((s, d) => s + d.value, 0);
+          return { branch, data, total };
+        }).filter(b => b.total > 0);
+
+        if (branchPies.length === 0) return null;
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(branchPies.length, 4)}, 1fr)`, gap: 12, marginBottom: 20 }}>
+            {branchPies.map(bp => (
+              <div key={bp.branch} className="card" style={{ padding: 16, textAlign: 'center' }}>
+                <h4 style={{ margin: '0 0 4px', fontSize: '0.9rem', color: '#1a1a2e' }}>{bp.branch}</h4>
+                <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginBottom: 8 }}>확정매출 {bp.total.toLocaleString()}원</div>
+                <ResponsiveContainer width="100%" height={160}>
+                  <PieChart>
+                    <Pie data={bp.data} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={60} innerRadius={30} paddingAngle={2}>
+                      {bp.data.map((d, i) => <Cell key={i} fill={typeColors[d.name] || COLORS[i % COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(v: any) => (Number(v) || 0).toLocaleString() + '원'} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 6, marginTop: 6 }}>
+                  {bp.data.map((d, i) => (
+                    <span key={i} style={{ fontSize: '0.65rem', display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 2, background: typeColors[d.name] || COLORS[i % COLORS.length], display: 'inline-block' }} />
+                      {d.name} {d.value.toLocaleString()}원
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* 차트 */}
       {chartData.length > 0 && (
@@ -1003,6 +1058,122 @@ function SalesAnalysis({ records, viewLevel }: {
                   <td style={{ color: '#e65100' }}>{v.pending.toLocaleString()}원</td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+/* 브리핑 분석                                                     */
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function BriefingAnalysis({ entries, members }: { entries: JournalEntry[]; members: Member[] }) {
+  // 브리핑자료제출 건
+  const briefingSubmits = entries.filter(e => e.activity_type === '브리핑자료제출');
+  // 미팅 > 브리핑 건
+  const briefingMeetings = entries.filter(e => {
+    if (e.activity_type !== '미팅') return false;
+    try { const d = JSON.parse(e.data); return d.meetingType === '브리핑'; } catch { return false; }
+  });
+
+  const totalSubmits = briefingSubmits.length;
+  const totalMeetings = briefingMeetings.length;
+  const conversionRate = totalSubmits > 0 ? Math.round((totalMeetings / totalSubmits) * 100) : 0;
+
+  // 담당자별 통계
+  const userStats: Record<string, { name: string; branch: string; submits: number; meetings: number }> = {};
+  briefingSubmits.forEach(e => {
+    if (!userStats[e.user_id]) {
+      const m = members.find(mm => mm.id === e.user_id);
+      userStats[e.user_id] = { name: (e as any).user_name || m?.name || '', branch: e.branch || m?.branch || '', submits: 0, meetings: 0 };
+    }
+    userStats[e.user_id].submits++;
+  });
+  briefingMeetings.forEach(e => {
+    if (!userStats[e.user_id]) {
+      const m = members.find(mm => mm.id === e.user_id);
+      userStats[e.user_id] = { name: (e as any).user_name || m?.name || '', branch: e.branch || m?.branch || '', submits: 0, meetings: 0 };
+    }
+    userStats[e.user_id].meetings++;
+  });
+  const userList = Object.values(userStats).filter(u => u.submits > 0 || u.meetings > 0).sort((a, b) => b.submits - a.submits);
+
+  // 차트 데이터
+  const chartData = userList.slice(0, 10).map(u => ({
+    name: u.name,
+    제출: u.submits,
+    브리핑: u.meetings,
+    전환율: u.submits > 0 ? Math.round((u.meetings / u.submits) * 100) : 0,
+  }));
+
+  return (
+    <div>
+      <h3 className="stats-subtitle"><TrendingUp size={18} /> 브리핑 분석 — 자료제출 vs 실제 브리핑</h3>
+
+      {/* 요약 카드 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
+        <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #0d47a1' }}>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>브리핑 자료제출</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#0d47a1' }}>{totalSubmits}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>건</span></div>
+        </div>
+        <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #e65100' }}>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>실제 브리핑 미팅</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#e65100' }}>{totalMeetings}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>건</span></div>
+        </div>
+        <div className="card" style={{ padding: '16px 20px', borderLeft: `4px solid ${conversionRate >= 50 ? '#188038' : '#d93025'}` }}>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>브리핑 전환율</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: conversionRate >= 50 ? '#188038' : '#d93025' }}>{conversionRate}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>%</span></div>
+        </div>
+      </div>
+
+      {/* 차트 */}
+      {chartData.length > 0 && (
+        <div className="card" style={{ padding: 20, marginBottom: 24 }}>
+          <h4 style={{ margin: '0 0 16px', fontSize: '0.9rem' }}>담당자별 브리핑 제출 vs 실제 미팅</h4>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={chartData} barSize={20}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" fontSize={12} />
+              <YAxis fontSize={12} />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="제출" fill="#0d47a1" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="브리핑" fill="#e65100" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* 담당자별 상세 테이블 */}
+      <div className="card" style={{ padding: 20 }}>
+        <h4 style={{ margin: '0 0 12px', fontSize: '0.9rem' }}>담당자별 상세</h4>
+        <div className="table-wrapper">
+          <table className="data-table">
+            <thead>
+              <tr><th>담당자</th><th>지사</th><th>자료제출</th><th>브리핑 미팅</th><th>전환율</th></tr>
+            </thead>
+            <tbody>
+              {userList.map((u, i) => {
+                const rate = u.submits > 0 ? Math.round((u.meetings / u.submits) * 100) : 0;
+                return (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 600 }}>{u.name}</td>
+                    <td style={{ fontSize: '0.78rem', color: '#5f6368' }}>{u.branch}</td>
+                    <td style={{ color: '#0d47a1', fontWeight: 600 }}>{u.submits}</td>
+                    <td style={{ color: '#e65100', fontWeight: 600 }}>{u.meetings}</td>
+                    <td>
+                      <span style={{
+                        padding: '2px 8px', borderRadius: 8, fontSize: '0.75rem', fontWeight: 600,
+                        background: rate >= 50 ? '#e8f5e9' : rate > 0 ? '#fff3e0' : '#f5f5f5',
+                        color: rate >= 50 ? '#188038' : rate > 0 ? '#e65100' : '#9aa0a6',
+                      }}>{rate}%</span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {userList.length === 0 && <tr><td colSpan={5} className="empty-state">브리핑 데이터가 없습니다.</td></tr>}
             </tbody>
           </table>
         </div>

@@ -19,6 +19,7 @@ import salesRoute from './routes/sales';
 import payrollRoute from './routes/payroll';
 import cardRoute from './routes/card';
 import analyticsRoute from './routes/analytics';
+import adminNotesRoute from './routes/admin-notes';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -50,6 +51,7 @@ app.route('/api/sales', salesRoute);
 app.route('/api/payroll', payrollRoute);
 app.route('/api/card', cardRoute);
 app.route('/api/analytics', analyticsRoute);
+app.route('/api/admin-notes', adminNotesRoute);
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));

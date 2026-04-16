@@ -57,7 +57,7 @@ function getEvaluationPeriods(count: number = 3) {
 export default function Accounting() {
   const { user: currentUser } = useAuthStore();
   const { branches: BRANCHES } = useBranches();
-  const [mainTab, setMainTab] = useState<'sales' | 'staff' | 'card'>('sales');
+  const [mainTab, setMainTab] = useState<'sales' | 'staff' | 'card' | 'bank'>('sales');
 
   // ━━ 공통 ━━
   const [users, setUsers] = useState<User[]>([]);
@@ -69,8 +69,11 @@ export default function Accounting() {
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
   const canEdit = canModify; // 하위 호환
 
+  const isAccountantRole = ['master', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
+
   // ━━ 매출 전체 탭 ━━
   const [allSales, setAllSales] = useState<SalesRecord[]>([]);
+  const [adminMemos, setAdminMemos] = useState<Record<string, { id: string; content: string }>>({});
   const [filterMonth, setFilterMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [filterBranch, setFilterBranch] = useState('');
   const [filterUser, setFilterUser] = useState('');
@@ -96,12 +99,27 @@ export default function Accounting() {
     try { await api.card.bulkDelete([...cardSelected]); setCardSelected(new Set()); loadCard(); } catch (err: any) { alert(err.message); }
   };
   const [cardSummary, setCardSummary] = useState<{ by_branch: any[]; by_user: any[] }>({ by_branch: [], by_user: [] });
-  const [cardMonth, setCardMonth] = useState('');
+  const [cardMonth, setCardMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [cardFilterBranch, setCardFilterBranch] = useState('');
   const [cardFilterUser, setCardFilterUser] = useState('');
   const [uploading, setUploading] = useState(false);
   const [previewRows, setPreviewRows] = useState<any[] | null>(null);
   const [excelColumns, setExcelColumns] = useState<string[]>([]);
+
+  // ━━ 거래내역 첨부 탭 ━━
+  const [bankItems, setBankItems] = useState<any[]>([]);
+  const [bankMonth, setBankMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [bankUploading, setBankUploading] = useState(false);
+  const [bankMovingId, setBankMovingId] = useState<string | null>(null);
+  const [bankMoveType, setBankMoveType] = useState('기타');
+  const [bankMoveUser, setBankMoveUser] = useState('');
+
+  const loadBank = async () => {
+    try {
+      const res = await api.accounting.staging(bankMonth);
+      setBankItems(res.items || []);
+    } catch { setBankItems([]); }
+  };
 
   // ━━ 직원 관리 탭 ━━
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -130,9 +148,21 @@ export default function Accounting() {
   const loadSales = async () => {
     try {
       const res = await api.sales.list({ month: filterMonth, user_id: filterUser || undefined });
-      // 회계장부는 입금확인된 건만 (confirmed + refunded + refund_requested)
-      // pending은 매출확인에서 처리
-      setAllSales((res.records || []).filter((r: SalesRecord) => r.status !== 'pending'));
+      setAllSales((res.records || []).filter((r: SalesRecord) => {
+        if (r.status === 'pending') return false;
+        // 카드결제 건은 정산일 적용 후에만 회계장부에 표시
+        if (r.payment_type === '카드' && !r.card_deposit_date) return false;
+        return true;
+      }));
+      // 총무 메모 로드
+      if (canModify) {
+        try {
+          const mRes = await api.sales.memos({ related_type: 'sales' });
+          const map: Record<string, { id: string; content: string }> = {};
+          (mRes.memos || []).forEach((m: any) => { map[m.related_id] = { id: m.id, content: m.content }; });
+          setAdminMemos(map);
+        } catch { /* */ }
+      }
     } catch { setAllSales([]); }
   };
 
@@ -245,6 +275,7 @@ export default function Accounting() {
   useEffect(() => { load(); }, []);
   useEffect(() => { if (mainTab === 'sales') loadSales(); }, [mainTab, filterMonth, filterUser]);
   useEffect(() => { if (mainTab === 'card') loadCard(); }, [mainTab, cardMonth, cardFilterBranch, cardFilterUser]);
+  useEffect(() => { if (mainTab === 'bank') loadBank(); }, [mainTab, bankMonth]);
 
   // ━━ 매출 전체 탭 핸들러 ━━
   const handleRefundApprove = async (id: string) => {
@@ -477,15 +508,18 @@ export default function Accounting() {
       </div>
 
       {/* 탭 */}
-      <div className="filter-bar" style={{ marginBottom: 20 }}>
-        <button className={`filter-btn ${mainTab === 'sales' ? 'active' : ''}`} onClick={() => setMainTab('sales')}>
+      <div className="premium-filter-bar" style={{ marginBottom: 20 }}>
+        <button className={`premium-filter-btn ${mainTab === 'sales' ? 'active' : ''}`} onClick={() => setMainTab('sales')}>
           매출 전체
         </button>
-        <button className={`filter-btn ${mainTab === 'staff' ? 'active' : ''}`} onClick={() => setMainTab('staff')}>
+        <button className={`premium-filter-btn ${mainTab === 'staff' ? 'active' : ''}`} onClick={() => setMainTab('staff')}>
           <UsersIcon size={14} style={{ marginRight: 4 }} /> 직원 관리
         </button>
-        <button className={`filter-btn ${mainTab === 'card' ? 'active' : ''}`} onClick={() => setMainTab('card')}>
+        <button className={`premium-filter-btn ${mainTab === 'card' ? 'active' : ''}`} onClick={() => setMainTab('card')}>
           카드사용내역
+        </button>
+        <button className={`premium-filter-btn ${mainTab === 'bank' ? 'active' : ''}`} onClick={() => setMainTab('bank')}>
+          거래내역 첨부 {bankItems.length > 0 && <span style={{ background: '#e65100', color: '#fff', padding: '1px 6px', borderRadius: 8, fontSize: '0.65rem', marginLeft: 4 }}>{bankItems.length}</span>}
         </button>
       </div>
 
@@ -556,8 +590,8 @@ export default function Accounting() {
 
           {/* 매출 목록 */}
           <div className="table-wrapper">
-            <table className="data-table">
-              <thead><tr><th></th><th>일자</th><th>담당자</th><th>유형</th><th>회원명</th><th>금액</th><th>입금일</th><th>상태</th><th>액션</th></tr></thead>
+            <table className="premium-table">
+              <thead><tr><th></th><th>일자</th><th>담당자</th><th>유형</th><th>회원명</th><th>금액</th><th>입금일</th><th>증빙</th><th>상태</th><th>액션</th></tr></thead>
               <tbody>
                 {displaySales.map(r => {
                   const st = STATUS_LABELS[r.status];
@@ -579,26 +613,42 @@ export default function Accounting() {
                         {r.direction === 'expense' ? '-' : '+'}{formatCurrency(r.amount)}
                       </td>
                       <td style={{ fontSize: '0.78rem', color: r.deposit_date ? '#188038' : '#9aa0a6' }}>{r.deposit_date || '-'}</td>
+                      <td style={{ fontSize: '0.72rem' }}>
+                        {r.receipt_type ? (
+                          <span style={{ padding: '1px 6px', borderRadius: 6, fontSize: '0.68rem', fontWeight: 500,
+                            background: r.receipt_type === '현금영수증' ? '#e8f5e9' : '#fff3e0',
+                            color: r.receipt_type === '현금영수증' ? '#188038' : '#e65100' }}>
+                            {r.receipt_type}
+                          </span>
+                        ) : <span style={{ color: '#dadce0' }}>-</span>}
+                      </td>
                       <td>
                         <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: '0.72rem', fontWeight: 600, background: st.bg, color: st.color }}>{st.label}</span>
-                        {/* 카드/이체 표시 */}
-                        {canEdit && (
-                          <div style={{ display: 'inline-flex', gap: 2, marginLeft: 4, verticalAlign: 'middle' }}>
-                            <button onClick={() => handlePaymentMethod(r.id, r.payment_method === '카드' ? '' : '카드')}
-                              style={{ padding: '1px 5px', fontSize: '0.6rem', borderRadius: 4, border: '1px solid', cursor: 'pointer',
-                                background: r.payment_method === '카드' ? '#1a73e8' : '#fff', color: r.payment_method === '카드' ? '#fff' : '#9aa0a6',
-                                borderColor: r.payment_method === '카드' ? '#1a73e8' : '#dadce0' }}>카드</button>
-                            <button onClick={() => handlePaymentMethod(r.id, r.payment_method === '이체' ? '' : '이체')}
-                              style={{ padding: '1px 5px', fontSize: '0.6rem', borderRadius: 4, border: '1px solid', cursor: 'pointer',
-                                background: r.payment_method === '이체' ? '#188038' : '#fff', color: r.payment_method === '이체' ? '#fff' : '#9aa0a6',
-                                borderColor: r.payment_method === '이체' ? '#188038' : '#dadce0' }}>이체</button>
-                          </div>
-                        )}
-                        {!canEdit && r.payment_method && (
-                          <span style={{ marginLeft: 4, fontSize: '0.6rem', padding: '1px 5px', borderRadius: 4,
-                            background: r.payment_method === '카드' ? '#e8f0fe' : '#e8f5e9',
-                            color: r.payment_method === '카드' ? '#1a73e8' : '#188038' }}>{r.payment_method}</span>
-                        )}
+                        {/* 카드/이체 표시 — payment_type(담당자 입력) 자동 반영 */}
+                        {(() => {
+                          const pm = r.payment_method || r.payment_type || '';
+                          return (
+                            <>
+                              {canEdit && (
+                                <div style={{ display: 'inline-flex', gap: 2, marginLeft: 4, verticalAlign: 'middle' }}>
+                                  <button onClick={() => handlePaymentMethod(r.id, pm === '카드' ? '' : '카드')}
+                                    style={{ padding: '1px 5px', fontSize: '0.6rem', borderRadius: 4, border: '1px solid', cursor: 'pointer',
+                                      background: pm === '카드' ? '#1a73e8' : '#fff', color: pm === '카드' ? '#fff' : '#9aa0a6',
+                                      borderColor: pm === '카드' ? '#1a73e8' : '#dadce0' }}>카드</button>
+                                  <button onClick={() => handlePaymentMethod(r.id, pm === '이체' ? '' : '이체')}
+                                    style={{ padding: '1px 5px', fontSize: '0.6rem', borderRadius: 4, border: '1px solid', cursor: 'pointer',
+                                      background: pm === '이체' ? '#188038' : '#fff', color: pm === '이체' ? '#fff' : '#9aa0a6',
+                                      borderColor: pm === '이체' ? '#188038' : '#dadce0' }}>이체</button>
+                                </div>
+                              )}
+                              {!canEdit && pm && (
+                                <span style={{ marginLeft: 4, fontSize: '0.6rem', padding: '1px 5px', borderRadius: 4,
+                                  background: pm === '카드' ? '#e8f0fe' : '#e8f5e9',
+                                  color: pm === '카드' ? '#1a73e8' : '#188038' }}>{pm}</span>
+                              )}
+                            </>
+                          );
+                        })()}
                       </td>
                       <td onClick={e => e.stopPropagation()}>
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -620,6 +670,37 @@ export default function Accounting() {
                           </div>
                         )}
                         {r.memo && editingMemo !== r.id && <div style={{ fontSize: '0.7rem', color: '#7b1fa2', marginTop: 4 }}>메모: {r.memo}</div>}
+                        {/* 총무 메모 */}
+                        {canModify && (
+                          <div style={{ marginTop: 4 }}>
+                            {adminMemos[r.id] ? (
+                              <div className="admin-memo" style={{ padding: '6px 10px', fontSize: '0.75rem' }}>
+                                {isAccountantRole ? (
+                                  <input className="admin-memo-input" style={{ minHeight: 24, fontSize: '0.75rem', padding: '4px 6px' }}
+                                    defaultValue={adminMemos[r.id].content}
+                                    onBlur={async (e) => {
+                                      const val = e.target.value.trim();
+                                      if (val === adminMemos[r.id].content) return;
+                                      if (val) await api.sales.updateAdminMemo(adminMemos[r.id].id, val);
+                                      else await api.sales.deleteAdminMemo(adminMemos[r.id].id);
+                                      loadSales();
+                                    }} />
+                                ) : (
+                                  <span>{adminMemos[r.id].content}</span>
+                                )}
+                              </div>
+                            ) : isAccountantRole ? (
+                              <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '1px 6px', color: '#f59e0b', border: '1px dashed #fbbf24' }}
+                                onClick={async () => {
+                                  const memo = prompt('총무 메모를 입력하세요:');
+                                  if (memo?.trim()) {
+                                    await api.sales.createAdminMemo({ related_type: 'sales', related_id: r.id, content: memo.trim() });
+                                    loadSales();
+                                  }
+                                }}>+ 총무메모</button>
+                            ) : null}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -628,6 +709,129 @@ export default function Accounting() {
               </tbody>
             </table>
           </div>
+        </>
+      )}
+
+      {/* ━━ 거래내역 첨부 탭 ━━ */}
+      {mainTab === 'bank' && (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <input type="month" className="form-input" value={bankMonth} onChange={(e) => setBankMonth(e.target.value)} style={{ width: 150 }} />
+              <span style={{ fontSize: '0.82rem', color: '#5f6368' }}>대기 <strong>{bankItems.length}</strong>건</span>
+            </div>
+            <label className="btn btn-sm btn-primary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <Plus size={13} /> {bankUploading ? '업로드 중...' : '은행 엑셀 업로드'}
+              <input type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} disabled={bankUploading} onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setBankUploading(true);
+                try {
+                  const XLSX = await import('xlsx');
+                  const data = await file.arrayBuffer();
+                  const wb = XLSX.read(data, { type: 'array' });
+                  const ws = wb.Sheets[wb.SheetNames[0]];
+                  const rawRows = XLSX.utils.sheet_to_json<any>(ws);
+                  const rows = rawRows.map((r: any) => {
+                    let txDate = r['거래일'] || r['거래일자'] || r['날짜'] || r['입금일'] || '';
+                    if (typeof txDate === 'number') {
+                      const d = new Date((txDate - 25569) * 86400000);
+                      txDate = d.toISOString().slice(0, 10);
+                    }
+                    return {
+                      depositor: r['입금자'] || r['입금자명'] || r['보내는분'] || r['적요'] || '',
+                      amount: Number(String(r['입금액'] || r['금액'] || r['입금'] || '0').replace(/[^0-9]/g, '')) || 0,
+                      transaction_date: String(txDate).trim(),
+                      description: r['적요'] || r['비고'] || r['메모'] || '',
+                    };
+                  }).filter((r: any) => r.depositor && r.amount > 0);
+
+                  if (rows.length === 0) { alert('유효한 데이터가 없습니다.'); setBankUploading(false); e.target.value = ''; return; }
+                  if (!confirm(`${rows.length}건 업로드하시겠습니까?\n(업무성과 중복 건은 자동 제외)`)) { setBankUploading(false); e.target.value = ''; return; }
+
+                  const res = await api.accounting.uploadBank(rows);
+                  let msg = `처리 완료:\n- 등록: ${res.inserted}건\n- 업무성과 중복: ${res.dupSales}건 (제외)\n- 기존 중복: ${res.dupStaging}건 (제외)`;
+                  if (res.skipped?.length > 0) msg += `\n- 누락: ${res.skipped.length}건`;
+                  alert(msg);
+                  loadBank();
+                } catch (err: any) { alert('업로드 실패: ' + err.message); }
+                finally { setBankUploading(false); e.target.value = ''; }
+              }} />
+            </label>
+          </div>
+
+          <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginBottom: 12, padding: '8px 12px', background: '#f8f9fa', borderRadius: 6 }}>
+            엑셀 양식: 입금자(입금자명) / 입금액(금액) / 거래일(날짜) / 적요(비고)<br />
+            업무성과에 이미 등록된 건(입금자+금액+입금일 일치)은 자동 제외됩니다.
+          </div>
+
+          {bankItems.length === 0 ? (
+            <div className="empty-state" style={{ padding: 40 }}>대기 중인 거래내역이 없습니다.</div>
+          ) : (
+            <div className="table-wrapper">
+              <table className="data-table" style={{ fontSize: '0.82rem' }}>
+                <thead>
+                  <tr>
+                    <th style={{ width: '12%' }}>거래일</th>
+                    <th style={{ width: '18%' }}>입금자</th>
+                    <th style={{ width: '14%', textAlign: 'right' }}>금액</th>
+                    <th>적요</th>
+                    <th style={{ width: '22%' }}>처리</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bankItems.map((item: any, i: number) => (
+                    <tr key={item.id} style={{ background: i % 2 === 1 ? '#fafbfc' : undefined }}>
+                      <td>{item.transaction_date}</td>
+                      <td style={{ fontWeight: 600 }}>{item.depositor}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600, color: '#188038' }}>{Number(item.amount).toLocaleString()}원</td>
+                      <td style={{ fontSize: '0.75rem', color: '#9aa0a6' }}>{item.description || '-'}</td>
+                      <td>
+                        {bankMovingId === item.id ? (
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <select className="form-input" value={bankMoveType} onChange={(e) => setBankMoveType(e.target.value)}
+                              style={{ fontSize: '0.72rem', padding: '2px 4px', width: 70 }}>
+                              <option value="계약">계약</option>
+                              <option value="낙찰">낙찰</option>
+                              <option value="중개">중개</option>
+                              <option value="기타">기타</option>
+                            </select>
+                            <select className="form-input" value={bankMoveUser} onChange={(e) => setBankMoveUser(e.target.value)}
+                              style={{ fontSize: '0.72rem', padding: '2px 4px', width: 80 }}>
+                              <option value="">담당자</option>
+                              {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                            </select>
+                            <button className="btn btn-sm btn-primary" style={{ fontSize: '0.68rem', padding: '2px 6px' }}
+                              onClick={async () => {
+                                try {
+                                  await api.accounting.stagingToSales(item.id, { type: bankMoveType, user_id: bankMoveUser || undefined });
+                                  setBankMovingId(null); loadBank();
+                                } catch (err: any) { alert(err.message); }
+                              }}>이동</button>
+                            <button className="btn btn-sm" style={{ fontSize: '0.68rem', padding: '2px 4px' }}
+                              onClick={() => setBankMovingId(null)}>취소</button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button className="btn btn-sm btn-primary" style={{ fontSize: '0.7rem', padding: '3px 8px' }}
+                              onClick={() => { setBankMovingId(item.id); setBankMoveType('기타'); setBankMoveUser(''); }}>
+                              매출 이동
+                            </button>
+                            <button className="btn btn-sm" style={{ fontSize: '0.7rem', padding: '3px 6px', color: '#9aa0a6' }}
+                              onClick={async () => {
+                                if (!confirm(`"${item.depositor} ${Number(item.amount).toLocaleString()}원" 을 무시하시겠습니까?`)) return;
+                                try { await api.accounting.stagingDelete(item.id); loadBank(); }
+                                catch (err: any) { alert(err.message); }
+                              }}>무시</button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
 
@@ -695,15 +899,22 @@ export default function Accounting() {
             <input type="month" className="form-input" value={cardMonth} onChange={(e) => setCardMonth(e.target.value)}
               style={{ width: 150, fontSize: '0.82rem' }} />
             <div style={{ minWidth: 110 }}>
-              <Select size="sm" options={[{ value: '', label: '전체 지사' }, { value: '의정부', label: '의정부' }, { value: '서초', label: '서초' }, { value: '기타', label: '기타' }]}
-                value={[{ value: '의정부', label: '의정부' }, { value: '서초', label: '서초' }, { value: '기타', label: '기타' }].find(o => o.value === cardFilterBranch) || { value: '', label: '전체 지사' }}
+              <Select size="sm" options={[{ value: '', label: '전체 지사' }, ...BRANCHES.map(b => ({ value: b, label: b })), { value: '기타', label: '기타' }]}
+                value={[...BRANCHES.map(b => ({ value: b, label: b })), { value: '기타', label: '기타' }].find(o => o.value === cardFilterBranch) || { value: '', label: '전체 지사' }}
                 onChange={(o: any) => { setCardFilterBranch(o?.value || ''); setCardFilterUser(''); }} isClearable />
             </div>
             <div style={{ minWidth: 180 }}>
-              <Select size="sm"
-                options={[{ value: '', label: '전체 담당자' }, ...users.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` }))]}
-                value={users.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` })).find(o => o.value === cardFilterUser) || { value: '', label: '전체 담당자' }}
-                onChange={(o: any) => setCardFilterUser(o?.value || '')} isClearable isSearchable />
+              {(() => {
+                const filteredUsers = cardFilterBranch
+                  ? users.filter(u => u.branch === cardFilterBranch)
+                  : users;
+                const opts = [{ value: '', label: '전체 담당자' }, ...filteredUsers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` }))];
+                return (
+                  <Select size="sm" options={opts}
+                    value={opts.find(o => o.value === cardFilterUser) || { value: '', label: '전체 담당자' }}
+                    onChange={(o: any) => setCardFilterUser(o?.value || '')} isClearable isSearchable />
+                );
+              })()}
             </div>
           </div>
 

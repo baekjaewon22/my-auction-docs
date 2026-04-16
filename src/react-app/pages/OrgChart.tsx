@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useLayoutEffect } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User, ApprovalCC } from '../types';
@@ -16,7 +16,7 @@ const TIER_COLORS = ['#1a73e8', '#1a73e8', '#e65100', '#188038', '#7b1fa2'];
 const TIER_BG = ['#e8f0fe', '#e8f0fe', '#fff3e0', '#e8f5e9', '#f3e5f5'];
 
 const ROLE_COLORS: Record<Role, string> = {
-  master: '#7b1fa2', ceo: '#1a73e8', cc_ref: '#1a73e8', admin: '#e65100', accountant: '#283593', accountant_asst: '#00695c', manager: '#188038', member: '#5f6368',
+  master: '#7b1fa2', ceo: '#1a73e8', cc_ref: '#1a73e8', admin: '#e65100', director: '#0d47a1', accountant: '#283593', accountant_asst: '#00695c', manager: '#188038', member: '#5f6368',
 };
 
 interface OrgNode {
@@ -110,7 +110,6 @@ export default function OrgChart() {
   const [editTiers, setEditTiers] = useState<string[]>([]);
   const [dragNodeId, setDragNodeId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-  const [scale, setScale] = useState(1);
   const [syncing, setSyncing] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
@@ -179,25 +178,11 @@ export default function OrgChart() {
 
   const saveTiers = (t: string[]) => { setTiers(t); localStorage.setItem(TIER_KEY, JSON.stringify(t)); };
 
-  const autoScale = useCallback(() => {
-    if (!treeRef.current || !pyramidRef.current) return;
-    pyramidRef.current.style.transform = 'scale(1)';
-    const containerW = treeRef.current.clientWidth - 48;
-    const contentW = pyramidRef.current.scrollWidth;
-    const newScale = contentW > containerW ? Math.max(containerW / contentW, 0.45) : 1;
-    setScale(newScale);
-    pyramidRef.current.style.transform = `scale(${newScale})`;
-  }, []);
-
-  useLayoutEffect(() => { const t = setTimeout(autoScale, 80); return () => clearTimeout(t); }, [tree, autoScale]);
   useEffect(() => {
-    const handleResize = () => {
-      autoScale();
-      setIsMobile(window.innerWidth <= 768);
-    };
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [autoScale]);
+  }, []);
 
   const usedIds = getAllUserIds(tree);
   const poolUsers = users.filter((u) => u.role !== 'master' && !usedIds.includes(u.id));
@@ -375,12 +360,19 @@ export default function OrgChart() {
             </span>
           )}
           {u ? (
-            <div className="ocm-avatar" style={{ background: (ROLE_COLORS[u.role] || color) + '20', color: ROLE_COLORS[u.role] || color }}>{u.name.charAt(0)}</div>
+            <div className="ocm-avatar" style={{
+              background: u.login_type === 'freelancer' ? '#7b1fa220' : (ROLE_COLORS[u.role] || color) + '20',
+              color: u.login_type === 'freelancer' ? '#7b1fa2' : ROLE_COLORS[u.role] || color,
+              border: u.login_type === 'freelancer' ? '2px solid #7b1fa2' : undefined,
+            }}>{u.name.charAt(0)}</div>
           ) : (
             <div className="ocm-avatar ocm-avatar-empty" style={{ borderColor: color, color }}>?</div>
           )}
           <div className="ocm-info">
-            <div className="ocm-label">{node.label}</div>
+            <div className="ocm-label">
+              {node.label}
+              {u?.login_type === 'freelancer' && <span style={{ fontSize: '0.6rem', marginLeft: 4, padding: '1px 4px', borderRadius: 4, background: '#f3e5f5', color: '#7b1fa2' }}>F</span>}
+            </div>
             {u && <div className="ocm-pos">{u.position_title || ROLE_LABELS[u.role]}</div>}
           </div>
           {hasChildren && <span className="ocm-badge">{node.children.length}</span>}
@@ -465,14 +457,21 @@ export default function OrgChart() {
             onDrop={(e) => handleDrop(node.id, e)}
           >
             {u ? (
-              <div className="oc-card-avatar" style={{ background: (ROLE_COLORS[u.role] || color) + '20', color: ROLE_COLORS[u.role] || color }}>{u.name.charAt(0)}</div>
+              <div className="oc-card-avatar" style={{
+                background: u.login_type === 'freelancer' ? '#7b1fa220' : (ROLE_COLORS[u.role] || color) + '20',
+                color: u.login_type === 'freelancer' ? '#7b1fa2' : ROLE_COLORS[u.role] || color,
+                border: u.login_type === 'freelancer' ? '2px solid #7b1fa2' : undefined,
+              }}>{u.name.charAt(0)}</div>
             ) : (
               <div className="oc-card-empty-avatar" style={{ borderColor: color }}>?</div>
             )}
             <div className="oc-card-body">
               {u ? (
                 <>
-                  <div className="oc-card-name">{u.name}</div>
+                  <div className="oc-card-name" style={u.login_type === 'freelancer' ? { color: '#7b1fa2' } : undefined}>
+                    {u.name}
+                    {u.login_type === 'freelancer' && <span style={{ fontSize: '0.6rem', marginLeft: 4, padding: '1px 4px', borderRadius: 4, background: '#f3e5f5', color: '#7b1fa2' }}>F</span>}
+                  </div>
                   <div className="oc-card-pos">{u.position_title || ROLE_LABELS[u.role]}</div>
                 </>
               ) : (
@@ -669,7 +668,7 @@ export default function OrgChart() {
             </div>
           ) : (
             /* 데스크탑: 피라미드 */
-            <div className="oc-pyramid oc-css-lines" ref={pyramidRef} style={{ transform: `scale(${scale})`, transformOrigin: 'top center' }}>
+            <div className="oc-pyramid oc-css-lines" ref={pyramidRef}>
               {tree.length === 1 ? (
                 renderNode(tree[0])
               ) : (

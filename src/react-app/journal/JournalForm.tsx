@@ -90,6 +90,14 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     }
   }, [timeFrom, activityType, bidProxy]);
 
+  // 업무 유형 변경 시: 사무/개인/브리핑은 현장출퇴근 불필요 → 해제
+  useEffect(() => {
+    if (['사무', '개인', '브리핑자료제출'].includes(activityType)) {
+      setFieldCheckIn(false);
+      setFieldCheckOut(false);
+    }
+  }, [activityType]);
+
   // [3-2] 현장퇴근 자동 활성화: 입찰/미팅/임장 18:00 종결 → 자동 체크
   useEffect(() => {
     const isFieldType = ['입찰', '미팅', '임장'].includes(activityType);
@@ -119,6 +127,25 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [inspClientType, setInspClientType] = useState<'고객명' | '기타'>('고객명');
   const [inspClient, setInspClient] = useState('');
   const [inspEtcReason, setInspEtcReason] = useState('');
+  // 임장 중복 경고
+  const [inspDupWarning, setInspDupWarning] = useState<{ user_name: string; target_date: string }[] | null>(null);
+
+  // 임장 사건번호+법원 중복 체크 (debounce)
+  useEffect(() => {
+    if (activityType !== '임장' || !inspCaseNo.trim() || inspCaseNo.length < 3 || !inspCourt) {
+      setInspDupWarning(null);
+      return;
+    }
+    const fullCase = `${inspYear}타경${inspCaseNo}`;
+    const timer = setTimeout(() => {
+      api.journal.checkCaseNo(fullCase, inspCourt)
+        .then(res => {
+          setInspDupWarning(res.exists ? res.entries : null);
+        })
+        .catch(() => setInspDupWarning(null));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [inspYear, inspCaseNo, inspCourt, activityType]);
 
   // 브리핑 고객명
   const [briefingClient, setBriefingClient] = useState('');
@@ -222,8 +249,10 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
 
 
-  // 필드 초기화 (공통 필드는 유지)
+  // 필드 초기화 (공통 필드 포함)
   const resetFields = () => {
+    setFieldCheckIn(false); setFieldCheckOut(false);
+    setTimeFrom(''); setTimeTo('');
     setBidCaseNo(''); setBidItemNo(''); setBidBidder(''); setBidBidderName(''); setBidSuggestedPrice(''); setBidPrice('');
     setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidDeviationReason('');
     setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient('');
@@ -410,6 +439,18 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                   <input type="text" value={inspItemNo} onChange={(e) => setInspItemNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="" className="case-no-input" maxLength={3} style={{ width: 52, textAlign: 'center' }} />
                 </div>
               </div>
+              {inspDupWarning && inspDupWarning.length > 0 && (
+                <div style={{ background: '#fff3e0', border: '1px solid #ffcc02', borderRadius: 8, padding: '8px 12px', marginBottom: 8, fontSize: '0.78rem', color: '#e65100', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                  <span style={{ fontSize: '1rem', lineHeight: 1 }}>⚠️</span>
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 2 }}>동일 사건번호 임장 이력이 있습니다</div>
+                    {inspDupWarning.map((d, i) => (
+                      <div key={i}>{d.user_name} — {d.target_date}</div>
+                    ))}
+                    <div style={{ color: '#9e9e9e', marginTop: 2, fontSize: '0.72rem' }}>등록은 정상적으로 진행됩니다.</div>
+                  </div>
+                </div>
+              )}
               <div className="form-row form-row-inline">
                 <div className="form-group" style={{ flex: 'none', minWidth: 70 }}>
                   <label>구분</label>
@@ -448,6 +489,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                 <div className="form-group"><label>사유</label><input type="text" value={meetingEtc} onChange={(e) => setMeetingEtc(e.target.value)} required /></div>
               )}
               {meetingType === '브리핑' ? (
+                <>
                 <div className="form-row form-row-inline">
                   <div className="form-group" style={{ flex: 'none' }}>
                     <label>사건번호</label>
@@ -461,8 +503,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                     <label>물건번호</label>
                     <input type="text" value={meetingItemNo} onChange={(e) => setMeetingItemNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="" className="case-no-input" maxLength={3} style={{ width: 52, textAlign: 'center' }} />
                   </div>
-                  <div className="form-group" style={{ flex: 1 }}><label>계약자명 *</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="계약자명" required /></div>
                 </div>
+                <div className="form-group"><label>계약자명 *</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="계약자명" required /></div>
+                </>
               ) : (
                 <div className="form-group"><label>계약자명 *</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="계약자명" required /></div>
               )}

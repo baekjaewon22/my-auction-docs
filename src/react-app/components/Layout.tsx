@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare
 } from 'lucide-react';
 
 export default function Layout() {
@@ -23,10 +23,14 @@ export default function Layout() {
   const role = (user?.role || 'member') as Role;
   const isFreelancer = (user as any)?.login_type === 'freelancer';
   const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(role);
-  const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-  const canAccounting = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
+  const canAccounting = !isFreelancer && (
+    ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(role) ||
+    (role === 'admin' && user?.branch === '의정부')
+  );
   const isAccountingOnly = !isFreelancer && ['accountant', 'accountant_asst'].includes(role);
+  const isDirector = role === 'director';
 
   const sidebarContent = (
     <>
@@ -54,7 +58,7 @@ export default function Layout() {
 
         {!isFreelancer && <div className="nav-divider" />}
         {!isFreelancer && !collapsed && <span className="nav-label">마이페이지</span>}
-        {!isAccountingOnly && !isFreelancer && (
+        {!isAccountingOnly && !isFreelancer && !isDirector && (
           <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
             <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
           </Link>
@@ -96,8 +100,8 @@ export default function Layout() {
           </>
         )}
 
-        {/* 통계: master/ceo/admin만 (cc_ref 제외) */}
-        {['master', 'ceo', 'admin'].includes(role) && (
+        {/* 통계: master/ceo/admin/director */}
+        {['master', 'ceo', 'admin', 'director'].includes(role) && (
           <Link to="/statistics" className={`nav-item ${isActive('/statistics') ? 'active' : ''}`} title="통계" onClick={() => setMobileOpen(false)}>
             <BarChart3 size={18} /> {!collapsed && '통계'}
           </Link>
@@ -109,17 +113,31 @@ export default function Layout() {
           </Link>
         )}
 
-        {canApproveUsers && (
+        {(canApproveUsers || isDirector) && (
           <Link to="/org" className={`nav-item ${isActive('/org') ? 'active' : ''}`} title="조직도" onClick={() => setMobileOpen(false)}>
             <Network size={18} /> {!collapsed && '조직도'}
           </Link>
         )}
 
-        {canApproveUsers && (
+        {canApproveUsers && !isDirector && (
           <Link to="/users" className={`nav-item ${isActive('/users') ? 'active' : ''}`} title="사용자 관리" onClick={() => setMobileOpen(false)}>
             <UserCog size={18} /> {!collapsed && '사용자 관리'}
           </Link>
         )}
+
+        {['master', 'ceo', 'cc_ref', 'admin', 'director'].includes(role) && (
+          <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
+            <BookOpen size={18} /> {!collapsed && '회의록'}
+          </Link>
+        )}
+        {['master', 'ceo', 'cc_ref', 'admin'].includes(role) && (
+          <Link to="/alimtalk-logs" className={`nav-item ${isActive('/alimtalk-logs') ? 'active' : ''}`} title="카카오 발송내역" onClick={() => setMobileOpen(false)}>
+            <MessageSquare size={18} /> {!collapsed && '카카오 발송내역'}
+          </Link>
+        )}
+        <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="관리자 노트" onClick={() => setMobileOpen(false)}>
+          <StickyNote size={18} /> {!collapsed && '관리자 노트'}
+        </Link>
 
         {canAccounting && (
           <>
@@ -135,12 +153,6 @@ export default function Layout() {
               <PieChart size={18} /> {!collapsed && '회계분석'}
             </Link>
           </>
-        )}
-
-        {['master', 'ceo', 'cc_ref', 'admin'].includes(role) && (
-          <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
-            <BookOpen size={18} /> {!collapsed && '회의록'}
-          </Link>
         )}
       </nav>
 

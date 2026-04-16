@@ -21,11 +21,11 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
   }
   monthList.reverse();
 
-  // 1. 월별 매출 (confirmed)
+  // 1. 월별 매출 (confirmed) — 공급가액 기준 (÷1.1)
   const salesByMonth = await db.prepare(`
     SELECT substr(contract_date, 1, 7) as month,
-      SUM(CASE WHEN status = 'confirmed' THEN amount ELSE 0 END) as revenue,
-      SUM(CASE WHEN status = 'refunded' THEN amount ELSE 0 END) as refunded,
+      SUM(CASE WHEN status = 'confirmed' THEN ROUND(amount / 1.1) ELSE 0 END) as revenue,
+      SUM(CASE WHEN status = 'refunded' THEN ROUND(amount / 1.1) ELSE 0 END) as refunded,
       COUNT(CASE WHEN status = 'confirmed' THEN 1 END) as confirmed_count
     FROM sales_records
     WHERE contract_date >= ?
@@ -51,27 +51,27 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
     WHERE salary > 0
   `).first<{ total_salary: number; headcount: number }>();
 
-  // 4. 매출 유형별 비중
+  // 4. 매출 유형별 비중 — 공급가액 기준
   const salesByType = await db.prepare(`
-    SELECT type, SUM(amount) as total, COUNT(*) as count
+    SELECT type, SUM(ROUND(amount / 1.1)) as total, COUNT(*) as count
     FROM sales_records
     WHERE status = 'confirmed' AND contract_date >= ?
     GROUP BY type ORDER BY total DESC
   `).bind(monthList[0] + '-01').all();
 
-  // 5. 담당자별 매출 순위
+  // 5. 담당자별 매출 순위 — 공급가액 기준
   const salesByUser = await db.prepare(`
     SELECT sr.user_id, u.name, u.branch, u.department,
-      SUM(sr.amount) as total, COUNT(*) as count
+      SUM(ROUND(sr.amount / 1.1)) as total, COUNT(*) as count
     FROM sales_records sr
     JOIN users u ON sr.user_id = u.id
     WHERE sr.status = 'confirmed' AND sr.contract_date >= ?
     GROUP BY sr.user_id ORDER BY total DESC LIMIT 15
   `).bind(monthList[0] + '-01').all();
 
-  // 6. 지사별 매출
+  // 6. 지사별 매출 — 공급가액 기준
   const salesByBranch = await db.prepare(`
-    SELECT branch, SUM(amount) as total, COUNT(*) as count
+    SELECT branch, SUM(ROUND(amount / 1.1)) as total, COUNT(*) as count
     FROM sales_records
     WHERE status = 'confirmed' AND contract_date >= ?
     GROUP BY branch ORDER BY total DESC

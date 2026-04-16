@@ -41,21 +41,33 @@ export default function ReviewList() {
 
       <div className="doc-list">
         {documents.map((doc) => (
-          <Link to={'/documents/' + doc.id} key={doc.id} className="doc-item">
+          <Link to={'/documents/' + doc.id} key={doc.id} className="doc-item"
+            style={doc.cancel_requested ? { background: '#fef2f2', borderColor: '#fecaca' } : undefined}>
             <div className="doc-info">
-              <FileText size={16} style={{ color: 'var(--primary)', marginRight: 8, flexShrink: 0 }} />
+              <FileText size={16} style={{ color: doc.cancel_requested ? '#dc2626' : 'var(--primary)', marginRight: 8, flexShrink: 0 }} />
               <div>
-                <div className="doc-title">{doc.title}</div>
+                <div className="doc-title" style={doc.cancel_requested ? { color: '#dc2626' } : undefined}>
+                  {doc.cancel_requested ? '[취소신청] ' : ''}{doc.title}
+                </div>
                 <div className="doc-meta">
                   <span>작성자: {doc.author_name}</span>
                   {doc.branch && <span>{doc.branch}</span>}
                   {doc.department && <span>{doc.department}</span>}
                   <span>{new Date(doc.updated_at).toLocaleDateString('ko-KR')}</span>
                 </div>
+                {doc.cancel_requested === 1 && doc.cancel_reason && (
+                  <div style={{ fontSize: '0.78rem', color: '#dc2626', marginTop: 4, padding: '4px 8px', background: '#fff5f5', borderRadius: 4, border: '1px dashed #fca5a5' }}>
+                    취소 사유: {doc.cancel_reason}
+                  </div>
+                )}
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span className="status-badge status-submitted">제출</span>
+              {doc.cancel_requested ? (
+                <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600, background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' }}>취소신청</span>
+              ) : (
+                <span className="status-badge status-submitted">제출</span>
+              )}
               {isCeoPlus && (
                 <button className="btn btn-sm btn-danger" style={{ padding: '2px 6px' }} onClick={(e) => handleDelete(doc.id, e)} title="삭제">
                   <Trash2 size={12} />

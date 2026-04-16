@@ -6,7 +6,7 @@ import type { Signature, ApprovalStep } from '../types';
 import SignaturePanel, { hasSavedSignature, quickSign } from '../components/SignaturePanel';
 import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
-import { FileDown, Save, ArrowLeft, Send, Stamp } from 'lucide-react';
+import { FileDown, Save, ArrowLeft, Send, Printer } from 'lucide-react';
 
 // 직인 사용 가능 역할
 const STAMP_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
@@ -25,8 +25,6 @@ export default function PropertyReport() {
   const [approvalSteps, setApprovalSteps] = useState<ApprovalStep[]>([]);
   const [showSignPanel, setShowSignPanel] = useState(false);
   const [signType, setSignType] = useState<'author' | 'approver'>('author');
-  const [showStampChoice, setShowStampChoice] = useState(false);
-  const [pendingSignAction, setPendingSignAction] = useState<'author' | 'approver' | null>(null);
 
   const canUseStamp = STAMP_ROLES.includes(user?.role || '');
 
@@ -74,20 +72,12 @@ export default function PropertyReport() {
     if (id) loadDoc(id);
   }, [id]);
 
-  // 서명 처리
-  const handleSignRequest = (type: 'author' | 'approver') => {
-    if (canUseStamp) {
-      setPendingSignAction(type);
-      setShowStampChoice(true);
-    } else {
-      doSign(type, 'personal');
-    }
-  };
-
-  const doSign = async (type: 'author' | 'approver', stampType: 'personal' | 'company') => {
+  // 서명 처리 — approverRole로 자동 판단
+  const handleSignRequest = async (type: 'author' | 'approver', approverRole?: string) => {
     if (!docId) return;
-    if (stampType === 'company') {
-      // 법인 직인 사용
+
+    // CEO 결재란 → 자동으로 대표 직인
+    if (canUseStamp && approverRole === 'ceo') {
       try {
         await api.signatures.sign(docId, '/LNCstemp.png');
         if (type === 'approver') {
@@ -95,21 +85,22 @@ export default function PropertyReport() {
         }
         await loadDoc(docId);
       } catch (err: any) { alert(err.message); }
+      return;
+    }
+
+    // 그 외 → 본인 서명
+    if (hasSavedSignature()) {
+      try {
+        await quickSign(docId, 'author', async () => {
+          if (type === 'approver') {
+            await api.documents.approve(docId);
+          }
+          await loadDoc(docId);
+        });
+      } catch (err: any) { alert(err.message); }
     } else {
-      // 개인 서명
-      if (hasSavedSignature()) {
-        try {
-          await quickSign(docId, 'author', async () => {
-            if (type === 'approver') {
-              await api.documents.approve(docId);
-            }
-            await loadDoc(docId);
-          });
-        } catch (err: any) { alert(err.message); }
-      } else {
-        setSignType(type);
-        setShowSignPanel(true);
-      }
+      setSignType(type);
+      setShowSignPanel(true);
     }
   };
 
@@ -161,32 +152,95 @@ export default function PropertyReport() {
     } catch (err: any) { alert(err.message); }
   };
 
-  // PDF 출력 (정확히 2페이지)
+  // PDF 출력
   const handlePdf = async () => {
     const el = printRef.current;
     if (!el) return;
     const pages = el.querySelectorAll('.pr-page') as NodeListOf<HTMLElement>;
-    if (pages.length < 2) return;
+    if (pages.length === 0) { alert('PDF로 변환할 페이지가 없습니다.'); return; }
 
-    const { default: jsPDF } = await import('jspdf');
-    const html2canvas = (await import('html2canvas')).default;
+    try {
+      const { default: jsPDF } = await import('jspdf');
+      const html2canvas = (await import('html2canvas')).default;
 
-    const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
-    const pxToMm = 0.264583;
+      const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
 
-    for (let i = 0; i < 2; i++) {
-      if (i > 0) pdf.addPage();
-      const canvas = await html2canvas(pages[i], {
-        scale: 2, useCORS: true, scrollY: 0,
-        width: pages[i].offsetWidth,
-        height: pages[i].offsetHeight,
-      });
-      const imgW = canvas.width * pxToMm / 2;
-      const imgH = canvas.height * pxToMm / 2;
-      const ratio = Math.min(210 / imgW, 297 / imgH);
-      pdf.addImage(canvas.toDataURL('image/jpeg', 0.98), 'JPEG', 0, 0, imgW * ratio, imgH * ratio);
+      for (let i = 0; i < pages.length; i++) {
+        if (i > 0) pdf.addPage();
+        // 안정적인 캔버스 생성: 고정 너비 기반
+        const page = pages[i];
+        const origWidth = page.style.width;
+        const origHeight = page.style.height;
+        page.style.width = '794px'; // A4 @96dpi
+        page.style.height = '1123px';
+
+        const canvas = await html2canvas(page, {
+          scale: 2,
+          useCORS: true,
+          allowTaint: true,
+          scrollX: 0,
+          scrollY: 0,
+          windowWidth: 794,
+          windowHeight: 1123,
+          backgroundColor: '#ffffff',
+        });
+
+        page.style.width = origWidth;
+        page.style.height = origHeight;
+
+        const imgData = canvas.toDataURL('image/jpeg', 0.92);
+        pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297);
+      }
+      pdf.save('물건분석보고서.pdf');
+    } catch (err: any) {
+      console.error('PDF 생성 오류:', err);
+      alert('PDF 생성에 실패했습니다: ' + (err.message || '알 수 없는 오류'));
     }
-    pdf.save('물건분석보고서.pdf');
+  };
+
+  // 프린트 — iframe 방식 (페이지 분리 정확)
+  const handlePrint = () => {
+    const el = printRef.current;
+    if (!el) return;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.left = '-9999px';
+    iframe.style.width = '210mm';
+    iframe.style.height = '297mm';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) { document.body.removeChild(iframe); return; }
+
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><style>
+      @page { margin: 0; size: A4; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { width: 210mm; font-family: '맑은 고딕','Malgun Gothic',sans-serif; }
+      .pr-page {
+        width: 210mm; height: 297mm;
+        page-break-after: always;
+        overflow: hidden;
+        position: relative;
+      }
+      .pr-page:last-child { page-break-after: auto; }
+      img { max-width: 100%; }
+      .pr-field { border-bottom: 1px solid #aaa; padding: 0 4px; display: inline-block; min-width: 80px; }
+    </style></head><body>${el.innerHTML}</body></html>`);
+    doc.close();
+
+    iframe.onload = () => {
+      setTimeout(() => {
+        iframe.contentWindow?.print();
+        setTimeout(() => document.body.removeChild(iframe), 1000);
+      }, 300);
+    };
+    // fallback: onload 안 발생 시
+    setTimeout(() => {
+      try { iframe.contentWindow?.print(); } catch {}
+      setTimeout(() => { try { document.body.removeChild(iframe); } catch {} }, 1000);
+    }, 1500);
   };
 
   const isEditable = status === 'draft' || status === 'rejected';
@@ -220,6 +274,13 @@ export default function PropertyReport() {
     setOverflowWarn(isOver);
   };
 
+  // 붙여넣기 시 서식 제거 (plain text only)
+  const handlePaste = (e: React.ClipboardEvent) => {
+    e.preventDefault();
+    const text = e.clipboardData.getData('text/plain');
+    document.execCommand('insertText', false, text);
+  };
+
   // Tab으로 다음 입력칸 이동
   const focusNext = (current: HTMLElement, reverse?: boolean) => {
     const all = Array.from(printRef.current?.querySelectorAll('[contenteditable="true"]') || []) as HTMLElement[];
@@ -238,6 +299,7 @@ export default function PropertyReport() {
         className="pr-field"
         tabIndex={0}
         style={{ minWidth: w || '80px', display: 'inline-block', borderBottom: '1px solid #aaa', padding: '0 4px', outline: 'none', background: isEditable ? '#fffde7' : 'transparent' }}
+        onPaste={handlePaste}
         onFocus={(e) => {
           if (!val && ph) e.currentTarget.textContent = '';
         }}
@@ -276,7 +338,8 @@ export default function PropertyReport() {
               <Send size={14} />
             </button>
           )}
-          <button className="btn btn-sm" onClick={handlePdf}><FileDown size={14} /></button>
+          <button className="btn btn-sm" onClick={handlePdf} title="PDF 저장"><FileDown size={14} /></button>
+          <button className="btn btn-sm" onClick={handlePrint} title="프린트"><Printer size={14} /></button>
         </div>
         {overflowWarn && <div style={{ fontSize: '0.7rem', color: '#d93025', fontWeight: 600, background: '#fce4ec', padding: '3px 8px', borderRadius: 6, marginTop: 4, textAlign: 'center' }}>1페이지 초과! 내용을 줄여주세요.</div>}
       </div>
@@ -293,27 +356,6 @@ export default function PropertyReport() {
             authorName={user?.name}
             onSign={handleSignRequest}
           />
-        </div>
-      )}
-
-      {/* 직인/개인서명 선택 모달 */}
-      {showStampChoice && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} onClick={() => setShowStampChoice(false)}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: 20, width: '100%', maxWidth: 320, boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ margin: '0 0 14px', fontSize: '1rem', color: '#1a2744' }}>서명 방식 선택</h3>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn btn-primary" style={{ flex: 1, padding: '12px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}
-                onClick={() => { setShowStampChoice(false); if (pendingSignAction) doSign(pendingSignAction, 'company'); }}>
-                <Stamp size={22} />
-                <span style={{ fontSize: '0.85rem' }}>법인 직인</span>
-              </button>
-              <button className="btn" style={{ flex: 1, padding: '12px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, border: '1px solid #dadce0' }}
-                onClick={() => { setShowStampChoice(false); if (pendingSignAction) doSign(pendingSignAction, 'personal'); }}>
-                <span style={{ fontSize: 22 }}>✍</span>
-                <span style={{ fontSize: '0.85rem' }}>개인 서명</span>
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
@@ -354,14 +396,26 @@ export default function PropertyReport() {
                   }
                   const slots: (Signature | null)[] = Array(headers.length).fill(null);
                   if (signatures.length > 0) slots[0] = signatures[0];
+                  const usedSigIds = new Set<string>();
+                  if (signatures.length > 0) usedSigIds.add(signatures[0].id || '');
                   approvalSteps.forEach((step, idx) => {
                     if (idx + 1 < headers.length) {
-                      let sig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1);
+                      // 1) 정확히 매칭
+                      let sig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1 && !usedSigIds.has(s.id || ''));
+                      // 2) proxy 매칭
                       if (!sig && step.status === 'approved' && (step as any).comment?.startsWith('proxy:')) {
                         const proxyId = (step as any).comment.replace('proxy:', '');
-                        sig = signatures.find(s => s.user_id === proxyId && signatures.indexOf(s) >= 1);
+                        sig = signatures.find(s => s.user_id === proxyId && signatures.indexOf(s) >= 1 && !usedSigIds.has(s.id || ''));
                       }
-                      if (sig) slots[idx + 1] = sig;
+                      // 3) CEO step → 직인 서명 매칭 (대리 승인)
+                      if (!sig && step.status === 'approved' && (step as any).approver_role === 'ceo') {
+                        sig = signatures.find(s => s.signature_data === '/LNCstemp.png' && !usedSigIds.has(s.id || ''));
+                      }
+                      // 4) 승인된 step인데 매칭 안 되면 → 남은 서명 중 순서대로
+                      if (!sig && step.status === 'approved') {
+                        sig = signatures.find(s => signatures.indexOf(s) >= 1 && !usedSigIds.has(s.id || ''));
+                      }
+                      if (sig) { slots[idx + 1] = sig; usedSigIds.add(sig.id || ''); }
                       else if (step.status === 'approved') slots[idx + 1] = { signature_data: '', signed_at: step.signed_at || '', user_name: step.approver_name } as any;
                     }
                   });
@@ -423,6 +477,7 @@ export default function PropertyReport() {
               <div style={{ marginBottom: 2 }}>1. <b style={{ color: '#1a2744' }}>말소기준 및 등기부상 소멸 불가 사항</b>
                 <div style={{ borderBottom: '1px solid #aaa', padding: '2px 4px', background: isEditable ? '#fffde7' : 'transparent', lineHeight: 1.45, outline: 'none', whiteSpace: 'pre-wrap', fontSize: '8.5pt', minHeight: '1.3em', color: '#1a1a1a' }}
                   contentEditable={isEditable} suppressContentEditableWarning tabIndex={0}
+                  onPaste={handlePaste}
                   onFocus={(e) => { if (!fields.extinguish || fields.extinguish.includes('color:#ccc')) e.currentTarget.innerHTML = ''; }}
                   onKeyDown={(e) => {
                     if (e.key === 'Tab') { e.preventDefault(); updateField('extinguish', e.currentTarget.innerHTML || ''); focusNext(e.currentTarget as HTMLElement, e.shiftKey); }
@@ -432,9 +487,10 @@ export default function PropertyReport() {
                   onBlur={(e) => { updateField('extinguish', e.currentTarget.innerHTML || ''); checkOverflow(); }}
                   dangerouslySetInnerHTML={{ __html: fields.extinguish && !fields.extinguish.includes('color:#ccc') ? fields.extinguish : '<span style="color:#ccc">내용 입력</span>' }} />
               </div>
-              <div style={{ marginBottom: 2 }}>2. <b style={{ color: '#1a2744' }}>선순위 임차권리 인수사항</b>
+              <div style={{ marginBottom: 2 }}>2. <b style={{ color: '#1a2744' }}>임차권리 인수사항</b>
                 <div style={{ borderBottom: '1px solid #aaa', padding: '2px 4px', background: isEditable ? '#fffde7' : 'transparent', lineHeight: 1.45, outline: 'none', whiteSpace: 'pre-wrap', fontSize: '8.5pt', minHeight: '1.3em', color: '#1a1a1a' }}
                   contentEditable={isEditable} suppressContentEditableWarning tabIndex={0}
+                  onPaste={handlePaste}
                   onFocus={(e) => { if (!fields.priority || fields.priority.includes('color:#ccc')) e.currentTarget.innerHTML = ''; }}
                   onKeyDown={(e) => {
                     if (e.key === 'Tab') { e.preventDefault(); updateField('priority', e.currentTarget.innerHTML || ''); focusNext(e.currentTarget as HTMLElement, e.shiftKey); }
@@ -447,6 +503,7 @@ export default function PropertyReport() {
               <div style={{ marginBottom: 2 }}>3. <b style={{ color: '#1a2744' }}>무잉여 / 취하 가능성</b>
                 <div style={{ borderBottom: '1px solid #aaa', padding: '2px 4px', background: isEditable ? '#fffde7' : 'transparent', lineHeight: 1.45, outline: 'none', whiteSpace: 'pre-wrap', fontSize: '8.5pt', minHeight: '1.3em', color: '#1a1a1a' }}
                   contentEditable={isEditable} suppressContentEditableWarning tabIndex={0}
+                  onPaste={handlePaste}
                   onFocus={(e) => { if (!fields.futile || fields.futile.includes('color:#ccc')) e.currentTarget.innerHTML = ''; }}
                   onKeyDown={(e) => {
                     if (e.key === 'Tab') { e.preventDefault(); updateField('futile', e.currentTarget.innerHTML || ''); focusNext(e.currentTarget as HTMLElement, e.shiftKey); }
@@ -459,6 +516,7 @@ export default function PropertyReport() {
               <div style={{ marginBottom: 2 }}>4. <b style={{ color: '#1a2744' }}>특이사항</b>
                 <div style={{ minHeight: '8em', borderBottom: '1px solid #aaa', padding: '2px 4px', background: isEditable ? '#fffde7' : 'transparent', lineHeight: 1.45, outline: 'none', whiteSpace: 'pre-wrap', fontSize: '8.5pt', color: '#1a1a1a' }}
                   contentEditable={isEditable} suppressContentEditableWarning tabIndex={0}
+                  onPaste={handlePaste}
                   onFocus={(e) => { if (!fields.special || fields.special.includes('color:#ccc')) e.currentTarget.innerHTML = ''; }}
                   onKeyDown={(e) => {
                     if (e.key === 'Tab') { e.preventDefault(); updateField('special', e.currentTarget.innerHTML || ''); focusNext(e.currentTarget as HTMLElement, e.shiftKey); return; }

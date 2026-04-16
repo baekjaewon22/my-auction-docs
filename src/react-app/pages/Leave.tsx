@@ -80,7 +80,7 @@ export default function Leave() {
   const role = user?.role || 'member';
   const isApprover = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(role);
   const canViewSensitive = ['master', 'ceo', 'cc_ref'].includes(role);
-  const canViewOthers = ['master', 'ceo', 'admin', 'accountant'].includes(role);
+  const canViewOthers = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canViewHourly = ['master', 'ceo', 'admin'].includes(role);
 
   // 담당자 열람 기능
@@ -92,7 +92,7 @@ export default function Leave() {
 
   useEffect(() => {
     if (canViewOthers) {
-      api.users.list().then(res => setMembers((res.users || []).filter((u: User) => u.role !== 'master' && u.id !== user?.id))).catch(() => {});
+      api.users.list().then(res => setMembers((res.users || []).filter((u: User) => u.role !== 'master' && u.role !== 'freelancer' && (u as any).login_type !== 'freelancer' && u.id !== user?.id))).catch(() => {});
     }
   }, []);
 
@@ -117,7 +117,8 @@ export default function Leave() {
         api.leave.listRequests(),
       ]);
       setBalance(balRes.leave);
-      setRequests(reqRes.requests);
+      // 내 신청 내역: 본인 것만 필터
+      setRequests((reqRes.requests || []).filter((r: any) => r.user_id === user?.id));
 
       if (isApprover) {
         const [pending, cancelReqs] = await Promise.all([
@@ -149,7 +150,7 @@ export default function Leave() {
   useEffect(() => {
     api.templates.list().then(res => setTemplates(res.templates)).catch(() => {});
   }, []);
-  const annualTemplate = templates.find(t => (t.title.includes('연차') || t.title.includes('휴가')) && !t.title.includes('반차'));
+  const annualTemplate = templates.find(t => (t.title.includes('연차') || t.title.includes('월차')) && !t.title.includes('반차') && !t.title.includes('특별'));
   const halfDayTemplate = templates.find(t => t.title.includes('반차'));
 
   const handleSubmit = async () => {
@@ -722,7 +723,7 @@ function RefundCalc() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    api.journal.members().then(res => setMembers(res.members)).catch(() => {});
+    api.journal.members().then(res => setMembers((res.members || []).filter((m: any) => m.login_type !== 'freelancer' && m.role !== 'freelancer'))).catch(() => {});
   }, []);
 
   const calculate = async () => {

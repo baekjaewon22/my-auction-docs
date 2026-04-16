@@ -2,12 +2,20 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 
-// KST (한국 시간) 기준 날짜
-const HOLIDAYS_2026 = [
-  '2026-01-01','2026-01-28','2026-01-29','2026-01-30','2026-03-01',
-  '2026-05-05','2026-05-24','2026-06-06','2026-08-15',
-  '2026-09-24','2026-09-25','2026-09-26','2026-10-03','2026-10-09','2026-12-25',
-];
+// KST (한국 시간) 기준 날짜 — 연도별 공휴일
+const HOLIDAYS: Record<string, string[]> = {
+  '2026': [
+    '2026-01-01','2026-01-28','2026-01-29','2026-01-30','2026-03-01',
+    '2026-05-05','2026-05-24','2026-06-06','2026-08-15',
+    '2026-09-24','2026-09-25','2026-09-26','2026-10-03','2026-10-09','2026-12-25',
+  ],
+  '2027': [
+    '2027-01-01','2027-02-15','2027-02-16','2027-02-17','2027-03-01',
+    '2027-05-05','2027-05-13','2027-06-06','2027-08-15',
+    '2027-10-13','2027-10-14','2027-10-15','2027-10-03','2027-10-09','2027-12-25',
+  ],
+};
+const ALL_HOLIDAYS = new Set(Object.values(HOLIDAYS).flat());
 
 function fmtDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
@@ -15,7 +23,7 @@ function fmtDate(d: Date): string {
 
 function isOffDay(d: Date): boolean {
   const day = d.getUTCDay();
-  return day === 0 || day === 6 || HOLIDAYS_2026.includes(fmtDate(d));
+  return day === 0 || day === 6 || ALL_HOLIDAYS.has(fmtDate(d));
 }
 
 function prevBizDay(d: Date): Date {
@@ -58,10 +66,12 @@ journal.get('/', async (c) => {
   const conditions: string[] = [];
   const params: string[] = [];
 
-  // Permission filter
+  // Permission filter: member도 같은 팀(지사+부서) 열람 가능
   if (user.role === 'member') {
-    conditions.push('j.user_id = ?');
-    params.push(user.sub);
+    conditions.push('j.branch = ?');
+    conditions.push('j.department = ?');
+    params.push(user.branch);
+    params.push(user.department);
   } else if (user.role === 'manager') {
     conditions.push('j.branch = ?');
     conditions.push('j.department = ?');
@@ -98,12 +108,13 @@ journal.get('/members', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
-  let query = "SELECT id, name, role, branch, department, position_title FROM users WHERE approved = 1 AND role != 'master'";
+  let query = "SELECT id, name, role, branch, department, position_title, login_type FROM users WHERE approved = 1 AND role != 'master'";
   const params: string[] = [];
 
   if (user.role === 'member') {
-    query += ' AND id = ?';
-    params.push(user.sub);
+    query += ' AND branch = ? AND department = ?';
+    params.push(user.branch);
+    params.push(user.department);
   } else if (user.role === 'manager') {
     query += ' AND branch = ? AND department = ?';
     params.push(user.branch);
@@ -254,6 +265,79 @@ journal.get('/dismissed-alerts', async (c) => {
   const db = c.env.DB;
   const result = await db.prepare('SELECT alert_key FROM dismissed_alerts').all();
   return c.json({ keys: (result.results || []).map((r: any) => r.alert_key) });
+});
+
+// GET /api/journal/duplicate-inspections — 중복 임장 사건번호+법원 조회 (같은 지사 내에서만)
+journal.get('/duplicate-inspections', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+
+  // 사용자 지사 확인
+  const profile = await db.prepare('SELECT branch FROM users WHERE id = ?').bind(user.sub).first<{ branch: string }>();
+  const branch = profile?.branch || '';
+
+  let query = `
+    SELECT j.activity_subtype as case_no,
+           json_extract(j.data, '$.court') as court,
+           j.branch,
+           GROUP_CONCAT(DISTINCT u.name) as user_names,
+           COUNT(DISTINCT j.user_id) as user_count,
+           MIN(j.target_date) as first_date,
+           MAX(j.target_date) as last_date
+    FROM journal_entries j
+    LEFT JOIN users u ON j.user_id = u.id
+    WHERE j.activity_type = '임장'
+      AND j.activity_subtype != ''
+  `;
+  const params: string[] = [];
+
+  // all=true이면 전체 지사 조회, 아니면 본인 지사만 (master/ceo/cc_ref는 항상 전체)
+  const allBranches = c.req.query('all') === 'true';
+  if (!allBranches && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
+    query += ' AND j.branch = ?';
+    params.push(branch);
+  }
+
+  query += `
+    GROUP BY j.activity_subtype, json_extract(j.data, '$.court'), j.branch
+    HAVING COUNT(DISTINCT j.user_id) > 1
+    ORDER BY MAX(j.target_date) DESC
+  `;
+
+  const rows = params.length > 0
+    ? await db.prepare(query).bind(...params).all()
+    : await db.prepare(query).all();
+  return c.json({ duplicates: rows.results || [] });
+});
+
+// GET /api/journal/check-case-no?case_no=xxx&court=yyy — 특정 사건번호+법원 중복 체크 (같은 지사)
+journal.get('/check-case-no', async (c) => {
+  const caseNo = c.req.query('case_no');
+  const court = c.req.query('court');
+  if (!caseNo) return c.json({ exists: false, entries: [] });
+
+  const user = c.get('user');
+  const db = c.env.DB;
+
+  let query = `
+    SELECT j.id, j.user_id, u.name as user_name, j.target_date, json_extract(j.data, '$.court') as court
+    FROM journal_entries j
+    LEFT JOIN users u ON j.user_id = u.id
+    WHERE j.activity_type = '임장'
+      AND j.activity_subtype = ?
+      AND j.user_id != ?
+      AND j.branch = ?
+  `;
+  const params: string[] = [caseNo, user.sub, user.branch];
+
+  if (court) {
+    query += ' AND json_extract(j.data, \'$.court\') = ?';
+    params.push(court);
+  }
+  query += ' ORDER BY j.target_date DESC';
+
+  const rows = await db.prepare(query).bind(...params).all();
+  return c.json({ exists: (rows.results || []).length > 0, entries: rows.results || [] });
 });
 
 export default journal;

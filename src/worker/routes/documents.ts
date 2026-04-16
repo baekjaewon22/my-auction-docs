@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv, Document, OrgNode } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { sendAlimtalkByTemplate } from '../alimtalk';
 
 // 결재선 자동 계산: 조직도를 위로 탐색하여 승인자 목록 반환
 async function buildApprovalChain(db: D1Database, authorId: string): Promise<string[]> {
@@ -26,6 +27,9 @@ async function buildApprovalChain(db: D1Database, authorId: string): Promise<str
     if (!parentNode) break;
 
     if (parentNode.user_id) {
+      // 프리랜서는 결재선에서 제외
+      const approver = await db.prepare('SELECT login_type FROM users WHERE id = ?').bind(parentNode.user_id).first<{ login_type: string }>();
+      if (approver?.login_type === 'freelancer') { currentParentId = parentNode.parent_id; continue; }
       chain.push(parentNode.user_id);
     }
     currentParentId = parentNode.parent_id;
@@ -297,6 +301,20 @@ documents.post('/:id/submit', async (c) => {
 
   await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
     .bind(crypto.randomUUID(), id, user.sub, 'submitted', details).run();
+
+  // 알림톡: 결재선 첫 번째 결재자에게 DOC_SUBMITTED
+  if (chain.length > 0) {
+    const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const firstApprover = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(chain[0]).first<{ phone: string }>();
+    if (firstApprover?.phone) {
+      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'DOC_SUBMITTED',
+        { author_name: user.name, doc_title: doc.title, department: user.department || '', submit_date: today },
+        [firstApprover.phone],
+      ).catch(() => {}));
+    }
+  }
+
   return c.json({ success: true, chain: chain.length });
 });
 
@@ -366,10 +384,35 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
       await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
         .bind(days, doc.author_id).run();
     }
+    // 알림톡: 최종 승인 → 작성자에게 DOC_FINAL_APPROVED
+    const author = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(doc.author_id).first<{ phone: string }>();
+    if (author?.phone) {
+      const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'DOC_FINAL_APPROVED',
+        { doc_title: doc.title, approver_name: user.name, approve_date: today },
+        [author.phone],
+      ).catch(() => {}));
+    }
   } else {
     // 중간 단계 승인 로그
     await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
       .bind(crypto.randomUUID(), id, user.sub, 'step_approved', `${user.name}님이 승인하였습니다.`).run();
+
+    // 알림톡: 단계 승인 → 다음 결재자에게 DOC_STEP_APPROVED
+    const nextStep = await db.prepare(
+      "SELECT approver_id FROM approval_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order ASC LIMIT 1"
+    ).bind(id).first<{ approver_id: string }>();
+    if (nextStep) {
+      const nextUser = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(nextStep.approver_id).first<{ phone: string }>();
+      if (nextUser?.phone) {
+        c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+          c.env as unknown as Record<string, unknown>, 'DOC_STEP_APPROVED',
+          { approver_name: user.name, doc_title: doc.title, author_name: (await db.prepare('SELECT name FROM users WHERE id = ?').bind(doc.author_id).first<{ name: string }>())?.name || '', department: doc.department || '' },
+          [nextUser.phone],
+        ).catch(() => {}));
+      }
+    }
   }
 
   return c.json({ success: true, final: allDone });
@@ -404,6 +447,17 @@ documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager'), 
     .bind(reason || '', id).run();
   await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
     .bind(crypto.randomUUID(), id, user.sub, 'rejected', `문서가 반려되었습니다. 사유: ${reason || '없음'}`).run();
+
+  // 알림톡: 반려 → 작성자에게 DOC_REJECTED
+  const author = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(doc.author_id).first<{ phone: string }>();
+  if (author?.phone) {
+    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+      c.env as unknown as Record<string, unknown>, 'DOC_REJECTED',
+      { doc_title: doc.title, rejector_name: user.name, reject_reason: reason || '없음' },
+      [author.phone],
+    ).catch(() => {}));
+  }
+
   return c.json({ success: true });
 });
 
@@ -444,7 +498,7 @@ documents.get('/:id/steps', async (c) => {
   const id = c.req.param('id');
   const db = c.env.DB;
   const result = await db.prepare(
-    'SELECT s.*, u.name as approver_name, u.position_title as approver_title FROM approval_steps s LEFT JOIN users u ON s.approver_id = u.id WHERE s.document_id = ? ORDER BY s.step_order'
+    'SELECT s.*, u.name as approver_name, u.position_title as approver_title, u.role as approver_role FROM approval_steps s LEFT JOIN users u ON s.approver_id = u.id WHERE s.document_id = ? ORDER BY s.step_order'
   ).bind(id).all();
   return c.json({ steps: result.results });
 });

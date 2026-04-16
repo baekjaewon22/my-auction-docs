@@ -9,7 +9,7 @@
 export const ALIMTALK_TEMPLATES = {
   // 회원가입 인증
   SIGNUP_VERIFY: {
-    code: 'signup_verify',
+    code: 'SIGNUP',
     variables: ['verify_code'],
     content: `[마이옥션 오피스]
 본인확인 인증번호입니다.
@@ -22,9 +22,12 @@ export const ALIMTALK_TEMPLATES = {
 
   // 문서 제출 → 결재자에게
   DOC_SUBMITTED: {
-    code: 'doc_submitted',
+    code: 'DOC',
     variables: ['author_name', 'doc_title', 'department', 'submit_date'],
     content: `[마이옥션 오피스]
+
+관리자님
+
 #{author_name}님이 문서를 제출하였습니다.
 
 ■ 문서명: #{doc_title}
@@ -36,9 +39,12 @@ export const ALIMTALK_TEMPLATES = {
 
   // 단계 승인 → 다음 결재자에게
   DOC_STEP_APPROVED: {
-    code: 'doc_step_approved',
+    code: 'docstep',
     variables: ['approver_name', 'doc_title', 'author_name', 'department'],
     content: `[마이옥션 오피스]
+
+관리자님
+
 #{approver_name}님이 문서를 승인하였습니다.
 다음 결재 차례입니다.
 
@@ -51,9 +57,12 @@ export const ALIMTALK_TEMPLATES = {
 
   // 최종 승인 → 작성자에게
   DOC_FINAL_APPROVED: {
-    code: 'doc_final_approved',
+    code: 'docfinal',
     variables: ['doc_title', 'approver_name', 'approve_date'],
     content: `[마이옥션 오피스]
+
+담당자님
+
 문서가 최종 승인되었습니다.
 
 ■ 문서명: #{doc_title}
@@ -63,9 +72,12 @@ export const ALIMTALK_TEMPLATES = {
 
   // 반려 → 작성자에게
   DOC_REJECTED: {
-    code: 'doc_rejected',
+    code: 'docre',
     variables: ['doc_title', 'rejector_name', 'reject_reason'],
     content: `[마이옥션 오피스]
+
+담당자님
+
 문서가 반려되었습니다.
 
 ■ 문서명: #{doc_title}
@@ -75,17 +87,53 @@ export const ALIMTALK_TEMPLATES = {
 수정 후 재제출해주세요.`,
   },
 
-  // CC 결재 알림
-  DOC_CC_SUBMITTED: {
-    code: 'doc_cc_submitted',
-    variables: ['author_name', 'doc_title', 'branch', 'submit_date'],
+  // 회원가입 승인 완료 → 신규회원에게
+  SIGNUP_APPROVED: {
+    code: 'signup2',
+    variables: ['user_name', 'branch', 'department', 'position_title'],
     content: `[마이옥션 오피스]
-#{author_name}님이 문서를 제출하였습니다.
-CC 결재 확인이 필요합니다.
 
-■ 문서명: #{doc_title}
-■ 소속: #{branch}
-■ 제출일: #{submit_date}`,
+#{user_name}님
+
+회원가입이 승인되었습니다.
+지금 로그인하실 수 있습니다.
+
+■ 소속: #{branch} #{department}
+■ 직책: #{position_title}`,
+  },
+
+  // 회의록 공유 알림
+  MINUTES_SHARED: {
+    code: 'shared',
+    variables: ['author_name', 'title', 'date'],
+    content: `[마이옥션 오피스]
+
+담당자님
+
+#{author_name}님이 회의록을 공유하였습니다.
+
+■ 제목: #{title}
+■ 작성일: #{date}
+
+확인해주세요.`,
+  },
+
+  // 입금 매칭 신청 → 총무에게
+  DEPOSIT_CLAIM: {
+    code: 'chong',
+    variables: ['claimer_name', 'depositor', 'amount', 'deposit_date', 'branch'],
+    content: `[마이옥션 오피스]
+
+총무담당자님
+
+#{claimer_name}님이 입금 매칭을 신청하였습니다.
+
+■ 입금자: #{depositor}
+■ 금액: #{amount}원
+■ 입금일: #{deposit_date}
+■ 지사: #{branch}
+
+매칭 확인이 필요합니다.`,
   },
 } as const;
 
@@ -224,12 +272,13 @@ export async function sendAlimtalk(
 
 // ── 편의 함수: 템플릿 기반 발송 ──
 
-/** 템플릿 키 + 변수 + 수신번호로 간편 발송 */
+/** 템플릿 키 + 변수 + 수신번호로 간편 발송 (+ 자동 로그 저장) */
 export async function sendAlimtalkByTemplate(
   env: Record<string, unknown>,
   templateKey: AlimtalkTemplateKey,
   variables: Record<string, string>,
   phones: string[],
+  options?: { db?: D1Database; relatedType?: string; relatedId?: string },
 ): Promise<AlimtalkSendResponse | null> {
   const template = ALIMTALK_TEMPLATES[templateKey];
   const content = replaceTemplateVariables(template.content, variables);
@@ -240,5 +289,32 @@ export async function sendAlimtalkByTemplate(
     useSmsFailover: true,
   }));
 
-  return sendAlimtalk(env, template.code, messages);
+  const result = await sendAlimtalk(env, template.code, messages);
+
+  // 로그 저장
+  const db = options?.db || (env.DB as D1Database | undefined);
+  if (db) {
+    for (const phone of phones) {
+      try {
+        await db.prepare(
+          'INSERT INTO alimtalk_logs (id, template_code, recipient_phone, content, request_id, status, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(
+          crypto.randomUUID(),
+          template.code,
+          normalizePhone(phone),
+          content,
+          result?.requestId || '',
+          result ? 'sent' : 'skipped',
+          options?.relatedType || templateKey,
+          options?.relatedId || '',
+        ).run();
+      } catch { /* 로그 실패는 발송에 영향 없음 */ }
+    }
+  }
+
+  return result;
+}
+
+interface D1Database {
+  prepare(query: string): { bind(...values: unknown[]): { run(): Promise<unknown>; all(): Promise<{ results: unknown[] }>; first<T>(): Promise<T | null> } };
 }

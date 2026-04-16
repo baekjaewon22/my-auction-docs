@@ -1,4 +1,4 @@
-export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'accountant' | 'accountant_asst' | 'manager' | 'member';
+export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'director' | 'accountant' | 'accountant_asst' | 'manager' | 'member';
 export type DocStatus = 'draft' | 'submitted' | 'approved' | 'rejected';
 
 export const BRANCHES = ['의정부', '서초'] as const;
@@ -9,6 +9,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   ceo: '대표',
   cc_ref: 'CC참조자',
   admin: '관리자',
+  director: '총괄이사',
   accountant: '총무담당',
   accountant_asst: '총무보조',
   manager: '팀장',
@@ -16,7 +17,7 @@ export const ROLE_LABELS: Record<Role, string> = {
 };
 
 // UI에서 표시할 역할 (master 제외)
-export const VISIBLE_ROLES: Role[] = ['ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'member'];
+export const VISIBLE_ROLES: Role[] = ['ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst', 'manager', 'member'];
 
 export interface User {
   id: string;
@@ -181,6 +182,14 @@ export interface SalesRecord {
   contract_not_reason: string;
   contract_not_approved: number;
   contract_not_approved_by: string | null;
+  // 매수신청대리비용
+  proxy_cost: number;
+  // 결제정보
+  payment_type: string;
+  receipt_type: string;
+  receipt_phone: string;
+  card_deposit_date: string;
+  client_phone: string;
   created_at: string;
   updated_at: string;
 }

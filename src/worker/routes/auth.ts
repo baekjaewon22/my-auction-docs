@@ -1,8 +1,12 @@
 import { Hono } from 'hono';
 import type { AuthEnv, User } from '../types';
 import { createToken, hashPassword, verifyPassword, authMiddleware } from '../middleware/auth';
+import { sendAlimtalkByTemplate, normalizePhone } from '../alimtalk';
 
 const auth = new Hono<AuthEnv>();
+
+// 인증코드 저장소 (메모리 — Worker 인스턴스 수명 동안 유지)
+const verifyStore = new Map<string, { code: string; expires: number; userId: string }>();
 
 // POST /api/auth/register
 auth.post('/register', async (c) => {
@@ -75,6 +79,88 @@ auth.get('/me', authMiddleware, async (c) => {
   ).bind(payload.sub).first();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
   return c.json({ user });
+});
+
+// ━━━ 비밀번호 찾기 ━━━
+
+// POST /api/auth/forgot-password/send — 인증코드 발송
+auth.post('/forgot-password/send', async (c) => {
+  const { email, name, phone } = await c.req.json<{ email: string; name: string; phone: string }>();
+  if (!email || !name || !phone) return c.json({ error: '이메일, 이름, 전화번호를 모두 입력하세요.' }, 400);
+
+  const db = c.env.DB;
+  const user = await db.prepare('SELECT id, name, phone FROM users WHERE email = ?').bind(email).first<any>();
+  if (!user) return c.json({ error: '등록되지 않은 이메일입니다.' }, 404);
+
+  // 이름과 전화번호 일치 확인
+  const normalizedInput = normalizePhone(phone);
+  const normalizedDB = normalizePhone(user.phone || '');
+  if (user.name !== name.trim() || normalizedInput !== normalizedDB) {
+    return c.json({ error: '이름 또는 전화번호가 일치하지 않습니다.' }, 400);
+  }
+
+  // 인증코드 생성 (6자리)
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const expires = Date.now() + 3 * 60 * 1000; // 3분
+  const key = normalizedInput;
+  verifyStore.set(key, { code, expires, userId: user.id });
+
+  // 알림톡 발송
+  try {
+    await sendAlimtalkByTemplate(
+      c.env as unknown as Record<string, unknown>, 'SIGNUP_VERIFY',
+      { verify_code: code },
+      [user.phone],
+    );
+  } catch {
+    return c.json({ error: '인증번호 발송에 실패했습니다. 잠시 후 다시 시도해주세요.' }, 500);
+  }
+
+  return c.json({ success: true, message: '인증번호가 발송되었습니다.' });
+});
+
+// POST /api/auth/forgot-password/verify — 인증코드 확인
+auth.post('/forgot-password/verify', async (c) => {
+  const { phone, code } = await c.req.json<{ phone: string; code: string }>();
+  if (!phone || !code) return c.json({ error: '전화번호와 인증코드를 입력하세요.' }, 400);
+
+  const key = normalizePhone(phone);
+  const stored = verifyStore.get(key);
+  if (!stored) return c.json({ error: '인증 요청 기록이 없습니다. 다시 시도해주세요.' }, 400);
+  if (Date.now() > stored.expires) {
+    verifyStore.delete(key);
+    return c.json({ error: '인증번호가 만료되었습니다. 다시 발송해주세요.' }, 400);
+  }
+  if (stored.code !== code.trim()) return c.json({ error: '인증번호가 일치하지 않습니다.' }, 400);
+
+  // 인증 성공 → 토큰 발급 (1회용, 5분)
+  const resetToken = crypto.randomUUID();
+  verifyStore.set('reset_' + resetToken, { code: 'verified', expires: Date.now() + 5 * 60 * 1000, userId: stored.userId });
+  verifyStore.delete(key);
+
+  return c.json({ success: true, reset_token: resetToken });
+});
+
+// POST /api/auth/forgot-password/reset — 비밀번호 재설정
+auth.post('/forgot-password/reset', async (c) => {
+  const { reset_token, new_password } = await c.req.json<{ reset_token: string; new_password: string }>();
+  if (!reset_token || !new_password) return c.json({ error: '토큰과 새 비밀번호를 입력하세요.' }, 400);
+  if (new_password.length < 4) return c.json({ error: '비밀번호는 4자 이상이어야 합니다.' }, 400);
+
+  const stored = verifyStore.get('reset_' + reset_token);
+  if (!stored || stored.code !== 'verified') return c.json({ error: '유효하지 않은 요청입니다. 다시 시도해주세요.' }, 400);
+  if (Date.now() > stored.expires) {
+    verifyStore.delete('reset_' + reset_token);
+    return c.json({ error: '재설정 시간이 만료되었습니다. 다시 시도해주세요.' }, 400);
+  }
+
+  const db = c.env.DB;
+  const newHash = await hashPassword(new_password);
+  await db.prepare("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(newHash, stored.userId).run();
+
+  verifyStore.delete('reset_' + reset_token);
+  return c.json({ success: true, message: '비밀번호가 변경되었습니다.' });
 });
 
 export default auth;

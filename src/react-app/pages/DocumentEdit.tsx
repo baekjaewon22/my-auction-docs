@@ -16,7 +16,7 @@ import type { Document, DocumentLog, Signature, ApprovalStep } from '../types';
 import SignaturePanel, { hasSavedSignature, quickSign } from '../components/SignaturePanel';
 import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
-import { FileDown } from 'lucide-react';
+import { FileDown, Printer } from 'lucide-react';
 
 export default function DocumentEdit() {
   const { id } = useParams<{ id: string }>();
@@ -37,6 +37,9 @@ export default function DocumentEdit() {
   const [showCancelRequest, setShowCancelRequest] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const STAMP_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
+  const canUseStamp = STAMP_ROLES.includes(user?.role || '');
 
   const editor = useEditor({
     extensions: [
@@ -311,10 +314,24 @@ export default function DocumentEdit() {
     document.body.removeChild(pdfContainer);
   };
 
-  // ApprovalBar에서 서명 버튼 클릭 시
-  const handleApprovalSign = async (type: 'author' | 'approver') => {
+  // ApprovalBar에서 서명 버튼 클릭 시 — approverRole로 자동 판단
+  const handleApprovalSign = async (type: 'author' | 'approver', approverRole?: string) => {
     if (!id) return;
-    // 저장된 서명이 있으면 패널 없이 즉시 서명
+
+    // CEO 결재란 → 자동으로 대표 직인 (선택 팝업 없이)
+    if (canUseStamp && approverRole === 'ceo') {
+      try {
+        await api.signatures.sign(id, '/LNCstemp.png');
+        if (type === 'approver') {
+          const result = await api.documents.approve(id) as any;
+          alert(result.final ? '문서가 최종 승인되었습니다.' : '승인 완료. 다음 단계 결재자에게 전달됩니다.');
+        }
+        window.location.reload();
+      } catch (err: any) { alert(err.message); }
+      return;
+    }
+
+    // 그 외 결재란 → 본인 서명
     if (hasSavedSignature()) {
       try {
         await quickSign(id, type, handleSignComplete);
@@ -383,6 +400,7 @@ export default function DocumentEdit() {
           )}
           <button className="btn btn-sm" onClick={() => setShowLogs(!showLogs)}>이력</button>
           <button className="btn btn-sm" onClick={handleExportPdf} title="PDF 다운로드"><FileDown size={14} /> PDF</button>
+          <button className="btn btn-sm" onClick={() => window.print()} title="프린트"><Printer size={14} /></button>
           {isEditable && doc.template_id && user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role) && (
             <button className="btn btn-sm" onClick={handleSaveAsTemplate} title="현재 내용을 템플릿에 반영">템플릿 저장</button>
           )}
@@ -527,7 +545,7 @@ export default function DocumentEdit() {
         )}
 
         {/* Editor Content */}
-        <div className="editor-content-wrapper">
+        <div className="editor-content-wrapper doc-print-area">
           <div className="editor-page-container">
             <EditorContent editor={editor} className="editor-area" />
             <PageNumbers />
@@ -579,6 +597,7 @@ export default function DocumentEdit() {
             onSign={handleSignComplete}
           />
         )}
+
       </div>
     </div>
   );

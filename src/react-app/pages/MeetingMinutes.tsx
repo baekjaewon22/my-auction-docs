@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
-import { Upload, FileText, Trash2, Eye, Download, Plus, X, ArrowLeft, Share2, FileUp } from 'lucide-react';
+import { Upload, FileText, Trash2, Eye, Download, Plus, X, ArrowLeft, Share2, FileUp, StickyNote } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import Select from '../components/Select';
 
 interface MinuteItem {
@@ -29,6 +30,7 @@ function formatDate(iso: string) {
 
 export default function MeetingMinutes() {
   const { user } = useAuthStore();
+  const navigate = useNavigate();
   const [items, setItems] = useState<MinuteItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -130,6 +132,33 @@ export default function MeetingMinutes() {
     if (shareTargets.length === 0) { alert('공유 대상을 선택하세요.'); return; }
     try { await api.minutes.share(minutesId, shareTargets); setSharingId(null); setShareTargets([]); alert('공유되었습니다.'); load(); }
     catch (err: any) { alert(err.message); }
+  };
+
+  // 관리자 노트로 이동
+  const handleMoveToNote = async (item: MinuteItem) => {
+    if (!confirm(`"${item.title}" 회의록을 관리자 노트로 이동하시겠습니까?`)) return;
+    try {
+      // txt 변환된 회의록: converted_content 사용, PDF: 설명+파일명으로 구성
+      let content = '';
+      if (item.source_type === 'txt') {
+        const res = await api.minutes.get(item.id);
+        // HTML → 텍스트 변환
+        const div = document.createElement('div');
+        div.innerHTML = res.minute.converted_content || '';
+        content = div.textContent || div.innerText || '';
+      } else {
+        content = `[회의록 PDF] ${item.file_name}\n${item.description || ''}`.trim();
+      }
+
+      await api.adminNotes.create({
+        title: item.title,
+        content,
+        source_type: 'minutes',
+        source_id: item.id,
+      });
+      alert('관리자 노트로 이동되었습니다.');
+      navigate('/admin-notes');
+    } catch (err: any) { alert(err.message); }
   };
 
   // 상세 보기
@@ -385,6 +414,9 @@ export default function MeetingMinutes() {
                 )}
                 <button className="btn btn-sm" onClick={() => { setSharingId(item.id); setShareTargets([]); }} title="공유">
                   <Share2 size={14} />
+                </button>
+                <button className="btn btn-sm" onClick={() => handleMoveToNote(item)} title="관리자 노트로 이동" style={{ color: '#f9a825' }}>
+                  <StickyNote size={14} />
                 </button>
                 {user && ['master', 'ceo', 'cc_ref'].includes(user.role) && (
                   <button className="btn btn-sm btn-danger" onClick={() => handleDelete(item.id, item.title)} title="삭제">

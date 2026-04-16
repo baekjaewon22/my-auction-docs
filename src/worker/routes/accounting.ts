@@ -37,7 +37,7 @@ accounting.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
 });
 
 // PUT /api/accounting/:userId - 직원 회계 정보 생성/수정 (급여, 직급)
-accounting.put('/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'), async (c) => {
+accounting.put('/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const userId = c.req.param('userId');
   const { salary, grade, position_allowance, pay_type, commission_rate } = await c.req.json<{ salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number }>();
   const db = c.env.DB;
@@ -77,7 +77,7 @@ accounting.put('/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'acco
 });
 
 // PUT /api/accounting/:userId/grade - 직급 강등 (관리자급 이상만)
-accounting.put('/:userId/grade', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'), async (c) => {
+accounting.put('/:userId/grade', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const userId = c.req.param('userId');
   const { grade } = await c.req.json<{ grade: string }>();
   const db = c.env.DB;
@@ -110,7 +110,7 @@ accounting.get('/evaluations/:userId', requireRole(...ACCOUNTING_ROLES), async (
 
 // POST /api/accounting/evaluate - 2개월 단위 매출 평가 실행
 // 현재 기간의 commissions 합산 → 기준매출 비교 → 결과 저장
-accounting.post('/evaluate', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'), async (c) => {
+accounting.post('/evaluate', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const { period_start, period_end } = await c.req.json<{ period_start: string; period_end: string }>();
   const db = c.env.DB;
 
@@ -216,6 +216,121 @@ accounting.get('/alerts/dashboard', requireRole(...ACCOUNTING_ROLES), async (c) 
     current_period_alerts: currentPeriodAlerts,
     current_period: { start: periodStart, end: periodEnd },
   });
+});
+
+// ━━━ 거래내역 첨부 (Bank Staging) ━━━
+
+// POST /api/accounting/upload-bank — 은행 엑셀 업로드 → 업무성과 중복 체크 → 스테이징
+accounting.post('/upload-bank', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const { rows } = await c.req.json<{ rows: { depositor: string; amount: number; transaction_date: string; description?: string }[] }>();
+
+  if (!rows || rows.length === 0) return c.json({ error: '데이터가 없습니다.' }, 400);
+
+  let inserted = 0;
+  let dupSales = 0;
+  let dupStaging = 0;
+  const skipped: string[] = [];
+
+  for (const row of rows) {
+    const depositor = (row.depositor || '').trim();
+    const amount = Math.abs(Number(String(row.amount || 0).replace(/[^0-9.-]/g, '')) || 0);
+    let txDate = row.transaction_date || '';
+    if (typeof txDate === 'number') {
+      const d = new Date((txDate - 25569) * 86400000);
+      txDate = d.toISOString().slice(0, 10);
+    }
+    txDate = String(txDate).trim();
+
+    if (!depositor || amount <= 0 || !txDate) {
+      skipped.push(`${depositor || '?'}: 정보 부족`);
+      continue;
+    }
+
+    // 1. 업무성과 중복 체크 (입금자명/고객명 + 금액 + 입금일)
+    const salesDup = await db.prepare(`
+      SELECT id FROM sales_records
+      WHERE (depositor_name = ? OR client_name = ?) AND amount = ? AND deposit_date = ?
+      LIMIT 1
+    `).bind(depositor, depositor, amount, txDate).first();
+    if (salesDup) { dupSales++; continue; }
+
+    // 2. 스테이징 내 중복 체크
+    const stagingDup = await db.prepare(
+      'SELECT id FROM bank_staging WHERE depositor = ? AND amount = ? AND transaction_date = ? LIMIT 1'
+    ).bind(depositor, amount, txDate).first();
+    if (stagingDup) { dupStaging++; continue; }
+
+    const id = crypto.randomUUID();
+    await db.prepare(
+      'INSERT INTO bank_staging (id, depositor, amount, transaction_date, description, created_by) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(id, depositor, amount, txDate, row.description || '', user.sub).run();
+    inserted++;
+  }
+
+  return c.json({ success: true, total: rows.length, inserted, dupSales, dupStaging, skipped });
+});
+
+// GET /api/accounting/staging — 스테이징 목록 조회
+accounting.get('/staging', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const db = c.env.DB;
+  const month = c.req.query('month') || '';
+
+  let query = "SELECT * FROM bank_staging WHERE status = 'pending'";
+  const params: any[] = [];
+  if (month) {
+    query += ' AND transaction_date LIKE ?';
+    params.push(month + '%');
+  }
+  query += ' ORDER BY transaction_date DESC, created_at DESC';
+
+  const result = params.length > 0
+    ? await db.prepare(query).bind(...params).all()
+    : await db.prepare(query).all();
+
+  return c.json({ items: result.results });
+});
+
+// POST /api/accounting/staging/:id/to-sales — 스테이징 → 매출전체로 이동 (새 매출 생성)
+accounting.post('/staging/:id/to-sales', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const stagingId = c.req.param('id');
+  const { type, user_id, type_detail } = await c.req.json<{ type: string; user_id?: string; type_detail?: string }>();
+
+  const item = await db.prepare('SELECT * FROM bank_staging WHERE id = ?').bind(stagingId).first<any>();
+  if (!item) return c.json({ error: '항목을 찾을 수 없습니다.' }, 404);
+
+  // 담당자 정보
+  const assignee = user_id
+    ? await db.prepare('SELECT id, branch, department FROM users WHERE id = ?').bind(user_id).first<any>()
+    : null;
+
+  const salesId = crypto.randomUUID();
+  await db.prepare(`
+    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, amount, contract_date, deposit_date, status, confirmed_at, confirmed_by, branch, department, memo)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now'), ?, ?, ?, ?)
+  `).bind(
+    salesId, assignee?.id || user.sub, type || '기타', type_detail || '',
+    item.depositor, item.depositor, item.amount,
+    item.transaction_date, item.transaction_date,
+    user.sub, assignee?.branch || user.branch || '', assignee?.department || user.department || '',
+    '거래내역 첨부에서 이동'
+  ).run();
+
+  // 스테이징 상태 업데이트
+  await db.prepare("UPDATE bank_staging SET status = 'approved', matched_sales_id = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(salesId, stagingId).run();
+
+  return c.json({ success: true, sales_id: salesId });
+});
+
+// DELETE /api/accounting/staging/:id — 스테이징 항목 삭제 (무시)
+accounting.delete('/staging/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const id = c.req.param('id');
+  await c.env.DB.prepare("UPDATE bank_staging SET status = 'dismissed', updated_at = datetime('now') WHERE id = ?").bind(id).run();
+  return c.json({ success: true });
 });
 
 export default accounting;

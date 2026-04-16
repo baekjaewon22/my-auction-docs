@@ -44,22 +44,25 @@ export default function UserManagement() {
   const [salaryInput, setSalaryInput] = useState('');
   const [gradeInput, setGradeInput] = useState('');
   const [posAllowanceInput, setPosAllowanceInput] = useState('');
-  const [cardNumberInput, setCardNumberInput] = useState('');
+  const [cardNumbers, setCardNumbers] = useState<string[]>(['']);
   const [hireDateInput, setHireDateInput] = useState('');
   const [payType, setPayType] = useState<'salary' | 'commission'>('salary');
   const [commissionRate, setCommissionRate] = useState('');
   const [evaluations, setEvaluations] = useState<SalesEvaluation[]>([]);
   const [saving, setSaving] = useState(false);
+  // 알림톡 수신 설정
+  const [alimBranches, setAlimBranches] = useState<Set<string>>(new Set());
+  const ALIM_BRANCHES = ['의정부', '서초', '대전', '부산'];
 
   const hierarchy: Record<string, number> = { master: 1, ceo: 2, cc_ref: 2, admin: 3, accountant: 3, accountant_asst: 4, manager: 4, member: 5 };
   const myLevel = hierarchy[currentUser?.role || ''] || 99;
   const canManagePending = ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser?.role || '');
-  // 회계 정보 편집 가능한 역할 (총무보조는 조회만)
-  const canEditAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
+  // 회계 정보 편집 가능한 역할
+  const canEditAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   // 회계 정보 열람 가능한 역할
   const canViewAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
-  // 입사기준일 편집 가능한 역할 (대표 + 회계)
-  const canSetHireDate = ['master', 'ceo', 'cc_ref', 'accountant'].includes(currentUser?.role || '');
+  // 입사기준일 편집 가능한 역할
+  const canSetHireDate = ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
 
   const load = () => {
     setLoading(true);
@@ -123,6 +126,11 @@ export default function UserManagement() {
   const handleSelectUser = async (u: User) => {
     setSelectedUser(u);
     setHireDateInput(u.hire_date || '');
+    // 알림톡 설정 로드
+    try {
+      const alimRes = await api.users.getAlimtalkSettings(u.id);
+      setAlimBranches(new Set(alimRes.branches ? alimRes.branches.split(',') : []));
+    } catch { setAlimBranches(new Set()); }
     if (!canViewAccounting) return;
     try {
       const [accRes, evalRes] = await Promise.all([
@@ -133,7 +141,7 @@ export default function UserManagement() {
       setSalaryInput(acc?.salary?.toString() || '');
       setGradeInput(acc?.grade || '');
       setPosAllowanceInput(acc?.position_allowance?.toString() || '0');
-      setCardNumberInput(u.card_number || '');
+      setCardNumbers(u.card_number ? u.card_number.split(',').map((s: string) => s.trim()) : ['']);
       setPayType(acc?.pay_type || 'salary');
       setCommissionRate(acc?.commission_rate?.toString() || '');
       setEvaluations(evalRes.evaluations);
@@ -141,7 +149,7 @@ export default function UserManagement() {
       setSalaryInput('');
       setGradeInput('');
       setPosAllowanceInput('0');
-      setCardNumberInput('');
+      setCardNumbers(['']);
       setPayType('salary');
       setCommissionRate('');
       setEvaluations([]);
@@ -160,7 +168,7 @@ export default function UserManagement() {
         commission_rate: Number(commissionRate) || 0,
       });
       // 카드번호도 저장
-      await api.card.updateUserCard(selectedUser.id, cardNumberInput);
+      await api.card.updateUserCard(selectedUser.id, cardNumbers.filter(c => c.trim()).join(','));
       alert('저장되었습니다.');
     } catch (err: any) { alert(err.message); }
     finally { setSaving(false); }
@@ -335,8 +343,21 @@ export default function UserManagement() {
                 {/* 법인카드 */}
                 <div>
                   <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>법인카드 번호</label>
-                  <input className="form-input" value={cardNumberInput} onChange={(e) => setCardNumberInput(e.target.value)}
-                    disabled={!canEditAccounting} style={{ width: '100%' }} placeholder="뒤 4자리 (예: 5900)" />
+                  {cardNumbers.map((cn, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
+                      <input className="form-input" value={cn}
+                        onChange={(e) => setCardNumbers(prev => prev.map((v, idx) => idx === i ? e.target.value : v))}
+                        disabled={!canEditAccounting} style={{ flex: 1 }} placeholder={`카드${i + 1} 뒤 4자리`} />
+                      {canEditAccounting && cardNumbers.length > 1 && (
+                        <button type="button" style={{ background: 'none', border: 'none', color: '#d93025', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                          onClick={() => setCardNumbers(prev => prev.filter((_, idx) => idx !== i))}>×</button>
+                      )}
+                    </div>
+                  ))}
+                  {canEditAccounting && (
+                    <button type="button" className="btn btn-sm" style={{ fontSize: '0.72rem', marginTop: 2 }}
+                      onClick={() => setCardNumbers(prev => [...prev, ''])}>+ 카드 추가</button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -363,8 +384,21 @@ export default function UserManagement() {
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>법인카드 번호</label>
-                  <input className="form-input" value={cardNumberInput} onChange={(e) => setCardNumberInput(e.target.value)}
-                    disabled={!canEditAccounting} style={{ width: '100%' }} placeholder="뒤 4자리 (예: 5900)" />
+                  {cardNumbers.map((cn, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
+                      <input className="form-input" value={cn}
+                        onChange={(e) => setCardNumbers(prev => prev.map((v, idx) => idx === i ? e.target.value : v))}
+                        disabled={!canEditAccounting} style={{ flex: 1 }} placeholder={`카드${i + 1} 뒤 4자리`} />
+                      {canEditAccounting && cardNumbers.length > 1 && (
+                        <button type="button" style={{ background: 'none', border: 'none', color: '#d93025', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                          onClick={() => setCardNumbers(prev => prev.filter((_, idx) => idx !== i))}>×</button>
+                      )}
+                    </div>
+                  ))}
+                  {canEditAccounting && (
+                    <button type="button" className="btn btn-sm" style={{ fontSize: '0.72rem', marginTop: 2 }}
+                      onClick={() => setCardNumbers(prev => [...prev, ''])}>+ 카드 추가</button>
+                  )}
                 </div>
               </div>
             )}
@@ -376,6 +410,35 @@ export default function UserManagement() {
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* 알림톡 수신 설정 (선택된 사용자가 총무일 때만) */}
+        {['accountant', 'accountant_asst'].includes(selectedUser.role) && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '') && (
+          <div className="card" style={{ marginBottom: 20, padding: 20 }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: '1rem', color: '#1a1a2e' }}>알림톡 수신 설정</h3>
+            <p style={{ fontSize: '0.78rem', color: '#9aa0a6', margin: '0 0 14px' }}>지사별 알림톡 수신 여부를 설정합니다.</p>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+              {ALIM_BRANCHES.map(branch => {
+                const isOn = alimBranches.has(branch);
+                return (
+                  <div key={branch} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 600, minWidth: 50, color: isOn ? '#1a1a2e' : '#9aa0a6' }}>{branch}</span>
+                    <div onClick={async () => {
+                      const next = new Set(alimBranches);
+                      if (isOn) next.delete(branch); else next.add(branch);
+                      setAlimBranches(next);
+                      try {
+                        await api.users.updateAlimtalkSettings(selectedUser!.id, [...next].join(','));
+                      } catch (err: any) { alert(err.message); }
+                    }}
+                      style={{ width: 44, height: 24, borderRadius: 12, background: isOn ? '#1a73e8' : '#dadce0', cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}>
+                      <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', position: 'absolute', top: 2, left: isOn ? 22 : 2, transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

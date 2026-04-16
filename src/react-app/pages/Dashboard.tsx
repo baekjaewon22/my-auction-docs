@@ -4,7 +4,7 @@ import { useAuthStore } from '../store';
 import { api } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 
@@ -102,9 +102,14 @@ export default function Dashboard() {
   const [pendingSales, setPendingSales] = useState<SalesRecord[]>([]);
   const [refundRequests, setRefundRequests] = useState<SalesRecord[]>([]);
   const [depositNotices, setDepositNotices] = useState<DepositNotice[]>([]);
+  const [refundImpacts, setRefundImpacts] = useState<any[]>([]);
   const [scheduleGaps, setScheduleGaps] = useState<ScheduleGapAlert[]>([]);
   const [contractAlerts, setContractAlerts] = useState<SalesRecord[]>([]);
+  const [dupInspections, setDupInspections] = useState<{ case_no: string; court: string; user_names: string; user_count: number; first_date: string; last_date: string; branch?: string }[]>([]);
+  const [dupAllBranches, setDupAllBranches] = useState(false);
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
+  const [pendingSalesBranch, setPendingSalesBranch] = useState('');
+  const [accountantLeaves, setAccountantLeaves] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '');
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
@@ -135,8 +140,12 @@ export default function Dashboard() {
 
         if (journalRes) {
           const entries = (journalRes as { entries: JournalEntry[] }).entries;
-          setAlerts(detectMissing(entries, allDocs));
-          setScheduleGaps(detectScheduleGaps(entries));
+          // member는 본인 entries만으로 미제출 판정 (팀 일지 전체가 들어오지만 문서는 본인 것만 있으므로)
+          const entriesForDetect = canApprove ? entries : entries.filter(e => e.user_id === user?.id);
+          // 미제출 감지 시 draft 문서는 제외 (작성 중인 보고서는 제출 완료가 아니므로)
+          const docsForDetect = allDocs.filter(d => d.status !== 'draft');
+          setAlerts(detectMissing(entriesForDetect, docsForDetect));
+          setScheduleGaps(detectScheduleGaps(canApprove ? entries : entries.filter(e => e.user_id === user?.id)));
         }
 
         // 계약서 확인 대기 알림 (관리자/회계)
@@ -201,6 +210,20 @@ export default function Dashboard() {
             ]);
             setPendingSales(pendRes.records || []);
             setRefundRequests(refRes.records || []);
+            // 총무: alimtalk_branches 기본 필터 설정
+            if (['accountant', 'accountant_asst'].includes(user?.role || '') && user?.id) {
+              try {
+                const alimRes = await api.users.getAlimtalkSettings(user.id);
+                const branches = alimRes.branches ? alimRes.branches.split(',') : [];
+                if (branches.length > 0) setPendingSalesBranch(branches[0]);
+              } catch { /* */ }
+            }
+          } catch { /* */ }
+
+          // 환불 영향 알림
+          try {
+            const impactRes = await api.sales.dashboardRefundImpacts();
+            setRefundImpacts((impactRes.impacts || []).filter((i: any) => i.is_previous_period));
           } catch { /* */ }
         }
 
@@ -209,9 +232,28 @@ export default function Dashboard() {
           const depRes = await api.sales.deposits();
           setDepositNotices((depRes.deposits || []).filter((d: DepositNotice) => d.status === 'pending'));
         } catch { /* */ }
+
+        // 총무 휴가 알림
+        try {
+          const acLeaveRes = await api.leave.accountantLeaves();
+          setAccountantLeaves(acLeaveRes.leaves || []);
+        } catch { /* */ }
+
+        // 중복 임장 사건번호 조회
+        try {
+          const dupRes = await api.journal.duplicateInspections(dupAllBranches);
+          setDupInspections(dupRes.duplicates || []);
+        } catch { /* */ }
       })
       .finally(() => setLoading(false));
   }, []);
+
+  // 중복 임장: 전 지사 토글 시 재조회
+  useEffect(() => {
+    api.journal.duplicateInspections(dupAllBranches)
+      .then(res => setDupInspections(res.duplicates || []))
+      .catch(() => {});
+  }, [dupAllBranches]);
 
   const stats = {
     total: documents.length,
@@ -242,6 +284,44 @@ export default function Dashboard() {
         <div className="stat-card stat-approved"><FileCheck size={28} className="stat-icon" /><div className="stat-number">{stats.approved}</div><div className="stat-label">승인</div></div>
         <div className="stat-card stat-rejected"><FileX size={28} className="stat-icon" /><div className="stat-number">{stats.rejected}</div><div className="stat-label">반려</div></div>
       </div>
+
+      {/* 총무 휴가 알림 (전체 직원에게 노출) */}
+      {accountantLeaves.length > 0 && (
+        <section className="section">
+          <div style={{ padding: '14px 18px', background: 'linear-gradient(135deg, #fff8e1 0%, #fff3cd 100%)', borderRadius: 10, border: '1px solid #ffd54f' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              <Clock size={16} color="#f9a825" />
+              <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#e65100' }}>총무 휴무 안내</span>
+            </div>
+            {accountantLeaves.map((lv: any) => {
+              const isSameDay = lv.start_date === lv.end_date;
+              const formatDate = (d: string) => d?.replace(/-/g, '.') || '';
+              const periodStr = isSameDay ? `(${formatDate(lv.start_date)})` : `(${formatDate(lv.start_date)}~${formatDate(lv.end_date).slice(5)})`;
+              const leaveLabel = lv.leave_type === '반차' ? '반차휴무' : lv.leave_type === '연차' ? '연차휴무' : lv.leave_type === '월차' ? '월차휴무' : `${lv.leave_type} 휴무`;
+              const todayStr = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+              const tomorrowStr = new Date(Date.now() + 9 * 60 * 60 * 1000 + 86400000).toISOString().slice(0, 10);
+              const isToday = lv.start_date <= todayStr && lv.end_date >= todayStr;
+              const isTomorrow = lv.start_date === tomorrowStr;
+              return (
+                <div key={lv.id} style={{ padding: '8px 12px', background: '#fff', borderRadius: 8, marginBottom: 6, border: '1px solid #ffe082' }}>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1a1a2e' }}>
+                    {lv.branch}지사 {lv.name} {lv.position_title || ''} {leaveLabel}
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: '#e65100', marginTop: 2 }}>
+                    {isToday && <span style={{ background: '#d93025', color: '#fff', padding: '1px 6px', borderRadius: 4, fontSize: '0.7rem', fontWeight: 700, marginRight: 6 }}>오늘</span>}
+                    {isTomorrow && !isToday && <span style={{ background: '#f9a825', color: '#fff', padding: '1px 6px', borderRadius: 4, fontSize: '0.7rem', fontWeight: 700, marginRight: 6 }}>내일</span>}
+                    {periodStr}
+                    {lv.reason && lv.leave_type === '특별휴가' && <span style={{ color: '#9aa0a6', marginLeft: 8 }}>({lv.reason})</span>}
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 6 }}>
+              결재 관련 문의는 다른 총무 담당자에게 연락해주세요.
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* [5-2] 내 미제출 보고서 D-Day (담당자 본인용 — 항상 노출) */}
       {(() => {
@@ -276,8 +356,8 @@ export default function Dashboard() {
         );
       })()}
 
-      {/* 미제출 알림 (관리자용) */}
-      {alerts.length > 0 && (
+      {/* 미제출 알림 (팀장/관리자용 — 팀원에겐 비노출) */}
+      {alerts.length > 0 && canApprove && (
         <section className="section">
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <AlertTriangle size={18} color="#d93025" /> 미제출 알림
@@ -323,8 +403,8 @@ export default function Dashboard() {
         </section>
       )}
 
-      {/* 일정 공백 알림 */}
-      {(() => {
+      {/* 일정 공백 알림 (팀장/관리자용) */}
+      {canApprove && (() => {
         const filteredGaps = scheduleGaps.filter(g => !dismissedKeys.has(`gap_${g.userName}_${g.date}`));
         if (filteredGaps.length === 0) return null;
         return (
@@ -369,11 +449,57 @@ export default function Dashboard() {
         );
       })()}
 
-      {/* 계약서 확인 대기 알림 */}
+      {/* 중복 임장 사건번호 알림 */}
+      {dupInspections.length > 0 && (
+        <section className="section">
+          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <MapPin size={18} color="#7b1fa2" /> 동일 사건 임장 알림
+            <span style={{ background: '#7b1fa2', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{dupInspections.length}건</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 'auto' }}>
+              <span style={{ fontSize: '0.68rem', color: !dupAllBranches ? '#7b1fa2' : '#9aa0a6', fontWeight: !dupAllBranches ? 600 : 400 }}>내 지사</span>
+              <div onClick={() => setDupAllBranches(!dupAllBranches)}
+                style={{ width: 32, height: 18, borderRadius: 9, background: dupAllBranches ? '#7b1fa2' : '#dadce0', cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}>
+                <div style={{ width: 14, height: 14, borderRadius: 7, background: '#fff', position: 'absolute', top: 2, left: dupAllBranches ? 16 : 2, transition: 'left 0.2s', boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }} />
+              </div>
+              <span style={{ fontSize: '0.68rem', color: dupAllBranches ? '#7b1fa2' : '#9aa0a6', fontWeight: dupAllBranches ? 600 : 400 }}>전 지사</span>
+            </div>
+          </h3>
+          <div className="missing-alert-list">
+            {dupInspections.slice(0, 15).map((dup, i) => {
+              const names = dup.user_names.split(',');
+              const nameDisplay = names.map((n, idx) => (
+                <span key={idx}>
+                  {idx > 0 && <span style={{ fontWeight: 400 }}>{idx === names.length - 1 ? '과(와) ' : ', '}</span>}
+                  <strong>{n.trim()}</strong>
+                </span>
+              ));
+              return (
+                <div key={i} className="missing-alert-item" style={{ borderLeft: '3px solid #7b1fa2' }}>
+                  <div className="missing-alert-content">
+                    <div className="missing-alert-main" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 700, background: '#f3e5f5', color: '#7b1fa2' }}>{dup.case_no}</span>
+                      {dup.court && <span style={{ padding: '2px 6px', borderRadius: 8, fontSize: '0.68rem', background: '#e8eaf6', color: '#3949ab' }}>{dup.court}</span>}
+                      {dupAllBranches && dup.branch && <span style={{ padding: '2px 6px', borderRadius: 8, fontSize: '0.68rem', background: '#e0f2f1', color: '#00695c' }}>{dup.branch}</span>}
+                      <span style={{ fontSize: '0.82rem' }}>
+                        {nameDisplay}의 동일 임장 건입니다.
+                      </span>
+                    </div>
+                    <div className="missing-alert-detail">
+                      임장일: {dup.first_date === dup.last_date ? dup.first_date : `${dup.first_date} ~ ${dup.last_date}`}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* 계약서/물건보고서 확인 대기 알림 */}
       {contractAlerts.length > 0 && (
         <section className="section">
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <FileText size={18} color="#7b1fa2" /> 계약서 확인 대기
+            <FileText size={18} color="#7b1fa2" /> 계약서/물건보고서 확인대기
             <span className="missing-alert-count">{contractAlerts.length}건</span>
           </h3>
           <div className="missing-alert-list">
@@ -429,19 +555,29 @@ export default function Dashboard() {
 
 
       {/* 입금 대기 매출 (회계/관리자급) */}
-      {pendingSales.length > 0 && (
+      {pendingSales.length > 0 && (() => {
+        const filteredPending = pendingSalesBranch ? pendingSales.filter((r: any) => r.branch === pendingSalesBranch) : pendingSales;
+        const branches = [...new Set(pendingSales.map((r: any) => r.branch).filter(Boolean))].sort();
+        return (
         <section className="section">
-          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <DollarSign size={18} color="#e65100" /> 입금 대기 매출
-            <span style={{ background: '#e65100', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{pendingSales.length}건</span>
+            <span style={{ background: '#e65100', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{filteredPending.length}건</span>
+            {branches.length > 1 && (
+              <select value={pendingSalesBranch} onChange={e => setPendingSalesBranch(e.target.value)}
+                style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: '0.75rem', borderRadius: 6, border: '1px solid #dadce0' }}>
+                <option value="">전체 지사</option>
+                {branches.map(b => <option key={b} value={b}>{b}</option>)}
+              </select>
+            )}
           </h3>
           <div className="doc-list">
-            {pendingSales.slice(0, 10).map((r: any) => (
+            {filteredPending.slice(0, 10).map((r: any) => (
               <Link to="/sales" key={r.id} className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
                 <div className="doc-info">
                   <DollarSign size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
                   <div>
-                    <div className="doc-title">{r.user_name} — {r.client_name} ({r.type})</div>
+                    <div className="doc-title">{r.branch ? `[${r.branch}] ` : ''}{r.user_name} — {r.client_name} ({r.type})</div>
                     <div className="doc-meta">
                       <span>{(r.amount || 0).toLocaleString()}원</span>
                       <span>{r.contract_date}</span>
@@ -452,7 +588,8 @@ export default function Dashboard() {
             ))}
           </div>
         </section>
-      )}
+        );
+      })()}
 
       {/* 환불 신청 (회계/관리자급) */}
       {refundRequests.length > 0 && (
@@ -471,6 +608,41 @@ export default function Dashboard() {
                     <div className="doc-meta">
                       <span>{(r.amount || 0).toLocaleString()}원</span>
                       <span>{r.refund_requested_at ? new Date(r.refund_requested_at).toLocaleDateString('ko-KR') : ''}</span>
+                    </div>
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* 환불 영향 알림 — 이전 기간 환불로 성과금/수익 회수 필요 */}
+      {refundImpacts.length > 0 && (
+        <section className="section">
+          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={18} color="#e65100" /> 환불 회수 필요
+            <span style={{ background: '#e65100', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{refundImpacts.length}건</span>
+          </h3>
+          <div className="doc-list">
+            {refundImpacts.map((imp: any) => (
+              <Link to="/payroll" key={imp.id} className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
+                <div className="doc-info">
+                  <AlertTriangle size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
+                  <div>
+                    <div className="doc-title">
+                      [{imp.user_branch}] {imp.user_name} — {imp.client_name} ({imp.type}) 환불
+                    </div>
+                    <div className="doc-meta">
+                      <span style={{ color: '#d93025', fontWeight: 600 }}>-{(imp.amount || 0).toLocaleString()}원</span>
+                      <span>{imp.bonus_period_label} 매출</span>
+                      <span>{imp.refund_approved_at ? new Date(imp.refund_approved_at).toLocaleDateString('ko-KR') + ' 환불승인' : ''}</span>
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: '#e65100', marginTop: 2 }}>
+                      {imp.is_contract && '→ 계약건수 차감, 랭킹 변동 가능'}
+                      {imp.affects_bonus && ' / 성과금 재계산 필요'}
+                      {imp.affects_commission && imp.recovery_amount > 0 && ` / 회수금액: ${imp.recovery_amount.toLocaleString()}원`}
+                      {!imp.is_contract && !imp.affects_bonus && !imp.affects_commission && '→ 다음 정산 시 공제 확인 필요'}
                     </div>
                   </div>
                 </div>
@@ -767,6 +939,20 @@ function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[
               alerts.push({ userName, userId, date, activity: `개인 - ${d.reason}`, missingDoc: '결근 사유서 미제출', dDay });
             }
           }
+        }
+      } catch { /* */ }
+    });
+
+    // 1-2. 입찰 건: 작성입찰가/제시입찰가/낙찰가 미작성 감지
+    dayEntries.forEach((entry) => {
+      if (entry.activity_type !== '입찰') return;
+      try {
+        const d = JSON.parse(entry.data);
+        const missing: string[] = [];
+        if (!d.bidPrice) missing.push('작성입찰가');
+        if (!d.suggestedPrice) missing.push('제시입찰가');
+        if (missing.length > 0) {
+          alerts.push({ userName, userId, date, activity: `입찰 — ${d.caseNo || ''}`, missingDoc: `${missing.join(', ')} 미작성`, dDay });
         }
       } catch { /* */ }
     });

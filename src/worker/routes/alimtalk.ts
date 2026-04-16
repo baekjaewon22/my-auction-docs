@@ -75,24 +75,32 @@ alimtalk.delete('/recipients/:id', requireRole('master', 'ceo', 'admin'), async 
 // ── 발송 이력 ──
 
 // GET /api/alimtalk/logs — 발송 이력 조회
-alimtalk.get('/logs', requireRole('master', 'ceo', 'admin'), async (c) => {
+alimtalk.get('/logs', requireRole('master', 'ceo', 'cc_ref', 'admin'), async (c) => {
   const db = c.env.DB;
   const templateCode = c.req.query('template');
-  const limit = parseInt(c.req.query('limit') || '50');
+  const search = c.req.query('search');
+  const limit = parseInt(c.req.query('limit') || '100');
 
-  let query = 'SELECT * FROM alimtalk_logs';
-  const params: string[] = [];
+  let query = `SELECT l.*, u.name as recipient_name
+    FROM alimtalk_logs l
+    LEFT JOIN users u ON l.recipient_user_id = u.id`;
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+
   if (templateCode) {
-    query += ' WHERE template_code = ?';
+    conditions.push('l.template_code = ?');
     params.push(templateCode);
   }
-  query += ' ORDER BY created_at DESC LIMIT ?';
+  if (search) {
+    conditions.push("(u.name LIKE ? OR l.recipient_phone LIKE ? OR l.content LIKE ?)");
+    const s = '%' + search + '%';
+    params.push(s, s, s);
+  }
+  if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
+  query += ' ORDER BY l.created_at DESC LIMIT ?';
+  params.push(limit);
 
-  const stmt = db.prepare(query);
-  const result = params.length > 0
-    ? await stmt.bind(...params, limit).all()
-    : await stmt.bind(limit).all();
-
+  const result = await db.prepare(query).bind(...params).all();
   return c.json({ logs: result.results });
 });
 
@@ -112,11 +120,13 @@ alimtalk.get('/status', requireRole('master', 'ceo', 'admin'), async (c) => {
     templates,
     categories: [
       { code: 'signup_verify', label: '회원가입 인증' },
+      { code: 'signup_approved', label: '회원가입 승인' },
       { code: 'doc_submitted', label: '문서 제출 알림' },
       { code: 'doc_step_approved', label: '단계 승인 알림' },
       { code: 'doc_final_approved', label: '최종 승인 알림' },
       { code: 'doc_rejected', label: '문서 반려 알림' },
-      { code: 'doc_cc_submitted', label: 'CC 결재 알림' },
+      { code: 'minutes_shared', label: '회의록 공유 알림' },
+      { code: 'deposit_claim', label: '입금 매칭 알림' },
     ],
   });
 });

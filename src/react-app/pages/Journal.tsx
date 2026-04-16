@@ -28,6 +28,7 @@ interface Member {
   branch: string;
   department: string;
   position_title?: string;
+  login_type?: string;
 }
 
 function toDateStr(d: Date): string {
@@ -96,7 +97,7 @@ export default function Journal() {
 
   const openForm = (date: string) => { setFormDate(date); setShowForm(true); };
 
-  const branches = [...new Set(members.map((m) => m.branch).filter(Boolean))].sort((a, b) => {
+  const branches = [...new Set(members.map((m) => m.branch).filter(Boolean))].filter(b => b !== '본사 관리').sort((a, b) => {
     if (a === '의정부') return -1;
     if (b === '의정부') return 1;
     return a.localeCompare(b);
@@ -106,7 +107,7 @@ export default function Journal() {
   const currentBranch = isCeoPlus ? branches[activeBranch] : (user?.branch || '');
 
   const renderBranchView = (branch: string) => {
-    const branchMembers = members.filter((m) => m.branch === branch || (!branch && !m.branch));
+    const branchMembers = members.filter((m) => (m.branch === branch || (!branch && !m.branch)) && m.login_type !== 'freelancer');
     const departments = [...new Set(branchMembers.map((m) => m.department).filter(Boolean))].sort();
     const noDeptMembers = branchMembers.filter((m) => !m.department);
 

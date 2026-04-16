@@ -201,6 +201,17 @@ export default function Login() {
   const [agreeTerms, setAgreeTerms] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
+  // 비밀번호 찾기
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotStep, setForgotStep] = useState<'input' | 'verify' | 'reset'>('input');
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotName, setForgotName] = useState('');
+  const [forgotPhone, setForgotPhone] = useState('');
+  const [verifyCode, setVerifyCode] = useState('');
+  const [resetToken, setResetToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
+  const [countdown, setCountdown] = useState(0);
   const { login } = useAuthStore();
   const navigate = useNavigate();
 
@@ -243,6 +254,50 @@ export default function Login() {
     setIsRegister(!isRegister); setError(''); setSuccess('');
     setAgreePrivacy(false); setAgreeTerms(false);
     setShowPrivacy(false); setShowTerms(false);
+    setForgotMode(false);
+  };
+
+  // 비밀번호 찾기: 인증코드 발송
+  const handleForgotSend = async () => {
+    if (!forgotEmail || !forgotName || !forgotPhone) { setError('이메일, 이름, 전화번호를 모두 입력하세요.'); return; }
+    setLoading(true); setError('');
+    try {
+      await api.auth.forgotSend(forgotEmail, forgotName, forgotPhone);
+      setForgotStep('verify');
+      setCountdown(180);
+      const timer = setInterval(() => setCountdown(prev => { if (prev <= 1) { clearInterval(timer); return 0; } return prev - 1; }), 1000);
+      setSuccess('인증번호가 발송되었습니다.');
+    } catch (err: any) { setError(err.message); }
+    finally { setLoading(false); }
+  };
+
+  // 비밀번호 찾기: 인증코드 확인
+  const handleForgotVerify = async () => {
+    if (!verifyCode) { setError('인증번호를 입력하세요.'); return; }
+    setLoading(true); setError(''); setSuccess('');
+    try {
+      const res = await api.auth.forgotVerify(forgotPhone, verifyCode);
+      setResetToken(res.reset_token);
+      setForgotStep('reset');
+      setSuccess('본인인증이 완료되었습니다. 새 비밀번호를 입력하세요.');
+    } catch (err: any) { setError(err.message); }
+    finally { setLoading(false); }
+  };
+
+  // 비밀번호 찾기: 비밀번호 재설정
+  const handleForgotReset = async () => {
+    if (!newPassword) { setError('새 비밀번호를 입력하세요.'); return; }
+    if (newPassword !== newPasswordConfirm) { setError('비밀번호가 일치하지 않습니다.'); return; }
+    if (newPassword.length < 4) { setError('비밀번호는 4자 이상이어야 합니다.'); return; }
+    setLoading(true); setError('');
+    try {
+      await api.auth.forgotReset(resetToken, newPassword);
+      setSuccess('비밀번호가 변경되었습니다. 로그인해주세요.');
+      setForgotMode(false); setForgotStep('input');
+      setForgotEmail(''); setForgotName(''); setForgotPhone('');
+      setVerifyCode(''); setNewPassword(''); setNewPasswordConfirm('');
+    } catch (err: any) { setError(err.message); }
+    finally { setLoading(false); }
   };
 
   return (
@@ -385,7 +440,88 @@ export default function Login() {
               {isRegister ? '로그인' : '회원가입'}
             </button>
           </p>
+          {!isRegister && !forgotMode && (
+            <p style={{ textAlign: 'center', marginTop: 4 }}>
+              <button type="button" className="btn-link-login" style={{ fontSize: '0.78rem', color: '#9aa0a6' }}
+                onClick={() => { setForgotMode(true); setForgotStep('input'); setError(''); setSuccess(''); }}>
+                비밀번호 찾기
+              </button>
+            </p>
+          )}
         </form>
+        {/* 비밀번호 찾기 */}
+        {forgotMode && (
+          <div style={{ padding: '0 28px 20px', marginTop: -8 }}>
+            <div style={{ background: '#f8f9fa', borderRadius: 12, padding: 20, border: '1px solid #e8eaed' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h3 style={{ margin: 0, fontSize: '1rem', color: '#1a1a2e' }}>비밀번호 찾기</h3>
+                <button type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9aa0a6', fontSize: '1.2rem' }}
+                  onClick={() => { setForgotMode(false); setForgotStep('input'); setError(''); setSuccess(''); }}>×</button>
+              </div>
+
+              {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
+              {success && <div className="alert alert-success" style={{ marginBottom: 12 }}>{success}</div>}
+
+              {forgotStep === 'input' && (
+                <>
+                  <div className="form-group" style={{ marginBottom: 10 }}>
+                    <label style={{ fontSize: '0.78rem' }}>이메일</label>
+                    <input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} placeholder="가입한 이메일" style={{ width: '100%' }} />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 10 }}>
+                    <label style={{ fontSize: '0.78rem' }}>이름</label>
+                    <input type="text" value={forgotName} onChange={(e) => setForgotName(e.target.value)} placeholder="가입 시 이름" style={{ width: '100%' }} />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 14 }}>
+                    <label style={{ fontSize: '0.78rem' }}>전화번호</label>
+                    <input type="tel" value={forgotPhone} onChange={(e) => setForgotPhone(e.target.value)} placeholder="010-0000-0000" style={{ width: '100%' }} />
+                  </div>
+                  <button type="button" className="btn btn-login" onClick={handleForgotSend} disabled={loading} style={{ width: '100%' }}>
+                    {loading ? '발송중...' : '인증번호 발송'}
+                  </button>
+                </>
+              )}
+
+              {forgotStep === 'verify' && (
+                <>
+                  <div style={{ fontSize: '0.78rem', color: '#5f6368', marginBottom: 12 }}>
+                    {forgotPhone}으로 인증번호가 발송되었습니다.
+                    {countdown > 0 && <span style={{ color: '#d93025', fontWeight: 600, marginLeft: 8 }}>{Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, '0')}</span>}
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 14 }}>
+                    <label style={{ fontSize: '0.78rem' }}>인증번호 (6자리)</label>
+                    <input type="text" value={verifyCode} onChange={(e) => setVerifyCode(e.target.value)}
+                      placeholder="인증번호 입력" maxLength={6} style={{ width: '100%', fontSize: '1.2rem', textAlign: 'center', letterSpacing: 8 }} />
+                  </div>
+                  <button type="button" className="btn btn-login" onClick={handleForgotVerify} disabled={loading} style={{ width: '100%' }}>
+                    {loading ? '확인중...' : '인증 확인'}
+                  </button>
+                  <button type="button" className="btn-link-login" style={{ display: 'block', margin: '10px auto 0', fontSize: '0.75rem', color: '#9aa0a6' }}
+                    onClick={() => { setForgotStep('input'); setError(''); setSuccess(''); }}>
+                    다시 발송
+                  </button>
+                </>
+              )}
+
+              {forgotStep === 'reset' && (
+                <>
+                  <div className="form-group" style={{ marginBottom: 10 }}>
+                    <label style={{ fontSize: '0.78rem' }}>새 비밀번호</label>
+                    <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="새 비밀번호 (4자 이상)" style={{ width: '100%' }} />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 14 }}>
+                    <label style={{ fontSize: '0.78rem' }}>비밀번호 확인</label>
+                    <input type="password" value={newPasswordConfirm} onChange={(e) => setNewPasswordConfirm(e.target.value)} placeholder="비밀번호 재입력" style={{ width: '100%' }} />
+                  </div>
+                  <button type="button" className="btn btn-login" onClick={handleForgotReset} disabled={loading} style={{ width: '100%' }}>
+                    {loading ? '변경중...' : '비밀번호 변경'}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="login-footer">
           <span>(주)엘앤씨부동산중개법인 | 사업자등록번호: 127-86-29704</span>
           <span>&copy; 2025 My Auction. All rights reserved.</span>

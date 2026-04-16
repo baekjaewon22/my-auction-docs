@@ -24,6 +24,8 @@ import Payroll from './pages/Payroll';
 import LeavePage from './pages/Leave';
 import PropertyReport from './pages/PropertyReport';
 import FinanceAnalytics from './pages/FinanceAnalytics';
+import AlimtalkLogs from './pages/AlimtalkLogs';
+import AdminNotes from './pages/AdminNotes';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore();
@@ -41,6 +43,13 @@ function TopRoute({ children }: { children: React.ReactNode }) {
 function ApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager'];
+  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function AccountingOrApproverRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
@@ -189,9 +198,9 @@ export default function App() {
           <Route
             path="users"
             element={
-              <ApproverRoute>
+              <AccountingOrApproverRoute>
                 <UserManagement />
-              </ApproverRoute>
+              </AccountingOrApproverRoute>
             }
           />
           {/* commissions 라우트 제거 — 매출확인으로 통합 */}
@@ -227,6 +236,22 @@ export default function App() {
               <AdminRoute>
                 <MeetingMinutes />
               </AdminRoute>
+            }
+          />
+          <Route
+            path="alimtalk-logs"
+            element={
+              <AdminRoute>
+                <AlimtalkLogs />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="admin-notes"
+            element={
+              <PrivateRoute>
+                <AdminNotes />
+              </PrivateRoute>
             }
           />
         </Route>

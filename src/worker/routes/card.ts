@@ -6,7 +6,8 @@ const card = new Hono<AuthEnv>();
 card.use('*', authMiddleware);
 
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
-const EDIT_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'] as const;
+const EDIT_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+const DELETE_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'] as const; // 삭제는 보조 제외
 
 // PUT /api/card/user/:userId — 법인카드 번호 등록/수정
 card.put('/user/:userId', requireRole(...EDIT_ROLES), async (c) => {
@@ -32,15 +33,18 @@ card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
   const usersResult = await db.prepare(
     "SELECT id, card_number, branch FROM users WHERE card_number != '' AND approved = 1"
   ).all();
-  // 뒤 4자리 → 사용자 매핑
+  // 뒤 4자리 → 사용자 매핑 (콤마 구분 복수 카드 지원)
   const last4Map: Record<string, { user_id: string; branch: string }> = {};
   for (const u of usersResult.results as any[]) {
-    const num = (u.card_number || '').replace(/[^0-9]/g, '');
+    const cards = (u.card_number || '').split(',');
     const info = { user_id: u.id, branch: u.branch };
-    if (num.length >= 4) {
-      last4Map[num.slice(-4)] = info;
-    } else if (num.length > 0) {
-      last4Map[num] = info;
+    for (const card of cards) {
+      const num = card.trim().replace(/[^0-9]/g, '');
+      if (num.length >= 4) {
+        last4Map[num.slice(-4)] = info;
+      } else if (num.length > 0) {
+        last4Map[num] = info;
+      }
     }
   }
 
@@ -105,6 +109,39 @@ card.get('/transactions', requireRole(...ACCOUNTING_ROLES), async (c) => {
   return c.json({ transactions: result.results });
 });
 
+// POST /api/card/rematch — 미매칭 건 재매칭
+card.post('/rematch', requireRole(...EDIT_ROLES), async (c) => {
+  const db = c.env.DB;
+  // 등록된 카드번호 매핑 (콤마 구분 복수 카드 지원)
+  const usersResult = await db.prepare(
+    "SELECT id, card_number, branch FROM users WHERE card_number != '' AND approved = 1"
+  ).all();
+  const last4Map: Record<string, { user_id: string; branch: string }> = {};
+  for (const u of usersResult.results as any[]) {
+    const cards = (u.card_number || '').split(',');
+    for (const card of cards) {
+      const num = card.trim().replace(/[^0-9]/g, '');
+      if (num.length >= 4) last4Map[num.slice(-4)] = { user_id: u.id, branch: u.branch };
+      else if (num.length > 0) last4Map[num] = { user_id: u.id, branch: u.branch };
+    }
+  }
+
+  // 미매칭 건 조회
+  const unmatched = await db.prepare("SELECT id, card_number FROM card_transactions WHERE user_id IS NULL OR user_id = ''").all();
+  let updated = 0;
+  for (const t of unmatched.results as any[]) {
+    const numOnly = (t.card_number || '').replace(/[^0-9]/g, '');
+    const last4 = numOnly.length >= 4 ? numOnly.slice(-4) : numOnly;
+    const match = last4 ? last4Map[last4] : null;
+    if (match) {
+      await db.prepare("UPDATE card_transactions SET user_id = ?, branch = ?, category = ? WHERE id = ?")
+        .bind(match.user_id, match.branch, match.branch || '기타', t.id).run();
+      updated++;
+    }
+  }
+  return c.json({ success: true, total: unmatched.results?.length || 0, updated });
+});
+
 // GET /api/card/summary — 지사별/담당자별 합산
 card.get('/summary', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const db = c.env.DB;
@@ -153,7 +190,7 @@ card.get('/user-total/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
 });
 
 // DELETE /api/card/transaction/:id — 개별 삭제
-card.delete('/transaction/:id', requireRole(...EDIT_ROLES), async (c) => {
+card.delete('/transaction/:id', requireRole(...DELETE_ROLES), async (c) => {
   const id = c.req.param('id');
   const db = c.env.DB;
   await db.prepare('DELETE FROM card_transactions WHERE id = ?').bind(id).run();
@@ -161,7 +198,7 @@ card.delete('/transaction/:id', requireRole(...EDIT_ROLES), async (c) => {
 });
 
 // DELETE /api/card/batch/:batchId — 배치 삭제
-card.delete('/batch/:batchId', requireRole(...EDIT_ROLES), async (c) => {
+card.delete('/batch/:batchId', requireRole(...DELETE_ROLES), async (c) => {
   const batchId = c.req.param('batchId');
   const db = c.env.DB;
   await db.prepare('DELETE FROM card_transactions WHERE upload_batch = ?').bind(batchId).run();
@@ -169,7 +206,7 @@ card.delete('/batch/:batchId', requireRole(...EDIT_ROLES), async (c) => {
 });
 
 // POST /api/card/bulk-delete — 다중 삭제
-card.post('/bulk-delete', requireRole(...EDIT_ROLES), async (c) => {
+card.post('/bulk-delete', requireRole(...DELETE_ROLES), async (c) => {
   const { ids } = await c.req.json<{ ids: string[] }>();
   const db = c.env.DB;
   if (!ids || ids.length === 0) return c.json({ error: '삭제할 항목이 없습니다.' }, 400);
