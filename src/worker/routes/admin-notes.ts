@@ -49,12 +49,11 @@ adminNotes.get('/', async (c) => {
   if (!viewerInfo) return c.json({ error: '사용자 정보 오류' }, 400);
 
   const role = viewerInfo.role;
-  const isAdmin = ADMIN_ROLES.includes(role as Role);
 
-  // visibility 필터링
+  // visibility 필터링 — master만 전체 열람, 그 외는 전부 visibility 조건 적용
   let notes;
-  if (isAdmin) {
-    // 관리자: 전체 보기
+  if (role === 'master') {
+    // master: 전체 보기
     notes = await db.prepare(
       `SELECT n.*, u.position_title as author_position,
          (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = n.id) as comment_count
@@ -63,7 +62,7 @@ adminNotes.get('/', async (c) => {
        ORDER BY n.pinned DESC, n.created_at DESC`
     ).all();
   } else {
-    // 일반: all, 본인 지사, 본인 부서만
+    // 관리자급 포함 전체: visibility 조건 적용
     notes = await db.prepare(
       `SELECT n.*, u.position_title as author_position,
          (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = n.id) as comment_count
@@ -88,13 +87,24 @@ adminNotes.get('/:id', async (c) => {
   const viewer = c.get('user');
   const id = c.req.param('id');
 
-  const viewerInfo = await db.prepare('SELECT role FROM users WHERE id = ?').bind(viewer.sub).first<{ role: string }>();
+  const viewerInfo = await db.prepare('SELECT role, branch, department FROM users WHERE id = ?').bind(viewer.sub).first<{ role: string; branch: string; department: string }>();
   const role = viewerInfo?.role || viewer.role;
 
   const note = await db.prepare(
     'SELECT n.*, u.position_title as author_position FROM admin_notes n LEFT JOIN users u ON n.author_id = u.id WHERE n.id = ?'
-  ).bind(id).first();
+  ).bind(id).first<any>();
   if (!note) return c.json({ error: '노트를 찾을 수 없습니다.' }, 404);
+
+  // visibility 체크 (master는 예외)
+  if (role !== 'master' && note.author_id !== viewer.sub) {
+    const v = note.visibility || 'all';
+    const allowed =
+      v === 'all' ||
+      (v === 'branch' && note.author_branch === viewerInfo?.branch) ||
+      (v === 'department' && note.author_branch === viewerInfo?.branch && note.author_department === viewerInfo?.department) ||
+      (v.startsWith('team:') && v === 'team:' + viewerInfo?.department);
+    if (!allowed) return c.json({ error: '열람 권한이 없습니다.' }, 403);
+  }
 
   const comments = await db.prepare(
     `SELECT c.*, u.position_title as author_position
@@ -120,8 +130,8 @@ adminNotes.post('/', async (c) => {
     'SELECT branch, department, position_title, role FROM users WHERE id = ?'
   ).bind(user.sub).first<{ branch: string; department: string; position_title: string; role: string }>();
 
-  // 핀 고정은 관리자만
-  const canPin = ADMIN_ROLES.includes((profile?.role || user.role) as Role);
+  // 핀 고정은 master만
+  const canPin = (profile?.role || user.role) === 'master';
 
   const id = crypto.randomUUID();
   await c.env.DB.prepare(
@@ -152,9 +162,13 @@ adminNotes.put('/:id', async (c) => {
     return c.json({ error: '본인 글만 수정할 수 있습니다.' }, 403);
   }
 
+  // pinned 수정은 master만
+  const canPin = user.role === 'master';
+  const newPinned = pinned !== undefined ? (canPin ? (pinned ? 1 : 0) : note.pinned) : note.pinned;
+
   await c.env.DB.prepare(
     `UPDATE admin_notes SET title = ?, content = ?, pinned = ?, updated_at = datetime('now') WHERE id = ?`
-  ).bind(title?.trim() || note.title, content?.trim() || note.content, pinned !== undefined ? (pinned ? 1 : 0) : note.pinned, id).run();
+  ).bind(title?.trim() || note.title, content?.trim() || note.content, newPinned, id).run();
 
   return c.json({ success: true });
 });

@@ -7,7 +7,7 @@
 // ── 템플릿 정의 ──
 
 export const ALIMTALK_TEMPLATES = {
-  // 회원가입 인증
+  // 회원가입 인증 (기존 유지)
   SIGNUP_VERIFY: {
     code: 'SIGNUP',
     variables: ['verify_code'],
@@ -20,10 +20,10 @@ export const ALIMTALK_TEMPLATES = {
 본인이 요청하지 않았다면 무시하세요.`,
   },
 
-  // 문서 제출 → 결재자에게
+  // 문서 제출 → 결재자에게 (doc2)
   DOC_SUBMITTED: {
-    code: 'DOC',
-    variables: ['author_name', 'doc_title', 'department', 'submit_date'],
+    code: 'doc2',
+    variables: ['author_name', 'doc_title', 'department', 'submit_date', 'link'],
     content: `[마이옥션 오피스]
 
 관리자님
@@ -34,13 +34,16 @@ export const ALIMTALK_TEMPLATES = {
 ■ 부서: #{department}
 ■ 제출일: #{submit_date}
 
-결재 확인이 필요합니다.`,
+결재 확인이 필요합니다.
+
+▶ 바로가기
+#{link}`,
   },
 
-  // 단계 승인 → 다음 결재자에게
+  // 단계 승인 → 다음 결재자에게 (docstep2)
   DOC_STEP_APPROVED: {
-    code: 'docstep',
-    variables: ['approver_name', 'doc_title', 'author_name', 'department'],
+    code: 'docstep2',
+    variables: ['approver_name', 'doc_title', 'author_name', 'department', 'link'],
     content: `[마이옥션 오피스]
 
 관리자님
@@ -52,10 +55,13 @@ export const ALIMTALK_TEMPLATES = {
 ■ 작성자: #{author_name}
 ■ 부서: #{department}
 
-결재 확인이 필요합니다.`,
+결재 확인이 필요합니다.
+
+▶ 바로가기
+#{link}`,
   },
 
-  // 최종 승인 → 작성자에게
+  // 최종 승인 → 작성자에게 (docfinal 기존 유지, 바로가기 없음)
   DOC_FINAL_APPROVED: {
     code: 'docfinal',
     variables: ['doc_title', 'approver_name', 'approve_date'],
@@ -70,10 +76,10 @@ export const ALIMTALK_TEMPLATES = {
 ■ 승인일: #{approve_date}`,
   },
 
-  // 반려 → 작성자에게
+  // 반려 → 작성자에게 (docre23)
   DOC_REJECTED: {
-    code: 'docre',
-    variables: ['doc_title', 'rejector_name', 'reject_reason'],
+    code: 'docre23',
+    variables: ['doc_title', 'rejector_name', 'reject_reason', 'link'],
     content: `[마이옥션 오피스]
 
 담당자님
@@ -84,10 +90,13 @@ export const ALIMTALK_TEMPLATES = {
 ■ 반려자: #{rejector_name}
 ■ 사유: #{reject_reason}
 
-수정 후 재제출해주세요.`,
+수정 후 재제출해주세요.
+
+▶ 바로가기
+#{link}`,
   },
 
-  // 회원가입 승인 완료 → 신규회원에게
+  // 회원가입 승인 → 신규회원에게 (signup2 기존 유지, 바로가기 없음)
   SIGNUP_APPROVED: {
     code: 'signup2',
     variables: ['user_name', 'branch', 'department', 'position_title'],
@@ -102,10 +111,10 @@ export const ALIMTALK_TEMPLATES = {
 ■ 직책: #{position_title}`,
   },
 
-  // 회의록 공유 알림
+  // 회의록 공유 (shared2)
   MINUTES_SHARED: {
-    code: 'shared',
-    variables: ['author_name', 'title', 'date'],
+    code: 'shared2',
+    variables: ['author_name', 'title', 'date', 'link'],
     content: `[마이옥션 오피스]
 
 담당자님
@@ -115,27 +124,143 @@ export const ALIMTALK_TEMPLATES = {
 ■ 제목: #{title}
 ■ 작성일: #{date}
 
-확인해주세요.`,
+확인해주세요.
+
+▶ 바로가기
+#{link}`,
   },
 
-  // 입금 매칭 신청 → 총무에게
+  // 결제확인 요청 → 총무에게 (chong2)
   DEPOSIT_CLAIM: {
-    code: 'chong',
-    variables: ['claimer_name', 'depositor', 'amount', 'deposit_date', 'branch'],
+    code: 'chong2',
+    variables: ['claimer_name', 'depositor', 'amount', 'deposit_date', 'branch', 'link'],
     content: `[마이옥션 오피스]
 
 총무담당자님
 
-#{claimer_name}님이 입금 매칭을 신청하였습니다.
+#{claimer_name}님이 결제확인을 요청하였습니다.
 
 ■ 입금자: #{depositor}
 ■ 금액: #{amount}원
 ■ 입금일: #{deposit_date}
 ■ 지사: #{branch}
 
-매칭 확인이 필요합니다.`,
+결제확인 부탁드립니다.
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 휴가 신청 → 관리자/총무 (laevetype)
+  LEAVE_REQUEST: {
+    code: 'laevetype',
+    variables: ['user_name', 'leave_type', 'start_date', 'end_date', 'branch', 'link'],
+    content: `[마이옥션 오피스]
+
+관리자님
+
+#{user_name}님이 휴가를 신청하였습니다.
+
+■ 유형: #{leave_type}
+■ 기간: #{start_date} ~ #{end_date}
+■ 지사: #{branch}
+
+승인 확인이 필요합니다.
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 휴가 승인/반려 → 신청자 (leaveok)
+  LEAVE_APPROVED: {
+    code: 'leaveok',
+    variables: ['user_name', 'status', 'leave_type', 'start_date', 'end_date', 'approver_name', 'link'],
+    content: `[마이옥션 오피스]
+
+#{user_name}님
+
+휴가 신청이 #{status}되었습니다.
+
+■ 유형: #{leave_type}
+■ 기간: #{start_date} ~ #{end_date}
+■ 처리자: #{approver_name}
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 환불 정산 변동 → 총무/관리자 (refund)
+  REFUND_NOTICE: {
+    code: 'refund',
+    variables: ['consultant_name', 'client_name', 'amount', 'branch', 'link'],
+    content: `[마이옥션 오피스]
+
+총무님
+
+환불 처리로 인한 정산 변동이 발생하였습니다.
+
+■ 담당자: #{consultant_name}
+■ 고객명: #{client_name}
+■ 환불금액: #{amount}원
+■ 지사: #{branch}
+
+공제 내역을 확인해주세요.
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 비밀번호 재설정 (pwreset)
+  PW_RESET: {
+    code: 'pwreset',
+    variables: ['verify_code'],
+    content: `[마이옥션 오피스]
+비밀번호 재설정 인증번호입니다.
+
+인증번호: #{verify_code}
+
+3분 이내에 입력해주세요.
+본인이 요청하지 않았다면 무시하세요.`,
+  },
+
+  // 급여정산 완료 (salary)
+  SALARY: {
+    code: 'salary',
+    variables: ['user_name', 'period', 'final_pay', 'pay_type', 'link'],
+    content: `[마이옥션 오피스]
+
+#{user_name}님
+
+#{period} 급여정산이 완료되었습니다.
+
+■ 실지급액: #{final_pay}원
+■ 정산유형: #{pay_type}
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 결제확인 완료 → 담당자 (ACCOUNTING)
+  ACCOUNTING_CONFIRMED: {
+    code: 'ACCOUNTING',
+    variables: ['consultant_name', 'depositor', 'amount', 'confirm_date', 'link'],
+    content: `[마이옥션 오피스]
+
+#{consultant_name}님
+
+요청하신 결제확인이 완료되었습니다.
+
+■ 입금자: #{depositor}
+■ 금액: #{amount}원
+■ 확인일: #{confirm_date}
+
+▶ 바로가기
+#{link}`,
   },
 } as const;
+
+// 앱 도메인 (바로가기 링크용)
+export const APP_URL = 'https://my-docs.kr';
 
 export type AlimtalkTemplateKey = keyof typeof ALIMTALK_TEMPLATES;
 

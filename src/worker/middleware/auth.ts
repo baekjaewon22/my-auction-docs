@@ -35,6 +35,9 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
     ).bind(payload.sub).first<{ id: string; role: Role; team_id: string | null; branch: string; department: string }>();
 
     if (freshUser) {
+      if (freshUser.role === 'resigned') {
+        return c.json({ error: '퇴사 처리된 계정입니다. 관리자에게 문의하세요.' }, 403);
+      }
       payload.role = freshUser.role;
       payload.team_id = freshUser.team_id;
       payload.branch = freshUser.branch;

@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 
 const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
@@ -295,6 +296,19 @@ leave.post('/request', async (c) => {
     .bind(id, user.sub, body.leave_type, body.start_date, body.end_date,
       body.hours || 8, days, body.reason, user.branch, user.department).run();
 
+  // 알림톡: 관리자/총무에게 LEAVE_REQUEST
+  const admins = await db.prepare(
+    "SELECT phone FROM users WHERE role IN ('master', 'ceo', 'admin', 'accountant') AND approved = 1 AND phone != ''"
+  ).all<{ phone: string }>();
+  const phones = (admins.results || []).map(r => r.phone).filter(Boolean);
+  if (phones.length > 0) {
+    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+      c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
+      { user_name: user.name, leave_type: body.leave_type, start_date: body.start_date, end_date: body.end_date, branch: user.branch || '', link: `${APP_URL}/leave` },
+      phones,
+    ).catch(() => {}));
+  }
+
   return c.json({ success: true, id });
 });
 
@@ -388,6 +402,16 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
     }
   }
 
+  // 알림톡: 신청자에게 LEAVE_APPROVED
+  const reqUser2 = await db.prepare('SELECT name, phone FROM users WHERE id = ?').bind(req.user_id).first<{ name: string; phone: string }>();
+  if (reqUser2?.phone) {
+    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+      c.env as unknown as Record<string, unknown>, 'LEAVE_APPROVED',
+      { user_name: reqUser2.name, status: '승인', leave_type: req.leave_type, start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
+      [reqUser2.phone],
+    ).catch(() => {}));
+  }
+
   return c.json({ success: true });
 });
 
@@ -404,6 +428,16 @@ leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'admin', 'manage
   await db.prepare(`UPDATE leave_requests SET status = 'rejected', approved_by = ?,
     reject_reason = ?, approved_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
     .bind(user.sub, reason || '', requestId).run();
+
+  // 알림톡: 신청자에게 LEAVE_APPROVED (반려)
+  const reqUser = await db.prepare('SELECT name, phone FROM users WHERE id = ?').bind(req.user_id).first<{ name: string; phone: string }>();
+  if (reqUser?.phone) {
+    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+      c.env as unknown as Record<string, unknown>, 'LEAVE_APPROVED',
+      { user_name: reqUser.name, status: '반려', leave_type: req.leave_type, start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
+      [reqUser.phone],
+    ).catch(() => {}));
+  }
 
   return c.json({ success: true });
 });
@@ -592,7 +626,6 @@ leave.delete('/requests/:id', requireRole('master'), async (c) => {
 leave.get('/accountant-leaves', async (c) => {
   const db = c.env.DB;
   const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST
-  const today = now.toISOString().slice(0, 10);
   // 하루 전부터 공지
   const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   // 7일 후

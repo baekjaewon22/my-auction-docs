@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -X POST \"https://my-auction-docs.nic874.workers.dev/api/auth/login\" -H \"Content-Type: application/json\" -d \"{\\\\\"email\\\\\":\\\\\"admin@gmail.com\\\\\",\\\\\"password\\\\\":\\\\\"1234\\\\\"}\")",
+      "Bash(curl -s -X POST \"https://my-auction-docs.nic874.workers.dev/api/_test-alimtalk-all?token=alimtalk-test-2026&phone=01029440141\")"
+    ]
+  }
+}

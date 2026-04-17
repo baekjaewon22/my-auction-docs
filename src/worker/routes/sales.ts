@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
-import { sendAlimtalkByTemplate } from '../alimtalk';
+import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 
 const sales = new Hono<AuthEnv>();
 sales.use('*', authMiddleware);
@@ -15,7 +15,7 @@ const EDIT_ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant',
 sales.get('/', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  const { month, user_id: filterUserId, date_mode } = c.req.query();
+  const { month, month_end, user_id: filterUserId, date_mode } = c.req.query();
 
   let query = `
     SELECT sr.*, sr.deposit_date, u.name as user_name, u.position_title,
@@ -33,8 +33,8 @@ sales.get('/', async (c) => {
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
 
   if (role === 'director') {
-    // 총괄이사: 본인 건 + 대전/부산만
-    conditions.push("(sr.user_id = ? OR sr.branch IN ('대전', '부산'))");
+    // 총괄이사: 본인 건 + 대전/부산 (담당자 지사 또는 매출귀속 지사 기준)
+    conditions.push(`(sr.user_id = ? OR sr.branch IN ('대전', '부산') OR sr.attribution_branch IN ('대전', '부산'))`);
     params.push(user.sub);
   } else if (!isAdmin && !isAccountant) {
     if (role === 'manager') {
@@ -58,12 +58,13 @@ sales.get('/', async (c) => {
     params.push(filterUserId);
   }
 
-  // 월별 필터: date_mode=settle → 카드:card_deposit_date, 이체:deposit_date, 미지정:contract_date
+  // 월별 필터: month_end 있으면 범위(시작월~종료월), 없으면 단일월
   if (month) {
+    const endMonth = month_end || month;
+    const mStart = month + '-01';
+    const [ey, em] = endMonth.split('-').map(Number);
+    const mEnd = `${endMonth}-${new Date(ey, em, 0).getDate()}`;
     if (date_mode === 'settle') {
-      const mStart = month + '-01';
-      const [yy, mm] = month.split('-').map(Number);
-      const mEnd = `${month}-${new Date(yy, mm, 0).getDate()}`;
       conditions.push(`(
         (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
         OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
@@ -71,8 +72,8 @@ sales.get('/', async (c) => {
       )`);
       params.push(mStart, mEnd, mStart, mEnd, mStart, mEnd);
     } else {
-      conditions.push("sr.contract_date LIKE ?");
-      params.push(month + '%');
+      conditions.push("sr.contract_date >= ? AND sr.contract_date <= ?");
+      params.push(mStart, mEnd);
     }
   }
 
@@ -138,7 +139,7 @@ sales.post('/', async (c) => {
     if (phones.length > 0) {
       c.executionCtx.waitUntil(sendAlimtalkByTemplate(
         c.env as unknown as Record<string, unknown>, 'DEPOSIT_CLAIM',
-        { claimer_name: user.name, depositor: body.depositor_name || body.client_name, amount: Number(body.amount || 0).toLocaleString('ko-KR'), deposit_date: body.contract_date || new Date().toISOString().slice(0, 10), branch: creatorBranch },
+        { claimer_name: user.name, depositor: body.depositor_name || body.client_name, amount: Number(body.amount || 0).toLocaleString('ko-KR'), deposit_date: body.contract_date || new Date().toISOString().slice(0, 10), branch: creatorBranch, link: `${APP_URL}/sales` },
         phones,
       ).catch(() => {}));
     }
@@ -170,12 +171,23 @@ sales.put('/:id', async (c) => {
   if (!isOwner && !isAdminPlus) return c.json({ error: '권한이 없습니다.' }, 403);
   if (record.status !== 'pending' && !isAdminPlus) return c.json({ error: '확정된 매출은 수정할 수 없습니다.' }, 400);
 
+  // card_pending 상태에서 card_deposit_date 입력 시 → confirmed 전환
+  const newCardDepDate = body.card_deposit_date ?? record.card_deposit_date ?? '';
+  let statusUpdate = record.status;
+  if (record.status === 'card_pending' && body.card_deposit_date && body.card_deposit_date.trim()) {
+    statusUpdate = 'confirmed';
+  }
+  // card_deposit_date 초기화 시 confirmed → card_pending 복귀
+  if (record.status === 'confirmed' && record.payment_type === '카드' && body.card_deposit_date === '') {
+    statusUpdate = 'card_pending';
+  }
+
   await db.prepare(`
     UPDATE sales_records SET type = ?, type_detail = ?, client_name = ?, depositor_name = ?,
       depositor_different = ?, amount = ?, contract_date = ?,
       payment_type = ?, receipt_type = ?, receipt_phone = ?, card_deposit_date = ?,
       appraisal_rate = ?, winning_rate = ?, client_phone = ?, proxy_cost = ?,
-      updated_at = datetime('now')
+      status = ?, updated_at = datetime('now')
     WHERE id = ?
   `).bind(
     body.type || record.type, body.type_detail ?? record.type_detail,
@@ -183,12 +195,24 @@ sales.put('/:id', async (c) => {
     body.depositor_different !== undefined ? (body.depositor_different ? 1 : 0) : record.depositor_different,
     body.amount ?? record.amount, body.contract_date ?? record.contract_date,
     body.payment_type ?? record.payment_type ?? '', body.receipt_type ?? record.receipt_type ?? '',
-    body.receipt_phone ?? record.receipt_phone ?? '', body.card_deposit_date ?? record.card_deposit_date ?? '',
+    body.receipt_phone ?? record.receipt_phone ?? '', newCardDepDate,
     body.appraisal_rate ?? record.appraisal_rate ?? 0, body.winning_rate ?? record.winning_rate ?? 0,
     body.client_phone ?? record.client_phone ?? '',
     body.proxy_cost ?? record.proxy_cost ?? 0,
-    id
+    statusUpdate, id
   ).run();
+
+  // 알림톡: 카드 정산일 입력으로 card_pending → confirmed 전환 시 담당자에게 ACCOUNTING_CONFIRMED
+  if (record.status === 'card_pending' && statusUpdate === 'confirmed') {
+    const consultant = await db.prepare('SELECT name, phone FROM users WHERE id = ?').bind(record.user_id).first<{ name: string; phone: string }>();
+    if (consultant?.phone) {
+      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'ACCOUNTING_CONFIRMED',
+        { consultant_name: consultant.name, depositor: record.depositor_name || record.client_name, amount: Number(record.amount || 0).toLocaleString('ko-KR'), confirm_date: newCardDepDate, link: `${APP_URL}/sales` },
+        [consultant.phone],
+      ).catch(() => {}));
+    }
+  }
 
   return c.json({ success: true });
 });
@@ -207,10 +231,24 @@ sales.post('/:id/confirm', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   if (record.status !== 'pending') return c.json({ error: '이미 처리된 건입니다.' }, 400);
 
   const depDate = deposit_date || new Date().toISOString().slice(0, 10);
+  // 카드 결제 → card_pending (카드 정산일 입력 전까지 대기)
+  const newStatus = record.payment_type === '카드' ? 'card_pending' : 'confirmed';
   await db.prepare(`
-    UPDATE sales_records SET status = 'confirmed', confirmed_at = datetime('now'), confirmed_by = ?, deposit_date = ?, updated_at = datetime('now')
+    UPDATE sales_records SET status = ?, confirmed_at = datetime('now'), confirmed_by = ?, deposit_date = ?, updated_at = datetime('now')
     WHERE id = ?
-  `).bind(user.sub, depDate, id).run();
+  `).bind(newStatus, user.sub, depDate, id).run();
+
+  // 알림톡: 담당자에게 결제확인 완료 (이체 → confirmed 일 때만; 카드는 정산일 입력 시점에 발송)
+  if (newStatus === 'confirmed') {
+    const consultant = await db.prepare('SELECT name, phone FROM users WHERE id = ?').bind(record.user_id).first<{ name: string; phone: string }>();
+    if (consultant?.phone) {
+      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'ACCOUNTING_CONFIRMED',
+        { consultant_name: consultant.name, depositor: record.depositor_name || record.client_name, amount: Number(record.amount || 0).toLocaleString('ko-KR'), confirm_date: depDate, link: `${APP_URL}/sales` },
+        [consultant.phone],
+      ).catch(() => {}));
+    }
+  }
 
   return c.json({ success: true });
 });
@@ -222,7 +260,7 @@ sales.post('/:id/unconfirm', requireRole('master', 'accountant'), async (c) => {
 
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
-  if (record.status !== 'confirmed') return c.json({ error: '확정된 매출만 취소할 수 있습니다.' }, 400);
+  if (record.status !== 'confirmed' && record.status !== 'card_pending') return c.json({ error: '확정된 매출만 취소할 수 있습니다.' }, 400);
 
   await db.prepare(`
     UPDATE sales_records SET status = 'pending', confirmed_at = NULL, confirmed_by = NULL, deposit_date = '', card_deposit_date = '', updated_at = datetime('now')
@@ -245,7 +283,7 @@ sales.post('/:id/refund-request', async (c) => {
   if (record.user_id !== user.sub && !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
     return c.json({ error: '본인 건만 환불 신청할 수 있습니다.' }, 403);
   }
-  if (record.status !== 'confirmed') return c.json({ error: '확정된 매출만 환불 신청할 수 있습니다.' }, 400);
+  if (record.status !== 'confirmed' && record.status !== 'card_pending') return c.json({ error: '확정된 매출만 환불 신청할 수 있습니다.' }, 400);
 
   await db.prepare(`
     UPDATE sales_records SET status = 'refund_requested', refund_requested_at = datetime('now'), updated_at = datetime('now')
@@ -269,6 +307,26 @@ sales.post('/:id/refund-approve', requireRole(...EDIT_ACCOUNTING_ROLES), async (
     UPDATE sales_records SET status = 'refunded', refund_approved_at = datetime('now'), refund_approved_by = ?, updated_at = datetime('now')
     WHERE id = ?
   `).bind(user.sub, id).run();
+
+  // 알림톡: 환불 승인 → 해당 지사 총무에게 REFUND_NOTICE
+  const consultant = await db.prepare('SELECT name FROM users WHERE id = ?').bind(record.user_id).first<{ name: string }>();
+  const recordBranch = record.branch || '';
+  if (recordBranch) {
+    const accountants = await db.prepare(
+      "SELECT phone, alimtalk_branches FROM users WHERE role IN ('accountant', 'accountant_asst') AND approved = 1 AND phone != ''"
+    ).all<{ phone: string; alimtalk_branches: string }>();
+    const phones = (accountants.results || [])
+      .filter(r => r.alimtalk_branches && r.alimtalk_branches.split(',').includes(recordBranch))
+      .map(r => r.phone)
+      .filter(Boolean);
+    if (phones.length > 0) {
+      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'REFUND_NOTICE',
+        { consultant_name: consultant?.name || '', client_name: record.client_name || '', amount: Number(record.amount || 0).toLocaleString('ko-KR'), branch: recordBranch, link: `${APP_URL}/sales` },
+        phones,
+      ).catch(() => {}));
+    }
+  }
 
   return c.json({ success: true });
 });
@@ -452,7 +510,7 @@ sales.get('/dashboard/refund-requests', async (c) => {
 sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  const { month, branch, department, user_id: filterUserId } = c.req.query();
+  const { month, month_end, branch, department, user_id: filterUserId } = c.req.query();
 
   let query = `
     SELECT sr.*, u.name as user_name, u.branch as user_branch, u.department as user_department
@@ -462,7 +520,14 @@ sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'
   `;
   const params: any[] = [];
 
-  if (month) { query += " AND sr.contract_date LIKE ?"; params.push(month + '%'); }
+  if (month) {
+    const endMonth = month_end || month;
+    const mStart = month + '-01';
+    const [ey, em] = endMonth.split('-').map(Number);
+    const mEnd = `${endMonth}-${new Date(ey, em, 0).getDate()}`;
+    query += " AND sr.contract_date >= ? AND sr.contract_date <= ?";
+    params.push(mStart, mEnd);
+  }
   if (branch) { query += " AND sr.branch = ?"; params.push(branch); }
   if (department) { query += " AND sr.department = ?"; params.push(department); }
   if (filterUserId) { query += " AND sr.user_id = ?"; params.push(filterUserId); }
@@ -555,7 +620,7 @@ sales.post('/deposits/:id/claim', async (c) => {
   if (phones.length > 0) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'DEPOSIT_CLAIM',
-      { claimer_name: user.name, depositor: notice.depositor, amount: Number(notice.amount).toLocaleString('ko-KR'), deposit_date: notice.deposit_date || '', branch: claimerBranch },
+      { claimer_name: user.name, depositor: notice.depositor, amount: Number(notice.amount).toLocaleString('ko-KR'), deposit_date: notice.deposit_date || '', branch: claimerBranch, link: `${APP_URL}/sales` },
       phones,
     ).catch(() => {}));
   }

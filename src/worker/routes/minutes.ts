@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv, Role } from '../types';
 import { authMiddleware, requireRole, verifyToken } from '../middleware/auth';
-import { sendAlimtalkByTemplate } from '../alimtalk';
+import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 
 // txt → 회의록 기본 포맷팅 (API 키 없을 때)
 function formatAsMinutes(title: string, raw: string): string {
@@ -80,7 +80,7 @@ minutes.use('*', async (c, next) => {
       // DB에서 최신 역할 확인
       const db = c.env.DB;
       const user = await db.prepare('SELECT role FROM users WHERE id = ?').bind(payload.sub).first<{ role: Role }>();
-      if (!user || !['master', 'ceo', 'cc_ref'].includes(user.role)) {
+      if (!user || !['master', 'ceo', 'cc_ref', 'admin', 'director'].includes(user.role)) {
         return c.json({ error: '권한이 없습니다.' }, 403);
       }
       payload.role = user.role;
@@ -103,25 +103,51 @@ minutes.use('*', async (c, next) => {
 });
 
 // GET /api/minutes - 목록 조회
+// master는 전체, 그 외(ceo/cc_ref/admin)는 업로더 본인 또는 공유받은 회의록만
 minutes.get('/', async (c) => {
   const db = c.env.DB;
+  const user = c.get('user');
+
+  if (user.role === 'master') {
+    const rows = await db.prepare(
+      `SELECT m.id, m.title, m.description, m.file_name, m.file_size, m.created_at, u.name as uploader_name
+       FROM meeting_minutes m
+       LEFT JOIN users u ON m.uploaded_by = u.id
+       ORDER BY m.created_at DESC`
+    ).all();
+    return c.json({ minutes: rows.results });
+  }
+
+  // 업로더 본인 또는 공유받은 건만
   const rows = await db.prepare(
-    `SELECT m.id, m.title, m.description, m.file_name, m.file_size, m.created_at, u.name as uploader_name
+    `SELECT DISTINCT m.id, m.title, m.description, m.file_name, m.file_size, m.created_at, u.name as uploader_name
      FROM meeting_minutes m
      LEFT JOIN users u ON m.uploaded_by = u.id
+     WHERE m.uploaded_by = ?
+        OR EXISTS (SELECT 1 FROM minutes_shares ms WHERE ms.minutes_id = m.id AND ms.shared_with = ?)
      ORDER BY m.created_at DESC`
-  ).all();
+  ).bind(user.sub, user.sub).all();
   return c.json({ minutes: rows.results });
 });
 
 // GET /api/minutes/:id/download - PDF 다운로드
 minutes.get('/:id/download', async (c) => {
   const db = c.env.DB;
+  const user = c.get('user');
+  const id = c.req.param('id');
   const row = await db.prepare(
-    'SELECT file_name, file_data FROM meeting_minutes WHERE id = ?'
-  ).bind(c.req.param('id')).first<{ file_name: string; file_data: string }>();
+    'SELECT uploaded_by, file_name, file_data FROM meeting_minutes WHERE id = ?'
+  ).bind(id).first<{ uploaded_by: string; file_name: string; file_data: string }>();
 
   if (!row) return c.json({ error: '파일을 찾을 수 없습니다.' }, 404);
+
+  // 권한 체크: master || 업로더 본인 || 공유받은 사용자
+  if (user.role !== 'master' && row.uploaded_by !== user.sub) {
+    const share = await db.prepare(
+      'SELECT 1 FROM minutes_shares WHERE minutes_id = ? AND shared_with = ?'
+    ).bind(id, user.sub).first();
+    if (!share) return c.json({ error: '열람 권한이 없습니다.' }, 403);
+  }
 
   const binary = Uint8Array.from(atob(row.file_data), ch => ch.charCodeAt(0));
   return new Response(binary, {
@@ -286,11 +312,20 @@ ${raw_text}
 // [7-2] GET /api/minutes/:id — 상세 조회 (변환된 내용 포함)
 minutes.get('/:id', async (c) => {
   const db = c.env.DB;
+  const user = c.get('user');
   const id = c.req.param('id');
   const row = await db.prepare(
     `SELECT m.*, u.name as uploader_name FROM meeting_minutes m LEFT JOIN users u ON m.uploaded_by = u.id WHERE m.id = ?`
   ).bind(id).first<any>();
   if (!row) return c.json({ error: '회의록을 찾을 수 없습니다.' }, 404);
+
+  // 권한 체크: master || 업로더 본인 || 공유받은 사용자
+  if (user.role !== 'master' && row.uploaded_by !== user.sub) {
+    const share = await db.prepare(
+      'SELECT 1 FROM minutes_shares WHERE minutes_id = ? AND shared_with = ?'
+    ).bind(id, user.sub).first();
+    if (!share) return c.json({ error: '열람 권한이 없습니다.' }, 403);
+  }
 
   const shares = await db.prepare(
     'SELECT ms.*, u.name as user_name FROM minutes_shares ms LEFT JOIN users u ON ms.shared_with = u.id WHERE ms.minutes_id = ?'
@@ -324,7 +359,7 @@ minutes.post('/:id/share', async (c) => {
     const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'MINUTES_SHARED',
-      { author_name: user.name, title: minute.title, date: today },
+      { author_name: user.name, title: minute.title, date: today, link: `${APP_URL}/minutes` },
       newSharedPhones,
     ).catch(() => {}));
   }

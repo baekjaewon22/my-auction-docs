@@ -20,6 +20,8 @@ import payrollRoute from './routes/payroll';
 import cardRoute from './routes/card';
 import analyticsRoute from './routes/analytics';
 import adminNotesRoute from './routes/admin-notes';
+import cooperationRoute from './routes/cooperation';
+import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -52,8 +54,50 @@ app.route('/api/payroll', payrollRoute);
 app.route('/api/card', cardRoute);
 app.route('/api/analytics', analyticsRoute);
 app.route('/api/admin-notes', adminNotesRoute);
+app.route('/api/cooperation', cooperationRoute);
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// 임시: 모든 알림톡 템플릿 테스트 발송 (인증 없이, 토큰 보호)
+app.post('/api/_test-alimtalk-all', async (c) => {
+  const token = c.req.query('token');
+  if (token !== 'alimtalk-test-2026') return c.json({ error: '권한 없음' }, 403);
+  const targetPhone = c.req.query('phone') || '01029440141';
+
+  const LINK = 'https://my-docs.kr/dashboard';
+  const sampleVars: Record<string, Record<string, string>> = {
+    SIGNUP_VERIFY: { verify_code: '123456' },
+    DOC_SUBMITTED: { author_name: '홍길동', doc_title: '외근 보고서', department: '경매사업부1팀', submit_date: '2026-04-17', link: LINK },
+    DOC_STEP_APPROVED: { approver_name: '팀장', doc_title: '외근 보고서', author_name: '홍길동', department: '경매사업부1팀', link: LINK },
+    DOC_FINAL_APPROVED: { doc_title: '외근 보고서', approver_name: '대표이사', approve_date: '2026-04-17' },
+    DOC_REJECTED: { doc_title: '외근 보고서', rejector_name: '팀장', reject_reason: '재제출 요망', link: LINK },
+    SIGNUP_APPROVED: { user_name: '홍길동', branch: '의정부', department: '경매사업부1팀', position_title: '사원' },
+    MINUTES_SHARED: { author_name: '홍길동', title: '월간 정기 회의록', date: '2026-04-17', link: LINK },
+    DEPOSIT_CLAIM: { claimer_name: '홍길동', depositor: '김철수', amount: '1,100,000', deposit_date: '2026-04-17', branch: '의정부', link: LINK },
+    LEAVE_REQUEST: { user_name: '홍길동', leave_type: '연차', start_date: '2026-04-20', end_date: '2026-04-20', branch: '의정부', link: LINK },
+    LEAVE_APPROVED: { user_name: '홍길동', status: '승인', leave_type: '연차', start_date: '2026-04-20', end_date: '2026-04-20', approver_name: '팀장', link: LINK },
+    REFUND_NOTICE: { consultant_name: '홍길동', client_name: '김철수', amount: '1,100,000', branch: '의정부', link: LINK },
+    PW_RESET: { verify_code: '654321' },
+    SALARY: { user_name: '홍길동', period: '2026년 3월', final_pay: '3,500,000', pay_type: '급여제', link: LINK },
+    ACCOUNTING_CONFIRMED: { consultant_name: '홍길동', depositor: '김철수', amount: '1,100,000', confirm_date: '2026-04-17', link: LINK },
+  };
+
+  const results: { key: string; code: string; ok: boolean; error?: string }[] = [];
+  for (const key of Object.keys(ALIMTALK_TEMPLATES) as (keyof typeof ALIMTALK_TEMPLATES)[]) {
+    try {
+      const r = await sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>,
+        key,
+        sampleVars[key] || {},
+        [targetPhone],
+      );
+      results.push({ key, code: ALIMTALK_TEMPLATES[key].code, ok: !!r });
+    } catch (err: any) {
+      results.push({ key, code: ALIMTALK_TEMPLATES[key].code, ok: false, error: err.message });
+    }
+  }
+  return c.json({ phone: targetPhone, total: results.length, sent: results.filter(r => r.ok).length, results });
+});
 
 export default app;

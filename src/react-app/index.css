@@ -3625,8 +3625,11 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .page { padding: 16px; }
   .page-header { flex-direction: column; align-items: flex-start; gap: 12px; }
 
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
-  .stats-grid .stat-card:first-child { grid-column: 1 / -1; }
+  .stats-grid { grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .stats-grid .stat-card { padding: 8px 4px; min-height: auto; }
+  .stats-grid .stat-card .stat-icon { width: 18px !important; height: 18px !important; margin-bottom: 2px; }
+  .stats-grid .stat-card .stat-number { font-size: 1.1rem; line-height: 1.2; }
+  .stats-grid .stat-card .stat-label { font-size: 0.65rem; }
 
   .doc-card-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .template-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }

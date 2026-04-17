@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, Handshake
 } from 'lucide-react';
 
 export default function Layout() {
@@ -138,6 +138,11 @@ export default function Layout() {
         <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="관리자 노트" onClick={() => setMobileOpen(false)}>
           <StickyNote size={18} /> {!collapsed && '관리자 노트'}
         </Link>
+        {!isFreelancer && (
+          <Link to="/cooperation" className={`nav-item ${isActive('/cooperation') ? 'active' : ''}`} title="업무협조요청" onClick={() => setMobileOpen(false)}>
+            <Handshake size={18} /> {!collapsed && '업무협조요청'}
+          </Link>
+        )}
 
         {canAccounting && (
           <>

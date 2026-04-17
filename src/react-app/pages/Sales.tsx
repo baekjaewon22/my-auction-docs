@@ -19,7 +19,8 @@ const TYPE_OPTIONS = [
 ];
 
 const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }> = {
-  pending: { label: '입금대기', color: '#e65100', bg: '#fff3e0' },
+  pending: { label: '입금신청', color: '#e65100', bg: '#fff3e0' },
+  card_pending: { label: '카드대기', color: '#7b1fa2', bg: '#f3e5f5' },
   confirmed: { label: '확정매출', color: '#188038', bg: '#e8f5e9' },
   refund_requested: { label: '환불신청', color: '#d93025', bg: '#fce4ec' },
   refunded: { label: '환불완료', color: '#9aa0a6', bg: '#f5f5f5' },
@@ -57,16 +58,32 @@ export default function Sales() {
   const [showDepositForm, setShowDepositForm] = useState(false);
   const [filterUser, setFilterUser] = useState('');
   const [filterType, setFilterType] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [showBranchSummary, setShowBranchSummary] = useState(false);
   const [filterBranch, setFilterBranch] = useState(() => {
-    // 총무 담당/보조는 본인 지사를 디폴트로
-    if (['accountant', 'accountant_asst'].includes(currentUser?.role || '') && currentUser?.branch) {
-      return currentUser.branch;
-    }
     // 총괄이사는 대전 디폴트
     if (currentUser?.role === 'director') return '대전';
     return '';
   });
+  const [branchDefaultApplied, setBranchDefaultApplied] = useState(false);
+
+  // 총무 담당/보조: 알림톡 설정(담당 지사)의 첫 번째 지사를 기본 필터로 적용
+  useEffect(() => {
+    if (branchDefaultApplied) return;
+    if (!currentUser?.id) return;
+    if (!['accountant', 'accountant_asst'].includes(currentUser.role || '')) return;
+    api.users.getAlimtalkSettings(currentUser.id).then(res => {
+      const branches = (res.branches || '').split(',').filter(Boolean);
+      if (branches.length > 0) setFilterBranch(branches[0]);
+      else if (currentUser.branch) setFilterBranch(currentUser.branch);
+      setBranchDefaultApplied(true);
+    }).catch(() => {
+      if (currentUser.branch) setFilterBranch(currentUser.branch);
+      setBranchDefaultApplied(true);
+    });
+  }, [currentUser?.id]);
   const [filterMonth, setFilterMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [filterMonthEnd, setFilterMonthEnd] = useState('');
 
   // 입금확인 시 입금일자
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
@@ -169,8 +186,9 @@ export default function Sales() {
   const isMaster = role === 'master' || role === 'accountant'; // 총무담당 = master 동급 (유형변경/확인취소)
   const canModifyAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 수정 권한
   const canApproveAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 입금확인/결제확인
+  const canDepositUpload = ['master', 'accountant', 'accountant_asst'].includes(role); // 입금등록/엑셀업로드 (총무 전용)
   const canDeleteAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(role); // 삭제/유형변경 (보조 제외)
-  const canViewAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 열람
+  // const canViewAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 열람 (현재 미사용)
   const isDirector = role === 'director';
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const isManager = role === 'manager';
@@ -179,12 +197,13 @@ export default function Sales() {
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const salesRes = await api.sales.list({ month: filterMonth, user_id: filterUser || undefined });
+      const salesRes = await api.sales.list({ month: filterMonth, month_end: filterMonthEnd || undefined, user_id: filterUser || undefined });
       setRecords(salesRes.records);
-      if (canViewAccounting) {
+      // 입금등록: 모든 담당자가 볼 수 있어야 함 (본인이 claim 가능하도록)
+      try {
         const depRes = await api.sales.deposits();
         setDeposits(depRes.deposits || []);
-      }
+      } catch { /* */ }
       if (showUserFilter) {
         const memRes = await api.journal.members();
         setMembers(memRes.members || []);
@@ -221,7 +240,7 @@ export default function Sales() {
     finally { if (!silent) setLoading(false); }
   };
 
-  useEffect(() => { load(); }, [filterMonth, filterUser, rankingYearly, rankingPeriodIdx]);
+  useEffect(() => { load(); }, [filterMonth, filterMonthEnd, filterUser, rankingYearly, rankingPeriodIdx]);
 
   const resetForm = () => {
     setFormType('계약'); setFormTypeDetail(''); setFormClientName('');
@@ -241,6 +260,30 @@ export default function Sales() {
     if (formType === '계약') {
       if (!formAppraisalRate || !formWinningRate) { alert('감정가 %와 낙찰가 %를 모두 입력하세요.'); return; }
     }
+
+    // [6-2] 낙찰 타입: 동일 고객의 기존 계약 찾기 → 계약시 설정한 수수료율과 비교
+    let rateDeviationReason = '';
+    if (formType === '낙찰' && formClientName) {
+      const priorContract = records.find(r =>
+        r.type === '계약' && r.client_name === formClientName &&
+        (r.appraisal_rate > 0 || r.winning_rate > 0)
+      );
+      if (priorContract) {
+        const confirmMatch = confirm(
+          `해당 고객(${formClientName})의 계약 조건이 있습니다.\n\n` +
+          `■ 계약 시 약정 수수료율\n` +
+          `  - 감정가: ${priorContract.appraisal_rate}%\n` +
+          `  - 낙찰가: ${priorContract.winning_rate}%\n\n` +
+          `실제 낙찰 수수료가 위 조건과 일치합니까?\n\n` +
+          `[확인] 일치 — 그대로 저장\n[취소] 불일치 — 사유 입력`
+        );
+        if (!confirmMatch) {
+          const reason = prompt(`계약 조건과 실제 수수료가 다른 사유를 입력하세요:\n(감정가 ${priorContract.appraisal_rate}% / 낙찰가 ${priorContract.winning_rate}%)`);
+          if (!reason || !reason.trim()) { alert('사유 미입력으로 저장 취소됨.'); return; }
+          rateDeviationReason = `[수수료변동사유] ${reason.trim()}`;
+        }
+      }
+    }
     try {
       const rawAmount = Number(fromMoneyDisplay(formAmount)) || 0;
       const proxyCost = formType === '매수신청대리' ? (Number(fromMoneyDisplay(formProxyCost)) || 0) : 0;
@@ -248,7 +291,7 @@ export default function Sales() {
       const finalAmount = formType === '매수신청대리' ? Math.abs(proxyProfit) : rawAmount;
       const finalDirection = formType === '매수신청대리' && proxyProfit < 0 ? 'expense' : undefined;
       await api.sales.create({
-        type: formType, type_detail: formType === '기타' ? formTypeDetail : (formType === '매수신청대리' ? `대리비용 ${proxyCost.toLocaleString()}원 / 수익 ${proxyProfit >= 0 ? '' : '-'}${Math.abs(proxyProfit).toLocaleString()}원` : ''),
+        type: formType, type_detail: formType === '기타' ? formTypeDetail : (formType === '매수신청대리' ? `대리비용 ${proxyCost.toLocaleString()}원 / 수익 ${proxyProfit >= 0 ? '' : '-'}${Math.abs(proxyProfit).toLocaleString()}원` : rateDeviationReason),
         client_name: formClientName, depositor_name: formDepositorDiff ? formDepositorName : '',
         depositor_different: formDepositorDiff, amount: finalAmount,
         contract_date: formContractDate,
@@ -311,24 +354,33 @@ export default function Sales() {
   };
   useEffect(() => { if (salesTab === 'activity') loadActivity(activityUser || undefined); }, [salesTab, activityUser]);
 
-  const filteredMembers = (filterBranch ? members.filter(m => m.branch === filterBranch) : members).filter(m => m.role !== 'master');
-  const memberOpts = filteredMembers.map(m => ({ value: m.id, label: `${m.name} (${m.department})` }));
+  const resignedWithSales = new Set(records.filter(r => r.user_id).map(r => r.user_id));
+  const filteredMembers = (filterBranch ? members.filter(m => m.branch === filterBranch) : members)
+    .filter(m => m.role !== 'master')
+    .filter(m => (m.role as string) !== 'resigned' || resignedWithSales.has(m.id));
+  const memberOpts = filteredMembers.map(m => ({ value: m.id, label: `${m.name} (${m.department})${(m.role as string) === 'resigned' ? ' [퇴사]' : ''}` }));
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
 
-  // 지사 + 유형 필터 적용된 records
-  let branchRecords = filterBranch ? records.filter(r => r.branch === filterBranch) : records;
+  // 지사 + 유형 + 담당자 + 상태 필터 적용된 records
+  // 지사 집계는 attribution_branch(매출 귀속 지사)가 있으면 그걸 우선 사용
+  const effectiveBranch = (r: SalesRecord) => r.attribution_branch || r.branch;
+  let branchRecords = filterBranch ? records.filter(r => effectiveBranch(r) === filterBranch) : records;
+  if (filterUser) branchRecords = branchRecords.filter(r => r.user_id === filterUser);
   if (filterType) branchRecords = branchRecords.filter(r => r.type === filterType);
+  if (filterStatus) branchRecords = branchRecords.filter(r => r.status === filterStatus);
 
   // 계약건수: 2개월 기준 (랭킹 데이터 활용), 220만원 이상이면 2건으로 카운트
   const contractCountSource = rankingRecords.length > 0 ? rankingRecords : branchRecords;
-  const contractCountFiltered = filterBranch
+  let contractCountFiltered = filterBranch
     ? contractCountSource.filter(r => r.branch === filterBranch)
     : contractCountSource;
-  const contractCount = contractCountFiltered.filter(r => r.type === '계약' && r.status !== 'refunded')
+  if (filterUser) contractCountFiltered = contractCountFiltered.filter(r => r.user_id === filterUser);
+  const contractCount = contractCountFiltered.filter(r => r.type === '계약' && r.status === 'confirmed')
     .reduce((sum, r) => sum + (r.amount >= 2200000 ? 2 : 1), 0);
-  // 확정매출/입금대기: 공급가액 기준 (÷1.1)
+  // 확정매출/카드대기/입금신청: 공급가액 기준 (÷1.1)
   const toSupply = (amount: number) => Math.round(amount / 1.1);
   const confirmedTotal = branchRecords.filter(r => r.status === 'confirmed').reduce((sum, r) => sum + toSupply(r.amount), 0);
+  const cardPendingTotal = branchRecords.filter(r => r.status === 'card_pending').reduce((sum, r) => sum + toSupply(r.amount), 0);
   const pendingTotal = branchRecords.filter(r => r.status === 'pending').reduce((sum, r) => sum + toSupply(r.amount), 0);
 
   if (loading) return <div className="page-loading">로딩중...</div>;
@@ -341,14 +393,14 @@ export default function Sales() {
           <button className="btn btn-primary" onClick={() => setShowAddForm(true)}>
             <Plus size={14} /> 매출내역 추가
           </button>
-          {canModifyAccounting && (
+          {canDepositUpload && (
             <button className="btn btn-sm" onClick={() => setShowDepositForm(true)}>입금등록</button>
           )}
         </div>
       </div>
 
       {/* 요약 카드 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #1a73e8' }}>
           <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>계약건수 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({rankingYearly ? `${new Date().getFullYear()}년` : `${rankingPeriodIdx * 2 + 1}~${rankingPeriodIdx * 2 + 2}월`})</span></div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#1a73e8' }}>{contractCount}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>건</span></div>
@@ -357,25 +409,74 @@ export default function Sales() {
           <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>확정매출</div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#188038' }}>{formatCurrency(confirmedTotal)}</div>
         </div>
+        <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #7b1fa2' }}>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>카드대기</div>
+          <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#7b1fa2' }}>{formatCurrency(cardPendingTotal)}</div>
+        </div>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #e65100' }}>
-          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>입금대기</div>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>입금신청</div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#e65100' }}>{formatCurrency(pendingTotal)}</div>
         </div>
       </div>
+      {/* 지사별 요약 (전체 지사 선택 시) */}
+      {!filterBranch && (isAdminPlus || isAccountant || isDirector) && (() => {
+        const allRecs = filterType ? records.filter(r => r.type === filterType) : records;
+        if (filterStatus) return null;
+        const branchSet = [...new Set(allRecs.map(r => effectiveBranch(r)).filter(Boolean))].sort();
+        if (branchSet.length <= 1) return null;
+        return (
+          <div className="card" style={{ padding: 0, marginBottom: 20, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', cursor: 'pointer', background: '#f8f9fa' }}
+              onClick={() => setShowBranchSummary(!showBranchSummary)}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#3c4043' }}>지사별 현황</span>
+              {showBranchSummary ? <ChevronUp size={16} color="#5f6368" /> : <ChevronDown size={16} color="#5f6368" />}
+            </div>
+            {showBranchSummary && (
+              <table style={{ width: '100%', fontSize: '0.78rem', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #e8eaed', color: '#5f6368' }}>
+                    <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 600 }}>지사</th>
+                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 600, color: '#188038' }}>확정매출</th>
+                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 600, color: '#7b1fa2' }}>카드대기</th>
+                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 600, color: '#e65100' }}>입금신청</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {branchSet.map(b => {
+                    const br = allRecs.filter(r => effectiveBranch(r) === b);
+                    const c = br.filter(r => r.status === 'confirmed').reduce((s, r) => s + toSupply(r.amount), 0);
+                    const cp = br.filter(r => r.status === 'card_pending').reduce((s, r) => s + toSupply(r.amount), 0);
+                    const p = br.filter(r => r.status === 'pending').reduce((s, r) => s + toSupply(r.amount), 0);
+                    return (
+                      <tr key={b} style={{ borderBottom: '1px solid #f3f4f6', cursor: 'pointer' }} onClick={() => setFilterBranch(b)}>
+                        <td style={{ padding: '6px 8px', fontWeight: 600 }}>{b}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: '#188038', fontWeight: 600 }}>{formatCurrency(c)}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: '#7b1fa2', fontWeight: 600 }}>{cp > 0 ? formatCurrency(cp) : '-'}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: '#e65100', fontWeight: 600 }}>{p > 0 ? formatCurrency(p) : '-'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        );
+      })()}
 
       {/* 전체 지사 개인별 계약건수 랭킹 (관리자만) */}
       {(isAdminPlus || isDirector) && (() => {
-        const contractRecords = (rankingRecords.length > 0 ? rankingRecords : records).filter(r => r.type === '계약' && r.status !== 'refunded');
+        const contractRecords = (rankingRecords.length > 0 ? rankingRecords : records).filter(r => r.type === '계약' && r.status === 'confirmed');
         // 개인별 집계 — user_name 기반 (퇴사자/미가입자 포함)
         const userMap: Record<string, { name: string; branch: string; position: string; count: number; totalAmount: number }> = {};
         contractRecords.forEach(r => {
           const name = r.user_name || '미확인';
-          const key = `${name}_${r.branch || ''}`; // 동명이인 방지: 이름+지사
+          const effBranch = effectiveBranch(r);
+          const key = `${name}_${effBranch}`; // 동명이인 방지: 이름+매출귀속지사
           if (!userMap[key]) {
             const m = members.find(mm => mm.id === r.user_id);
             userMap[key] = {
               name,
-              branch: r.branch || m?.branch || '',
+              branch: effBranch || m?.branch || '',
               position: (m as any)?.position_title || '',
               count: 0,
               totalAmount: 0,
@@ -469,7 +570,11 @@ export default function Sales() {
 
       {/* 필터 */}
       <div className="filter-bar" style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input type="month" className="form-input" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} style={{ width: 160 }} />
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          <input type="month" className="form-input" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} style={{ width: 140 }} title="시작월" />
+          <span style={{ color: '#9aa0a6' }}>~</span>
+          <input type="month" className="form-input" value={filterMonthEnd} onChange={(e) => setFilterMonthEnd(e.target.value)} style={{ width: 140 }} title="종료월 (비워두면 단일월)" placeholder="종료월" />
+        </div>
         {/* 지사 필터: 관리자/총무만 (팀장/총괄이사는 본인 섹터 고정) */}
         {(isAdminPlus || isAccountant) && (
           <div style={{ minWidth: 120 }}>
@@ -499,6 +604,24 @@ export default function Sales() {
             value={TYPE_OPTIONS.map(o => ({ value: o.value, label: o.label })).find(o => o.value === filterType) || { value: '', label: '전체 유형' }}
             onChange={(o: any) => setFilterType(o?.value || '')} placeholder="유형" isClearable />
         </div>
+        <div style={{ minWidth: 110 }}>
+          <Select size="sm" options={[
+            { value: '', label: '전체 상태' },
+            { value: 'confirmed', label: '확정매출' },
+            { value: 'card_pending', label: '카드대기' },
+            { value: 'pending', label: '입금신청' },
+            { value: 'refund_requested', label: '환불신청' },
+            { value: 'refunded', label: '환불완료' },
+          ]}
+            value={[
+              { value: 'confirmed', label: '확정매출' },
+              { value: 'card_pending', label: '카드대기' },
+              { value: 'pending', label: '입금신청' },
+              { value: 'refund_requested', label: '환불신청' },
+              { value: 'refunded', label: '환불완료' },
+            ].find(o => o.value === filterStatus) || { value: '', label: '전체 상태' }}
+            onChange={(o: any) => setFilterStatus(o?.value || '')} placeholder="상태" isClearable />
+        </div>
       </div>
 
       {/* 탭 + 검색 */}
@@ -510,7 +633,7 @@ export default function Sales() {
               <Activity size={14} style={{ marginRight: 4 }} /> 활동내역
             </button>
           )}
-          {canModifyAccounting && (
+          {canDepositUpload && (
             <button className={`premium-filter-btn ${salesTab === 'upload' ? 'active' : ''}`} onClick={() => setSalesTab('upload')}>
               <Upload size={14} style={{ marginRight: 4 }} /> 엑셀 업로드
             </button>
@@ -554,7 +677,7 @@ export default function Sales() {
             ...clientSales.map(r => ({ date: r.contract_date, kind: 'sale' as const, data: r })),
             ...clientJournals.map(e => ({ date: e.target_date, kind: 'journal' as const, data: e })),
           ].sort((a, b) => a.date.localeCompare(b.date));
-          const totalAmount = clientSales.filter(r => r.status === 'confirmed').reduce((s, r) => s + r.amount, 0);
+          const totalAmount = clientSales.filter(r => r.status === 'confirmed' || r.status === 'card_pending').reduce((s, r) => s + r.amount, 0);
           const COLORS: Record<string, string> = { '입찰': '#1a73e8', '임장': '#188038', '미팅': '#e65100', '브리핑자료제출': '#0d47a1', '사무': '#7b1fa2' };
 
           return (
@@ -671,7 +794,7 @@ export default function Sales() {
       })()}
 
       {/* ━━━ 엑셀 업로드 탭 [6-4] ━━━ */}
-      {salesTab === 'upload' && canModifyAccounting && (
+      {salesTab === 'upload' && canDepositUpload && (
         <div className="card" style={{ padding: 20 }}>
           <h3 style={{ margin: '0 0 14px', fontSize: '1rem' }}>매출 엑셀 업로드</h3>
 
@@ -779,7 +902,16 @@ export default function Sales() {
                 <input className="form-input" value={formTypeDetail} onChange={(e) => setFormTypeDetail(e.target.value)} style={{ width: '100%' }} placeholder="기타 상세" /></div>
             )}
             <div><label className="form-label">계약자명</label>
-              <input className="form-input" value={formClientName} onChange={(e) => setFormClientName(e.target.value)} style={{ width: '100%' }} placeholder="계약자명" /></div>
+              <input className="form-input" value={formClientName} onChange={(e) => setFormClientName(e.target.value)} style={{ width: '100%' }} placeholder="계약자명" />
+              {formType === '낙찰' && formClientName && (() => {
+                const prior = records.find(r => r.type === '계약' && r.client_name === formClientName && (r.appraisal_rate > 0 || r.winning_rate > 0));
+                return prior ? (
+                  <div style={{ marginTop: 4, padding: '4px 8px', background: '#fff8e1', borderRadius: 4, fontSize: '0.72rem', color: '#7b5e00' }}>
+                    📋 계약 조건: 감정가 {prior.appraisal_rate}% / 낙찰가 {prior.winning_rate}%
+                  </div>
+                ) : null;
+              })()}
+            </div>
             {formType === '계약' && (
               <div><label className="form-label">전화번호 <span style={{ fontSize: '0.7rem', color: '#9aa0a6', fontWeight: 400 }}>동명이인 방지</span></label>
                 <input className="form-input" value={formPhone} onChange={(e) => setFormPhone(e.target.value)} style={{ width: '100%' }} placeholder="010-0000-0000" /></div>
@@ -892,8 +1024,8 @@ export default function Sales() {
         </div>
       )}
 
-      {/* 입금등록 폼 (회계) */}
-      {showDepositForm && canModifyAccounting && (
+      {/* 입금등록 폼 (총무 전용) */}
+      {showDepositForm && canDepositUpload && (
         <div className="card" style={{ marginBottom: 20, padding: 20, border: '2px solid #1a73e8' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <h3 style={{ margin: 0, fontSize: '1rem', color: '#1a73e8' }}>입금등록 (회계 → 담당자)</h3>
@@ -909,14 +1041,27 @@ export default function Sales() {
       )}
 
       {/* 입금 등록 내역 */}
-      {deposits.filter(d => d.status !== 'approved').length > 0 && (
+      {(() => {
+        // 표시 필터:
+        //  - pending: 전체 공지 (모두 노출)
+        //  - claimed: 클레임한 본인(claimed_by === currentUser) 또는 총무/master만 노출
+        //  - approved: 숨김
+        const visibleDeposits = deposits.filter(d => {
+          if (d.status === 'approved') return false;
+          if (d.status === 'claimed') {
+            return d.claimed_by === currentUser?.id || canDepositUpload;
+          }
+          return true; // pending
+        });
+        if (visibleDeposits.length === 0) return null;
+        return (
         <div className="card" style={{ marginBottom: 20, padding: '16px 20px' }}>
           <h3 style={{ fontSize: '0.95rem', marginBottom: 12, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
             <Clock size={16} color="#1a73e8" /> 입금 등록 내역
-            <span style={{ fontSize: '0.78rem', color: '#9aa0a6', fontWeight: 400 }}>({deposits.filter(d => d.status !== 'approved').length}건)</span>
+            <span style={{ fontSize: '0.78rem', color: '#9aa0a6', fontWeight: 400 }}>({visibleDeposits.length}건)</span>
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-            {deposits.filter(d => d.status !== 'approved').map(dep => {
+            {visibleDeposits.map(dep => {
               const dDay = Math.ceil((new Date(dep.deposit_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
               const isClaiming = claimingId === dep.id;
               return (
@@ -957,7 +1102,8 @@ export default function Sales() {
             })}
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* 매출 목록 (데스크톱) */}
       <div className="table-wrapper sales-desktop-table">
@@ -971,15 +1117,16 @@ export default function Sales() {
                 { key: 'type', label: '유형' },
                 { key: 'client_name', label: '계약자명' },
                 { key: 'amount', label: '금액' },
+                { key: 'payment_type', label: '결제' },
                 { key: 'deposit_date', label: '결제일' },
                 { key: 'contract_submitted', label: '계약서/물건보고서' },
                 { key: 'status', label: '상태' },
               ].map(col => (
-                <th key={col.key} onClick={() => toggleSort(col.key)} style={{ cursor: 'pointer', userSelect: 'none' }}>
+                <th key={col.key} onClick={() => toggleSort(col.key)} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
                   {col.label} {sortKey === col.key ? (sortDir === 'asc' ? '▲' : '▼') : ''}
                 </th>
               ))}
-              <th>액션</th>
+              <th style={{ whiteSpace: 'nowrap' }}>액션</th>
             </tr>
             {selectedIds.size > 0 && canApproveAccounting && (
               <tr><td colSpan={10} style={{ background: '#fce4ec', padding: '6px 12px' }}>
@@ -1006,16 +1153,25 @@ export default function Sales() {
                 <tr key={r.id} onClick={() => openDetail(r)} className="clickable-row"
                   style={{ cursor: 'pointer', ...(isRefunded ? { opacity: 0.5, textDecoration: 'line-through', background: '#fafafa' } : r.type === '낙찰' ? { background: '#f3f0ff' } : r.type === '계약' ? { background: '#f0f7ff' } : {}) }}>
                   {canDeleteAccounting && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} /></td>}
-                  <td style={{ fontSize: '0.8rem' }}>{r.contract_date}</td>
-                  <td>{r.user_name}</td>
-                  <td><span style={{ fontSize: '0.8rem' }}>{r.type}</span>{r.type === '기타' && r.type_detail && <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}> ({r.type_detail})</span>}</td>
-                  <td>
+                  <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{r.contract_date}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{r.user_name}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}><span style={{ fontSize: '0.78rem' }}>{r.type}</span>{r.type === '기타' && r.type_detail && <span style={{ color: '#9aa0a6', fontSize: '0.72rem' }}> ({r.type_detail})</span>}</td>
+                  <td style={{ whiteSpace: 'nowrap', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.client_name + (r.depositor_different === 1 && r.depositor_name ? ' / 입금자: ' + r.depositor_name : '')}>
                     {r.client_name}
-                    {r.depositor_different === 1 && r.depositor_name && <div style={{ fontSize: '0.72rem', color: '#e65100' }}>입금자: {r.depositor_name}</div>}
+                    {r.depositor_different === 1 && r.depositor_name && <span style={{ fontSize: '0.7rem', color: '#e65100', marginLeft: 4 }}>({r.depositor_name})</span>}
                   </td>
-                  <td style={{ fontWeight: 600 }}>{formatCurrency(r.amount)}</td>
-                  <td style={{ fontSize: '0.78rem', color: r.deposit_date ? '#188038' : '#9aa0a6' }}>{r.deposit_date || '-'}</td>
-                  <td onClick={(e) => e.stopPropagation()} style={{ textAlign: 'center' }}>
+                  <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{formatCurrency(r.amount)}</td>
+                  <td style={{ fontSize: '0.72rem', whiteSpace: 'nowrap', textAlign: 'center' }}>
+                    {r.payment_type ? (
+                      <span style={{ padding: '1px 6px', borderRadius: 6, fontWeight: 600,
+                        background: r.payment_type === '카드' ? '#f3e5f5' : '#e8f0fe',
+                        color: r.payment_type === '카드' ? '#7b1fa2' : '#1a73e8' }}>
+                        {r.payment_type}
+                      </span>
+                    ) : <span style={{ color: '#dadce0' }}>-</span>}
+                  </td>
+                  <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap', color: r.deposit_date ? '#188038' : '#9aa0a6' }}>{r.deposit_date || '-'}</td>
+                  <td onClick={(e) => e.stopPropagation()} style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
                     {r.type !== '계약' && r.type !== '낙찰' ? (
                       <span style={{ color: '#9aa0a6', fontSize: '0.7rem' }}>-</span>
                     ) : r.contract_submitted && r.contract_not_approved ? (
@@ -1072,10 +1228,10 @@ export default function Sales() {
                       </div>
                     )}
                   </td>
-                  <td>
-                    <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: '0.75rem', fontWeight: 600, background: st.bg, color: st.color }}>{st.label}</span>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: '0.72rem', fontWeight: 600, background: st.bg, color: st.color, whiteSpace: 'nowrap' }}>{st.label}</span>
                   </td>
-                  <td onClick={(e) => e.stopPropagation()}>
+                  <td onClick={(e) => e.stopPropagation()} style={{ whiteSpace: 'nowrap' }}>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       {/* 입금확인/결제확인 (회계) */}
                       {r.status === 'pending' && canApproveAccounting && !isConfirming && (
@@ -1085,13 +1241,13 @@ export default function Sales() {
                       )}
                       {isConfirming && (
                         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                          <input type="date" className="form-input" value={confirmDepositDate} onChange={(e) => setConfirmDepositDate(e.target.value)} style={{ fontSize: '0.78rem', padding: '4px 6px' }} />
+                          <input type="date" className="form-input" min="2020-01-01" max="2099-12-31" value={confirmDepositDate} onChange={(e) => setConfirmDepositDate(e.target.value)} style={{ fontSize: '0.78rem', padding: '4px 6px' }} />
                           <button className="btn btn-sm btn-success" onClick={() => handleConfirm(r.id)}>확인</button>
                           <button className="btn btn-sm" onClick={() => setConfirmingId(null)}>취소</button>
                         </div>
                       )}
-                      {/* 카드결제 정산일 (총무 — 확정 후 입력) */}
-                      {r.status === 'confirmed' && r.payment_type === '카드' && (() => {
+                      {/* 카드결제 정산일 (총무 — 결제확인 후 입력) */}
+                      {(r.status === 'card_pending' || (r.status === 'confirmed' && r.payment_type === '카드')) && (() => {
                         const settled = !!r.card_deposit_date;
                         const canEditSettle = role === 'master' || role === 'accountant'; // 총무담당만 수정 가능
                         const canSetSettle = canApproveAccounting && !settled; // 미적용 시 총무급 적용 가능
@@ -1112,12 +1268,16 @@ export default function Sales() {
                             ) : canSetSettle ? (
                               <>
                                 <input type="date" className="form-input" value={settleDate}
+                                  min="2020-01-01" max="2099-12-31"
                                   onFocus={() => setSettleDate('')}
                                   onChange={(e) => setSettleDate(e.target.value)}
                                   style={{ fontSize: '0.72rem', padding: '3px 5px', width: 120 }} />
                                 <button className="btn btn-sm btn-primary" style={{ fontSize: '0.65rem', padding: '2px 6px' }}
                                   onClick={async () => {
                                     if (!settleDate) { alert('정산일을 선택하세요.'); return; }
+                                    // 년도 4자리 검증
+                                    const [y] = settleDate.split('-');
+                                    if (!y || y.length !== 4 || Number(y) < 2020 || Number(y) > 2099) { alert('정산일 년도는 4자리(2020~2099)로 입력하세요.'); return; }
                                     try { await api.sales.update(r.id, { card_deposit_date: settleDate }); setSettleDate(''); load(true); } catch (err: any) { alert(err.message); }
                                   }}>적용</button>
                               </>
@@ -1242,7 +1402,10 @@ export default function Sales() {
 
       {/* 상세 팝업 */}
       {detailRecord && (
-        <div className="modal-overlay" onClick={() => setDetailRecord(null)}>
+        <div className="modal-overlay" onClick={(e) => {
+          // 팝업 밖 클릭 시 닫기 방지 (의도치 않은 저장 누락 방지)
+          e.stopPropagation();
+        }}>
           <div className="journal-popup" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480 }}>
             <div className="journal-popup-header">
               <h3 style={{ margin: 0 }}>매출 상세</h3>
@@ -1468,7 +1631,7 @@ export default function Sales() {
                         <option value="카드">카드</option>
                       </select>
                     </div>
-                    {detailRecord.type === '매수신청대리' && (
+                    {(detailRecord.type as string) === '매수신청대리' && (
                       <div style={{ gridColumn: '1 / -1' }}>
                         <label className="form-label" style={{ fontSize: '0.72rem' }}>대리비용 (담당자 지급금액)</label>
                         <input className="form-input" defaultValue={detailRecord.proxy_cost ? detailRecord.proxy_cost.toLocaleString() : '0'}
@@ -1512,11 +1675,11 @@ export default function Sales() {
                 </div>
               )}
 
-              {/* 확인 취소 (총무담당/master — confirmed → pending) */}
-              {detailRecord.status === 'confirmed' && isMaster && (
+              {/* 확인 취소 (총무담당/master — confirmed/card_pending → pending) */}
+              {(detailRecord.status === 'confirmed' || detailRecord.status === 'card_pending') && isMaster && (
                 <button className="btn btn-sm" style={{ fontSize: '0.78rem', marginBottom: 12, color: '#e65100', border: '1px solid #e65100' }}
                   onClick={async () => {
-                    if (!confirm('입금확인을 취소하고 입금대기 상태로 되돌리시겠습니까?')) return;
+                    if (!confirm('결제확인을 취소하고 입금신청 상태로 되돌리시겠습니까?')) return;
                     try { await api.sales.unconfirm(detailRecord.id); setDetailRecord(null); load(); }
                     catch (err: any) { alert(err.message); }
                   }}>
@@ -1524,7 +1687,7 @@ export default function Sales() {
                 </button>
               )}
               {/* 환불신청 버튼 (본인 건 또는 마스터/총무담당 + 확정매출만) */}
-              {detailRecord.status === 'confirmed' && (detailRecord.user_id === currentUser?.id || isMaster) && (
+              {(detailRecord.status === 'confirmed' || detailRecord.status === 'card_pending') && (detailRecord.user_id === currentUser?.id || isMaster) && (
                 <button className="btn btn-sm btn-danger" style={{ fontSize: '0.78rem', marginBottom: 12 }}
                   onClick={async () => {
                     if (!confirm('환불을 신청하시겠습니까?\n회계 승인 후 처리됩니다.')) return;

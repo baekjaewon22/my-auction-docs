@@ -143,9 +143,17 @@ export default function Payroll() {
     }
   };
 
-  // 지사 필터 적용
-  const filteredUsers = (filterBranch ? users.filter(u => u.branch === filterBranch) : users).filter(u => u.role !== 'master');
-  const userOpts = filteredUsers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''} · ${u.branch || ''})` }));
+  // 지사 필터 적용 (퇴사자는 퇴사월 이전 정산월에서만 표시)
+  const branchFiltered = (filterBranch ? users.filter(u => u.branch === filterBranch) : users).filter(u => u.role !== 'master');
+  const activeUsers = branchFiltered.filter(u => (u.role as string) !== 'resigned');
+  const resignedUsers = branchFiltered.filter(u => {
+    if ((u.role as string) !== 'resigned') return false;
+    // updated_at(퇴사 처리일)의 월과 선택 정산월 비교 → 퇴사월 이전까지만 표시
+    const resignedMonth = (u.updated_at || '').slice(0, 7);
+    return resignedMonth && selectedMonth < resignedMonth;
+  });
+  const filteredUsers = [...activeUsers, ...resignedUsers];
+  const userOpts = filteredUsers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''} · ${u.branch || ''})${(u.role as string) === 'resigned' ? ' [퇴사]' : ''}` }));
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
 
   const s = data?.summary;
@@ -351,7 +359,6 @@ export default function Payroll() {
                   // 공제 분류: 식대(세전공제) vs 기타(세후공제)
                   const foodDeductions = commDeductions.filter(e => e.isFood).reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0);
                   const otherDeductions = commDeductions.filter(e => !e.isFood).reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0);
-                  const totalDeductions = foodDeductions + otherDeductions;
                   // 소득 합계: 매출수입(비율) + 매수신청대리(100%) + 추가정산
                   const totalIncome = commissionAmount + proxyIncome + extraDetails.reduce((s, e) => s + e.afterRate, 0);
                   // 원천세: (소득 - 식대 - 원천세면제항목) × 3.3%
@@ -360,7 +367,6 @@ export default function Payroll() {
                   const tax33 = Math.round(taxableIncome * 0.033);
                   // 실지급 = 소득 - 식대 - 원천세 - 기타공제
                   const finalPay = totalIncome - foodDeductions - tax33 - otherDeductions;
-                  const companyRevenue = netSales - commissionAmount;
                   return (
                     <>
                       <div className="payroll-section-title">수익 정산</div>
@@ -705,7 +711,6 @@ export default function Payroll() {
             const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
             const proxyTotal = proxyRecords.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
             const proxyCostTotal = proxyRecords.reduce((sum: number, r: any) => sum + (r.proxy_cost || 0), 0);
-            const proxyVat = periodMonth >= 5 ? proxyRecords.reduce((sum: number, r: any) => sum + (r.amount || 0) - Math.round((r.amount || 0) / 1.1), 0) : 0;
             const compRev = netSales - commAmt;
             return (
               <div className="payroll-sheet" style={{ marginTop: 16 }}>

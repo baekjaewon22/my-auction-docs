@@ -38,6 +38,7 @@ export default function Statistics() {
   const [filterDept, setFilterDept] = useState('');
   const [filterUser, setFilterUser] = useState('');
   const [filterMonth, setFilterMonth] = useState('');
+  const [filterMonthEnd, setFilterMonthEnd] = useState('');
   const [salesRecords, setSalesRecords] = useState<SalesRecord[]>([]);
   const isDirector = user?.role === 'director';
   const isSalesVisible = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || (user?.role === 'admin' && user?.branch === '의정부') || isDirector;
@@ -51,11 +52,11 @@ export default function Statistics() {
     Promise.all([
       api.journal.list({ range: 'all' }),
       api.journal.members(),
-      api.sales.stats({ month: filterMonth || undefined, branch: filterBranch || undefined, department: filterDept || undefined, user_id: filterUser || undefined }).catch(() => ({ records: [] })),
+      api.sales.stats({ month: filterMonth || undefined, month_end: filterMonthEnd || undefined, branch: filterBranch || undefined, department: filterDept || undefined, user_id: filterUser || undefined }).catch(() => ({ records: [] })),
     ])
       .then(([eRes, mRes, sRes]) => { setEntries(eRes.entries); setMembers(mRes.members); setSalesRecords(sRes.records || []); })
       .finally(() => setLoading(false));
-  }, []);
+  }, [filterMonth, filterMonthEnd, filterBranch, filterDept, filterUser]);
 
   // Available branches/depts/users for filters — 지사 목록은 DB 기준
   const branchNames = branches.map((b: any) => typeof b === 'string' ? b : b.name).filter((b: string) => b !== '본사 관리');
@@ -82,7 +83,11 @@ export default function Statistics() {
     (!filterUser || m.id === filterUser)
   );
   const filteredEntries = entries.filter((e) => {
-    if (filterMonth && !e.target_date.startsWith(filterMonth)) return false;
+    if (filterMonth) {
+      const m = e.target_date.slice(0, 7);
+      const end = filterMonthEnd || filterMonth;
+      if (m < filterMonth || m > end) return false;
+    }
     if (filterUser) return e.user_id === filterUser;
     if (filterDept) return e.department === filterDept && (!filterBranch || e.branch === filterBranch);
     if (filterBranch) return e.branch === filterBranch;
@@ -143,7 +148,17 @@ export default function Statistics() {
               options={monthOptions}
               value={filterMonth ? { value: filterMonth, label: filterMonth } : null}
               onChange={(o: any) => setFilterMonth(o?.value || '')}
-              placeholder="전체 기간"
+              placeholder="시작월"
+              isClearable
+            />
+          </div>
+          <div style={{ minWidth: 130 }}>
+            <Select
+              size="sm"
+              options={monthOptions}
+              value={filterMonthEnd ? { value: filterMonthEnd, label: filterMonthEnd } : null}
+              onChange={(o: any) => setFilterMonthEnd(o?.value || '')}
+              placeholder="종료월"
               isClearable
             />
           </div>
@@ -157,7 +172,7 @@ export default function Statistics() {
           {filterBranch && <span className="stats-filter-tag">{filterBranch} 지사</span>}
           {filterDept && <span className="stats-filter-tag">{filterDept}</span>}
           {filterUser && <span className="stats-filter-tag">{filteredUsers.find((m) => m.id === filterUser)?.name}</span>}
-          <button className="btn-link" style={{ fontSize: '0.75rem', marginLeft: 8 }} onClick={() => { setFilterBranch(''); setFilterDept(''); setFilterUser(''); setFilterMonth(''); }}>초기화</button>
+          <button className="btn-link" style={{ fontSize: '0.75rem', marginLeft: 8 }} onClick={() => { setFilterBranch(''); setFilterDept(''); setFilterUser(''); setFilterMonth(''); setFilterMonthEnd(''); }}>초기화</button>
         </div>
       )}
 
@@ -185,7 +200,7 @@ export default function Statistics() {
         {tabs[tab] === '브리핑 분석' && <BriefingAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
         {tabs[tab] === '근태 분석' && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
         {tabs[tab] === '이상 감지' && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
-        {tabs[tab] === '매출/환불' && <SalesAnalysis records={isDirector ? salesRecords.filter(r => r.branch === '대전' || r.branch === '부산') : salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
+        {tabs[tab] === '매출/환불' && <SalesAnalysis records={isDirector ? salesRecords.filter(r => { const eb = r.attribution_branch || r.branch; return eb === '대전' || eb === '부산' || r.user_id === user?.id; }) : salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
       </div>
     </div>
   );
@@ -914,7 +929,7 @@ function SalesAnalysis({ records, viewLevel }: {
   records.forEach(r => {
     const key = groupBy === 'person' ? (r.user_name || r.user_id)
       : groupBy === 'department' ? (r.department || '미지정')
-      : (r.branch || '미지정');
+      : ((r.attribution_branch || r.branch) || '미지정');
     if (!grouped[key]) grouped[key] = { confirmed: 0, refunded: 0, pending: 0, count: 0 };
     grouped[key].count++;
     if (r.status === 'confirmed') grouped[key].confirmed += toSupply(r.amount);
@@ -962,7 +977,7 @@ function SalesAnalysis({ records, viewLevel }: {
           '권리분석보증서': '#e65100', '매수신청대리': '#d93025', '기타': '#9aa0a6',
         };
         const branchPies = branchOrder.map(branch => {
-          const branchConfirmed = confirmed.filter(r => r.branch === branch);
+          const branchConfirmed = confirmed.filter(r => (r.attribution_branch || r.branch) === branch);
           const typeMap: Record<string, number> = {};
           branchConfirmed.forEach(r => {
             const t = r.type || '기타';

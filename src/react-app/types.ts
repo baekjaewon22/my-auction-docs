@@ -1,4 +1,4 @@
-export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'director' | 'accountant' | 'accountant_asst' | 'manager' | 'member';
+export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'director' | 'accountant' | 'accountant_asst' | 'manager' | 'member' | 'resigned';
 export type DocStatus = 'draft' | 'submitted' | 'approved' | 'rejected';
 
 export const BRANCHES = ['의정부', '서초'] as const;
@@ -14,6 +14,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   accountant_asst: '총무보조',
   manager: '팀장',
   member: '팀원',
+  resigned: '퇴사자',
 };
 
 // UI에서 표시할 역할 (master 제외)
@@ -34,6 +35,7 @@ export interface User {
   hire_date?: string;
   login_type?: 'employee' | 'freelancer';
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface Team {
@@ -141,7 +143,7 @@ export interface UserAccounting {
   updated_at?: string;
 }
 
-export type SalesStatus = 'pending' | 'confirmed' | 'refund_requested' | 'refunded';
+export type SalesStatus = 'pending' | 'card_pending' | 'confirmed' | 'refund_requested' | 'refunded';
 
 export interface SalesRecord {
   id: string;
@@ -170,6 +172,8 @@ export interface SalesRecord {
   memo: string;
   branch: string;
   department: string;
+  // 매출 귀속 지사 (비워두면 branch 사용) — 집계 전용
+  attribution_branch?: string;
   // [6-1] 수수료 계산
   appraisal_price: number;
   winning_price: number;

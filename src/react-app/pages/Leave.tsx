@@ -92,7 +92,7 @@ export default function Leave() {
 
   useEffect(() => {
     if (canViewOthers) {
-      api.users.list().then(res => setMembers((res.users || []).filter((u: User) => u.role !== 'master' && u.role !== 'freelancer' && (u as any).login_type !== 'freelancer' && u.id !== user?.id))).catch(() => {});
+      api.users.list().then(res => setMembers((res.users || []).filter((u: User) => u.role !== 'master' && (u as any).login_type !== 'freelancer' && u.id !== user?.id))).catch(() => {});
     }
   }, []);
 

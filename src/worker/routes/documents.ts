@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv, Document, OrgNode } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
-import { sendAlimtalkByTemplate } from '../alimtalk';
+import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 
 // 결재선 자동 계산: 조직도를 위로 탐색하여 승인자 목록 반환
 async function buildApprovalChain(db: D1Database, authorId: string): Promise<string[]> {
@@ -85,6 +85,15 @@ documents.get('/', async (c) => {
     // Full access — 단, 타인의 draft는 제외
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(user.sub);
+  } else if (user.role === 'accountant' || user.role === 'accountant_asst') {
+    // 총무(담당/보조): 전체 문서함 열람 가능 — 타인 draft 제외
+    conditions.push("(d.status != 'draft' OR d.author_id = ?)");
+    params.push(user.sub);
+  } else if (user.role === 'director') {
+    // 총괄이사: 본인 + 대전/부산 지사 — 타인 draft 제외
+    conditions.push("(d.author_id = ? OR d.branch IN ('대전', '부산'))");
+    conditions.push("(d.status != 'draft' OR d.author_id = ?)");
+    params.push(user.sub, user.sub);
   } else if (user.role === 'admin' && user.branch === '의정부') {
     // 의정부 관리자: 전체 열람 — 타인 draft 제외
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
@@ -281,11 +290,23 @@ documents.post('/:id/submit', async (c) => {
   // 기존 결재선 삭제 (반려 후 재제출 대응)
   await db.prepare('DELETE FROM approval_steps WHERE document_id = ?').bind(id).run();
 
-  // 결재선 INSERT
+  // 팀장 중 오늘 휴가자는 자동 건너뛰기 (role='manager'만 대상)
+  const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const todayLeaves = await db.prepare(
+    "SELECT user_id FROM leave_requests WHERE status = 'approved' AND start_date <= ? AND end_date >= ?"
+  ).bind(today, today).all();
+  const onLeaveIds = new Set((todayLeaves.results || []).map((r: any) => r.user_id));
+
+  // 결재선 INSERT (팀장+휴가중 → skipped 상태로 기록)
   for (let i = 0; i < chain.length; i++) {
+    const approverId = chain[i];
+    const approverInfo = await db.prepare('SELECT role FROM users WHERE id = ?').bind(approverId).first<{ role: string }>();
+    const isManagerOnLeave = approverInfo?.role === 'manager' && onLeaveIds.has(approverId);
+    const status = isManagerOnLeave ? 'approved' : 'pending';
+    const comment = isManagerOnLeave ? '팀장 휴무로 자동 승인' : null;
     await db.prepare(
-      'INSERT INTO approval_steps (id, document_id, step_order, approver_id, status) VALUES (?, ?, ?, ?, ?)'
-    ).bind(crypto.randomUUID(), id, i + 1, chain[i], 'pending').run();
+      'INSERT INTO approval_steps (id, document_id, step_order, approver_id, status, comment, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(crypto.randomUUID(), id, i + 1, approverId, status, comment, isManagerOnLeave ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null).run();
   }
 
   await db.prepare("UPDATE documents SET status = 'submitted', reject_reason = NULL, updated_at = datetime('now') WHERE id = ?").bind(id).run();
@@ -309,7 +330,7 @@ documents.post('/:id/submit', async (c) => {
     if (firstApprover?.phone) {
       c.executionCtx.waitUntil(sendAlimtalkByTemplate(
         c.env as unknown as Record<string, unknown>, 'DOC_SUBMITTED',
-        { author_name: user.name, doc_title: doc.title, department: user.department || '', submit_date: today },
+        { author_name: user.name, doc_title: doc.title, department: user.department || '', submit_date: today, link: `${APP_URL}/documents/${id}` },
         [firstApprover.phone],
       ).catch(() => {}));
     }
@@ -372,17 +393,43 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
     await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
       .bind(crypto.randomUUID(), id, user.sub, 'approved', '문서가 최종 승인되었습니다.').run();
 
-    // 연차/반차 문서 승인 시 자동 차감
+    // 연차/월차/반차 문서 승인 시 자동 차감 + leave_requests 등록
     const title = doc.title || '';
-    if (title.includes('연차') || title.includes('반차')) {
+    if (title.includes('연차') || title.includes('월차') || title.includes('반차')) {
       const days = title.includes('반차') ? 0.5 : 1;
+      const leaveType = title.includes('반차') ? '반차' : title.includes('월차') ? '월차' : '연차';
       const existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
       if (!existing) {
-        await db.prepare('INSERT INTO annual_leave (id, user_id, total_days, used_days) VALUES (?, ?, 15, 0)')
+        await db.prepare('INSERT INTO annual_leave (id, user_id, total_days, used_days, leave_type, monthly_days, monthly_used) VALUES (?, ?, 15, 0, \'annual\', 0, 0)')
           .bind(crypto.randomUUID(), doc.author_id).run();
       }
-      await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
-        .bind(days, doc.author_id).run();
+      // 월차 사용자면 monthly_used 차감, 연차 사용자면 used_days 차감
+      const leaveData = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
+      if (leaveData?.leave_type === 'monthly') {
+        await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
+          .bind(days, doc.author_id).run();
+      } else {
+        await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
+          .bind(days, doc.author_id).run();
+      }
+      // leave_requests에 자동 등록 (휴가 신청 내역 연동)
+      const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      // 문서 내용에서 날짜 추출 시도
+      const contentText = (doc.content || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+      let startDate = today;
+      let endDate = today;
+      // "휴가일 : 2026년 4월 17일" 또는 "시작일 : ...", "기간 : ..." 등
+      const dateMatch = contentText.match(/(\d{4})\s*년?\s*(\d{1,2})\s*월?\s*(\d{1,2})\s*일/);
+      if (dateMatch) {
+        startDate = `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`;
+        endDate = startDate;
+      }
+      await db.prepare(
+        "INSERT INTO leave_requests (id, user_id, leave_type, start_date, end_date, days, reason, status, approved_by, approved_at, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), ?, ?)"
+      ).bind(
+        crypto.randomUUID(), doc.author_id, leaveType, startDate, endDate, days,
+        `문서결재 자동등록 (${doc.title})`, user.sub, doc.branch || '', doc.department || ''
+      ).run();
     }
     // 알림톡: 최종 승인 → 작성자에게 DOC_FINAL_APPROVED
     const author = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(doc.author_id).first<{ phone: string }>();
@@ -408,7 +455,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
       if (nextUser?.phone) {
         c.executionCtx.waitUntil(sendAlimtalkByTemplate(
           c.env as unknown as Record<string, unknown>, 'DOC_STEP_APPROVED',
-          { approver_name: user.name, doc_title: doc.title, author_name: (await db.prepare('SELECT name FROM users WHERE id = ?').bind(doc.author_id).first<{ name: string }>())?.name || '', department: doc.department || '' },
+          { approver_name: user.name, doc_title: doc.title, author_name: (await db.prepare('SELECT name FROM users WHERE id = ?').bind(doc.author_id).first<{ name: string }>())?.name || '', department: doc.department || '', link: `${APP_URL}/documents/${id}` },
           [nextUser.phone],
         ).catch(() => {}));
       }
@@ -453,7 +500,7 @@ documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager'), 
   if (author?.phone) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'DOC_REJECTED',
-      { doc_title: doc.title, rejector_name: user.name, reject_reason: reason || '없음' },
+      { doc_title: doc.title, rejector_name: user.name, reject_reason: reason || '없음', link: `${APP_URL}/documents/${id}` },
       [author.phone],
     ).catch(() => {}));
   }
@@ -555,12 +602,20 @@ documents.post('/:id/cancel-approve', requireRole('master', 'ceo', 'cc_ref', 'ad
     "UPDATE documents SET cancelled = 1, cancel_requested = 0, updated_at = datetime('now') WHERE id = ?"
   ).bind(id).run();
 
-  // 연차/반차 문서였고 승인 완료 상태였으면 연차 복원
-  if (doc.status === 'approved' && (doc.title.includes('연차') || doc.title.includes('반차'))) {
+  // 연차/월차/반차 문서였고 승인 완료 상태였으면 휴가 복원
+  if (doc.status === 'approved' && (doc.title.includes('연차') || doc.title.includes('월차') || doc.title.includes('반차'))) {
     const days = doc.title.includes('반차') ? 0.5 : 1;
-    await db.prepare(
-      'UPDATE annual_leave SET used_days = MAX(0, used_days - ?) WHERE user_id = ?'
-    ).bind(days, doc.author_id).run();
+    const leaveData = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
+    if (leaveData?.leave_type === 'monthly') {
+      await db.prepare("UPDATE annual_leave SET monthly_used = MAX(0, monthly_used - ?), updated_at = datetime('now') WHERE user_id = ?")
+        .bind(days, doc.author_id).run();
+    } else {
+      await db.prepare("UPDATE annual_leave SET used_days = MAX(0, used_days - ?), updated_at = datetime('now') WHERE user_id = ?")
+        .bind(days, doc.author_id).run();
+    }
+    // leave_requests에서 문서결재 자동등록 건 삭제
+    await db.prepare("DELETE FROM leave_requests WHERE user_id = ? AND reason LIKE ? AND status = 'approved'")
+      .bind(doc.author_id, `%${doc.title}%`).run();
   }
 
   await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')

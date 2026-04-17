@@ -28,6 +28,7 @@ export default function ArchivePage() {
   const [filterDept, setFilterDept] = useState('');
   const [filterAuthor, setFilterAuthor] = useState('');
   const [filterStatus, setFilterStatus] = useState('approved');
+  const [filterCategory, setFilterCategory] = useState('');
   const [searchText, setSearchText] = useState('');
 
   // 외근 보고서에서 외근 일자 추출
@@ -45,6 +46,8 @@ export default function ArchivePage() {
 
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'admin';
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
+  const isAccountant = ['accountant', 'accountant_asst'].includes(user?.role || '');
+  const canFilterAll = isCeoPlus || isAdmin || isAccountant;
 
   // 다운로드 체크 (localStorage)
   const [checked, setChecked] = useState<Record<string, boolean>>(() => {
@@ -69,6 +72,21 @@ export default function ArchivePage() {
       .finally(() => setLoading(false));
   }, []);
 
+  // 문서 제목 기반 카테고리 분류 (외근일지 별도, 휴가류 통합)
+  const DOC_CATEGORIES = [
+    { value: '외근일지', label: '외근일지', keywords: ['외근'] },
+    { value: '휴가', label: '휴가', keywords: ['연차', '월차', '반차', '휴가'] },
+    { value: '업무/보고', label: '업무/보고', keywords: ['보고서', '업무', '일지', '회의', '기획', '제안', '분석'] },
+    { value: '인사/채용', label: '인사/채용', keywords: ['인사', '채용', '퇴직', '입사', '발령'] },
+    { value: '경비/비용', label: '경비/비용', keywords: ['경비', '비용', '청구', '정산', '지출', '영수'] },
+  ];
+  const getDocCategory = (title: string): string => {
+    for (const cat of DOC_CATEGORIES) {
+      if (cat.keywords.some(k => title.includes(k))) return cat.value;
+    }
+    return '기타';
+  };
+
   // 상태 탭 필터
   let filtered = documents;
   if (statusTab === 'approved') filtered = filtered.filter(d => d.status === 'approved' && d.cancelled !== 1);
@@ -79,6 +97,7 @@ export default function ArchivePage() {
   if (filterBranch) filtered = filtered.filter((d) => d.branch === filterBranch);
   if (filterDept) filtered = filtered.filter((d) => d.department === filterDept);
   if (filterAuthor) filtered = filtered.filter((d) => d.author_name?.includes(filterAuthor));
+  if (filterCategory) filtered = filtered.filter((d) => getDocCategory(d.title) === filterCategory);
   if (searchText) filtered = filtered.filter((d) => d.title.includes(searchText) || d.author_name?.includes(searchText));
 
   // 월 목록
@@ -96,13 +115,14 @@ export default function ArchivePage() {
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   // 필터 변경 시 1페이지로 리셋
-  useEffect(() => { setPage(1); }, [statusTab, filterMonth, filterBranch, filterDept, filterAuthor, searchText]);
+  useEffect(() => { setPage(1); }, [statusTab, filterMonth, filterBranch, filterDept, filterAuthor, filterCategory, searchText]);
 
   const resetFilters = () => {
     setFilterMonth('');
     setFilterBranch('');
     setFilterDept('');
     setFilterAuthor('');
+    setFilterCategory('');
     setSearchText('');
     setFilterStatus('approved');
   };
@@ -144,7 +164,7 @@ export default function ArchivePage() {
           <div className="archive-filter-item">
             <Select size="sm" options={monthOpts} value={filterMonth ? { value: filterMonth, label: filterMonth } : null} onChange={(o: any) => setFilterMonth(o?.value || '')} placeholder="전체 기간" isClearable />
           </div>
-          {(isCeoPlus || isAdmin) && (
+          {canFilterAll && (
             <div className="archive-filter-item">
               <Select size="sm" options={BRANCH_OPTS} value={filterBranch ? { value: filterBranch, label: filterBranch } : null} onChange={(o: any) => { setFilterBranch(o?.value || ''); setFilterDept(''); }} placeholder="전체 지사" isClearable />
             </div>
@@ -155,17 +175,23 @@ export default function ArchivePage() {
           <div className="archive-filter-item">
             <Select size="sm" options={authorOpts} value={filterAuthor ? { value: filterAuthor, label: filterAuthor } : null} onChange={(o: any) => setFilterAuthor(o?.value || '')} placeholder="작성자" isClearable isSearchable />
           </div>
+          <div className="archive-filter-item">
+            <Select size="sm" options={[...DOC_CATEGORIES.map(c => ({ value: c.value, label: c.label })), { value: '기타', label: '기타' }]}
+              value={filterCategory ? { value: filterCategory, label: filterCategory } : null}
+              onChange={(o: any) => setFilterCategory(o?.value || '')} placeholder="문서구분" isClearable />
+          </div>
           <div className="archive-filter-item archive-search">
             <Search size={14} className="archive-search-icon" />
             <input type="text" value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="제목/작성자 검색" className="archive-search-input" />
           </div>
         </div>
-        {(filterMonth || filterBranch || filterDept || filterAuthor || searchText) && (
+        {(filterMonth || filterBranch || filterDept || filterAuthor || filterCategory || searchText) && (
           <div className="archive-filter-tags">
             {filterMonth && <span className="stats-filter-tag">{filterMonth}</span>}
             {filterBranch && <span className="stats-filter-tag">{filterBranch}</span>}
             {filterDept && <span className="stats-filter-tag">{filterDept}</span>}
             {filterAuthor && <span className="stats-filter-tag">{filterAuthor}</span>}
+            {filterCategory && <span className="stats-filter-tag">{filterCategory}</span>}
             {searchText && <span className="stats-filter-tag">"{searchText}"</span>}
             <button className="btn-link" style={{ fontSize: '0.75rem', marginLeft: 4 }} onClick={resetFilters}>초기화</button>
           </div>

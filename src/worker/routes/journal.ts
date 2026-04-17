@@ -66,17 +66,13 @@ journal.get('/', async (c) => {
   const conditions: string[] = [];
   const params: string[] = [];
 
-  // Permission filter: member도 같은 팀(지사+부서) 열람 가능
+  // Permission filter: member는 같은 지사 전체 일지 열람 가능
   if (user.role === 'member') {
     conditions.push('j.branch = ?');
-    conditions.push('j.department = ?');
     params.push(user.branch);
-    params.push(user.department);
   } else if (user.role === 'manager') {
     conditions.push('j.branch = ?');
-    conditions.push('j.department = ?');
     params.push(user.branch);
-    params.push(user.department);
   } else if (user.role === 'admin' && user.branch === '의정부') {
     // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
@@ -112,13 +108,11 @@ journal.get('/members', async (c) => {
   const params: string[] = [];
 
   if (user.role === 'member') {
-    query += ' AND branch = ? AND department = ?';
+    query += ' AND branch = ?';
     params.push(user.branch);
-    params.push(user.department);
   } else if (user.role === 'manager') {
-    query += ' AND branch = ? AND department = ?';
+    query += ' AND branch = ?';
     params.push(user.branch);
-    params.push(user.department);
   } else if (user.role === 'admin' && user.branch === '의정부') {
     // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
@@ -189,11 +183,11 @@ journal.put('/:id', async (c) => {
     bid_field_only?: boolean; // 낙찰가/입찰가만 수정하는 경우
   }>();
 
-  // 시간 제한 체크
-  if (!isTopRole) {
+  // 시간 제한 체크 (admin 이상은 모든 날짜 수정 가능)
+  if (!isTopRole && !isAdminPlus) {
     if (entry.target_date < today) {
-      // 과거 일지: 입찰의 낙찰가/입찰가만 허용 (admin 이상 또는 일반 사용자 낙찰가)
-      if (isBidEntry && (body.bid_field_only || isAdminPlus)) {
+      // 과거 일지: 입찰의 낙찰가/입찰가만 허용
+      if (isBidEntry && body.bid_field_only) {
         // 허용: 입찰 필드만 수정
       } else {
         return c.json({ error: '지난 일정은 수정할 수 없습니다.' }, 400);
@@ -202,7 +196,7 @@ journal.put('/:id', async (c) => {
       const hour = new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCHours();
       if (hour >= 18) {
         // 오늘 18시 이후: 입찰 낙찰가/입찰가만 허용
-        if (isBidEntry && (body.bid_field_only || isAdminPlus)) {
+        if (isBidEntry && body.bid_field_only) {
           // 허용
         } else {
           return c.json({ error: '오늘 일정은 18시 이후 수정할 수 없습니다.' }, 400);
@@ -267,20 +261,35 @@ journal.get('/dismissed-alerts', async (c) => {
   return c.json({ keys: (result.results || []).map((r: any) => r.alert_key) });
 });
 
-// GET /api/journal/duplicate-inspections — 중복 임장 사건번호+법원 조회 (같은 지사 내에서만)
+// GET /api/journal/duplicate-inspections — 중복 임장 사건번호+법원 조회
+// 열람 권한:
+//   - master/ceo/cc_ref/admin/director: 전체 열람 가능
+//   - manager (팀장): 본인 팀에 관련된 중복건만
+//   - member 등 일반 팀원: 본인이 관련된 중복건만
+//   - accountant/총무 계열: 열람 없음
 journal.get('/duplicate-inspections', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
   // 사용자 지사 확인
-  const profile = await db.prepare('SELECT branch FROM users WHERE id = ?').bind(user.sub).first<{ branch: string }>();
+  const profile = await db.prepare('SELECT branch, department FROM users WHERE id = ?').bind(user.sub).first<{ branch: string; department: string }>();
   const branch = profile?.branch || '';
+  const department = profile?.department || '';
 
+  const isTopRole = ['master', 'ceo', 'cc_ref', 'admin', 'director'].includes(user.role);
+  const isManager = user.role === 'manager';
+  const isMember = user.role === 'member';
+
+  // 알림 종료 조건:
+  //   1) 같은 사건번호+법원+지사로 '입찰' 일지가 등록됨 → 알림 제외
+  //   2) 첫 임장 등록일 기준 1개월(30일) 경과 → 알림 제외
   let query = `
     SELECT j.activity_subtype as case_no,
            json_extract(j.data, '$.court') as court,
            j.branch,
            GROUP_CONCAT(DISTINCT u.name) as user_names,
+           GROUP_CONCAT(DISTINCT j.user_id) as user_ids,
+           GROUP_CONCAT(DISTINCT u.department) as user_departments,
            COUNT(DISTINCT j.user_id) as user_count,
            MIN(j.target_date) as first_date,
            MAX(j.target_date) as last_date
@@ -288,26 +297,60 @@ journal.get('/duplicate-inspections', async (c) => {
     LEFT JOIN users u ON j.user_id = u.id
     WHERE j.activity_type = '임장'
       AND j.activity_subtype != ''
+      AND NOT EXISTS (
+        SELECT 1 FROM journal_entries jb
+        WHERE jb.activity_type = '입찰'
+          AND jb.activity_subtype = j.activity_subtype
+          AND json_extract(jb.data, '$.court') = json_extract(j.data, '$.court')
+          AND jb.branch = j.branch
+      )
   `;
   const params: string[] = [];
 
-  // all=true이면 전체 지사 조회, 아니면 본인 지사만 (master/ceo/cc_ref는 항상 전체)
-  const allBranches = c.req.query('all') === 'true';
-  if (!allBranches && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
+  // 권한별 지사/팀 필터
+  // - 상위자(master/ceo/cc_ref/admin/director): 기본 전체 지사 (항상 전부 노출)
+  // - 일반 사용자: 본인 지사 고정
+  if (!isTopRole) {
     query += ' AND j.branch = ?';
     params.push(branch);
   }
+  // 상위자는 별도 지사 필터 없음 (전체 노출)
+
+  // 팀원/팀장은 관련 건만 볼 수 있게 후처리 필터링용 변수 (GROUP BY 결과 이후 필터)
+  const memberOnlyMine = isMember;
+  const managerOnlyMyTeam = isManager;
 
   query += `
     GROUP BY j.activity_subtype, json_extract(j.data, '$.court'), j.branch
     HAVING COUNT(DISTINCT j.user_id) > 1
+       AND MIN(j.target_date) >= date('now', '-30 days')
     ORDER BY MAX(j.target_date) DESC
   `;
 
   const rows = params.length > 0
     ? await db.prepare(query).bind(...params).all()
     : await db.prepare(query).all();
-  return c.json({ duplicates: rows.results || [] });
+
+  let results = rows.results || [];
+
+  // 팀원: 본인이 관련된 중복건만
+  if (memberOnlyMine) {
+    results = results.filter((r: any) => {
+      const ids = (r.user_ids || '').split(',');
+      return ids.includes(user.sub);
+    });
+  }
+
+  // 팀장: 본인 지사+부서에 속한 팀원이 관련된 중복건만
+  if (managerOnlyMyTeam) {
+    results = results.filter((r: any) => {
+      // 해당 중복건 관련자의 department 중 본인 부서가 있는지
+      const depts = (r.user_departments || '').split(',').map((d: string) => d.trim());
+      return r.branch === branch && depts.includes(department);
+    });
+  }
+
+  return c.json({ duplicates: results });
 });
 
 // GET /api/journal/check-case-no?case_no=xxx&court=yyy — 특정 사건번호+법원 중복 체크 (같은 지사)

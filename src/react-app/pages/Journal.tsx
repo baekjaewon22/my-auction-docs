@@ -107,7 +107,7 @@ export default function Journal() {
   const currentBranch = isCeoPlus ? branches[activeBranch] : (user?.branch || '');
 
   const renderBranchView = (branch: string) => {
-    const branchMembers = members.filter((m) => (m.branch === branch || (!branch && !m.branch)) && m.login_type !== 'freelancer');
+    const branchMembers = members.filter((m) => (m.branch === branch || (!branch && !m.branch)) && m.login_type !== 'freelancer' && m.role !== 'resigned');
     const departments = [...new Set(branchMembers.map((m) => m.department).filter(Boolean))].sort();
     const noDeptMembers = branchMembers.filter((m) => !m.department);
 
@@ -328,7 +328,7 @@ export default function Journal() {
           {(() => {
             const hBranch = isCeoPlus && branches.length > 1 ? branches[historyBranch] : (user?.branch || '');
             const canSeeAll = user?.role === 'master';
-            let deptMembers = members.filter(m => m.branch === hBranch && (historyDept === '' || m.department === historyDept));
+            let deptMembers = members.filter(m => m.branch === hBranch && (historyDept === '' || m.department === historyDept) && m.role !== 'resigned');
 
             const [year, month] = historyMonth.split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();

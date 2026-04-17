@@ -71,6 +71,15 @@ const smallStyles: StylesConfig<any, false, GroupBase<any>> = {
     fontSize: '0.75rem',
     padding: '6px 10px',
   }),
+  menu: (base) => ({
+    ...base,
+    borderRadius: 8,
+    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+    border: '1px solid #e8eaed',
+    zIndex: 9999,
+    overflow: 'hidden',
+  }),
+  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
   singleValue: (base) => ({
     ...base,
     fontSize: '0.75rem',

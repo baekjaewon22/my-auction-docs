@@ -177,8 +177,8 @@ export function getKSTHour(): number {
  * - 과거: 수정 불가 (ceo/cc_ref/master는 가능)
  */
 export function isEditable(entryDate: string, userRole?: string): boolean {
-  // ceo/cc_ref/master는 항상 수정 가능
-  if (userRole && ['master', 'ceo', 'cc_ref'].includes(userRole)) return true;
+  // ceo/cc_ref/master/admin은 항상 수정 가능
+  if (userRole && ['master', 'ceo', 'cc_ref', 'admin'].includes(userRole)) return true;
 
   const today = getToday();
   const tomorrow = getTomorrow();

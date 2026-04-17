@@ -11,9 +11,11 @@ interface Props {
 }
 
 export default function ApprovalBar({ signatures, approvalSteps, currentUserId, currentUserRole, docStatus, authorName, onSign }: Props) {
-  const authorSig = signatures[0] || null;
+  // 빈 signature_data는 서명으로 간주하지 않음 (백필된 placeholder 포함)
+  const authorSigRaw = signatures[0] || null;
+  const authorSig = authorSigRaw?.signature_data ? authorSigRaw : null;
   const isAuthor = docStatus === 'draft' || docStatus === 'rejected';
-  const authorSigned = signatures.some(s => s.user_id === currentUserId);
+  const authorSigned = signatures.some(s => s.user_id === currentUserId && s.signature_data);
 
   // 동적 결재선: 작성자 + approval_steps
   const slots: { label: string; name?: string; status: 'empty' | 'signed' | 'approved' | 'rejected' | 'pending'; signature?: Signature; canSign: boolean; approverRole?: string }[] = [];
@@ -86,7 +88,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
           <div key={idx} className={`approval-slot ${slot.status === 'approved' ? 'approval-slot-done' : ''} ${slot.status === 'rejected' ? 'approval-slot-rejected' : ''}`}>
             <div className="approval-slot-header">{slot.label}</div>
             <div className="approval-slot-body">
-              {slot.signature ? (
+              {slot.signature && slot.signature.signature_data ? (
                 <>
                   <img src={slot.signature.signature_data} alt={`${slot.signature.user_name} 서명`} className="approval-slot-img" />
                   <div className="approval-slot-name">{slot.signature.user_name}</div>

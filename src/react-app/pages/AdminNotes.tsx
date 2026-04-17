@@ -83,7 +83,7 @@ export default function AdminNotes() {
   const [commentAnonymous, setCommentAnonymous] = useState(false);
   const [commentLoading, setCommentLoading] = useState(false);
 
-  const isAdmin = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
+  // const isAdmin = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role); // 현재 미사용
   const isManager = !!user && ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user.role);
   const isMaster = user?.role === 'master';
 
@@ -317,7 +317,7 @@ export default function AdminNotes() {
                 <input type="checkbox" checked={formAnonymous} onChange={(e) => setFormAnonymous(e.target.checked)} />
                 <EyeOff size={13} /> 익명으로 작성
               </label>
-              {isAdmin && (
+              {user?.role === 'master' && (
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.82rem', marginTop: 18 }}>
                   <input type="checkbox" checked={formPinned} onChange={(e) => setFormPinned(e.target.checked)} />
                   <Pin size={13} /> 상단 고정

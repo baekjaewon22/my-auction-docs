@@ -64,12 +64,16 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
   const saveEdit = async (entry: JournalEntry) => {
     try {
       // 사건번호 변경 시 activity_subtype도 갱신
-      const updatePayload: { data: Record<string, any>; activity_subtype?: string } = { data: editData };
+      const updatePayload: { data: Record<string, any>; activity_subtype?: string; bid_field_only?: boolean } = { data: editData };
       if (editData.caseNo && (entry.activity_type === '입찰' || entry.activity_type === '임장')) {
         updatePayload.activity_subtype = editData.caseNo;
       }
       if (editData.briefingCaseNo && entry.activity_type === '브리핑자료제출') {
         updatePayload.activity_subtype = editData.briefingCaseNo;
+      }
+      // 읽기전용(과거일정)에서 입찰 수정 시 bid_field_only 플래그 전달
+      if (readonly && entry.activity_type === '입찰') {
+        updatePayload.bid_field_only = true;
       }
       await api.journal.update(entry.id, updatePayload);
       setEditingId(null);
@@ -200,7 +204,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           {d.briefingSubmit && <span className="journal-field-badge briefing-badge">브리핑</span>}
                         </div>
                       )}
-                      {(!readonly || isMaster) && (
+                      {(!readonly || isMaster || isEditing) && (
                         <div className="journal-entry-actions">
                           {(!readonly || isMaster) && !isEditing && <button className="btn-icon" title="수정" onClick={() => startEdit(entry)}><Pencil size={14} /></button>}
                           {isEditing && <button className="btn-icon success" title="저장" onClick={() => saveEdit(entry)}><Save size={14} /></button>}

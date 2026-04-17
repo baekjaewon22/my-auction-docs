@@ -105,10 +105,10 @@ auth.post('/forgot-password/send', async (c) => {
   const key = normalizedInput;
   verifyStore.set(key, { code, expires, userId: user.id });
 
-  // 알림톡 발송
+  // 알림톡 발송 (비밀번호 재설정 전용 템플릿)
   try {
     await sendAlimtalkByTemplate(
-      c.env as unknown as Record<string, unknown>, 'SIGNUP_VERIFY',
+      c.env as unknown as Record<string, unknown>, 'PW_RESET',
       { verify_code: code },
       [user.phone],
     );

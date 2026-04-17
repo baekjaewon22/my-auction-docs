@@ -278,9 +278,10 @@ export const api = {
   },
 
   sales: {
-    list: (params?: { month?: string; user_id?: string; date_mode?: string }) => {
+    list: (params?: { month?: string; month_end?: string; user_id?: string; date_mode?: string }) => {
       const q = new URLSearchParams();
       if (params?.month) q.set('month', params.month);
+      if (params?.month_end) q.set('month_end', params.month_end);
       if (params?.user_id) q.set('user_id', params.user_id);
       if (params?.date_mode) q.set('date_mode', params.date_mode);
       const qs = q.toString();
@@ -312,9 +313,10 @@ export const api = {
       request<{ records: import('./types').SalesRecord[] }>('/sales/dashboard/refund-requests'),
     dashboardRefundImpacts: () =>
       request<{ impacts: any[] }>('/sales/dashboard/refund-impacts'),
-    stats: (params?: { month?: string; branch?: string; department?: string; user_id?: string }) => {
+    stats: (params?: { month?: string; month_end?: string; branch?: string; department?: string; user_id?: string }) => {
       const q = new URLSearchParams();
       if (params?.month) q.set('month', params.month);
+      if (params?.month_end) q.set('month_end', params.month_end);
       if (params?.branch) q.set('branch', params.branch);
       if (params?.department) q.set('department', params.department);
       if (params?.user_id) q.set('user_id', params.user_id);
@@ -422,6 +424,27 @@ export const api = {
       request<{ success: boolean; sales_id: string }>('/accounting/staging/' + id + '/to-sales', { method: 'POST', body: JSON.stringify(data) }),
     stagingDelete: (id: string) =>
       request('/accounting/staging/' + id, { method: 'DELETE' }),
+  },
+
+  cooperation: {
+    list: (filter?: string) =>
+      request<{ requests: any[] }>('/cooperation' + (filter ? '?filter=' + filter : '')),
+    dashboard: () =>
+      request<{ alerts: any[] }>('/cooperation/dashboard'),
+    get: (id: string) =>
+      request<{ request: any; replies: any[]; photos: any[] }>('/cooperation/' + id),
+    create: (data: { receiver_id: string; court?: string; case_year?: string; case_type?: string; case_number?: string; content?: string }) =>
+      request<{ success: boolean; id: string }>('/cooperation', { method: 'POST', body: JSON.stringify(data) }),
+    accept: (id: string) =>
+      request('/cooperation/' + id + '/accept', { method: 'POST' }),
+    complete: (id: string) =>
+      request('/cooperation/' + id + '/complete', { method: 'POST' }),
+    reply: (id: string, data: { content?: string; photos?: { file_name: string; file_data: string; file_size: number }[] }) =>
+      request<{ success: boolean; reply_id: string }>('/cooperation/' + id + '/reply', { method: 'POST', body: JSON.stringify(data) }),
+    getPhoto: (photoId: string) =>
+      request<{ photo: { id: string; file_name: string; file_data: string; file_size: number } }>('/cooperation/photos/' + photoId),
+    delete: (id: string) =>
+      request('/cooperation/' + id, { method: 'DELETE' }),
   },
 
   journal: {

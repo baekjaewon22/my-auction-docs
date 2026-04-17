@@ -45,6 +45,7 @@ function FreelancerDashboard() {
 
   const totalAmount = mySales.filter(r => r.status === 'confirmed').reduce((s, r) => s + r.amount, 0);
   const pendingCount = mySales.filter(r => r.status === 'pending').length;
+  const cardPendingCount = mySales.filter(r => r.status === 'card_pending').length;
   const confirmedCount = mySales.filter(r => r.status === 'confirmed').length;
 
   return (
@@ -61,7 +62,8 @@ function FreelancerDashboard() {
 
       <div className="stats-grid">
         <div className="stat-card"><DollarSign size={28} className="stat-icon" /><div className="stat-number">{mySales.length}</div><div className="stat-label">전체 매출</div></div>
-        <div className="stat-card stat-submitted"><Clock size={28} className="stat-icon" /><div className="stat-number">{pendingCount}</div><div className="stat-label">입금대기</div></div>
+        <div className="stat-card stat-submitted"><Clock size={28} className="stat-icon" /><div className="stat-number">{pendingCount}</div><div className="stat-label">입금신청</div></div>
+        {cardPendingCount > 0 && <div className="stat-card" style={{ borderTop: '3px solid #7b1fa2' }}><Clock size={28} className="stat-icon" style={{ color: '#7b1fa2' }} /><div className="stat-number" style={{ color: '#7b1fa2' }}>{cardPendingCount}</div><div className="stat-label">카드대기</div></div>}
         <div className="stat-card stat-approved"><FileCheck size={28} className="stat-icon" /><div className="stat-number">{confirmedCount}</div><div className="stat-label">확정</div></div>
         <div className="stat-card" style={{ borderTop: '3px solid #7b1fa2' }}><TrendingDown size={28} className="stat-icon" style={{ color: '#7b1fa2' }} /><div className="stat-number" style={{ color: '#7b1fa2' }}>{totalAmount.toLocaleString()}</div><div className="stat-label">확정 매출액</div></div>
       </div>
@@ -73,8 +75,8 @@ function FreelancerDashboard() {
             {mySales.slice(0, 10).map(r => (
               <Link key={r.id} to="/sales" className="doc-item">
                 <div className="doc-item-header">
-                  <span className={`doc-status status-${r.status === 'confirmed' ? 'approved' : r.status === 'pending' ? 'submitted' : 'draft'}`}>
-                    {r.status === 'confirmed' ? '확정' : r.status === 'pending' ? '대기' : r.status}
+                  <span className={`doc-status status-${r.status === 'confirmed' ? 'approved' : r.status === 'pending' ? 'submitted' : r.status === 'card_pending' ? 'submitted' : 'draft'}`}>
+                    {r.status === 'confirmed' ? '확정' : r.status === 'pending' ? '입금신청' : r.status === 'card_pending' ? '카드대기' : r.status}
                   </span>
                   <span className="doc-date">{r.contract_date}</span>
                 </div>
@@ -105,15 +107,73 @@ export default function Dashboard() {
   const [refundImpacts, setRefundImpacts] = useState<any[]>([]);
   const [scheduleGaps, setScheduleGaps] = useState<ScheduleGapAlert[]>([]);
   const [contractAlerts, setContractAlerts] = useState<SalesRecord[]>([]);
+  const [myMissingDocs, setMyMissingDocs] = useState<SalesRecord[]>([]);
   const [dupInspections, setDupInspections] = useState<{ case_no: string; court: string; user_names: string; user_count: number; first_date: string; last_date: string; branch?: string }[]>([]);
   const [dupAllBranches, setDupAllBranches] = useState(false);
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [pendingSalesBranch, setPendingSalesBranch] = useState('');
   const [accountantLeaves, setAccountantLeaves] = useState<any[]>([]);
+  const [coopAlerts, setCoopAlerts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '');
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
   const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
+  const isMaster = user?.role === 'master';
+
+  // 마스터 전용 섹션 전체 삭제 버튼 — DB 영구 저장
+  const MasterCloseBtn = ({ alertType, keys, onClose }: { alertType: string; keys: string[]; onClose: () => void }) => isMaster ? (
+    <button className="btn-icon"
+      title="섹션 전체 삭제 (마스터 전용 — 영구 삭제)"
+      onClick={async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (!confirm('이 알림 목록을 모두 삭제하시겠습니까?\n(영구 삭제 — 새로고침해도 복구되지 않음)')) return;
+        try {
+          const bulkKeys = keys.map(k => ({ alert_type: alertType, alert_key: k }));
+          if (bulkKeys.length > 0) await api.journal.dismissAlertsBulk(bulkKeys);
+          setDismissedKeys(prev => { const n = new Set(prev); keys.forEach(k => n.add(k)); return n; });
+          onClose();
+        } catch (err: any) { alert(err.message); }
+      }}
+      style={{ marginLeft: 'auto', color: '#9aa0a6', padding: 4, background: 'transparent', border: 'none', cursor: 'pointer' }}>
+      <X size={16} />
+    </button>
+  ) : null;
+
+  // 마스터 전용 개별 항목 삭제 버튼
+  const MasterItemCloseBtn = ({ alertType, alertKey }: { alertType: string; alertKey: string }) => isMaster ? (
+    <button className="btn-icon"
+      title="이 항목 삭제 (마스터 전용 — 영구 삭제)"
+      onClick={async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (!confirm('이 알림 항목을 삭제하시겠습니까?\n(영구 삭제 — 새로고침해도 복구되지 않음)')) return;
+        try {
+          await api.journal.dismissAlert(alertType, alertKey);
+          setDismissedKeys(prev => new Set(prev).add(alertKey));
+        } catch (err: any) { alert(err.message); }
+      }}
+      style={{ color: '#bdc1c6', padding: '2px 4px', background: 'transparent', border: 'none', cursor: 'pointer', marginLeft: 4 }}>
+      <X size={13} />
+    </button>
+  ) : null;
+
+  // dismissedKeys가 업데이트되면 각 state에서 해당 항목 제거
+  useEffect(() => {
+    if (dismissedKeys.size === 0) return;
+    setCoopAlerts(prev => prev.filter((a: any) => !dismissedKeys.has(`coop_${a.id}`)));
+    setMyMissingDocs(prev => prev.filter(r => !dismissedKeys.has(`my_doc_missing_${r.id}`)));
+    setAlerts(prev => prev.filter(a => !dismissedKeys.has(`missing_${a.userId}_${a.date}_${a.activity || ''}`) && !dismissedKeys.has(`my_missing_${a.userId}_${a.date}_${a.activity || ''}`)));
+    setDupInspections(prev => prev.filter((d: any) => !dismissedKeys.has(`dup_${d.case_no}_${d.court}_${d.branch || ''}`)));
+    setContractAlerts(prev => prev.filter(r => !dismissedKeys.has(`contract_${r.id}`)));
+    setPendingApprovals(prev => prev.filter((d: any) => !dismissedKeys.has(`approval_${d.id}`)));
+    setPendingSales(prev => prev.filter((r: any) => !dismissedKeys.has(`pending_sales_${r.id}`)));
+    setRefundRequests(prev => prev.filter((r: any) => !dismissedKeys.has(`refund_request_${r.id}`)));
+    setRefundImpacts(prev => prev.filter((imp: any) => !dismissedKeys.has(`refund_impact_${imp.id}`)));
+    setDepositNotices(prev => prev.filter((d: any) => !dismissedKeys.has(`deposit_${d.id}`)));
+    setSalesAlerts(prev => prev.filter((a: any) => !dismissedKeys.has(`shortfall_${a.id}`)));
+    setDemotionCandidates(prev => prev.filter((a: any) => !dismissedKeys.has(`demotion_${a.id}`)));
+    setCancelRequests(prev => prev.filter((d: any) => !dismissedKeys.has(`cancel_${d.id}`)));
+    setAccountantLeaves(prev => prev.filter((lv: any) => !dismissedKeys.has(`acc_leave_${lv.id}`)));
+  }, [dismissedKeys]);
 
   useEffect(() => {
     // 삭제된 알림 목록 로드
@@ -158,6 +218,16 @@ export default function Dashboard() {
             setContractAlerts(pending);
           } catch { /* */ }
         }
+
+        // 본인 계약서/보고서 미작성 경고 (모든 권한자 본인 건만)
+        try {
+          const mine = await api.sales.list({});
+          const myMissing = (mine.records as SalesRecord[]).filter(r =>
+            r.user_id === user?.id && r.status !== 'refunded'
+              && !r.contract_submitted && !r.contract_not_submitted
+          );
+          setMyMissingDocs(myMissing);
+        } catch { /* */ }
 
         // 승인 대기 문서 + 결재선 확인
         if (submittedRes && canApprove) {
@@ -239,6 +309,14 @@ export default function Dashboard() {
           setAccountantLeaves(acLeaveRes.leaves || []);
         } catch { /* */ }
 
+        // 업무협조요청 알림 (프리랜서 제외)
+        if ((user as any)?.login_type !== 'freelancer') {
+          try {
+            const coopRes = await api.cooperation.dashboard();
+            setCoopAlerts(coopRes.alerts || []);
+          } catch { /* */ }
+        }
+
         // 중복 임장 사건번호 조회
         try {
           const dupRes = await api.journal.duplicateInspections(dupAllBranches);
@@ -292,6 +370,7 @@ export default function Dashboard() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
               <Clock size={16} color="#f9a825" />
               <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#e65100' }}>총무 휴무 안내</span>
+              <MasterCloseBtn alertType="accountant_leave" keys={accountantLeaves.map((lv: any) => `acc_leave_${lv.id}`)} onClose={() => setAccountantLeaves([])} />
             </div>
             {accountantLeaves.map((lv: any) => {
               const isSameDay = lv.start_date === lv.end_date;
@@ -303,7 +382,8 @@ export default function Dashboard() {
               const isToday = lv.start_date <= todayStr && lv.end_date >= todayStr;
               const isTomorrow = lv.start_date === tomorrowStr;
               return (
-                <div key={lv.id} style={{ padding: '8px 12px', background: '#fff', borderRadius: 8, marginBottom: 6, border: '1px solid #ffe082' }}>
+                <div key={lv.id} style={{ padding: '8px 12px', background: '#fff', borderRadius: 8, marginBottom: 6, border: '1px solid #ffe082', position: 'relative' }}>
+                  {isMaster && <div style={{ position: 'absolute', top: 4, right: 4 }}><MasterItemCloseBtn alertType="accountant_leave" alertKey={`acc_leave_${lv.id}`} /></div>}
                   <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1a1a2e' }}>
                     {lv.branch}지사 {lv.name} {lv.position_title || ''} {leaveLabel}
                   </div>
@@ -323,6 +403,39 @@ export default function Dashboard() {
         </section>
       )}
 
+      {/* 업무협조요청 알림 */}
+      {coopAlerts.length > 0 && (
+        <section className="section">
+          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <ExternalLink size={18} color="#7b1fa2" /> 업무협조요청
+            <span style={{ background: '#7b1fa2', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{coopAlerts.length}건</span>
+            <MasterCloseBtn alertType="coop" keys={coopAlerts.map((a: any) => `coop_${a.id}`)} onClose={() => setCoopAlerts([])} />
+          </h3>
+          <div className="doc-list">
+            {coopAlerts.map((a: any) => {
+              const caseNo = a.case_number ? `${a.case_year}${a.case_type}${a.case_number}` : '';
+              return (
+                <div key={a.id} style={{ position: 'relative' }}>
+                  <Link to="/cooperation" className="doc-item" style={{ borderLeft: '3px solid #7b1fa2' }}>
+                    <div className="doc-info">
+                      <div>
+                        <div className="doc-title">{a.sender_name} {a.sender_position} ({a.sender_branch}) → 업무협조요청</div>
+                        <div className="doc-meta">
+                          {a.court && <span>{a.court}</span>}
+                          {caseNo && <span style={{ fontWeight: 600 }}>{caseNo}</span>}
+                          <span>{a.created_at?.slice(0, 10)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </Link>
+                  {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="coop" alertKey={`coop_${a.id}`} /></div>}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* [5-2] 내 미제출 보고서 D-Day (담당자 본인용 — 항상 노출) */}
       {(() => {
         const myAlerts = alerts.filter((a) => a.userId === user?.id);
@@ -332,6 +445,7 @@ export default function Dashboard() {
             <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Bell size={18} color="#d93025" /> 내 미제출 보고서
               <span className="missing-alert-count">{myAlerts.length}건</span>
+              <MasterCloseBtn alertType="my_missing" keys={myAlerts.map(a => `my_missing_${a.userId}_${a.date}_${a.activity || ''}`)} onClose={() => setAlerts(prev => prev.filter(a => a.userId !== user?.id))} />
             </h3>
             <div className="missing-alert-list">
               {myAlerts.map((a, i) => (
@@ -356,12 +470,44 @@ export default function Dashboard() {
         );
       })()}
 
+      {/* 본인 계약서/보고서 미작성 경고 */}
+      {myMissingDocs.length > 0 && (
+        <section className="section">
+          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={18} color="#d93025" /> 본인 미작성 알림
+            <span className="missing-alert-count" style={{ background: '#fce4ec', color: '#d93025' }}>{myMissingDocs.length}건</span>
+            <MasterCloseBtn alertType="my_doc_missing" keys={myMissingDocs.map(r => `my_doc_missing_${r.id}`)} onClose={() => setMyMissingDocs([])} />
+          </h3>
+          <div className="missing-alert-list">
+            {myMissingDocs.slice(0, 10).map(r => {
+              const docLabel = r.type === '낙찰' ? '물건분석보고서' : '컨설팅계약서';
+              return (
+                <div key={r.id} style={{ position: 'relative' }}>
+                  <Link to="/sales" className="missing-alert-item" style={{ borderLeft: '3px solid #d93025', textDecoration: 'none' }}>
+                    <div style={{ flex: 1 }}>
+                      <div className="missing-alert-main">
+                        <span className="missing-alert-doc" style={{ color: '#d93025' }}>{docLabel} 미작성</span>
+                        <span style={{ marginLeft: 8, fontSize: '0.78rem', color: '#5f6368' }}>{r.client_name}</span>
+                      </div>
+                      <div className="missing-alert-detail">{r.contract_date} · {r.type} · {r.amount?.toLocaleString()}원</div>
+                    </div>
+                  </Link>
+                  {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="my_doc_missing" alertKey={`my_doc_missing_${r.id}`} /></div>}
+                </div>
+              );
+            })}
+            {myMissingDocs.length > 10 && <div className="missing-alert-more">외 {myMissingDocs.length - 10}건 더 있음</div>}
+          </div>
+        </section>
+      )}
+
       {/* 미제출 알림 (팀장/관리자용 — 팀원에겐 비노출) */}
       {alerts.length > 0 && canApprove && (
         <section className="section">
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <AlertTriangle size={18} color="#d93025" /> 미제출 알림
             <span className="missing-alert-count">{alerts.length}건</span>
+            <MasterCloseBtn alertType="missing_report" keys={alerts.map(a => `missing_${a.userId}_${a.date}_${a.activity || ''}`)} onClose={() => setAlerts([])} />
           </h3>
           <div className="missing-alert-list">
             {(() => {
@@ -452,6 +598,28 @@ export default function Dashboard() {
       {/* 중복 임장 사건번호 알림 */}
       {dupInspections.length > 0 && (
         <section className="section">
+          {/* 액션형 경고 배너 — 컨설팅 중복 처리 원칙 */}
+          <div style={{
+            padding: '14px 18px',
+            marginBottom: 12,
+            background: 'linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%)',
+            border: '2px solid #e65100',
+            borderLeft: '6px solid #d93025',
+            borderRadius: 10,
+            boxShadow: '0 2px 8px rgba(217, 48, 37, 0.15)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <AlertTriangle size={22} color="#d93025" style={{ flexShrink: 0, marginTop: 2 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#b71c1c', marginBottom: 4 }}>
+                  ⚠ 컨설팅 중복사건 처리 안내
+                </div>
+                <div style={{ fontSize: '0.82rem', color: '#3c4043', lineHeight: 1.55 }}>
+                  본 건은 <strong style={{ color: '#d93025' }}>컨설팅 중복사건</strong>에 해당하므로, <strong>관리자는 관련 자료를 별도로 공유하지 마시고 즉시 변호사님께 직접 전달</strong>해 주시기 바랍니다.
+                </div>
+              </div>
+            </div>
+          </div>
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <MapPin size={18} color="#7b1fa2" /> 동일 사건 임장 알림
             <span style={{ background: '#7b1fa2', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{dupInspections.length}건</span>
@@ -462,6 +630,7 @@ export default function Dashboard() {
                 <div style={{ width: 14, height: 14, borderRadius: 7, background: '#fff', position: 'absolute', top: 2, left: dupAllBranches ? 16 : 2, transition: 'left 0.2s', boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }} />
               </div>
               <span style={{ fontSize: '0.68rem', color: dupAllBranches ? '#7b1fa2' : '#9aa0a6', fontWeight: dupAllBranches ? 600 : 400 }}>전 지사</span>
+              <MasterCloseBtn alertType="dup_inspection" keys={dupInspections.map(d => `dup_${d.case_no}_${d.court}_${d.branch || ''}`)} onClose={() => setDupInspections([])} />
             </div>
           </h3>
           <div className="missing-alert-list">
@@ -474,7 +643,8 @@ export default function Dashboard() {
                 </span>
               ));
               return (
-                <div key={i} className="missing-alert-item" style={{ borderLeft: '3px solid #7b1fa2' }}>
+                <div key={i} className="missing-alert-item" style={{ borderLeft: '3px solid #7b1fa2', position: 'relative' }}>
+                  {isMaster && <div style={{ position: 'absolute', top: 6, right: 6 }}><MasterItemCloseBtn alertType="dup_inspection" alertKey={`dup_${dup.case_no}_${dup.court}_${dup.branch || ''}`} /></div>}
                   <div className="missing-alert-content">
                     <div className="missing-alert-main" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 700, background: '#f3e5f5', color: '#7b1fa2' }}>{dup.case_no}</span>
@@ -484,8 +654,12 @@ export default function Dashboard() {
                         {nameDisplay}의 동일 임장 건입니다.
                       </span>
                     </div>
-                    <div className="missing-alert-detail">
-                      임장일: {dup.first_date === dup.last_date ? dup.first_date : `${dup.first_date} ~ ${dup.last_date}`}
+                    <div className="missing-alert-detail" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>임장일: {dup.first_date === dup.last_date ? dup.first_date : `${dup.first_date} ~ ${dup.last_date}`}</span>
+                      <Link to={`/cooperation?court=${encodeURIComponent(dup.court || '')}&case_no=${encodeURIComponent(dup.case_no || '')}`}
+                        style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 6, background: '#7b1fa2', color: '#fff', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+                        업무협조요청
+                      </Link>
                     </div>
                   </div>
                 </div>
@@ -501,10 +675,12 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <FileText size={18} color="#7b1fa2" /> 계약서/물건보고서 확인대기
             <span className="missing-alert-count">{contractAlerts.length}건</span>
+            <MasterCloseBtn alertType="contract_alert" keys={contractAlerts.map(r => `contract_${r.id}`)} onClose={() => setContractAlerts([])} />
           </h3>
           <div className="missing-alert-list">
             {contractAlerts.slice(0, 10).map((r, i) => (
-              <div key={i} className="missing-alert-item" style={{ borderLeft: `3px solid ${r.contract_submitted ? '#1a73e8' : '#d93025'}` }}>
+              <div key={i} className="missing-alert-item" style={{ borderLeft: `3px solid ${r.contract_submitted ? '#1a73e8' : '#d93025'}`, position: 'relative' }}>
+                {isMaster && <div style={{ position: 'absolute', top: 6, right: 6 }}><MasterItemCloseBtn alertType="contract_alert" alertKey={`contract_${r.id}`} /></div>}
                 <div className="missing-alert-content">
                   <div className="missing-alert-main">
                     <strong>{r.user_name}</strong> — {r.client_name}
@@ -526,27 +702,31 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Bell size={18} color="#e65100" /> 승인 대기
             <span style={{ background: '#e65100', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{pendingApprovals.length}건</span>
+            <MasterCloseBtn alertType="pending_approval" keys={pendingApprovals.map((d: any) => `approval_${d.id}`)} onClose={() => setPendingApprovals([])} />
           </h3>
           <div className="doc-list">
             {pendingApprovals.map((doc: any) => {
               const isWaiting = doc.myStatus === 'waiting_final';
               return (
-                <Link to={'/documents/' + doc.id} key={doc.id} className="doc-item" style={{ borderLeft: `3px solid ${isWaiting ? '#1a73e8' : '#e65100'}` }}>
-                  <div className="doc-info">
-                    <FileText size={16} style={{ color: isWaiting ? '#1a73e8' : '#e65100', marginRight: 8, flexShrink: 0 }} />
-                    <div>
-                      <div className="doc-title">{doc.title}</div>
-                      <div className="doc-meta">
-                        <span>작성자: {doc.author_name}</span>
-                        {doc.department && <span>{doc.department}</span>}
-                        <span>{new Date(doc.updated_at).toLocaleDateString('ko-KR')}</span>
+                <div key={doc.id} style={{ position: 'relative' }}>
+                  <Link to={'/documents/' + doc.id} className="doc-item" style={{ borderLeft: `3px solid ${isWaiting ? '#1a73e8' : '#e65100'}` }}>
+                    <div className="doc-info">
+                      <FileText size={16} style={{ color: isWaiting ? '#1a73e8' : '#e65100', marginRight: 8, flexShrink: 0 }} />
+                      <div>
+                        <div className="doc-title">{doc.title}</div>
+                        <div className="doc-meta">
+                          <span>작성자: {doc.author_name}</span>
+                          {doc.department && <span>{doc.department}</span>}
+                          <span>{new Date(doc.updated_at).toLocaleDateString('ko-KR')}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <span className={`status-badge ${isWaiting ? 'status-draft' : 'status-submitted'}`}>
-                    {isWaiting ? '최종 승인 대기' : '승인 필요'}
-                  </span>
-                </Link>
+                    <span className={`status-badge ${isWaiting ? 'status-draft' : 'status-submitted'}`}>
+                      {isWaiting ? '최종 승인 대기' : '승인 필요'}
+                    </span>
+                  </Link>
+                  {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="pending_approval" alertKey={`approval_${doc.id}`} /></div>}
+                </div>
               );
             })}
           </div>
@@ -570,21 +750,25 @@ export default function Dashboard() {
                 {branches.map(b => <option key={b} value={b}>{b}</option>)}
               </select>
             )}
+            <MasterCloseBtn alertType="pending_sales" keys={pendingSales.map((r: any) => `pending_sales_${r.id}`)} onClose={() => setPendingSales([])} />
           </h3>
           <div className="doc-list">
             {filteredPending.slice(0, 10).map((r: any) => (
-              <Link to="/sales" key={r.id} className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
-                <div className="doc-info">
-                  <DollarSign size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
-                  <div>
-                    <div className="doc-title">{r.branch ? `[${r.branch}] ` : ''}{r.user_name} — {r.client_name} ({r.type})</div>
-                    <div className="doc-meta">
-                      <span>{(r.amount || 0).toLocaleString()}원</span>
-                      <span>{r.contract_date}</span>
+              <div key={r.id} style={{ position: 'relative' }}>
+                <Link to="/sales" className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
+                  <div className="doc-info">
+                    <DollarSign size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
+                    <div>
+                      <div className="doc-title">{r.branch ? `[${r.branch}] ` : ''}{r.user_name} — {r.client_name} ({r.type})</div>
+                      <div className="doc-meta">
+                        <span>{(r.amount || 0).toLocaleString()}원</span>
+                        <span>{r.contract_date}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </Link>
+                </Link>
+                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="pending_sales" alertKey={`pending_sales_${r.id}`} /></div>}
+              </div>
             ))}
           </div>
         </section>
@@ -597,21 +781,25 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <RotateCcw size={18} color="#d93025" /> 환불 신청
             <span style={{ background: '#d93025', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{refundRequests.length}건</span>
+            <MasterCloseBtn alertType="refund_request" keys={refundRequests.map((r: any) => `refund_request_${r.id}`)} onClose={() => setRefundRequests([])} />
           </h3>
           <div className="doc-list">
             {refundRequests.map((r: any) => (
-              <Link to="/sales" key={r.id} className="doc-item" style={{ borderLeft: '3px solid #d93025' }}>
-                <div className="doc-info">
-                  <RotateCcw size={16} style={{ color: '#d93025', marginRight: 8, flexShrink: 0 }} />
-                  <div>
-                    <div className="doc-title">{r.user_name} — {r.client_name} 환불신청</div>
-                    <div className="doc-meta">
-                      <span>{(r.amount || 0).toLocaleString()}원</span>
-                      <span>{r.refund_requested_at ? new Date(r.refund_requested_at).toLocaleDateString('ko-KR') : ''}</span>
+              <div key={r.id} style={{ position: 'relative' }}>
+                <Link to="/sales" className="doc-item" style={{ borderLeft: '3px solid #d93025' }}>
+                  <div className="doc-info">
+                    <RotateCcw size={16} style={{ color: '#d93025', marginRight: 8, flexShrink: 0 }} />
+                    <div>
+                      <div className="doc-title">{r.user_name} — {r.client_name} 환불신청</div>
+                      <div className="doc-meta">
+                        <span>{(r.amount || 0).toLocaleString()}원</span>
+                        <span>{r.refund_requested_at ? new Date(r.refund_requested_at).toLocaleDateString('ko-KR') : ''}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </Link>
+                </Link>
+                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="refund_request" alertKey={`refund_request_${r.id}`} /></div>}
+              </div>
             ))}
           </div>
         </section>
@@ -623,30 +811,34 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <AlertTriangle size={18} color="#e65100" /> 환불 회수 필요
             <span style={{ background: '#e65100', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{refundImpacts.length}건</span>
+            <MasterCloseBtn alertType="refund_impact" keys={refundImpacts.map((imp: any) => `refund_impact_${imp.id}`)} onClose={() => setRefundImpacts([])} />
           </h3>
           <div className="doc-list">
             {refundImpacts.map((imp: any) => (
-              <Link to="/payroll" key={imp.id} className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
-                <div className="doc-info">
-                  <AlertTriangle size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
-                  <div>
-                    <div className="doc-title">
-                      [{imp.user_branch}] {imp.user_name} — {imp.client_name} ({imp.type}) 환불
-                    </div>
-                    <div className="doc-meta">
-                      <span style={{ color: '#d93025', fontWeight: 600 }}>-{(imp.amount || 0).toLocaleString()}원</span>
-                      <span>{imp.bonus_period_label} 매출</span>
-                      <span>{imp.refund_approved_at ? new Date(imp.refund_approved_at).toLocaleDateString('ko-KR') + ' 환불승인' : ''}</span>
-                    </div>
-                    <div style={{ fontSize: '0.7rem', color: '#e65100', marginTop: 2 }}>
-                      {imp.is_contract && '→ 계약건수 차감, 랭킹 변동 가능'}
-                      {imp.affects_bonus && ' / 성과금 재계산 필요'}
-                      {imp.affects_commission && imp.recovery_amount > 0 && ` / 회수금액: ${imp.recovery_amount.toLocaleString()}원`}
-                      {!imp.is_contract && !imp.affects_bonus && !imp.affects_commission && '→ 다음 정산 시 공제 확인 필요'}
+              <div key={imp.id} style={{ position: 'relative' }}>
+                <Link to="/payroll" className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
+                  <div className="doc-info">
+                    <AlertTriangle size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
+                    <div>
+                      <div className="doc-title">
+                        [{imp.user_branch}] {imp.user_name} — {imp.client_name} ({imp.type}) 환불
+                      </div>
+                      <div className="doc-meta">
+                        <span style={{ color: '#d93025', fontWeight: 600 }}>-{(imp.amount || 0).toLocaleString()}원</span>
+                        <span>{imp.bonus_period_label} 매출</span>
+                        <span>{imp.refund_approved_at ? new Date(imp.refund_approved_at).toLocaleDateString('ko-KR') + ' 환불승인' : ''}</span>
+                      </div>
+                      <div style={{ fontSize: '0.7rem', color: '#e65100', marginTop: 2 }}>
+                        {imp.is_contract && '→ 계약건수 차감, 랭킹 변동 가능'}
+                        {imp.affects_bonus && ' / 성과금 재계산 필요'}
+                        {imp.affects_commission && imp.recovery_amount > 0 && ` / 회수금액: ${imp.recovery_amount.toLocaleString()}원`}
+                        {!imp.is_contract && !imp.affects_bonus && !imp.affects_commission && '→ 다음 정산 시 공제 확인 필요'}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </Link>
+                </Link>
+                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="refund_impact" alertKey={`refund_impact_${imp.id}`} /></div>}
+              </div>
             ))}
           </div>
         </section>
@@ -658,25 +850,29 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Clock size={18} color="#d93025" /> 입금 등록 (미처리)
             <span style={{ background: '#d93025', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{depositNotices.length}건</span>
+            <MasterCloseBtn alertType="deposit_notice" keys={depositNotices.map((d: any) => `deposit_${d.id}`)} onClose={() => setDepositNotices([])} />
           </h3>
           <div className="doc-list">
             {depositNotices.map((d: any) => {
               const dDay = Math.ceil((new Date(d.deposit_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
               return (
-                <Link to="/sales" key={d.id} className="doc-item" style={{ borderLeft: '3px solid #d93025' }}>
-                  <div className="doc-info">
-                    <Clock size={16} style={{ color: '#d93025', marginRight: 8, flexShrink: 0 }} />
-                    <div>
-                      <div className="doc-title">입금자: {d.depositor} — {(d.amount || 0).toLocaleString()}원</div>
-                      <div className="doc-meta">
-                        <span>입금일: {d.deposit_date}</span>
-                        <span style={{ fontWeight: 700, color: '#d93025' }}>
-                          D{dDay <= 0 ? '+' : '-'}{Math.abs(dDay)}
-                        </span>
+                <div key={d.id} style={{ position: 'relative' }}>
+                  <Link to="/sales" className="doc-item" style={{ borderLeft: '3px solid #d93025' }}>
+                    <div className="doc-info">
+                      <Clock size={16} style={{ color: '#d93025', marginRight: 8, flexShrink: 0 }} />
+                      <div>
+                        <div className="doc-title">입금자: {d.depositor} — {(d.amount || 0).toLocaleString()}원</div>
+                        <div className="doc-meta">
+                          <span>입금일: {d.deposit_date}</span>
+                          <span style={{ fontWeight: 700, color: '#d93025' }}>
+                            D{dDay <= 0 ? '+' : '-'}{Math.abs(dDay)}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </Link>
+                  </Link>
+                  {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="deposit_notice" alertKey={`deposit_${d.id}`} /></div>}
+                </div>
               );
             })}
           </div>
@@ -689,10 +885,12 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <TrendingDown size={18} color="#e65100" /> 기준매출 미달
             <span style={{ background: '#e65100', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{salesAlerts.length}명</span>
+            <MasterCloseBtn alertType="sales_shortfall" keys={salesAlerts.map((a: any) => `shortfall_${a.id}`)} onClose={() => setSalesAlerts([])} />
           </h3>
           <div className="doc-list">
             {salesAlerts.map((a: any) => (
-              <div key={a.id} className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
+              <div key={a.id} className="doc-item" style={{ borderLeft: '3px solid #e65100', position: 'relative' }}>
+                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="sales_shortfall" alertKey={`shortfall_${a.id}`} /></div>}
                 <div className="doc-info">
                   <TrendingDown size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
                   <div>
@@ -717,10 +915,12 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <ArrowDownCircle size={18} color="#d93025" /> 강등 대상
             <span style={{ background: '#d93025', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{demotionCandidates.length}명</span>
+            <MasterCloseBtn alertType="demotion" keys={demotionCandidates.map((a: any) => `demotion_${a.id}`)} onClose={() => setDemotionCandidates([])} />
           </h3>
           <div className="doc-list">
             {demotionCandidates.map((a: any) => (
-              <div key={a.id} className="doc-item" style={{ borderLeft: '3px solid #d93025', background: '#fce4ec' }}>
+              <div key={a.id} className="doc-item" style={{ borderLeft: '3px solid #d93025', background: '#fce4ec', position: 'relative' }}>
+                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="demotion" alertKey={`demotion_${a.id}`} /></div>}
                 <div className="doc-info">
                   <ArrowDownCircle size={16} style={{ color: '#d93025', marginRight: 8, flexShrink: 0 }} />
                   <div>
@@ -744,6 +944,7 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <AlertTriangle size={18} color="#d93025" /> 취소 신청
             <span style={{ background: '#d93025', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{cancelRequests.length}건</span>
+            <MasterCloseBtn alertType="cancel_request" keys={cancelRequests.map((d: any) => `cancel_${d.id}`)} onClose={() => setCancelRequests([])} />
           </h3>
           <div className="doc-list">
             {cancelRequests.map((doc: any) => (
@@ -768,6 +969,7 @@ export default function Dashboard() {
                       setCancelRequests(prev => prev.filter(d => d.id !== doc.id));
                     } catch (err: any) { alert(err.message); }
                   }}>취소 승인</button>
+                  {isMaster && <MasterItemCloseBtn alertType="cancel_request" alertKey={`cancel_${doc.id}`} />}
                 </div>
               </div>
             ))}

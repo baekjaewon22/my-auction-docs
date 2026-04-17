@@ -9,7 +9,7 @@ import Select, { toOptions } from '../components/Select';
 import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingUp, AlertTriangle, ArrowDownCircle } from 'lucide-react';
 
 import { useDepartments } from '../hooks/useDepartments';
-const ROLE_OPTS = VISIBLE_ROLES.map((v) => ({ value: v, label: ROLE_LABELS[v] }));
+const ROLE_OPTS = [...VISIBLE_ROLES, 'resigned' as const].map((v) => ({ value: v, label: ROLE_LABELS[v] }));
 // BRANCH_OPTS는 컴포넌트 내부에서 동적 생성
 const POSITION_TITLES = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴'];
 const POSITION_OPTS = POSITION_TITLES.map((p) => ({ value: p, label: p }));
@@ -32,7 +32,7 @@ export default function UserManagement() {
   const { branches: branchList } = useBranches();
   const DEPT_OPTS = toOptions(deptList);
   const BRANCH_OPTS = branchList.map(b => ({ value: b, label: b }));
-  const [tab, setTab] = useState<'approved' | 'pending'>('approved');
+  const [tab, setTab] = useState<'approved' | 'pending' | 'resigned'>('approved');
   const [users, setUsers] = useState<User[]>([]);
   const [pendingUsers, setPendingUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,8 +80,8 @@ export default function UserManagement() {
 
   const getAvailableRoles = () => {
     if (currentUser?.role === 'master') return ROLE_OPTS;
-    if (currentUser?.role === 'ceo' || currentUser?.role === 'cc_ref') return ROLE_OPTS.filter((r) => ['cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'member'].includes(r.value));
-    if (currentUser?.role === 'admin') return ROLE_OPTS.filter((r) => ['manager', 'member'].includes(r.value));
+    if (currentUser?.role === 'ceo' || currentUser?.role === 'cc_ref') return ROLE_OPTS.filter((r) => ['cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'member', 'resigned'].includes(r.value));
+    if (currentUser?.role === 'admin') return ROLE_OPTS.filter((r) => ['manager', 'member', 'resigned'].includes(r.value));
     return [];
   };
   const availableRoles = getAvailableRoles();
@@ -553,13 +553,16 @@ export default function UserManagement() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 8 }}>
         <div className="filter-bar" style={{ marginBottom: 0 }}>
           <button className={`filter-btn ${tab === 'approved' ? 'active' : ''}`} onClick={() => setTab('approved')}>
-            승인된 사용자 ({users.length})
+            승인된 사용자 ({users.filter(u => u.role !== 'resigned').length})
           </button>
           {canManagePending && (
             <button className={`filter-btn ${tab === 'pending' ? 'active' : ''}`} onClick={() => setTab('pending')}>
               가입 대기 {pendingUsers.length > 0 && <span className="pending-badge">{pendingUsers.length}</span>}
             </button>
           )}
+          <button className={`filter-btn ${tab === 'resigned' ? 'active' : ''}`} onClick={() => setTab('resigned')} style={tab === 'resigned' ? { background: '#9aa0a6', color: '#fff' } : {}}>
+            퇴사자 ({users.filter(u => u.role === 'resigned').length})
+          </button>
         </div>
         {tab === 'approved' && (
           <input className="form-input" placeholder="이름, 이메일, 지사, 팀 검색" value={userSearchTerm} onChange={(e) => setUserSearchTerm(e.target.value)}
@@ -575,7 +578,7 @@ export default function UserManagement() {
               <tr><th>이름</th><th>이메일</th><th>역할</th><th>보직</th><th>지사</th><th>팀</th><th>가입일</th><th></th></tr>
             </thead>
             <tbody>
-              {users.filter((u) => u.role !== 'master' || currentUser?.role === 'master').filter(u => {
+              {users.filter((u) => u.role !== 'resigned').filter((u) => u.role !== 'master' || currentUser?.role === 'master').filter(u => {
                 if (!userSearchTerm) return true;
                 const q = userSearchTerm.toLowerCase();
                 return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) || (u.branch || '').toLowerCase().includes(q) || (u.department || '').toLowerCase().includes(q) || (u.position_title || '').toLowerCase().includes(q);
@@ -635,6 +638,35 @@ export default function UserManagement() {
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── 퇴사자 목록 ── */}
+      {tab === 'resigned' && (
+        <div className="table-wrapper">
+          <table className="data-table">
+            <thead><tr><th>이름</th><th>이메일</th><th>지사</th><th>팀</th><th>가입일</th><th>복직</th></tr></thead>
+            <tbody>
+              {users.filter(u => u.role === 'resigned').map(u => (
+                <tr key={u.id}>
+                  <td><strong>{u.name}</strong></td>
+                  <td style={{ fontSize: '0.75rem' }}>{u.email}</td>
+                  <td>{u.branch || '-'}</td>
+                  <td>{u.department || '-'}</td>
+                  <td style={{ fontSize: '0.72rem' }}>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
+                  <td>
+                    <button className="btn btn-sm btn-success" onClick={async () => {
+                      if (!confirm(`${u.name}님을 복직 처리하시겠습니까?`)) return;
+                      try { await api.users.updateRole(u.id, 'member'); load(); } catch (err: any) { alert(err.message); }
+                    }}><UserCheck size={13} /> 복직</button>
+                  </td>
+                </tr>
+              ))}
+              {users.filter(u => u.role === 'resigned').length === 0 && (
+                <tr><td colSpan={6} className="empty-state">퇴사자가 없습니다.</td></tr>
+              )}
             </tbody>
           </table>
         </div>

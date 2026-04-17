@@ -15,7 +15,8 @@ const GRADE_OPTIONS = ['M1', 'M2', 'M3', 'M4'] as const;
 const GRADE_COLORS: Record<string, string> = { M1: '#188038', M2: '#1a73e8', M3: '#e65100', M4: '#d93025' };
 
 const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }> = {
-  pending: { label: '입금대기', color: '#e65100', bg: '#fff3e0' },
+  pending: { label: '입금신청', color: '#e65100', bg: '#fff3e0' },
+  card_pending: { label: '카드대기', color: '#7b1fa2', bg: '#f3e5f5' },
   confirmed: { label: '확정매출', color: '#188038', bg: '#e8f5e9' },
   refund_requested: { label: '환불신청', color: '#d93025', bg: '#fce4ec' },
   refunded: { label: '환불완료', color: '#9aa0a6', bg: '#f5f5f5' },
@@ -75,6 +76,7 @@ export default function Accounting() {
   const [allSales, setAllSales] = useState<SalesRecord[]>([]);
   const [adminMemos, setAdminMemos] = useState<Record<string, { id: string; content: string }>>({});
   const [filterMonth, setFilterMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [filterMonthEnd, setFilterMonthEnd] = useState('');
   const [filterBranch, setFilterBranch] = useState('');
   const [filterUser, setFilterUser] = useState('');
   const [editingMemo, setEditingMemo] = useState<string | null>(null);
@@ -129,6 +131,9 @@ export default function Accounting() {
   const [saving, setSaving] = useState(false);
   const [salaryInput, setSalaryInput] = useState('');
   const [gradeInput, setGradeInput] = useState('');
+  const [payTypeInput, setPayTypeInput] = useState<'salary' | 'commission'>('salary');
+  const [commRateInput, setCommRateInput] = useState('');
+  const [posAllowInput, setPosAllowInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [salesSearchTerm, setSalesSearchTerm] = useState('');
 
@@ -147,7 +152,7 @@ export default function Accounting() {
 
   const loadSales = async () => {
     try {
-      const res = await api.sales.list({ month: filterMonth, user_id: filterUser || undefined });
+      const res = await api.sales.list({ month: filterMonth, month_end: filterMonthEnd || undefined, user_id: filterUser || undefined });
       setAllSales((res.records || []).filter((r: SalesRecord) => {
         if (r.status === 'pending') return false;
         // 카드결제 건은 정산일 적용 후에만 회계장부에 표시
@@ -273,7 +278,7 @@ export default function Accounting() {
   };
 
   useEffect(() => { load(); }, []);
-  useEffect(() => { if (mainTab === 'sales') loadSales(); }, [mainTab, filterMonth, filterUser]);
+  useEffect(() => { if (mainTab === 'sales') loadSales(); }, [mainTab, filterMonth, filterMonthEnd, filterUser]);
   useEffect(() => { if (mainTab === 'card') loadCard(); }, [mainTab, cardMonth, cardFilterBranch, cardFilterUser]);
   useEffect(() => { if (mainTab === 'bank') loadBank(); }, [mainTab, bankMonth]);
 
@@ -325,6 +330,9 @@ export default function Accounting() {
       setSelectedAccount(acc);
       setSalaryInput(acc?.salary?.toString() || '');
       setGradeInput(acc?.grade || '');
+      setPayTypeInput(acc?.pay_type || 'salary');
+      setCommRateInput(acc?.commission_rate?.toString() || '');
+      setPosAllowInput(acc?.position_allowance?.toString() || '0');
       setEvaluations(evalRes.evaluations);
     } catch {
       setSelectedAccount(null); setEvaluations([]); setUserSalesRecords([]);
@@ -335,7 +343,13 @@ export default function Accounting() {
     if (!selectedUser || !canEdit) return;
     setSaving(true);
     try {
-      await api.accounting.update(selectedUser.id, { salary: Number(salaryInput) || 0, grade: gradeInput });
+      await api.accounting.update(selectedUser.id, {
+        salary: payTypeInput === 'commission' ? 0 : (Number(salaryInput) || 0),
+        grade: payTypeInput === 'commission' ? '' : gradeInput,
+        position_allowance: Number(posAllowInput) || 0,
+        pay_type: payTypeInput,
+        commission_rate: Number(commRateInput) || 0,
+      });
       load();
     } catch (err: any) { alert(err.message); }
     finally { setSaving(false); }
@@ -410,26 +424,52 @@ export default function Accounting() {
         {/* 급여 & 직급 */}
         <div className="card" style={{ marginBottom: 20, padding: 20 }}>
           <h3 style={{ marginTop: 0, marginBottom: 16, fontSize: '1rem' }}>급여 및 직급 설정</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 20 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 20 }}>
             <div>
-              <label className="form-label">급여 (월급)</label>
+              <label className="form-label">정산유형</label>
+              <select className="form-input" value={payTypeInput} onChange={(e) => setPayTypeInput(e.target.value as any)} disabled={!canEdit} style={{ width: '100%' }}>
+                <option value="salary">급여제</option>
+                <option value="commission">비율제</option>
+              </select>
+            </div>
+            {payTypeInput === 'salary' ? (
+              <>
+                <div>
+                  <label className="form-label">급여 (월급)</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input className="form-input" value={toMoneyDisplay(salaryInput)} onChange={(e) => setSalaryInput(fromMoneyDisplay(e.target.value))} disabled={!canEdit} style={{ flex: 1 }} />
+                    <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>원</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="form-label">기준매출 (급여 x 1.3 x 4)</label>
+                  <div style={{ padding: '10px 14px', background: calculatedStandardSales > 0 ? '#e8f5e9' : '#f5f5f5', borderRadius: 8, fontSize: '1.1rem', fontWeight: 700, color: calculatedStandardSales > 0 ? '#188038' : '#9aa0a6' }}>
+                    {calculatedStandardSales > 0 ? formatCurrency(calculatedStandardSales) : '-'}
+                  </div>
+                </div>
+                <div>
+                  <label className="form-label">직급단계</label>
+                  <select className="form-input" value={gradeInput} onChange={(e) => setGradeInput(e.target.value)} disabled={!canEdit} style={{ width: '100%' }}>
+                    <option value="">미지정</option>
+                    {GRADE_OPTIONS.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </div>
+              </>
+            ) : (
+              <div>
+                <label className="form-label">수수료율 (%)</label>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input className="form-input" type="number" value={commRateInput} onChange={(e) => setCommRateInput(e.target.value)} disabled={!canEdit} style={{ flex: 1 }} />
+                  <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>%</span>
+                </div>
+              </div>
+            )}
+            <div>
+              <label className="form-label">직책수당</label>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input className="form-input" value={toMoneyDisplay(salaryInput)} onChange={(e) => setSalaryInput(fromMoneyDisplay(e.target.value))} disabled={!canEdit} style={{ flex: 1 }} />
+                <input className="form-input" value={toMoneyDisplay(posAllowInput)} onChange={(e) => setPosAllowInput(fromMoneyDisplay(e.target.value))} disabled={!canEdit} style={{ flex: 1 }} />
                 <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>원</span>
               </div>
-            </div>
-            <div>
-              <label className="form-label">기준매출 (급여 x 1.3 x 4)</label>
-              <div style={{ padding: '10px 14px', background: calculatedStandardSales > 0 ? '#e8f5e9' : '#f5f5f5', borderRadius: 8, fontSize: '1.1rem', fontWeight: 700, color: calculatedStandardSales > 0 ? '#188038' : '#9aa0a6' }}>
-                {calculatedStandardSales > 0 ? formatCurrency(calculatedStandardSales) : '-'}
-              </div>
-            </div>
-            <div>
-              <label className="form-label">직급단계</label>
-              <select className="form-input" value={gradeInput} onChange={(e) => setGradeInput(e.target.value)} disabled={!canEdit} style={{ width: '100%' }}>
-                <option value="">미지정</option>
-                {GRADE_OPTIONS.map(g => <option key={g} value={g}>{g}</option>)}
-              </select>
             </div>
           </div>
           {canEdit && <div style={{ marginTop: 16 }}><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? '저장중...' : '저장'}</button></div>}
@@ -561,7 +601,11 @@ export default function Accounting() {
 
           {/* 필터 */}
           <div className="filter-bar" style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-            <input type="month" className="form-input" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} style={{ width: 160 }} />
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              <input type="month" className="form-input" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} style={{ width: 140 }} title="시작월" />
+              <span style={{ color: '#9aa0a6' }}>~</span>
+              <input type="month" className="form-input" value={filterMonthEnd} onChange={(e) => setFilterMonthEnd(e.target.value)} style={{ width: 140 }} title="종료월 (비워두면 단일월)" placeholder="종료월" />
+            </div>
             <div style={{ minWidth: 120 }}>
               <Select size="sm" options={[{ value: '', label: '전체 지사' }, ...branchOpts]}
                 value={branchOpts.find(o => o.value === filterBranch) || { value: '', label: '전체 지사' }}
@@ -591,7 +635,7 @@ export default function Accounting() {
           {/* 매출 목록 */}
           <div className="table-wrapper">
             <table className="premium-table">
-              <thead><tr><th></th><th>일자</th><th>담당자</th><th>유형</th><th>회원명</th><th>금액</th><th>입금일</th><th>증빙</th><th>상태</th><th>액션</th></tr></thead>
+              <thead><tr><th></th><th>일자</th><th style={{ whiteSpace: 'nowrap' }}>담당자</th><th>유형</th><th>회원명</th><th>금액</th><th>입금일</th><th style={{ whiteSpace: 'nowrap' }}>증빙</th><th>상태</th><th>액션</th></tr></thead>
               <tbody>
                 {displaySales.map(r => {
                   const st = STATUS_LABELS[r.status];
@@ -603,7 +647,7 @@ export default function Accounting() {
                         {r.direction === 'expense' ? '-' : '+'}
                       </td>
                       <td style={{ fontSize: '0.8rem' }}>{r.contract_date}</td>
-                      <td>{r.user_name}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{r.user_name}</td>
                       <td><span style={{ fontSize: '0.8rem' }}>{r.type}</span>{r.type === '기타' && r.type_detail && <span style={{ color: '#9aa0a6', fontSize: '0.72rem' }}> ({r.type_detail})</span>}</td>
                       <td>
                         {r.client_name}
@@ -613,12 +657,12 @@ export default function Accounting() {
                         {r.direction === 'expense' ? '-' : '+'}{formatCurrency(r.amount)}
                       </td>
                       <td style={{ fontSize: '0.78rem', color: r.deposit_date ? '#188038' : '#9aa0a6' }}>{r.deposit_date || '-'}</td>
-                      <td style={{ fontSize: '0.72rem' }}>
+                      <td style={{ fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
                         {r.receipt_type ? (
                           <span style={{ padding: '1px 6px', borderRadius: 6, fontSize: '0.68rem', fontWeight: 500,
                             background: r.receipt_type === '현금영수증' ? '#e8f5e9' : '#fff3e0',
                             color: r.receipt_type === '현금영수증' ? '#188038' : '#e65100' }}>
-                            {r.receipt_type}
+                            {r.receipt_type === '현금영수증' ? '현금' : r.receipt_type}
                           </span>
                         ) : <span style={{ color: '#dadce0' }}>-</span>}
                       </td>
@@ -843,23 +887,25 @@ export default function Accounting() {
           </div>
           <div className="table-wrapper">
             <table className="data-table">
-              <thead><tr><th>이름</th><th>역할</th><th>지사</th><th>부서</th><th>급여</th><th>기준매출</th><th>직급</th></tr></thead>
+              <thead><tr><th>이름</th><th>역할</th><th>지사</th><th>부서</th><th>유형</th><th>급여/수수료</th><th>기준매출</th><th>직급</th></tr></thead>
               <tbody>
                 {filteredStaffUsers.map(u => {
                   const acc = getAccountForUser(u.id);
+                  const isComm = acc?.pay_type === 'commission';
                   return (
                     <tr key={u.id} onClick={() => handleSelectUser(u)} className="clickable-row" style={{ cursor: 'pointer' }}>
                       <td><strong>{u.name}</strong></td>
                       <td><span className={`role-badge role-${u.role}`}>{ROLE_LABELS[u.role as Role]}</span></td>
                       <td>{u.branch || '-'}</td>
                       <td>{u.department || '-'}</td>
-                      <td>{acc?.salary ? formatCurrency(acc.salary) : <span style={{ color: '#9aa0a6' }}>미설정</span>}</td>
-                      <td>{acc?.standard_sales ? formatCurrency(acc.standard_sales) : <span style={{ color: '#9aa0a6' }}>-</span>}</td>
+                      <td><span style={{ fontSize: '0.72rem', padding: '2px 6px', borderRadius: 8, background: isComm ? '#f3e5f5' : '#e8f0fe', color: isComm ? '#7b1fa2' : '#1a73e8', fontWeight: 600 }}>{isComm ? '비율제' : '급여제'}</span></td>
+                      <td>{isComm ? <span style={{ color: '#7b1fa2', fontWeight: 600 }}>{acc?.commission_rate || 0}%</span> : acc?.salary ? formatCurrency(acc.salary) : <span style={{ color: '#9aa0a6' }}>미설정</span>}</td>
+                      <td>{!isComm && acc?.standard_sales ? formatCurrency(acc.standard_sales) : <span style={{ color: '#9aa0a6' }}>-</span>}</td>
                       <td>{acc?.grade ? <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: '0.8rem', fontWeight: 700, background: GRADE_COLORS[acc.grade] + '18', color: GRADE_COLORS[acc.grade] }}>{acc.grade}</span> : <span style={{ color: '#9aa0a6' }}>-</span>}</td>
                     </tr>
                   );
                 })}
-                {filteredStaffUsers.length === 0 && <tr><td colSpan={7} style={{ textAlign: 'center', color: '#9aa0a6', padding: 32 }}>검색 결과가 없습니다.</td></tr>}
+                {filteredStaffUsers.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', color: '#9aa0a6', padding: 32 }}>검색 결과가 없습니다.</td></tr>}
               </tbody>
             </table>
           </div>

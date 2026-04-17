@@ -16,7 +16,7 @@ const TIER_COLORS = ['#1a73e8', '#1a73e8', '#e65100', '#188038', '#7b1fa2'];
 const TIER_BG = ['#e8f0fe', '#e8f0fe', '#fff3e0', '#e8f5e9', '#f3e5f5'];
 
 const ROLE_COLORS: Record<Role, string> = {
-  master: '#7b1fa2', ceo: '#1a73e8', cc_ref: '#1a73e8', admin: '#e65100', director: '#0d47a1', accountant: '#283593', accountant_asst: '#00695c', manager: '#188038', member: '#5f6368',
+  master: '#7b1fa2', ceo: '#1a73e8', cc_ref: '#1a73e8', admin: '#e65100', director: '#0d47a1', accountant: '#283593', accountant_asst: '#00695c', manager: '#188038', member: '#5f6368', resigned: '#bdc1c6',
 };
 
 interface OrgNode {

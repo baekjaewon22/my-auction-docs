@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store';
 import Layout from './components/Layout';
@@ -26,6 +26,7 @@ import PropertyReport from './pages/PropertyReport';
 import FinanceAnalytics from './pages/FinanceAnalytics';
 import AlimtalkLogs from './pages/AlimtalkLogs';
 import AdminNotes from './pages/AdminNotes';
+import Cooperation from './pages/Cooperation';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore();
@@ -68,6 +69,14 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// 조직도 열람 — 관리자+총무+총괄이사 허용 (일반 팀원 차단)
+function OrgRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst'];
+  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
 
 function NonAccountingRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
@@ -82,54 +91,12 @@ function AccountingRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-// 중복 탭 감지
-function useSingleTab() {
-  const [isDuplicate, setIsDuplicate] = useState(false);
-
-  useEffect(() => {
-    const channel = new BroadcastChannel('myauction_tab');
-    const tabId = Date.now().toString() + Math.random();
-    let ready = false;
-
-    // 잠시 대기 후 새 탭 알림 (새로고침 시 이전 채널이 닫힐 시간 확보)
-    const timer = setTimeout(() => {
-      ready = true;
-      channel.postMessage({ type: 'new_tab', tabId });
-    }, 300);
-
-    channel.onmessage = (e) => {
-      if (e.data.type === 'new_tab' && e.data.tabId !== tabId && ready) {
-        channel.postMessage({ type: 'already_open', tabId });
-      }
-      if (e.data.type === 'already_open' && e.data.tabId !== tabId) {
-        setIsDuplicate(true);
-      }
-    };
-
-    return () => { clearTimeout(timer); channel.close(); };
-  }, []);
-
-  return isDuplicate;
-}
-
 export default function App() {
   const { loadUser, loading } = useAuthStore();
-  const isDuplicate = useSingleTab();
 
   useEffect(() => {
     loadUser();
   }, []);
-
-  if (isDuplicate) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', gap: 16, padding: 24, textAlign: 'center' }}>
-        <div style={{ fontSize: '2.5rem' }}>📋</div>
-        <h2 style={{ margin: 0, color: '#1a1a2e' }}>이미 열려있는 탭이 있습니다</h2>
-        <p style={{ color: '#666', fontSize: '0.9rem', margin: 0 }}>마이옥션 오피스는 하나의 탭에서만 사용할 수 있습니다.<br />기존 탭을 확인해주세요.</p>
-        <button onClick={() => window.close()} style={{ padding: '8px 24px', borderRadius: 8, border: '1px solid #dadce0', background: '#fff', cursor: 'pointer', fontSize: '0.85rem' }}>이 탭 닫기</button>
-      </div>
-    );
-  }
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -190,9 +157,9 @@ export default function App() {
           <Route
             path="org"
             element={
-              <AdminRoute>
+              <OrgRoute>
                 <OrgChart />
-              </AdminRoute>
+              </OrgRoute>
             }
           />
           <Route
@@ -251,6 +218,14 @@ export default function App() {
             element={
               <PrivateRoute>
                 <AdminNotes />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="cooperation"
+            element={
+              <PrivateRoute>
+                <Cooperation />
               </PrivateRoute>
             }
           />

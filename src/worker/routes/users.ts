@@ -11,7 +11,7 @@ users.get('/', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_a
   const user = c.get('user');
   const db = c.env.DB;
 
-  let query = 'SELECT id, email, name, phone, role, team_id, branch, department, position_title, card_number, hire_date, login_type, approved, created_at FROM users WHERE approved = 1';
+  let query = 'SELECT id, email, name, phone, role, team_id, branch, department, position_title, card_number, hire_date, login_type, approved, created_at, updated_at FROM users WHERE approved = 1';
   const params: string[] = [];
 
   if (user.role === 'accountant' || user.role === 'accountant_asst') {
@@ -94,7 +94,7 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   const { role, branch, department } = await c.req.json<{ role?: string; branch?: string; department?: string }>();
   const db = c.env.DB;
 
-  if (role && !['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst', 'manager', 'member'].includes(role)) {
+  if (role && !['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst', 'manager', 'member', 'resigned'].includes(role)) {
     return c.json({ error: '유효하지 않은 역할입니다.' }, 400);
   }
 
