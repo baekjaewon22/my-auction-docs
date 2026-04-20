@@ -56,7 +56,9 @@ export default function Leave() {
   const [pendingRequests, setPendingRequests] = useState<LeaveRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [tab, setTab] = useState<'my' | 'approve' | 'refund'>('my');
+  const [tab, setTab] = useState<'my' | 'approve' | 'refund' | 'manage'>('my');
+  const [manageAll, setManageAll] = useState<LeaveRequest[]>([]);
+  const [manageFilter, setManageFilter] = useState<{ status: string; month: string; userQuery: string }>({ status: '', month: '', userQuery: '' });
 
   // 폼
   const [formType, setFormType] = useState<FormLeaveType>('연차/월차');
@@ -82,6 +84,7 @@ export default function Leave() {
   const canViewSensitive = ['master', 'ceo', 'cc_ref'].includes(role);
   const canViewOthers = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canViewHourly = ['master', 'ceo', 'admin'].includes(role);
+  const canManageAll = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
 
   // 담당자 열람 기능
   const [members, setMembers] = useState<User[]>([]);
@@ -92,7 +95,16 @@ export default function Leave() {
 
   useEffect(() => {
     if (canViewOthers) {
-      api.users.list().then(res => setMembers((res.users || []).filter((u: User) => u.role !== 'master' && (u as any).login_type !== 'freelancer' && u.id !== user?.id))).catch(() => {});
+      // 총무보조는 팀장·관리자급·이사·대표자 목록에서 제외
+      const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+      api.users.list().then(res => setMembers(
+        (res.users || []).filter((u: User) =>
+          u.role !== 'master'
+          && (u as any).login_type !== 'freelancer'
+          && u.id !== user?.id
+          && !(role === 'accountant_asst' && RESTRICTED_ROLES_FOR_ASST.includes(u.role as string))
+        )
+      )).catch(() => {});
     }
   }, []);
 
@@ -126,6 +138,10 @@ export default function Leave() {
           api.leave.listRequests({ status: 'cancel_requested' }),
         ]);
         setPendingRequests([...pending.requests, ...cancelReqs.requests]);
+      }
+      if (canManageAll) {
+        const all = await api.leave.listRequests();
+        setManageAll(all.requests || []);
       }
     } catch (err: any) { console.error(err); }
     finally { setLoading(false); }
@@ -453,6 +469,11 @@ export default function Leave() {
             <Calculator size={14} style={{ marginRight: 4, verticalAlign: 'middle' }} /> 환급 계산
           </button>
         )}
+        {canManageAll && (
+          <button onClick={() => setTab('manage')} style={{ padding: '10px 20px', fontWeight: tab === 'manage' ? 700 : 400, color: tab === 'manage' ? '#1a73e8' : '#5f6368', background: 'none', border: 'none', borderBottomWidth: 2, borderBottomStyle: 'solid', borderBottomColor: tab === 'manage' ? '#1a73e8' : 'transparent', cursor: 'pointer', fontSize: '0.9rem' }}>
+            전체 휴가 관리
+          </button>
+        )}
       </div>
 
       {/* 휴가 신청 폼 */}
@@ -616,7 +637,7 @@ export default function Leave() {
                             {req.status === 'approved' ? '취소요청' : '취소'}
                           </button>
                         )}
-                        {role === 'master' && (
+                        {['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role) && (
                           <button className="btn btn-sm btn-danger" onClick={async () => {
                             if (!confirm(`이 휴가 신청을 삭제하시겠습니까?\n${req.status === 'approved' ? '승인된 건이므로 차감된 연차가 복원됩니다.' : ''}`)) return;
                             try { await api.leave.deleteRequest(req.id); load(); }
@@ -679,7 +700,7 @@ export default function Leave() {
                             </button>
                           </>
                         )}
-                        {role === 'master' && (
+                        {['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role) && (
                           <button className="btn btn-sm" onClick={async () => {
                             if (!confirm('이 신청을 삭제하시겠습니까?')) return;
                             try { await api.leave.deleteRequest(req.id); load(); }
@@ -711,6 +732,119 @@ export default function Leave() {
       {tab === 'refund' && canViewSensitive && (
         <RefundCalc />
       )}
+
+      {/* 전체 휴가 관리 — 관리자/회계 */}
+      {tab === 'manage' && canManageAll && (() => {
+        const typeColors: Record<string, string> = {
+          '연차': '#1a73e8', '월차': '#188038', '반차': '#7c4dff', '시간차': '#e65100', '특별휴가': '#d93025',
+        };
+        const statusLabels: Record<string, { label: string; bg: string; color: string }> = {
+          'pending': { label: '대기', bg: '#fff3e0', color: '#e65100' },
+          'approved': { label: '승인', bg: '#e8f5e9', color: '#188038' },
+          'rejected': { label: '반려', bg: '#fce4ec', color: '#d93025' },
+          'cancel_requested': { label: '취소요청', bg: '#fff8e1', color: '#f9ab00' },
+          'cancelled': { label: '취소', bg: '#f5f5f5', color: '#5f6368' },
+        };
+
+        // 중복 감지: (user_id, leave_type, start_date, days) 동일 건 2건+
+        const dupSet = new Set<string>();
+        const counter = new Map<string, number>();
+        manageAll.forEach(r => {
+          const k = `${r.user_id}|${r.leave_type}|${r.start_date}|${r.days}`;
+          counter.set(k, (counter.get(k) || 0) + 1);
+        });
+        counter.forEach((cnt, k) => { if (cnt >= 2) dupSet.add(k); });
+        const isDup = (r: any) => dupSet.has(`${r.user_id}|${r.leave_type}|${r.start_date}|${r.days}`);
+
+        const RESTRICTED_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+        let list = manageAll;
+        if (role === 'accountant_asst') list = list.filter((r: any) => !RESTRICTED_ROLES.includes(r.user_role || ''));
+        if (manageFilter.status) list = list.filter(r => r.status === manageFilter.status);
+        if (manageFilter.month) list = list.filter(r => r.start_date.startsWith(manageFilter.month));
+        if (manageFilter.userQuery) {
+          const q = manageFilter.userQuery.toLowerCase();
+          list = list.filter((r: any) => (r.user_name || '').toLowerCase().includes(q));
+        }
+
+        return (
+          <div>
+            <div className="card" style={{ padding: 14, marginBottom: 12 }}>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input className="form-input" placeholder="이름 검색" value={manageFilter.userQuery}
+                  onChange={(e) => setManageFilter({ ...manageFilter, userQuery: e.target.value })}
+                  style={{ width: 160, fontSize: '0.85rem' }} />
+                <select className="form-input" value={manageFilter.status}
+                  onChange={(e) => setManageFilter({ ...manageFilter, status: e.target.value })}
+                  style={{ width: 130, fontSize: '0.85rem' }}>
+                  <option value="">전체 상태</option>
+                  <option value="pending">대기</option>
+                  <option value="approved">승인</option>
+                  <option value="rejected">반려</option>
+                  <option value="cancel_requested">취소요청</option>
+                  <option value="cancelled">취소</option>
+                </select>
+                <input type="month" className="form-input" value={manageFilter.month}
+                  onChange={(e) => setManageFilter({ ...manageFilter, month: e.target.value })}
+                  style={{ width: 140, fontSize: '0.85rem' }} />
+                <button className="btn btn-sm" onClick={() => setManageFilter({ status: '', month: '', userQuery: '' })}>초기화</button>
+                <div style={{ flex: 1 }} />
+                <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>총 {list.length}건{dupSet.size > 0 && <span style={{ color: '#d93025', marginLeft: 10 }}>⚠ 중복의심 {dupSet.size}쌍</span>}</span>
+              </div>
+            </div>
+
+            <div className="table-wrapper">
+              <table className="data-table" style={{ fontSize: '0.83rem' }}>
+                <thead>
+                  <tr>
+                    <th>담당자</th>
+                    <th>지사/부서</th>
+                    <th>유형</th>
+                    <th>기간</th>
+                    <th>일수</th>
+                    <th>상태</th>
+                    <th>신청일</th>
+                    <th>사유/반려사유</th>
+                    <th>삭제</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {list.map((req: any) => (
+                    <tr key={req.id} style={isDup(req) ? { background: '#fff3e0' } : {}}>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {req.user_name || '-'}
+                        {isDup(req) && <span style={{ fontSize: '0.66rem', padding: '1px 5px', borderRadius: 6, background: '#fce4ec', color: '#d93025', fontWeight: 700, marginLeft: 4 }}>중복</span>}
+                      </td>
+                      <td style={{ whiteSpace: 'nowrap', fontSize: '0.78rem', color: '#5f6368' }}>{req.branch}{req.department ? ' / ' + req.department : ''}</td>
+                      <td><span style={{ color: typeColors[req.leave_type] || '#5f6368', fontWeight: 600 }}>{req.leave_type}</span></td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{req.start_date}{req.end_date !== req.start_date ? ' ~ ' + req.end_date : ''}</td>
+                      <td>{req.days}{req.hours && req.hours < 8 ? `일(${req.hours}h)` : '일'}</td>
+                      <td>
+                        <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: statusLabels[req.status]?.bg, color: statusLabels[req.status]?.color }}>
+                          {statusLabels[req.status]?.label || req.status}
+                        </span>
+                      </td>
+                      <td style={{ whiteSpace: 'nowrap', fontSize: '0.75rem', color: '#5f6368' }}>{(req.created_at || '').slice(0, 10)}</td>
+                      <td style={{ fontSize: '0.78rem', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {req.reason && <div>{req.reason}</div>}
+                        {req.reject_reason && <div style={{ color: '#d93025' }}>반려: {req.reject_reason}</div>}
+                      </td>
+                      <td>
+                        <button className="btn btn-sm btn-danger" style={{ fontSize: '0.72rem', padding: '2px 8px' }}
+                          onClick={async () => {
+                            if (!confirm(`${req.user_name} ${req.leave_type} ${req.start_date} (${req.days}일) 삭제하시겠습니까?${req.status === 'approved' ? '\n승인된 건이므로 차감된 연차가 복원됩니다.' : ''}`)) return;
+                            try { await api.leave.deleteRequest(req.id); load(); }
+                            catch (err: any) { alert(err.message); }
+                          }}>삭제</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {list.length === 0 && <tr><td colSpan={9} className="empty-state">해당하는 휴가 내역이 없습니다.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

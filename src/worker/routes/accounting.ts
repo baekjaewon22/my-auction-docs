@@ -8,9 +8,19 @@ accounting.use('*', authMiddleware);
 // 총무 역할 체크 헬퍼
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 
-// GET /api/accounting - 전체 직원 회계 정보 목록
+// 총무보조(accountant_asst) 열람·수정 제한 — 팀장·관리자급·이사·대표자는 총무담당만
+const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+async function canAccessUserAccounting(db: D1Database, viewer: any, targetUserId: string): Promise<boolean> {
+  if (viewer.role !== 'accountant_asst') return true;
+  const target = await db.prepare('SELECT role FROM users WHERE id = ?').bind(targetUserId).first<any>();
+  if (!target) return true;
+  return !RESTRICTED_ROLES_FOR_ASST.includes(target.role);
+}
+
+// GET /api/accounting - 전체 직원 회계 정보 목록 (총무보조는 제한 대상 제외)
 accounting.get('/', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const db = c.env.DB;
+  const viewer = c.get('user');
   const result = await db.prepare(`
     SELECT ua.*, u.name as user_name, u.branch, u.department, u.role, u.position_title
     FROM user_accounting ua
@@ -18,13 +28,21 @@ accounting.get('/', requireRole(...ACCOUNTING_ROLES), async (c) => {
     WHERE u.approved = 1
     ORDER BY u.name ASC
   `).all();
-  return c.json({ accounts: result.results });
+  let accounts = result.results as any[];
+  if (viewer.role === 'accountant_asst') {
+    accounts = accounts.filter((a: any) => !RESTRICTED_ROLES_FOR_ASST.includes(a.role));
+  }
+  return c.json({ accounts });
 });
 
 // GET /api/accounting/:userId - 특정 직원 회계 정보
 accounting.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const userId = c.req.param('userId');
   const db = c.env.DB;
+  const viewer = c.get('user');
+  if (!(await canAccessUserAccounting(db, viewer, userId))) {
+    return c.json({ error: '해당 직원의 회계 정보 열람 권한이 없습니다.' }, 403);
+  }
 
   const account = await db.prepare(`
     SELECT ua.*, u.name as user_name, u.branch, u.department, u.role, u.position_title
@@ -39,6 +57,10 @@ accounting.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
 // PUT /api/accounting/:userId - 직원 회계 정보 생성/수정 (급여, 직급)
 accounting.put('/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const userId = c.req.param('userId');
+  const viewer = c.get('user');
+  if (!(await canAccessUserAccounting(c.env.DB, viewer, userId))) {
+    return c.json({ error: '해당 직원의 회계 정보 수정 권한이 없습니다.' }, 403);
+  }
   const { salary, grade, position_allowance, pay_type, commission_rate } = await c.req.json<{ salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number }>();
   const db = c.env.DB;
 
@@ -81,6 +103,10 @@ accounting.put('/:userId/grade', requireRole('master', 'ceo', 'cc_ref', 'admin',
   const userId = c.req.param('userId');
   const { grade } = await c.req.json<{ grade: string }>();
   const db = c.env.DB;
+  const viewer = c.get('user');
+  if (!(await canAccessUserAccounting(db, viewer, userId))) {
+    return c.json({ error: '해당 직원의 직급 수정 권한이 없습니다.' }, 403);
+  }
 
   if (!['M1', 'M2', 'M3', 'M4'].includes(grade)) {
     return c.json({ error: '유효하지 않은 직급입니다.' }, 400);
@@ -100,6 +126,10 @@ accounting.put('/:userId/grade', requireRole('master', 'ceo', 'cc_ref', 'admin',
 accounting.get('/evaluations/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const userId = c.req.param('userId');
   const db = c.env.DB;
+  const viewer = c.get('user');
+  if (!(await canAccessUserAccounting(db, viewer, userId))) {
+    return c.json({ error: '해당 직원의 평가 이력 열람 권한이 없습니다.' }, 403);
+  }
 
   const result = await db.prepare(`
     SELECT * FROM sales_evaluations WHERE user_id = ? ORDER BY period_start DESC
@@ -177,6 +207,7 @@ accounting.post('/evaluate', requireRole('master', 'ceo', 'cc_ref', 'admin', 'ac
 // GET /api/accounting/alerts - 대시보드용 경고 목록 (미달 + 강등 대상)
 accounting.get('/alerts/dashboard', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const db = c.env.DB;
+  const viewer = c.get('user');
 
   // 현재 기준 평가 기간 계산 (2개월 단위: 1-2월, 3-4월, 5-6월 ...)
   const now = new Date();
@@ -194,7 +225,7 @@ accounting.get('/alerts/dashboard', requireRole(...ACCOUNTING_ROLES), async (c) 
 
   // 최근 평가에서 미달인 직원들
   const alerts = await db.prepare(`
-    SELECT se.*, ua.salary, ua.grade, u.name as user_name, u.branch, u.department
+    SELECT se.*, ua.salary, ua.grade, u.name as user_name, u.branch, u.department, u.role
     FROM sales_evaluations se
     JOIN user_accounting ua ON ua.user_id = se.user_id
     JOIN users u ON u.id = se.user_id
@@ -210,10 +241,13 @@ accounting.get('/alerts/dashboard', requireRole(...ACCOUNTING_ROLES), async (c) 
     a.period_start >= periodStart && a.period_end <= periodEnd
   );
 
+  // 총무보조 제한 대상 필터
+  const isAsst = viewer.role === 'accountant_asst';
+  const filterFn = (r: any) => !isAsst || !RESTRICTED_ROLES_FOR_ASST.includes(r.role);
   return c.json({
-    alerts: alerts.results,
-    demotion_candidates: demotionCandidates,
-    current_period_alerts: currentPeriodAlerts,
+    alerts: (alerts.results as any[]).filter(filterFn),
+    demotion_candidates: demotionCandidates.filter(filterFn),
+    current_period_alerts: currentPeriodAlerts.filter(filterFn),
     current_period: { start: periodStart, end: periodEnd },
   });
 });
@@ -309,8 +343,8 @@ accounting.post('/staging/:id/to-sales', requireRole(...ACCOUNTING_ROLES), async
 
   const salesId = crypto.randomUUID();
   await db.prepare(`
-    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, amount, contract_date, deposit_date, status, confirmed_at, confirmed_by, branch, department, memo)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now'), ?, ?, ?, ?)
+    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, amount, contract_date, deposit_date, status, confirmed_at, confirmed_by, branch, department, memo, payment_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now'), ?, ?, ?, ?, '이체')
   `).bind(
     salesId, assignee?.id || user.sub, type || '기타', type_detail || '',
     item.depositor, item.depositor, item.amount,

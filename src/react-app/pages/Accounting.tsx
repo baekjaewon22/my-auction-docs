@@ -69,6 +69,10 @@ export default function Accounting() {
   const canModify = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
   const canEdit = canModify; // 하위 호환
+  // 총무보조 급여 열람 제한 — 팀장·관리자급·이사·대표자
+  const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+  const isRestrictedForViewer = (u: User | null) =>
+    currentUser?.role === 'accountant_asst' && !!u && RESTRICTED_ROLES_FOR_ASST.includes(u.role as string);
 
   const isAccountantRole = ['master', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
 
@@ -319,6 +323,12 @@ export default function Accounting() {
   // ━━ 직원 관리 탭 핸들러 ━━
   const handleSelectUser = async (u: User) => {
     setSelectedUser(u);
+    if (isRestrictedForViewer(u)) {
+      setSelectedAccount(null); setEvaluations([]); setUserSalesRecords([]);
+      setSalaryInput(''); setGradeInput(''); setPayTypeInput('salary');
+      setCommRateInput(''); setPosAllowInput('0');
+      return;
+    }
     try {
       const [accRes, evalRes, salesRes] = await Promise.all([
         api.accounting.get(u.id),
@@ -341,6 +351,10 @@ export default function Accounting() {
 
   const handleSave = async () => {
     if (!selectedUser || !canEdit) return;
+    if (isRestrictedForViewer(selectedUser)) {
+      alert('해당 직원의 급여·회계 정보 수정 권한이 없습니다.');
+      return;
+    }
     setSaving(true);
     try {
       await api.accounting.update(selectedUser.id, {
@@ -380,7 +394,8 @@ export default function Accounting() {
   const memberOpts = filteredMembers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` }));
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
   const filteredStaffUsers = users.filter(u =>
-    u.name.includes(searchTerm) || u.department?.includes(searchTerm) || u.branch?.includes(searchTerm)
+    (u.name.includes(searchTerm) || u.department?.includes(searchTerm) || u.branch?.includes(searchTerm))
+    && !(currentUser?.role === 'accountant_asst' && RESTRICTED_ROLES_FOR_ASST.includes(u.role as string))
   );
   const getAccountForUser = (userId: string) => accounts.find(a => a.user_id === userId);
 

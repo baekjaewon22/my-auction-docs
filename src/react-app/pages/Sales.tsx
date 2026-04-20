@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { SalesRecord, DepositNotice } from '../types';
 import { useBranches } from '../hooks/useBranches';
 import Select from '../components/Select';
 import {
-  DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity, ChevronDown, ChevronUp
+  DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity, ChevronDown, ChevronUp, Trash2
 } from 'lucide-react';
 import type { JournalEntry } from '../journal/types';
 
@@ -172,7 +172,7 @@ export default function Sales() {
   const [claimClient, setClaimClient] = useState('');
 
   // [6-3] 활동내역
-  const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'upload'>('list');
+  const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'upload' | 'auditlog'>('list');
   const [activityEntries, setActivityEntries] = useState<JournalEntry[]>([]);
   const [activityBranch, setActivityBranch] = useState('');
   const [activityUser, setActivityUser] = useState('');
@@ -180,14 +180,21 @@ export default function Sales() {
   const [selectedClient, setSelectedClient] = useState<string | null>(null);
   const [activityPage, setActivityPage] = useState(0);
   const ACTIVITY_PAGE_SIZE = 20;
+  // 활동 로그 (총무/총무보조의 수정·삭제·상태변경 감사)
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [auditMonth, setAuditMonth] = useState<string>(() => new Date().toISOString().slice(0, 7));
+  const [auditAction, setAuditAction] = useState<string>('');
+  const [auditActor, setAuditActor] = useState<string>('');
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
 
   const role = currentUser?.role || 'member';
   const isAccountant = ['accountant', 'accountant_asst'].includes(role);
-  const isMaster = role === 'master' || role === 'accountant'; // 총무담당 = master 동급 (유형변경/확인취소)
+  const isMaster = role === 'master' || role === 'accountant' || role === 'accountant_asst'; // 총무/총무보조 = master 동급 (유형변경/확인취소)
   const canModifyAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 수정 권한
   const canApproveAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 입금확인/결제확인
   const canDepositUpload = ['master', 'accountant', 'accountant_asst'].includes(role); // 입금등록/엑셀업로드 (총무 전용)
-  const canDeleteAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(role); // 삭제/유형변경 (보조 제외)
+  const canDeleteAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 삭제/유형변경 (총무보조 로그 강제)
+  const canViewAuditLog = role === 'master' || role === 'accountant'; // 활동 로그 조회 (총무보조 제외)
   // const canViewAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 열람 (현재 미사용)
   const isDirector = role === 'director';
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
@@ -353,6 +360,20 @@ export default function Sales() {
     } catch { setActivityEntries([]); setAllRecords([]); }
   };
   useEffect(() => { if (salesTab === 'activity') loadActivity(activityUser || undefined); }, [salesTab, activityUser]);
+  useEffect(() => {
+    if (salesTab !== 'auditlog' || !canViewAuditLog) return;
+    (async () => {
+      try {
+        const res = await api.sales.activityLogs({
+          month: auditMonth || undefined,
+          action: auditAction || undefined,
+          actor_id: auditActor || undefined,
+          limit: 300,
+        }) as any;
+        setAuditLogs(res.logs || []);
+      } catch { setAuditLogs([]); }
+    })();
+  }, [salesTab, auditMonth, auditAction, auditActor, canViewAuditLog]);
 
   const resignedWithSales = new Set(records.filter(r => r.user_id).map(r => r.user_id));
   const filteredMembers = (filterBranch ? members.filter(m => m.branch === filterBranch) : members)
@@ -369,13 +390,25 @@ export default function Sales() {
   if (filterType) branchRecords = branchRecords.filter(r => r.type === filterType);
   if (filterStatus) branchRecords = branchRecords.filter(r => r.status === filterStatus);
 
-  // 계약건수: 2개월 기준 (랭킹 데이터 활용), 220만원 이상이면 2건으로 카운트
+  // 동명이인 중복 감지: (이름 + 전화번호)가 allRecords에서 2건+인 경우
+  const duplicateKeys = new Set<string>();
+  const dupCounter = new Map<string, number>();
+  allRecords.forEach(r => {
+    if (!r.client_name || !r.client_phone) return;
+    const key = `${r.client_name}|${r.client_phone}`;
+    dupCounter.set(key, (dupCounter.get(key) || 0) + 1);
+  });
+  dupCounter.forEach((cnt, k) => { if (cnt >= 2) duplicateKeys.add(k); });
+  const isDuplicate = (r: SalesRecord) => !!(r.client_name && r.client_phone && duplicateKeys.has(`${r.client_name}|${r.client_phone}`));
+
+  // 계약건수: 2개월 기준 (랭킹 데이터 활용), 220만원 이상이면 2건으로 카운트, exclude_from_count=1은 제외
   const contractCountSource = rankingRecords.length > 0 ? rankingRecords : branchRecords;
   let contractCountFiltered = filterBranch
     ? contractCountSource.filter(r => r.branch === filterBranch)
     : contractCountSource;
   if (filterUser) contractCountFiltered = contractCountFiltered.filter(r => r.user_id === filterUser);
-  const contractCount = contractCountFiltered.filter(r => r.type === '계약' && r.status === 'confirmed')
+  const contractCount = contractCountFiltered
+    .filter(r => r.type === '계약' && r.status === 'confirmed' && !r.exclude_from_count)
     .reduce((sum, r) => sum + (r.amount >= 2200000 ? 2 : 1), 0);
   // 확정매출/카드대기/입금신청: 공급가액 기준 (÷1.1)
   const toSupply = (amount: number) => Math.round(amount / 1.1);
@@ -638,6 +671,11 @@ export default function Sales() {
               <Upload size={14} style={{ marginRight: 4 }} /> 엑셀 업로드
             </button>
           )}
+          {canViewAuditLog && (
+            <button className={`premium-filter-btn ${salesTab === 'auditlog' ? 'active' : ''}`} onClick={() => setSalesTab('auditlog')}>
+              활동 이력
+            </button>
+          )}
         </div>
         {(salesTab === 'list' || salesTab === 'activity') && (
           <input className="form-input" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
@@ -796,45 +834,46 @@ export default function Sales() {
       {/* ━━━ 엑셀 업로드 탭 [6-4] ━━━ */}
       {salesTab === 'upload' && canDepositUpload && (
         <div className="card" style={{ padding: 20 }}>
-          <h3 style={{ margin: '0 0 14px', fontSize: '1rem' }}>매출 엑셀 업로드</h3>
+          <h3 style={{ margin: '0 0 14px', fontSize: '1rem' }}>매출 엑셀 업로드 (실적표)</h3>
 
           {/* 양식 안내 */}
           <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: '0.85rem', color: '#3c4043', fontWeight: 600, marginBottom: 8 }}>엑셀 양식 (필수)</div>
-            <div className="table-wrapper" style={{ maxWidth: 600 }}>
-              <table className="data-table" style={{ fontSize: '0.82rem' }}>
-                <thead><tr><th>담당자</th><th>날짜</th><th>고객명</th><th>매출항목</th><th>입금액</th></tr></thead>
+            <div style={{ fontSize: '0.85rem', color: '#3c4043', fontWeight: 600, marginBottom: 8 }}>열 구성 (A~S)</div>
+            <div className="table-wrapper" style={{ fontSize: '0.75rem' }}>
+              <table className="data-table" style={{ fontSize: '0.75rem' }}>
+                <thead>
+                  <tr>
+                    <th>열</th><th>내용</th><th>처리</th>
+                  </tr>
+                </thead>
                 <tbody>
-                  <tr style={{ color: '#9aa0a6' }}>
-                    <td>홍길동</td><td>2026-03-05</td><td>김고객</td><td>계약</td><td>3,300,000</td>
-                  </tr>
-                  <tr style={{ color: '#9aa0a6' }}>
-                    <td>홍길동</td><td>2026-03-12</td><td>박고객</td><td>낙찰</td><td>5,500,000</td>
-                  </tr>
+                  <tr><td>A</td><td>날짜</td><td>환불일자(환불건만 사용)</td></tr>
+                  <tr><td>B</td><td>지사</td><td>본사→의정부, 강남지사→서초, 대전→대전, 부산→부산</td></tr>
+                  <tr><td>C</td><td>담당자</td><td>이름으로 사용자 매칭</td></tr>
+                  <tr><td>D</td><td>고객명</td><td>입금자명 매칭에 사용</td></tr>
+                  <tr><td>E</td><td>전화번호</td><td>고객 전화번호</td></tr>
+                  <tr><td>F</td><td>무시</td><td>—</td></tr>
+                  <tr><td>G</td><td>계약유형</td><td>컨설팅계약→계약, 낙찰수수료→낙찰, 권리분석의뢰→권리분석보증서, 매수신청대리, 중개수수료→중개, 그 외→기타</td></tr>
+                  <tr><td>H</td><td>계약일</td><td>contract_date (없으면 L열 입금일로 대체)</td></tr>
+                  <tr><td>I</td><td>매출액(VAT포함)</td><td style={{ color: '#d93025' }}>음수면 전달 환불 공제로 처리</td></tr>
+                  <tr><td>J</td><td>실수익</td><td>무시</td></tr>
+                  <tr><td>K</td><td>결제일</td><td>카드 결제건의 고객 결제일 (참고용)</td></tr>
+                  <tr><td>L</td><td><strong>입금일</strong></td><td><strong>이체→deposit_date, 카드→card_deposit_date</strong></td></tr>
+                  <tr><td>M</td><td>증빙</td><td>"현금영수증" 포함 시 receipt_type 자동 설정</td></tr>
+                  <tr><td>N</td><td>결제방식</td><td>카드/이체</td></tr>
+                  <tr><td>S</td><td>비고</td><td>010-****-**** → 현금영수증 번호</td></tr>
                 </tbody>
               </table>
             </div>
-            <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginTop: 6, lineHeight: 1.5 }}>
-              매출항목: 계약 / 낙찰 / 중개 / 매수신청대리 / 기타 / <span style={{ color: '#d93025' }}>계약환불 / 낙찰환불</span><br />
-              입금액: 부가세 포함 금액 (숫자 또는 콤마 포함 가능)<br />
-              <span style={{ color: '#d93025' }}>환불 항목은 동일 고객명이어도 삭제하지 않고 별도 환불 건으로 등록됩니다.</span>
+            <div style={{ fontSize: '0.78rem', color: '#3c4043', marginTop: 10, lineHeight: 1.6, background: '#fffbe6', padding: '10px 12px', borderRadius: 6, border: '1px solid #f4d03f' }}>
+              <strong>환불 판별 (3가지 중 하나라도 해당 시 환불 처리):</strong><br />
+              1) L 또는 M열에 <strong>"환불"</strong> 또는 <strong>"카드취소"</strong> 텍스트<br />
+              2) 셀이 <span style={{ color: '#d93025', fontWeight: 700 }}>빨간색</span>으로 표시됨<br />
+              3) I열 매출액이 <strong>음수</strong> (전달 환불 공제)<br />
+              <br />
+              <strong style={{ color: '#1a73e8' }}>환불 매칭:</strong> 기존 매출에서 <strong>고객명 + 금액 + 결제방식</strong> 일치건을 찾아 status=환불완료로 업데이트. 매칭 실패 또는 다건 매칭 시 스킵됩니다.<br />
+              <strong style={{ color: '#d93025' }}>※ 알림톡은 일괄 업로드 시 발송되지 않습니다.</strong>
             </div>
-          </div>
-
-          {/* 양식 다운로드 */}
-          <div style={{ marginBottom: 16 }}>
-            <button className="btn btn-sm" onClick={async () => {
-              const XLSX = await import('xlsx');
-              const ws = XLSX.utils.aoa_to_sheet([
-                ['담당자', '날짜', '고객명', '매출항목', '입금액'],
-                ['홍길동', '2026-03-05', '김고객', '계약', 3300000],
-                ['홍길동', '2026-03-12', '박고객', '낙찰', 5500000],
-              ]);
-              ws['!cols'] = [{ wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 8 }, { wch: 14 }];
-              const wb = XLSX.utils.book_new();
-              XLSX.utils.book_append_sheet(wb, ws, '매출');
-              XLSX.writeFile(wb, '매출업로드양식.xlsx');
-            }}>양식 다운로드 (.xlsx)</button>
           </div>
 
           {/* 파일 업로드 */}
@@ -844,34 +883,133 @@ export default function Sales() {
             try {
               const XLSX = await import('xlsx');
               const data = await file.arrayBuffer();
-              const wb = XLSX.read(data, { type: 'array' });
+              const wb = XLSX.read(data, { type: 'array', cellStyles: true });
               const ws = wb.Sheets[wb.SheetNames[0]];
-              const rows = XLSX.utils.sheet_to_json<any>(ws);
-              if (rows.length === 0) { alert('데이터가 없습니다.'); return; }
+              if (!ws || !ws['!ref']) { alert('데이터가 없습니다.'); return; }
+              const range = XLSX.utils.decode_range(ws['!ref']);
 
-              // 컬럼명 매핑
-              const mapped = rows.map((r: any) => ({
-                user_name: r['담당자'] || r['담당자명'] || '',
-                type: r['매출항목'] || r['유형'] || '계약',
-                client_name: r['고객명'] || r['계약자명'] || '',
-                amount: Number(String(r['입금액'] || r['금액'] || '0').replace(/[^0-9]/g, '')) || 0,
-                contract_date: r['날짜'] || r['계약일'] || '',
-                deposit_date: r['날짜'] || r['계약일'] || '', // 기존 데이터이므로 입금 확정 처리
-              }));
+              // 셀 값/색상 읽기 헬퍼
+              const getCell = (col: string, row: number): any => ws[col + row];
+              const getCellValue = (col: string, row: number): any => {
+                const cell = getCell(col, row);
+                return cell?.v ?? '';
+              };
+              const isRedCell = (col: string, row: number): boolean => {
+                const cell = getCell(col, row);
+                if (!cell?.s) return false;
+                // 글자색 빨강 체크
+                const fg = cell.s.color || cell.s.fgColor;
+                const rgb = fg?.rgb || '';
+                if (typeof rgb === 'string') {
+                  const hex = rgb.toUpperCase().replace('#', '').slice(-6);
+                  // FF RRGGBB 또는 RRGGBB
+                  if (/^[0-9A-F]{6}$/.test(hex)) {
+                    const r = parseInt(hex.slice(0, 2), 16);
+                    const g = parseInt(hex.slice(2, 4), 16);
+                    const b = parseInt(hex.slice(4, 6), 16);
+                    // 빨강 계열: R 높고 G, B 낮음
+                    if (r >= 180 && g <= 100 && b <= 100) return true;
+                  }
+                }
+                return false;
+              };
 
-              // 미리보기
-              const valid = mapped.filter(r => r.user_name && r.client_name && r.amount > 0);
-              const invalid = mapped.length - valid.length;
-              let msg = `총 ${mapped.length}건 중 ${valid.length}건 등록 가능`;
-              if (invalid > 0) msg += ` (${invalid}건 누락 — 담당자/고객명/금액 확인)`;
-              msg += '\n\n업로드하시겠습니까?';
+              // 날짜 정규화 헬퍼
+              const normD = (v: any): string => {
+                if (v === null || v === undefined || v === '') return '';
+                if (typeof v === 'number') {
+                  const d = new Date((v - 25569) * 86400000);
+                  return d.toISOString().slice(0, 10);
+                }
+                return String(v).trim().slice(0, 10);
+              };
+              const isDateLike = (v: any): boolean => {
+                if (v === null || v === undefined || v === '') return false;
+                if (typeof v === 'number') return v > 1 && v < 100000;
+                return /^\d{4}-\d{2}-\d{2}/.test(String(v));
+              };
+
+              const payloadRecords: any[] = [];
+              for (let r = range.s.r + 1; r <= range.e.r; r++) {  // 헤더 스킵
+                const rowNo = r + 1;  // 엑셀은 1-based
+                const dateA = getCellValue('A', rowNo);
+                const branchB = String(getCellValue('B', rowNo) || '').trim();
+                const nameC = String(getCellValue('C', rowNo) || '').trim();
+                const clientD = String(getCellValue('D', rowNo) || '').trim();
+                const phoneE = String(getCellValue('E', rowNo) || '').trim();
+                const typeG = String(getCellValue('G', rowNo) || '').trim();
+                const dateH = getCellValue('H', rowNo);
+                const amountI = getCellValue('I', rowNo);
+                const dateK = getCellValue('K', rowNo);
+                const dateL = getCellValue('L', rowNo);  // L = 입금일 (모든 행에 채워짐)
+                const evidM = String(getCellValue('M', rowNo) || '').trim();
+                const payN = String(getCellValue('N', rowNo) || '').trim();
+                const memoS = String(getCellValue('S', rowNo) || '').trim();
+
+                // 완전 빈 행 스킵 (고객명·금액·담당자 모두 없음)
+                if (!clientD && !amountI && !nameC) continue;
+
+                // 환불 텍스트 감지 — L 또는 M열에 환불/카드취소 (L이 날짜면 무시, 텍스트만 검사)
+                const lStr = typeof dateL === 'string' ? dateL : '';
+                const mText = evidM;
+                let refundMark: 'refund' | 'card_cancel' | '' = '';
+                if (/카드취소/.test(lStr) || /카드취소/.test(mText)) refundMark = 'card_cancel';
+                else if (/환불/.test(lStr) || /환불/.test(mText)) refundMark = 'refund';
+
+                // 빨간색 셀 감지 (I, L, M, N열 또는 D(고객명) 중 하나라도 빨강이면 환불)
+                const hasRed = isRedCell('I', rowNo) || isRedCell('L', rowNo) || isRedCell('M', rowNo) || isRedCell('N', rowNo) || isRedCell('D', rowNo);
+
+                // L열 입금일은 날짜인 경우만 사용
+                const depositL = isDateLike(dateL) ? normD(dateL) : '';
+
+                payloadRecords.push({
+                  row_no: rowNo,
+                  date_a: normD(dateA),
+                  branch_raw: branchB,
+                  user_name: nameC,
+                  client_name: clientD,
+                  client_phone: phoneE,
+                  type_raw: typeG,
+                  contract_date: normD(dateH),
+                  amount: Number(String(amountI ?? 0).replace(/[^0-9.\-]/g, '')) || 0,
+                  pay_date: normD(dateK),          // K열 카드 고객결제일
+                  card_approve_date: depositL,     // L열 입금일 (★ 모든 결제건 공통)
+                  evidence_raw: evidM,
+                  payment_raw: payN,
+                  memo_s: memoS,
+                  refund_mark: refundMark,
+                  has_red_color: hasRed,
+                });
+              }
+
+              if (payloadRecords.length === 0) { alert('업로드할 행이 없습니다.'); return; }
+
+              const refundRows = payloadRecords.filter(r => r.refund_mark || r.has_red_color || r.amount < 0);
+              const normalRows = payloadRecords.length - refundRows.length;
+
+              let msg = `총 ${payloadRecords.length}개 행 분석 완료\n`;
+              msg += `• 일반 매출: ${normalRows}건\n`;
+              msg += `• 환불/취소 의심 건: ${refundRows.length}건\n\n`;
+              msg += '업로드하시겠습니까?';
               if (!confirm(msg)) return;
 
-              const refundCount = valid.filter(r => r.type === '계약환불' || r.type === '낙찰환불').length;
-              const res = await api.sales.bulkImport(valid) as any;
-              let resultMsg = `${res.count}건이 등록되었습니다.`;
-              if (refundCount > 0) resultMsg += ` (환불 ${refundCount}건 포함)`;
-              if (res.skipped?.length > 0) resultMsg += `\n\n건너뛴 ${res.skipped.length}건:\n${res.skipped.join('\n')}`;
+              const res = await api.sales.bulkImport(payloadRecords) as any;
+              let resultMsg = `✓ 신규 매출 등록: ${res.count}건\n`;
+              if (res.refund_count > 0) resultMsg += `✓ 환불 처리: ${res.refund_count}건\n`;
+              if (res.skip_counts) {
+                const sc = res.skip_counts;
+                const detail = [];
+                if (sc.no_client) detail.push(`고객명 없음(빈행): ${sc.no_client}`);
+                if (sc.zero_amount) detail.push(`금액 0: ${sc.zero_amount}`);
+                if (sc.duplicate) detail.push(`중복: ${sc.duplicate}`);
+                if (sc.no_origin) detail.push(`환불 원본 없음: ${sc.no_origin}`);
+                if (sc.multi_match) detail.push(`다건매칭: ${sc.multi_match}`);
+                if (detail.length) resultMsg += `\n▶ 스킵 유형별: ${detail.join(' / ')}`;
+              }
+              if (res.skipped?.length > 0) {
+                resultMsg += `\n\n⚠ 상세 스킵 ${res.skipped.length}건:\n${res.skipped.slice(0, 30).join('\n')}`;
+                if (res.skipped.length > 30) resultMsg += `\n... 외 ${res.skipped.length - 30}건`;
+              }
               alert(resultMsg);
               setSalesTab('list');
               load();
@@ -880,6 +1018,112 @@ export default function Sales() {
           }} />
         </div>
       )}
+
+      {/* ━━━ 활동 로그 탭 (수정·삭제·상태변경 감사 이력) ━━━ */}
+      {salesTab === 'auditlog' && canViewAuditLog && (() => {
+        const ACTION_LABELS: Record<string, string> = {
+          update: '수정',
+          delete: '삭제',
+          status_change: '상태변경',
+          refund_approve: '환불승인',
+          deposit_claim_approve: '입금신청승인',
+          deposit_delete: '입금등록삭제',
+          payment_method_change: '결제방법변경',
+        };
+        const ACTION_COLOR: Record<string, string> = {
+          update: '#1a73e8', delete: '#d93025', status_change: '#188038',
+          refund_approve: '#f9ab00', deposit_claim_approve: '#188038',
+          deposit_delete: '#d93025', payment_method_change: '#1a73e8',
+        };
+        const actorOptions = Array.from(new Set(auditLogs.map(l => l.actor_id + '|' + (l.actor_display_name || l.actor_name || '?'))))
+          .map(s => { const [id, name] = s.split('|'); return { value: id, label: name }; });
+
+        return (
+          <div className="card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+              <h3 style={{ margin: 0, fontSize: '1rem' }}>활동 이력 (총무·총무보조)</h3>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input type="month" className="form-input" value={auditMonth}
+                  onChange={(e) => setAuditMonth(e.target.value)}
+                  style={{ width: 130, fontSize: '0.82rem', padding: '6px 10px' }} />
+                <select className="form-input" value={auditAction} onChange={(e) => setAuditAction(e.target.value)}
+                  style={{ width: 140, fontSize: '0.82rem', padding: '6px 10px' }}>
+                  <option value="">전체 작업</option>
+                  {Object.entries(ACTION_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+                <select className="form-input" value={auditActor} onChange={(e) => setAuditActor(e.target.value)}
+                  style={{ width: 140, fontSize: '0.82rem', padding: '6px 10px' }}>
+                  <option value="">전체 작업자</option>
+                  {actorOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+                <button className="btn btn-sm" onClick={() => { setAuditAction(''); setAuditActor(''); }}>초기화</button>
+              </div>
+            </div>
+            <div style={{ fontSize: '0.78rem', color: '#9aa0a6', marginBottom: 10 }}>
+              총무·총무보조의 매출 수정/삭제/상태변경 이력입니다. 총 {auditLogs.length}건
+            </div>
+            {auditLogs.length === 0 ? (
+              <div style={{ padding: 30, textAlign: 'center', color: '#9aa0a6', fontSize: '0.85rem' }}>조회된 기록이 없습니다.</div>
+            ) : (
+              <div className="table-wrapper">
+                <table className="data-table" style={{ fontSize: '0.82rem' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 140, whiteSpace: 'nowrap' }}>일시</th>
+                      <th style={{ width: 100, whiteSpace: 'nowrap' }}>작업자</th>
+                      <th style={{ width: 90, whiteSpace: 'nowrap' }}>역할</th>
+                      <th style={{ width: 110, whiteSpace: 'nowrap' }}>작업</th>
+                      <th style={{ minWidth: 180 }}>대상</th>
+                      <th>변경 내용</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditLogs.map((l) => {
+                      const isOpen = expandedLogId === l.id;
+                      return (
+                        <React.Fragment key={l.id}>
+                          <tr style={{ cursor: 'pointer' }} onClick={() => setExpandedLogId(isOpen ? null : l.id)}>
+                            <td style={{ whiteSpace: 'nowrap' }}>{(l.created_at || '').replace('T', ' ').slice(0, 16)}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>{l.actor_display_name || l.actor_name || '?'}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>{l.actor_role === 'accountant' ? '총무' : l.actor_role === 'accountant_asst' ? '총무보조' : l.actor_role}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>
+                              <span style={{ padding: '2px 8px', borderRadius: 4, background: (ACTION_COLOR[l.action] || '#5f6368') + '22', color: ACTION_COLOR[l.action] || '#5f6368', fontWeight: 600 }}>
+                                {ACTION_LABELS[l.action] || l.action}
+                              </span>
+                            </td>
+                            <td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>{l.target_label}</td>
+                            <td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 400, color: '#3c4043' }}>{l.diff_summary}</td>
+                          </tr>
+                          {isOpen && (l.before_snapshot || l.after_snapshot) && (
+                            <tr>
+                              <td colSpan={6} style={{ background: '#f8f9fa', padding: 12 }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: '0.75rem' }}>
+                                  {l.before_snapshot && (
+                                    <div>
+                                      <div style={{ fontWeight: 600, marginBottom: 4, color: '#d93025' }}>변경 전</div>
+                                      <pre style={{ margin: 0, padding: 8, background: '#fff', border: '1px solid #e8eaed', borderRadius: 4, overflow: 'auto', maxHeight: 300, fontSize: '0.72rem' }}>{(() => { try { return JSON.stringify(JSON.parse(l.before_snapshot), null, 2); } catch { return l.before_snapshot; } })()}</pre>
+                                    </div>
+                                  )}
+                                  {l.after_snapshot && (
+                                    <div>
+                                      <div style={{ fontWeight: 600, marginBottom: 4, color: '#188038' }}>변경 후</div>
+                                      <pre style={{ margin: 0, padding: 8, background: '#fff', border: '1px solid #e8eaed', borderRadius: 4, overflow: 'auto', maxHeight: 300, fontSize: '0.72rem' }}>{(() => { try { return JSON.stringify(JSON.parse(l.after_snapshot), null, 2); } catch { return l.after_snapshot; } })()}</pre>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ━━━ 매출내역 탭 ━━━ */}
       {salesTab === 'list' && <>
@@ -1083,6 +1327,15 @@ export default function Sales() {
                           {canApproveAccounting && <button className="btn btn-sm btn-success" onClick={() => handleDepositApprove(dep.id)}><CheckCircle size={13} /> 최종승인</button>}
                         </>
                       )}
+                      {canDepositUpload && (
+                        <button className="btn btn-sm btn-danger" style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                          onClick={async () => {
+                            if (!confirm(`입금등록 "${dep.depositor} ${formatCurrency(dep.amount)}"을(를) 삭제하시겠습니까?${dep.status === 'claimed' ? '\n\n※ 담당자가 클레임한 건입니다. 삭제해도 매출은 유지됩니다.' : ''}`)) return;
+                            try { await api.sales.deleteDeposit(dep.id); load(true); } catch (err: any) { alert(err.message); }
+                          }}>
+                          <Trash2 size={12} /> 삭제
+                        </button>
+                      )}
                     </div>
                   </div>
                   {isClaiming && (
@@ -1151,13 +1404,15 @@ export default function Sales() {
               const isConfirming = confirmingId === r.id;
               return (
                 <tr key={r.id} onClick={() => openDetail(r)} className="clickable-row"
-                  style={{ cursor: 'pointer', ...(isRefunded ? { opacity: 0.5, textDecoration: 'line-through', background: '#fafafa' } : r.type === '낙찰' ? { background: '#f3f0ff' } : r.type === '계약' ? { background: '#f0f7ff' } : {}) }}>
+                  style={{ cursor: 'pointer', ...(isRefunded ? { color: '#d93025', textDecoration: 'line-through', background: '#fef7f6' } : r.type === '낙찰' ? { background: '#f3f0ff' } : r.type === '계약' ? { background: '#f0f7ff' } : {}) }}>
                   {canDeleteAccounting && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} /></td>}
                   <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{r.contract_date}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{r.user_name}</td>
                   <td style={{ whiteSpace: 'nowrap' }}><span style={{ fontSize: '0.78rem' }}>{r.type}</span>{r.type === '기타' && r.type_detail && <span style={{ color: '#9aa0a6', fontSize: '0.72rem' }}> ({r.type_detail})</span>}</td>
-                  <td style={{ whiteSpace: 'nowrap', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.client_name + (r.depositor_different === 1 && r.depositor_name ? ' / 입금자: ' + r.depositor_name : '')}>
+                  <td style={{ whiteSpace: 'nowrap', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.client_name + (r.client_phone ? ' / ' + r.client_phone : '') + (r.depositor_different === 1 && r.depositor_name ? ' / 입금자: ' + r.depositor_name : '')}>
                     {r.client_name}
+                    {isDuplicate(r) && <span style={{ fontSize: '0.66rem', padding: '0 4px', borderRadius: 6, background: '#fce4ec', color: '#d93025', fontWeight: 700, marginLeft: 4 }}>중복</span>}
+                    {r.exclude_from_count ? <span style={{ fontSize: '0.66rem', padding: '0 4px', borderRadius: 6, background: '#f5f5f5', color: '#5f6368', marginLeft: 3 }}>미포함</span> : null}
                     {r.depositor_different === 1 && r.depositor_name && <span style={{ fontSize: '0.7rem', color: '#e65100', marginLeft: 4 }}>({r.depositor_name})</span>}
                   </td>
                   <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{formatCurrency(r.amount)}</td>
@@ -1316,11 +1571,13 @@ export default function Sales() {
             const isRefunded = r.status === 'refunded';
             const expanded = expandedIds.has(r.id);
             return (
-              <div key={r.id} className="sales-card" style={isRefunded ? { opacity: 0.5 } : r.type === '낙찰' ? { borderLeft: '3px solid #7c4dff' } : r.type === '계약' ? { borderLeft: '3px solid #1a73e8' } : {}}>
+              <div key={r.id} className="sales-card" style={isRefunded ? { color: '#d93025', background: '#fef7f6', borderLeft: '3px solid #d93025' } : r.type === '낙찰' ? { borderLeft: '3px solid #7c4dff' } : r.type === '계약' ? { borderLeft: '3px solid #1a73e8' } : {}}>
                 <div className="sales-card-header" onClick={() => toggleExpand(r.id)}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 700, fontSize: '0.92rem' }}>{r.client_name}</span>
+                      {isDuplicate(r) && <span style={{ fontSize: '0.68rem', padding: '1px 6px', borderRadius: 8, background: '#fce4ec', color: '#d93025', fontWeight: 700 }}>중복</span>}
+                      {r.exclude_from_count ? <span style={{ fontSize: '0.68rem', padding: '1px 6px', borderRadius: 8, background: '#f5f5f5', color: '#5f6368' }}>미포함</span> : null}
                       <span style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: 8, background: st.bg, color: st.color, fontWeight: 600 }}>{st.label}</span>
                       <span style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: 8, background: '#f3f4f6', color: '#5f6368' }}>{r.type}</span>
                     </div>
@@ -1427,10 +1684,41 @@ export default function Sales() {
                   )}
                 </div>
                 <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>상태</span><div><span style={{ padding: '2px 8px', borderRadius: 10, fontSize: '0.75rem', fontWeight: 600, background: STATUS_LABELS[detailRecord.status].bg, color: STATUS_LABELS[detailRecord.status].color }}>{STATUS_LABELS[detailRecord.status].label}</span></div></div>
-                <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>계약자명</span><div style={{ fontWeight: 600 }}>{detailRecord.client_name}</div></div>
+                <div>
+                  <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>계약자명</span>
+                  <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {detailRecord.client_name}
+                    {isDuplicate(detailRecord) && (
+                      <span style={{ fontSize: '0.68rem', padding: '1px 6px', borderRadius: 8, background: '#fce4ec', color: '#d93025', fontWeight: 700 }}>중복</span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>전화번호 <span style={{ fontSize: '0.65rem', color: '#9aa0a6', fontWeight: 400 }}>(동명이인 방지)</span></span>
+                  <div style={{ fontWeight: 500, fontFamily: 'monospace' }}>{detailRecord.client_phone || <span style={{ color: '#9aa0a6' }}>-</span>}</div>
+                </div>
                 <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>담당자</span><div>{detailRecord.user_name}</div></div>
                 <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>금액</span><div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{formatCurrency(detailRecord.amount)}</div></div>
                 <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>일자</span><div>{detailRecord.contract_date}</div></div>
+                {/* 중복 계약: 계약 미포함 체크박스 (계약 타입만) */}
+                {detailRecord.type === '계약' && isDuplicate(detailRecord) && canModifyAccounting && (
+                  <div style={{ gridColumn: '1 / -1', background: '#fff8e1', border: '1px solid #f4d03f', borderRadius: 6, padding: '8px 10px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.82rem', cursor: 'pointer' }}>
+                      <input type="checkbox"
+                        checked={!!detailRecord.exclude_from_count}
+                        onChange={async (e) => {
+                          const checked = e.target.checked;
+                          try {
+                            await api.sales.updateExcludeCount(detailRecord.id, checked);
+                            setDetailRecord({ ...detailRecord, exclude_from_count: checked ? 1 : 0 } as any);
+                            load(true);
+                          } catch (err: any) { alert(err.message); }
+                        }} />
+                      <span>계약 미포함 (갯수 카운트 제외)</span>
+                      <span style={{ fontSize: '0.72rem', color: '#9aa0a6' }}>※ 매출·실적 집계는 유지</span>
+                    </label>
+                  </div>
+                )}
                 {/* 계약조건 — 감정가/낙찰가 (인라인 수정) */}
                 {detailRecord.type === '계약' && (
                   <>
@@ -1514,19 +1802,21 @@ export default function Sales() {
                 {detailRecord.deposit_date && (
                   <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>결제일</span><div style={{ color: '#188038' }}>{detailRecord.deposit_date}</div></div>
                 )}
-                {detailRecord.payment_type && (
+                {(detailRecord.payment_type || canApproveAccounting || isMaster) && (
                   <div>
-                    <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>결제방식</span>
-                    {isMaster ? (
-                      <select className="form-input" defaultValue={detailRecord.payment_type} style={{ width: '100%', fontSize: '0.9rem', fontWeight: 600, marginTop: 2 }}
+                    <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>결제방식 {!detailRecord.payment_type && <span style={{ color: '#d93025', fontSize: '0.68rem' }}>(미입력)</span>}</span>
+                    {(isMaster || canApproveAccounting) ? (
+                      <select className="form-input" defaultValue={detailRecord.payment_type || ''} style={{ width: '100%', fontSize: '0.9rem', fontWeight: 600, marginTop: 2 }}
                         onChange={async (e) => {
+                          if (!e.target.value) return;
                           try { await api.sales.update(detailRecord.id, { payment_type: e.target.value }); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
                         }}>
+                        <option value="">선택</option>
                         <option value="이체">이체</option>
                         <option value="카드">카드</option>
                       </select>
                     ) : (
-                      <div>{detailRecord.payment_type}</div>
+                      <div>{detailRecord.payment_type || '-'}</div>
                     )}
                   </div>
                 )}
@@ -1695,6 +1985,17 @@ export default function Sales() {
                     catch (err: any) { alert(err.message); }
                   }}>
                   <RotateCcw size={12} /> 환불신청
+                </button>
+              )}
+              {/* 환불승인 버튼 (환불신청 상태 + 관리자/회계) — 회계장부와 동일 동작 */}
+              {detailRecord.status === 'refund_requested' && canApproveAccounting && (
+                <button className="btn btn-sm btn-danger" style={{ fontSize: '0.78rem', marginBottom: 12 }}
+                  onClick={async () => {
+                    if (!confirm('환불을 승인하시겠습니까?\n승인 즉시 환불완료 처리되며 취소할 수 없습니다.')) return;
+                    try { await api.sales.refundApprove(detailRecord.id); setDetailRecord(null); load(); }
+                    catch (err: any) { alert(err.message); }
+                  }}>
+                  <RotateCcw size={12} /> 환불승인
                 </button>
               )}
               {/* 메모 */}

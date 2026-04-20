@@ -174,6 +174,8 @@ export interface SalesRecord {
   department: string;
   // 매출 귀속 지사 (비워두면 branch 사용) — 집계 전용
   attribution_branch?: string;
+  // 계약 미포함 (중복 계약 시 갯수 카운트에서 제외, 매출/실적은 유지)
+  exclude_from_count?: number;
   // [6-1] 수수료 계산
   appraisal_price: number;
   winning_price: number;

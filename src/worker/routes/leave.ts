@@ -125,6 +125,13 @@ leave.get('/me', async (c) => {
 leave.get('/user/:userId', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const userId = c.req.param('userId');
   const db = c.env.DB;
+  const viewer = c.get('user');
+
+  const RESTRICTED_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+  const userInfoEarly = await db.prepare('SELECT role FROM users WHERE id = ?').bind(userId).first<any>();
+  if (viewer.role === 'accountant_asst' && userInfoEarly && RESTRICTED_ROLES.includes(userInfoEarly.role)) {
+    return c.json({ error: '해당 직원의 연차·급여 정보 열람 권한이 없습니다.' }, 403);
+  }
 
   const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
   const userInfo = await db.prepare('SELECT hire_date, created_at, name FROM users WHERE id = ?').bind(userId).first<any>();
@@ -276,17 +283,15 @@ leave.post('/request', async (c) => {
     return c.json({ success: true, id });
   }
 
-  // 잔여 연차 확인
+  // 잔여 연차 확인: 월차는 음수 허용 (차월 월차 누적 시 자동 상쇄), 연차는 부족 시 차단
   const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(user.sub).first<any>();
   if (leaveInfo) {
     const isMonthly = body.leave_type === '월차';
-    if (isMonthly) {
-      const remaining = (leaveInfo.monthly_days || 0) - (leaveInfo.monthly_used || 0);
-      if (remaining < days) return c.json({ error: `월차 잔여일이 부족합니다. (잔여: ${remaining}일)` }, 400);
-    } else {
+    if (!isMonthly) {
       const remaining = leaveInfo.total_days - leaveInfo.used_days;
       if (remaining < days) return c.json({ error: `연차 잔여일이 부족합니다. (잔여: ${remaining}일)` }, 400);
     }
+    // 월차: 잔여 부족해도 신청 허용 → monthly_used 증가시켜 음수 잔여 기록
   }
 
   const id = crypto.randomUUID();
@@ -320,9 +325,9 @@ leave.get('/requests', async (c) => {
   const month = c.req.query('month') || '';
   const filterUserId = c.req.query('user_id') || '';
 
-  const isAdmin = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user.role);
+  const isAdmin = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'].includes(user.role);
 
-  let query = `SELECT lr.*, u.name as user_name FROM leave_requests lr
+  let query = `SELECT lr.*, u.name as user_name, u.role as user_role FROM leave_requests lr
     LEFT JOIN users u ON lr.user_id = u.id WHERE 1=1`;
   const params: any[] = [];
 
@@ -517,6 +522,16 @@ leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'admin',
 leave.get('/refund/:userId', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const userId = c.req.param('userId');
   const db = c.env.DB;
+  const viewer = c.get('user');
+
+  // 총무보조는 팀장·관리자급·이사·대표자 환급 차단
+  const RESTRICTED_ROLES_REFUND = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+  if (viewer.role === 'accountant_asst') {
+    const t = await db.prepare('SELECT role FROM users WHERE id = ?').bind(userId).first<any>();
+    if (t && RESTRICTED_ROLES_REFUND.includes(t.role)) {
+      return c.json({ error: '해당 직원의 환급 정보 열람 권한이 없습니다.' }, 403);
+    }
+  }
 
   const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
   const accounting = await db.prepare('SELECT salary FROM user_accounting WHERE user_id = ?').bind(userId).first<any>();
@@ -598,8 +613,8 @@ leave.put('/hire-date/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 
   return c.json({ success: true, entitlement });
 });
 
-// ───── 휴가 신청 삭제 (마스터 전용) ─────
-leave.delete('/requests/:id', requireRole('master'), async (c) => {
+// ───── 휴가 신청 삭제 (관리자/회계) ─────
+leave.delete('/requests/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const id = c.req.param('id');
   const db = c.env.DB;
 

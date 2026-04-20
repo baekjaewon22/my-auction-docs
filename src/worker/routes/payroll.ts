@@ -7,6 +7,15 @@ payroll.use('*', authMiddleware);
 
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 
+// 총무보조(accountant_asst) 열람 제한 — 팀장·관리자급·이사·대표자 정산은 총무담당만 접근 가능
+const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+async function canAccessUserPayroll(db: D1Database, viewer: any, targetUserId: string): Promise<boolean> {
+  if (viewer.role !== 'accountant_asst') return true;
+  const target = await db.prepare('SELECT role FROM users WHERE id = ?').bind(targetUserId).first<any>();
+  if (!target) return true;
+  return !RESTRICTED_ROLES_FOR_ASST.includes(target.role);
+}
+
 // GET /api/payroll/:userId?month=YYYY-MM
 // 급여제: 1개월 정산 + 성과금은 2개월 기준
 // 비율제: 1개월 정산
@@ -15,6 +24,10 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const userId = c.req.param('userId');
   const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
   const db = c.env.DB;
+  const viewer = c.get('user');
+  if (!(await canAccessUserPayroll(db, viewer, userId))) {
+    return c.json({ error: '해당 직원의 정산 정보 열람 권한이 없습니다.' }, 403);
+  }
 
   const [yearStr, monthStr] = month.split('-');
   const y = Number(yearStr);
@@ -40,9 +53,15 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   ).bind(userId).first<any>();
 
   // 2026년 1~2월은 전원 프리랜서(비율 50%) — 강제 적용
+  // 예외: commission_rate_overrides 테이블에 유저별 월별 예외 비율 저장 가능
   const isJanFeb2026 = y === 2026 && m <= 2;
   const isCommission = isJanFeb2026 ? true : (accounting?.pay_type === 'commission');
-  const effectiveRate = isJanFeb2026 ? 50 : (accounting?.commission_rate || 0);
+  const override = await db.prepare(
+    'SELECT commission_rate FROM commission_rate_overrides WHERE user_id = ? AND year_month = ?'
+  ).bind(userId, month).first<any>().catch(() => null);
+  const effectiveRate = override?.commission_rate !== undefined
+    ? override.commission_rate
+    : (isJanFeb2026 ? 50 : (accounting?.commission_rate || 0));
 
   // 매출 조회: 1개월 기준 (카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date)
   const salesQuery = `
@@ -158,7 +177,7 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   return c.json({
     user,
     accounting: isJanFeb2026
-      ? { ...(accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0 }), pay_type: 'commission', commission_rate: 50 }
+      ? { ...(accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0 }), pay_type: 'commission', commission_rate: effectiveRate }
       : (accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0, pay_type: 'salary', commission_rate: 0 }),
     is_hq: isHQ,
     is_commission: isCommission,
@@ -260,6 +279,10 @@ payroll.get('/save/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const userId = c.req.param('userId');
   const period = c.req.query('period') || '';
   const db = c.env.DB;
+  const viewer = c.get('user');
+  if (!(await canAccessUserPayroll(db, viewer, userId))) {
+    return c.json({ error: '해당 직원의 정산 정보 열람 권한이 없습니다.' }, 403);
+  }
   const row = await db.prepare('SELECT * FROM payroll_saves WHERE user_id = ? AND period = ?').bind(userId, period).first();
   return c.json({ save: row || null });
 });
@@ -271,6 +294,9 @@ payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const { user_id, period, pay_type, data: saveData } = await c.req.json<{
     user_id: string; period: string; pay_type: string; data: Record<string, unknown>;
   }>();
+  if (!(await canAccessUserPayroll(db, user, user_id))) {
+    return c.json({ error: '해당 직원의 정산 정보 저장 권한이 없습니다.' }, 403);
+  }
 
   // 잠금 체크: 익달 5일 이후면 수정 불가
   const existing = await db.prepare('SELECT locked FROM payroll_saves WHERE user_id = ? AND period = ?').bind(user_id, period).first<any>();

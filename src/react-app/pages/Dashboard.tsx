@@ -120,13 +120,13 @@ export default function Dashboard() {
   const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
   const isMaster = user?.role === 'master';
 
-  // 마스터 전용 섹션 전체 삭제 버튼 — DB 영구 저장
+  // 마스터 전용 섹션 전체 삭제 버튼 — 실수 방지를 위해 명확한 라벨 표시
   const MasterCloseBtn = ({ alertType, keys, onClose }: { alertType: string; keys: string[]; onClose: () => void }) => isMaster ? (
-    <button className="btn-icon"
-      title="섹션 전체 삭제 (마스터 전용 — 영구 삭제)"
+    <button
+      title={`섹션 전체 ${keys.length}건 삭제 (마스터 전용 — 영구 삭제)`}
       onClick={async (e) => {
         e.preventDefault(); e.stopPropagation();
-        if (!confirm('이 알림 목록을 모두 삭제하시겠습니까?\n(영구 삭제 — 새로고침해도 복구되지 않음)')) return;
+        if (!confirm(`⚠ 섹션 전체 ${keys.length}건을 모두 삭제합니다.\n\n개별 삭제를 원하시면 각 항목의 X 버튼을 이용하세요.\n\n정말 전체 삭제하시겠습니까? (영구 삭제)`)) return;
         try {
           const bulkKeys = keys.map(k => ({ alert_type: alertType, alert_key: k }));
           if (bulkKeys.length > 0) await api.journal.dismissAlertsBulk(bulkKeys);
@@ -134,8 +134,8 @@ export default function Dashboard() {
           onClose();
         } catch (err: any) { alert(err.message); }
       }}
-      style={{ marginLeft: 'auto', color: '#9aa0a6', padding: 4, background: 'transparent', border: 'none', cursor: 'pointer' }}>
-      <X size={16} />
+      style={{ marginLeft: 'auto', fontSize: '0.65rem', color: '#d93025', padding: '2px 6px', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>
+      전체 삭제
     </button>
   ) : null;
 
@@ -176,8 +176,14 @@ export default function Dashboard() {
   }, [dismissedKeys]);
 
   useEffect(() => {
-    // 삭제된 알림 목록 로드
-    api.journal.dismissedAlerts().then(res => setDismissedKeys(new Set(res.keys))).catch(() => {});
+    (async () => {
+    // 삭제된 알림 목록을 먼저 완전히 받아온 후 데이터 로딩 시작
+    let localDismissed = new Set<string>();
+    try {
+      const dRes = await api.journal.dismissedAlerts();
+      localDismissed = new Set(dRes.keys);
+      setDismissedKeys(localDismissed);
+    } catch { /* */ }
 
     const promises: Promise<any>[] = [
       api.documents.list(),
@@ -293,7 +299,7 @@ export default function Dashboard() {
           // 환불 영향 알림
           try {
             const impactRes = await api.sales.dashboardRefundImpacts();
-            setRefundImpacts((impactRes.impacts || []).filter((i: any) => i.is_previous_period));
+            setRefundImpacts((impactRes.impacts || []).filter((i: any) => i.is_previous_period && !localDismissed.has(`refund_impact_${i.id}`)));
           } catch { /* */ }
         }
 
@@ -320,10 +326,11 @@ export default function Dashboard() {
         // 중복 임장 사건번호 조회
         try {
           const dupRes = await api.journal.duplicateInspections(dupAllBranches);
-          setDupInspections(dupRes.duplicates || []);
+          setDupInspections((dupRes.duplicates || []).filter((d: any) => !localDismissed.has(`dup_${d.case_no}_${d.court}_${d.branch || ''}`)));
         } catch { /* */ }
       })
       .finally(() => setLoading(false));
+    })();
   }, []);
 
   // 중복 임장: 전 지사 토글 시 재조회

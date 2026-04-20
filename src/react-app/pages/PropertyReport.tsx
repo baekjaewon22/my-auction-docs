@@ -6,7 +6,7 @@ import type { Signature, ApprovalStep } from '../types';
 import SignaturePanel, { hasSavedSignature, quickSign } from '../components/SignaturePanel';
 import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
-import { FileDown, Save, ArrowLeft, Send, Printer } from 'lucide-react';
+import { FileDown, Save, ArrowLeft, Send, Printer, X as XIcon } from 'lucide-react';
 
 // 직인 사용 가능 역할
 const STAMP_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
@@ -19,6 +19,9 @@ export default function PropertyReport() {
   const [saving, setSaving] = useState(false);
   const [docId, setDocId] = useState(id || '');
   const [status, setStatus] = useState('draft');
+  const [rejectReason, setRejectReason] = useState('');
+  const [savedRejectReason, setSavedRejectReason] = useState('');
+  const [showReject, setShowReject] = useState(false);
 
   // 결재/서명
   const [signatures, setSignatures] = useState<Signature[]>([]);
@@ -54,6 +57,7 @@ export default function PropertyReport() {
       const res = await api.documents.get(docIdToLoad);
       const doc = res.document;
       setStatus(doc.status);
+      setSavedRejectReason((doc as any).reject_reason || '');
       try {
         const saved = JSON.parse(doc.content);
         if (saved && typeof saved === 'object' && saved.court !== undefined) setFields(saved);
@@ -141,13 +145,26 @@ export default function PropertyReport() {
       return;
     }
     if (!docId) { await handleSave(); }
-    if (!confirm('물건분석보고서를 제출하시겠습니까?')) return;
+    if (!confirm(status === 'rejected' ? '물건분석보고서를 재제출하시겠습니까?' : '물건분석보고서를 제출하시겠습니까?')) return;
     try {
       if (!docId) return;
       await api.documents.update(docId, { content: JSON.stringify(fields) });
       await api.documents.submit(docId);
       setStatus('submitted');
       alert('제출되었습니다.');
+      await loadDoc(docId);
+    } catch (err: any) { alert(err.message); }
+  };
+
+  // 반려
+  const handleReject = async () => {
+    if (!docId) return;
+    if (!rejectReason.trim()) { alert('반려 사유를 입력하세요.'); return; }
+    try {
+      await api.documents.reject(docId, rejectReason.trim());
+      setShowReject(false);
+      setRejectReason('');
+      alert('반려되었습니다. 작성자가 다시 수정할 수 있습니다.');
       await loadDoc(docId);
     } catch (err: any) { alert(err.message); }
   };
@@ -250,6 +267,16 @@ export default function PropertyReport() {
   const [mobileScale, setMobileScale] = useState(1);
   const mySigned = signatures.some(s => s.user_id === user?.id);
 
+  // 반려 가능 판정 (승인 권한자와 동일)
+  const myPendingStep = approvalSteps.find(s => s.approver_id === user?.id && s.status === 'pending');
+  const prevAllApproved = myPendingStep
+    ? approvalSteps.filter(s => s.step_order < myPendingStep.step_order).every(s => s.status === 'approved')
+    : false;
+  const canReject = status === 'submitted' && (
+    (myPendingStep && prevAllApproved) ||
+    ['master', 'ceo', 'cc_ref'].includes(user?.role || '')
+  );
+
   // 모바일 스케일 자동 계산
   useEffect(() => {
     const calcScale = () => {
@@ -334,15 +361,48 @@ export default function PropertyReport() {
           {saving && <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>저장중...</span>}
           {isEditable && <button className="btn btn-sm btn-primary" onClick={handleSave}><Save size={14} /></button>}
           {isEditable && (
-            <button className="btn btn-sm" style={{ background: '#188038', color: '#fff', opacity: mySigned ? 1 : 0.5 }} onClick={handleSubmit}>
+            <button className="btn btn-sm" style={{ background: '#188038', color: '#fff', opacity: mySigned ? 1 : 0.5 }} onClick={handleSubmit} title={status === 'rejected' ? '재제출' : '최종 제출'}>
               <Send size={14} />
             </button>
+          )}
+          {canReject && (
+            <button className="btn btn-sm btn-danger" onClick={() => setShowReject(true)} title="반려">반려</button>
           )}
           <button className="btn btn-sm" onClick={handlePdf} title="PDF 저장"><FileDown size={14} /></button>
           <button className="btn btn-sm" onClick={handlePrint} title="프린트"><Printer size={14} /></button>
         </div>
         {overflowWarn && <div style={{ fontSize: '0.7rem', color: '#d93025', fontWeight: 600, background: '#fce4ec', padding: '3px 8px', borderRadius: 6, marginTop: 4, textAlign: 'center' }}>1페이지 초과! 내용을 줄여주세요.</div>}
+        {status === 'rejected' && savedRejectReason && (
+          <div style={{ fontSize: '0.8rem', background: '#fce4ec', color: '#d93025', padding: '6px 10px', borderRadius: 6, marginTop: 6, fontWeight: 500, borderLeft: '3px solid #d93025' }}>
+            <strong>반려 사유:</strong> {savedRejectReason} <span style={{ color: '#5f6368', fontWeight: 400, marginLeft: 6 }}>— 내용 수정 후 재제출하세요</span>
+          </div>
+        )}
       </div>
+
+      {/* 반려 모달 */}
+      {showReject && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowReject(false)}>
+          <div style={{ background: '#fff', borderRadius: 8, padding: 20, minWidth: 360, maxWidth: 500, width: '90%' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <h3 style={{ margin: 0, fontSize: '1rem' }}>문서 반려</h3>
+              <button className="btn btn-sm" onClick={() => setShowReject(false)}><XIcon size={14} /></button>
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: 6, fontWeight: 600 }}>반려 사유</label>
+              <textarea className="form-input" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)}
+                placeholder="반려 사유를 입력하세요. 작성자에게 전달됩니다."
+                rows={4} style={{ width: '100%', resize: 'vertical' }} />
+            </div>
+            <div style={{ fontSize: '0.78rem', color: '#5f6368', background: '#fffbe6', padding: '8px 10px', borderRadius: 6, marginBottom: 12 }}>
+              반려 시 문서는 작성자의 "내 문서"로 돌아가며, 작성자가 내용을 수정해 재제출할 수 있습니다.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-sm" onClick={() => setShowReject(false)}>취소</button>
+              <button className="btn btn-sm btn-danger" onClick={handleReject}>반려</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 결재란 */}
       {docId && (

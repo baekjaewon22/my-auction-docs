@@ -297,6 +297,8 @@ export const api = {
       request('/sales/by-entry/' + entryId, { method: 'DELETE' }),
     updatePaymentMethod: (id: string, payment_method: string) =>
       request('/sales/' + id + '/payment-method', { method: 'PUT', body: JSON.stringify({ payment_method }) }),
+    updateExcludeCount: (id: string, exclude: boolean) =>
+      request('/sales/' + id + '/exclude-count', { method: 'PUT', body: JSON.stringify({ exclude }) }),
     confirm: (id: string, deposit_date?: string) =>
       request('/sales/' + id + '/confirm', { method: 'POST', body: JSON.stringify({ deposit_date }) }),
     unconfirm: (id: string) =>
@@ -330,6 +332,8 @@ export const api = {
       request('/sales/deposits/' + id + '/claim', { method: 'POST', body: JSON.stringify(data) }),
     approveDeposit: (id: string) =>
       request('/sales/deposits/' + id + '/approve', { method: 'POST' }),
+    deleteDeposit: (id: string) =>
+      request('/sales/deposits/' + id, { method: 'DELETE' }),
     createAccountingEntry: (data: { amount: number; content: string; date: string; assignee_id: string; direction?: string }) =>
       request<{ success: boolean; id: string }>('/sales/accounting-entry', { method: 'POST', body: JSON.stringify(data) }),
     contractCheck: (id: string, data: { contract_submitted?: number; contract_not_submitted?: number; contract_not_reason?: string; contract_not_approved?: number }) =>
@@ -338,6 +342,16 @@ export const api = {
       request('/sales/' + id + '/contract-not-approve', { method: 'PUT' }),
     bulkImport: (records: any[]) =>
       request<{ success: boolean; count: number }>('/sales/bulk-import', { method: 'POST', body: JSON.stringify({ records }) }),
+    // 활동 내역 (master, accountant)
+    activityLogs: (params?: { month?: string; actor_id?: string; action?: string; limit?: number }) => {
+      const q = new URLSearchParams();
+      if (params?.month) q.set('month', params.month);
+      if (params?.actor_id) q.set('actor_id', params.actor_id);
+      if (params?.action) q.set('action', params.action);
+      if (params?.limit) q.set('limit', String(params.limit));
+      const qs = q.toString();
+      return request<{ logs: any[] }>('/sales/activity-logs' + (qs ? '?' + qs : ''));
+    },
     // 총무 메모
     memos: (params?: { related_type?: string; related_id?: string }) => {
       const q = new URLSearchParams();

@@ -59,6 +59,10 @@ export default function UserManagement() {
   const canManagePending = ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser?.role || '');
   // 회계 정보 편집 가능한 역할
   const canEditAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
+  // 총무보조 정산 열람/수정 제한 — 팀장·관리자급·이사·대표자
+  const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+  const isRestrictedForViewer = (targetUser: User | null) =>
+    currentUser?.role === 'accountant_asst' && !!targetUser && RESTRICTED_ROLES_FOR_ASST.includes(targetUser.role as string);
   // 회계 정보 열람 가능한 역할
   const canViewAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   // 입사기준일 편집 가능한 역할
@@ -132,6 +136,17 @@ export default function UserManagement() {
       setAlimBranches(new Set(alimRes.branches ? alimRes.branches.split(',') : []));
     } catch { setAlimBranches(new Set()); }
     if (!canViewAccounting) return;
+    // 총무보조 제한 대상: 회계 정보 로드 생략
+    if (isRestrictedForViewer(u)) {
+      setSalaryInput('');
+      setGradeInput('');
+      setPosAllowanceInput('0');
+      setCardNumbers(['']);
+      setPayType('salary');
+      setCommissionRate('');
+      setEvaluations([]);
+      return;
+    }
     try {
       const [accRes, evalRes] = await Promise.all([
         api.accounting.get(u.id),
@@ -158,6 +173,10 @@ export default function UserManagement() {
 
   const handleSaveAccounting = async () => {
     if (!selectedUser || !canEditAccounting) return;
+    if (isRestrictedForViewer(selectedUser)) {
+      alert('해당 직원의 급여·회계 정보 수정 권한이 없습니다.');
+      return;
+    }
     setSaving(true);
     try {
       await api.accounting.update(selectedUser.id, {
@@ -284,8 +303,15 @@ export default function UserManagement() {
           </div>
         </div>
 
-        {/* 회계 정보 카드 (회계 열람 가능자만) */}
-        {canViewAccounting && (
+        {/* 회계 정보 카드 (회계 열람 가능자만, 총무보조 제한 대상 제외) */}
+        {canViewAccounting && isRestrictedForViewer(selectedUser) && (
+          <div className="card" style={{ padding: 16, marginBottom: 16, background: '#fff8e1', borderLeft: '3px solid #f4d03f' }}>
+            <div style={{ fontSize: '0.85rem', color: '#5f6368' }}>
+              <strong style={{ color: '#e65100' }}>🔒 열람 제한</strong> — 해당 직원의 급여·회계 정보는 <strong>총무담당 이상</strong>만 조회할 수 있습니다.
+            </div>
+          </div>
+        )}
+        {canViewAccounting && !isRestrictedForViewer(selectedUser) && (
           <div className="card" style={{ marginBottom: 20, padding: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
               <h3 style={{ margin: 0, fontSize: '1rem', color: '#1a1a2e' }}>

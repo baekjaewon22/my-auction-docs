@@ -144,7 +144,12 @@ export default function Payroll() {
   };
 
   // 지사 필터 적용 (퇴사자는 퇴사월 이전 정산월에서만 표시)
-  const branchFiltered = (filterBranch ? users.filter(u => u.branch === filterBranch) : users).filter(u => u.role !== 'master');
+  // 총무보조(accountant_asst)는 팀장·관리자급·이사·대표자 열람 제한
+  const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+  const currentRole = (currentUser?.role || '') as string;
+  const branchFiltered = (filterBranch ? users.filter(u => u.branch === filterBranch) : users)
+    .filter(u => u.role !== 'master')
+    .filter(u => currentRole !== 'accountant_asst' || !RESTRICTED_ROLES_FOR_ASST.includes(u.role as string));
   const activeUsers = branchFiltered.filter(u => (u.role as string) !== 'resigned');
   const resignedUsers = branchFiltered.filter(u => {
     if ((u.role as string) !== 'resigned') return false;
