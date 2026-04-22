@@ -156,6 +156,39 @@ sales.get('/', async (c) => {
   return c.json({ records: result.results });
 });
 
+// GET /api/sales/ranking — 전사 계약건수 랭킹 (집계만, 전 직원 열람 가능)
+sales.get('/ranking', async (c) => {
+  const db = c.env.DB;
+  const { period_start, period_end } = c.req.query();
+  if (!period_start || !period_end) return c.json({ error: 'period_start, period_end 필수' }, 400);
+  const [sy, sm] = period_start.split('-').map(Number);
+  const [ey, em] = period_end.split('-').map(Number);
+  const mStart = `${period_start}-01`;
+  const mEnd = `${period_end}-${new Date(ey, em, 0).getDate()}`;
+  void sy; void sm;
+
+  const result = await db.prepare(`
+    SELECT u.name as user_name,
+      COALESCE(NULLIF(sr.attribution_branch, ''), sr.branch) as eff_branch,
+      u.position_title as position,
+      SUM(CASE WHEN sr.amount >= 2200000 THEN 2 ELSE 1 END) as count,
+      SUM(sr.amount) as total_amount
+    FROM sales_records sr
+    JOIN users u ON u.id = sr.user_id
+    WHERE sr.type = '계약' AND sr.status = 'confirmed'
+      AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
+      AND (
+        (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
+        OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
+        OR ((sr.payment_type = '' OR sr.payment_type IS NULL) AND sr.contract_date >= ? AND sr.contract_date <= ?)
+      )
+    GROUP BY u.name, eff_branch
+    ORDER BY count DESC, total_amount DESC
+  `).bind(mStart, mEnd, mStart, mEnd, mStart, mEnd).all<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>();
+
+  return c.json({ ranking: result.results || [] });
+});
+
 // POST /api/sales — 매출 내역 추가
 sales.post('/', async (c) => {
   const user = c.get('user');
@@ -228,6 +261,7 @@ sales.put('/:id', async (c) => {
     amount?: number; contract_date?: string;
     payment_type?: string; receipt_type?: string; receipt_phone?: string;
     card_deposit_date?: string;
+    tax_invoice_date?: string; tax_invoice_type?: string;
     appraisal_rate?: number; winning_rate?: number; client_phone?: string;
     proxy_cost?: number;
   }>();
@@ -268,6 +302,7 @@ sales.put('/:id', async (c) => {
     UPDATE sales_records SET type = ?, type_detail = ?, client_name = ?, depositor_name = ?,
       depositor_different = ?, amount = ?, contract_date = ?,
       payment_type = ?, receipt_type = ?, receipt_phone = ?, card_deposit_date = ?,
+      tax_invoice_date = ?, tax_invoice_type = ?,
       appraisal_rate = ?, winning_rate = ?, client_phone = ?, proxy_cost = ?,
       status = ?, updated_at = datetime('now')
     WHERE id = ?
@@ -278,6 +313,8 @@ sales.put('/:id', async (c) => {
     body.amount ?? record.amount, body.contract_date ?? record.contract_date,
     body.payment_type ?? record.payment_type ?? '', body.receipt_type ?? record.receipt_type ?? '',
     body.receipt_phone ?? record.receipt_phone ?? '', newCardDepDate,
+    body.tax_invoice_date ?? record.tax_invoice_date ?? '',
+    body.tax_invoice_type ?? record.tax_invoice_type ?? '',
     body.appraisal_rate ?? record.appraisal_rate ?? 0, body.winning_rate ?? record.winning_rate ?? 0,
     body.client_phone ?? record.client_phone ?? '',
     body.proxy_cost ?? record.proxy_cost ?? 0,

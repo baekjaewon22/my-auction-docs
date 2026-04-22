@@ -219,7 +219,9 @@ export default function Dashboard() {
           try {
             const sRes = await api.sales.list({});
             const pending = (sRes.records as SalesRecord[]).filter(r =>
-              (r.contract_submitted && !r.contract_not_approved) || (r.contract_not_submitted && !r.contract_not_approved)
+              // 계약·낙찰 유형만 보고서 제출 대상 (권리분석보증서/매수신청대리/중개/기타 제외)
+              (r.type === '계약' || r.type === '낙찰') &&
+              ((r.contract_submitted && !r.contract_not_approved) || (r.contract_not_submitted && !r.contract_not_approved))
             );
             setContractAlerts(pending);
           } catch { /* */ }
@@ -230,6 +232,7 @@ export default function Dashboard() {
           const mine = await api.sales.list({});
           const myMissing = (mine.records as SalesRecord[]).filter(r =>
             r.user_id === user?.id && r.status !== 'refunded'
+              && (r.type === '계약' || r.type === '낙찰')  // 계약·낙찰 유형만 보고서 제출 대상
               && !r.contract_submitted && !r.contract_not_submitted
           );
           setMyMissingDocs(myMissing);

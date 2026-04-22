@@ -356,7 +356,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
 
   if (!myStep) {
     // 결재선에 없어도 권한자는 대리 승인 가능
-    if (['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role)) {
+    if (['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'manager'].includes(user.role)) {
       // 모든 pending 단계를 승인 처리 (대리 서명자 기록)
       await db.prepare(
         "UPDATE approval_steps SET status = 'approved', signed_at = datetime('now'), comment = ? WHERE document_id = ? AND status = 'pending'"
@@ -398,38 +398,46 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
     if (title.includes('연차') || title.includes('월차') || title.includes('반차')) {
       const days = title.includes('반차') ? 0.5 : 1;
       const leaveType = title.includes('반차') ? '반차' : title.includes('월차') ? '월차' : '연차';
-      const existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
-      if (!existing) {
-        await db.prepare('INSERT INTO annual_leave (id, user_id, total_days, used_days, leave_type, monthly_days, monthly_used) VALUES (?, ?, 15, 0, \'annual\', 0, 0)')
-          .bind(crypto.randomUUID(), doc.author_id).run();
-      }
-      // 월차 사용자면 monthly_used 차감, 연차 사용자면 used_days 차감
-      const leaveData = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
-      if (leaveData?.leave_type === 'monthly') {
-        await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-          .bind(days, doc.author_id).run();
-      } else {
-        await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
-          .bind(days, doc.author_id).run();
-      }
-      // leave_requests에 자동 등록 (휴가 신청 내역 연동)
+
+      // 날짜 결정 (문서 내용에서 추출, 없으면 오늘)
       const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
-      // 문서 내용에서 날짜 추출 시도
       const contentText = (doc.content || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
       let startDate = today;
       let endDate = today;
-      // "휴가일 : 2026년 4월 17일" 또는 "시작일 : ...", "기간 : ..." 등
       const dateMatch = contentText.match(/(\d{4})\s*년?\s*(\d{1,2})\s*월?\s*(\d{1,2})\s*일/);
       if (dateMatch) {
         startDate = `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`;
         endDate = startDate;
       }
-      await db.prepare(
-        "INSERT INTO leave_requests (id, user_id, leave_type, start_date, end_date, days, reason, status, approved_by, approved_at, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), ?, ?)"
-      ).bind(
-        crypto.randomUUID(), doc.author_id, leaveType, startDate, endDate, days,
-        `문서결재 자동등록 (${doc.title})`, user.sub, doc.branch || '', doc.department || ''
-      ).run();
+
+      // [중복 방지] 같은 user + 같은 날짜 + 같은 타입 + 미취소 상태이면 스킵
+      const dup = await db.prepare(
+        "SELECT id FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
+      ).bind(doc.author_id, leaveType, startDate, endDate).first();
+
+      if (!dup) {
+        const existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
+        if (!existing) {
+          await db.prepare('INSERT INTO annual_leave (id, user_id, total_days, used_days, leave_type, monthly_days, monthly_used) VALUES (?, ?, 15, 0, \'annual\', 0, 0)')
+            .bind(crypto.randomUUID(), doc.author_id).run();
+        }
+        // 월차 사용자면 monthly_used 차감, 연차 사용자면 used_days 차감
+        const leaveData = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
+        if (leaveData?.leave_type === 'monthly') {
+          await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
+            .bind(days, doc.author_id).run();
+        } else {
+          await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
+            .bind(days, doc.author_id).run();
+        }
+        await db.prepare(
+          "INSERT INTO leave_requests (id, user_id, leave_type, start_date, end_date, days, reason, status, approved_by, approved_at, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), ?, ?)"
+        ).bind(
+          crypto.randomUUID(), doc.author_id, leaveType, startDate, endDate, days,
+          `문서결재 자동등록 (${doc.title})`, user.sub, doc.branch || '', doc.department || ''
+        ).run();
+      }
+      // dup이 있으면 이미 leave_request가 존재하므로 문서만 승인 상태로 남기고 차감·등록 생략
     }
     // 알림톡: 최종 승인 → 작성자에게 DOC_FINAL_APPROVED
     const author = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(doc.author_id).first<{ phone: string }>();
@@ -481,7 +489,7 @@ documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager'), 
     "SELECT * FROM approval_steps WHERE document_id = ? AND approver_id = ? AND status = 'pending'"
   ).bind(id, user.sub).first();
 
-  if (!myStep && user.role !== 'master' && user.role !== 'ceo' && user.role !== 'cc_ref') {
+  if (!myStep && !['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user.role)) {
     return c.json({ error: '결재선에 포함되지 않았습니다.' }, 403);
   }
 

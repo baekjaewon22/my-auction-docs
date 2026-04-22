@@ -274,7 +274,7 @@ export default function PropertyReport() {
     : false;
   const canReject = status === 'submitted' && (
     (myPendingStep && prevAllApproved) ||
-    ['master', 'ceo', 'cc_ref'].includes(user?.role || '')
+    ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '')
   );
 
   // 모바일 스케일 자동 계산

@@ -115,7 +115,7 @@ export default function DocumentEdit() {
     : false;
   const canApprove = doc && doc.status === 'submitted' && (
     (myPendingStep && prevAllApproved) ||
-    ['master', 'ceo', 'cc_ref'].includes(user?.role || '')
+    ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '')
   );
 
   const mySigned = signatures.some((s) => s.user_id === user?.id);
@@ -331,10 +331,23 @@ export default function DocumentEdit() {
       return;
     }
 
-    // 그 외 결재란 → 본인 서명
+    // 그 외 결재란 → 본인 서명 + (결재자면) 승인 처리
     if (hasSavedSignature()) {
       try {
-        await quickSign(id, type, handleSignComplete);
+        await quickSign(id, type, async (sig: string, t: SignatureType) => {
+          // 서명 완료 후: 결재자 슬롯이면 자동으로 승인 API 호출
+          if (type === 'approver') {
+            try {
+              const result = await api.documents.approve(id) as any;
+              alert(result.final ? '문서가 최종 승인되었습니다.' : '승인 완료. 다음 단계 결재자에게 전달됩니다.');
+              window.location.reload();
+              return;
+            } catch (err: any) {
+              alert(err.message || '승인 처리 중 오류가 발생했습니다.');
+            }
+          }
+          handleSignComplete(sig, t);
+        });
       } catch (err: any) {
         alert(err.message || '서명 처리 중 오류가 발생했습니다.');
       }
@@ -346,8 +359,20 @@ export default function DocumentEdit() {
   };
 
   // 서명 완료 - 결재란에만 반영 (문서 본문은 건드리지 않음)
-  const handleSignComplete = (_signatureData: string, _type: SignatureType) => {
+  // 결재자 서명이면 자동으로 승인 API 호출
+  const handleSignComplete = async (_signatureData: string, _type: SignatureType) => {
     if (!id) return;
+    // signatureType이 'approver'이면 승인 API 호출 (패널 통해 최초 서명 등록하는 경로)
+    if (signatureType === 'approver') {
+      try {
+        const result = await api.documents.approve(id) as any;
+        alert(result.final ? '문서가 최종 승인되었습니다.' : '승인 완료. 다음 단계 결재자에게 전달됩니다.');
+        window.location.reload();
+        return;
+      } catch (err: any) {
+        alert(err.message || '승인 처리 중 오류가 발생했습니다.');
+      }
+    }
     api.signatures.getByDocument(id).then((res) => setSignatures(res.signatures));
     setShowSignature(false);
   };

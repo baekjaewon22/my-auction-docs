@@ -26,6 +26,15 @@ const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }
   refunded: { label: '환불완료', color: '#9aa0a6', bg: '#f5f5f5' },
 };
 
+function formatPhone(v: string): string {
+  const d = (v || '').replace(/\D/g, '').slice(0, 11);
+  if (d.length === 0) return '';
+  if (d.length < 4) return d;
+  if (d.length <= 7) return `${d.slice(0, 3)}-${d.slice(3)}`;
+  if (d.length === 10) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`;
+  return `${d.slice(0, 3)}-${d.slice(3, 7)}-${d.slice(7)}`;
+}
+
 function getDateLabel(type: string): string {
   if (type === '낙찰' || type === '중개') return '발생일';
   return '계약일';
@@ -88,6 +97,9 @@ export default function Sales() {
   // 입금확인 시 입금일자
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [confirmDepositDate, setConfirmDepositDate] = useState(() => new Date().toISOString().slice(0, 10));
+  // 총무메모 hover popup (총무급만)
+  const [adminMemosMap, setAdminMemosMap] = useState<Record<string, string>>({});
+  const [hoveredMemoRow, setHoveredMemoRow] = useState<{ id: string; x: number; y: number } | null>(null);
   // 상세 팝업
   const [detailRecord, setDetailRecord] = useState<SalesRecord | null>(null);
   const openDetail = async (r: SalesRecord) => {
@@ -147,6 +159,7 @@ export default function Sales() {
   // 랭킹 모드: 2달 단위(기본) vs 연간
   const [rankingYearly, setRankingYearly] = useState(false);
   const [rankingRecords, setRankingRecords] = useState<SalesRecord[]>([]);
+  const [rankingData, setRankingData] = useState<Array<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>>([]);
   const [settleDate, setSettleDate] = useState('');
   // 2개월 기간 선택 (1-2, 3-4, 5-6, 7-8, 9-10, 11-12)
   const [rankingPeriodIdx, setRankingPeriodIdx] = useState(() => {
@@ -206,6 +219,15 @@ export default function Sales() {
     try {
       const salesRes = await api.sales.list({ month: filterMonth, month_end: filterMonthEnd || undefined, user_id: filterUser || undefined });
       setRecords(salesRes.records);
+      // 총무급이면 총무메모 맵 로드 (row hover 팝업용)
+      if (isAccountant || isMaster) {
+        try {
+          const mRes = await api.sales.memos({ related_type: 'sales' });
+          const map: Record<string, string> = {};
+          (mRes.memos || []).forEach((m: any) => { if (m.related_id && m.content) map[m.related_id] = m.content; });
+          setAdminMemosMap(map);
+        } catch { /* */ }
+      }
       // 입금등록: 모든 담당자가 볼 수 있어야 함 (본인이 claim 가능하도록)
       try {
         const depRes = await api.sales.deposits();
@@ -215,12 +237,23 @@ export default function Sales() {
         const memRes = await api.journal.members();
         setMembers(memRes.members || []);
       }
-      // 랭킹용: 2달 단위 or 연간 전체 데이터
+      // 랭킹 집계: 전 직원 열람 가능 (개인 레코드 노출 아님)
+      try {
+        const year = new Date().getFullYear();
+        const startMonth = rankingYearly
+          ? `${year}-01`
+          : `${year}-${String(rankingPeriodIdx * 2 + 1).padStart(2, '0')}`;
+        const endMonth = rankingYearly
+          ? `${year}-12`
+          : `${year}-${String(rankingPeriodIdx * 2 + 2).padStart(2, '0')}`;
+        const rk = await api.sales.ranking(startMonth, endMonth);
+        setRankingData(rk.ranking || []);
+      } catch { setRankingData([]); }
+      // 관리자/총괄이사용 원본 레코드 (상단 계약건수 카드 집계 소스)
       if (isAdminPlus || isDirector) {
         try {
           const year = new Date().getFullYear();
           if (rankingYearly) {
-            // 연간: 2달씩 6개 분기 병렬 조회 (정산일 기준)
             const periods = Array.from({ length: 6 }, (_, i) => {
               const m = i * 2 + 1;
               return [`${year}-${String(m).padStart(2, '0')}`, `${year}-${String(m + 1).padStart(2, '0')}`];
@@ -231,7 +264,6 @@ export default function Sales() {
             const all = results.flatMap(r => r.records || []);
             setRankingRecords(all);
           } else {
-            // 선택된 2개월 기간 (정산일 기준)
             const pStart = rankingPeriodIdx * 2 + 1;
             const startMonth = `${year}-${String(pStart).padStart(2, '0')}`;
             const endMonth = `${year}-${String(pStart + 1).padStart(2, '0')}`;
@@ -263,9 +295,16 @@ export default function Sales() {
   const handleAdd = async () => {
     if (!formClientName) { alert('계약자명을 입력하세요.'); return; }
     if (!fromMoneyDisplay(formAmount) || Number(fromMoneyDisplay(formAmount)) <= 0) { alert('금액을 입력하세요.'); return; }
-    // [6-1] 계약 타입이면 감정가%/낙찰가% 필수
+    // [6-1] 계약 타입이면 감정가%/낙찰가% 및 전화번호 필수
     if (formType === '계약') {
       if (!formAppraisalRate || !formWinningRate) { alert('감정가 %와 낙찰가 %를 모두 입력하세요.'); return; }
+      const phoneDigits = (formPhone || '').replace(/\D/g, '');
+      if (phoneDigits.length < 10) { alert('계약자 전화번호를 입력하세요. (중복 확인용 필수)'); return; }
+      // 중복 계약 경고 (같은 이름 + 같은 전화번호)
+      const dup = records.find(r => r.type === '계약' && r.client_name === formClientName && (r.client_phone || '').replace(/\D/g, '') === phoneDigits);
+      if (dup) {
+        if (!confirm(`동일한 고객(${formClientName}, ${formPhone})의 기존 계약이 있습니다.\n\n■ 기존 계약일: ${dup.contract_date}\n■ 기존 금액: ${dup.amount.toLocaleString()}원\n\n중복 계약으로 등록하시겠습니까?\n(필요 시 등록 후 상세에서 '계약 미포함' 체크)`)) return;
+      }
     }
 
     // [6-2] 낙찰 타입: 동일 고객의 기존 계약 찾기 → 계약시 설정한 수수료율과 비교
@@ -496,30 +535,16 @@ export default function Sales() {
         );
       })()}
 
-      {/* 전체 지사 개인별 계약건수 랭킹 (관리자만) */}
-      {(isAdminPlus || isDirector) && (() => {
-        const contractRecords = (rankingRecords.length > 0 ? rankingRecords : records).filter(r => r.type === '계약' && r.status === 'confirmed');
-        // 개인별 집계 — user_name 기반 (퇴사자/미가입자 포함)
-        const userMap: Record<string, { name: string; branch: string; position: string; count: number; totalAmount: number }> = {};
-        contractRecords.forEach(r => {
-          const name = r.user_name || '미확인';
-          const effBranch = effectiveBranch(r);
-          const key = `${name}_${effBranch}`; // 동명이인 방지: 이름+매출귀속지사
-          if (!userMap[key]) {
-            const m = members.find(mm => mm.id === r.user_id);
-            userMap[key] = {
-              name,
-              branch: effBranch || m?.branch || '',
-              position: (m as any)?.position_title || '',
-              count: 0,
-              totalAmount: 0,
-            };
-          }
-          userMap[key].count += r.amount >= 2200000 ? 2 : 1;
-          userMap[key].totalAmount += r.amount || 0;
-        });
-        // 정렬: 1차 건수, 2차 계약금액
-        const sorted = Object.values(userMap).sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount);
+      {/* 전체 지사 개인별 계약건수 랭킹 (전 직원 열람) */}
+      {(() => {
+        // 서버 집계 결과 사용 — 개인 매출 레코드는 노출하지 않음
+        const sorted = rankingData.map(r => ({
+          name: r.user_name || '미확인',
+          branch: r.eff_branch || '',
+          position: r.position || '',
+          count: r.count,
+          totalAmount: r.total_amount,
+        }));
         // 동률 처리: 건수+금액 모두 같으면 같은 순위
         const ranking = sorted.map((u, idx) => {
           let rank = idx + 1;
@@ -679,7 +704,7 @@ export default function Sales() {
         </div>
         {(salesTab === 'list' || salesTab === 'activity') && (
           <input className="form-input" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="계약자명, 담당자 검색" style={{ width: 200, fontSize: '0.82rem', padding: '6px 10px' }} />
+            placeholder="계약자, 담당자, 입금자, 번호 검색" style={{ width: 220, fontSize: '0.82rem', padding: '6px 10px' }} />
         )}
       </div>
 
@@ -1157,8 +1182,10 @@ export default function Sales() {
               })()}
             </div>
             {formType === '계약' && (
-              <div><label className="form-label">전화번호 <span style={{ fontSize: '0.7rem', color: '#9aa0a6', fontWeight: 400 }}>동명이인 방지</span></label>
-                <input className="form-input" value={formPhone} onChange={(e) => setFormPhone(e.target.value)} style={{ width: '100%' }} placeholder="010-0000-0000" /></div>
+              <div><label className="form-label">전화번호 <span style={{ color: '#d93025' }}>*</span> <span style={{ fontSize: '0.7rem', color: '#9aa0a6', fontWeight: 400 }}>(동명이인/중복 방지, 필수)</span></label>
+                <input className="form-input" value={formPhone} inputMode="tel"
+                  onChange={(e) => setFormPhone(formatPhone(e.target.value))}
+                  style={{ width: '100%' }} placeholder="010-0000-0000" maxLength={13} /></div>
             )}
             <div>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1392,7 +1419,12 @@ export default function Sales() {
             {[...branchRecords].filter(r => {
               if (!searchQuery) return true;
               const q = searchQuery.toLowerCase();
-              return (r.client_name || '').toLowerCase().includes(q) || (r.user_name || '').toLowerCase().includes(q);
+              const qDigits = q.replace(/\D/g, '');
+              const phoneDigits = (r.client_phone || '').replace(/\D/g, '');
+              return (r.client_name || '').toLowerCase().includes(q)
+                || (r.user_name || '').toLowerCase().includes(q)
+                || (r.depositor_name || '').toLowerCase().includes(q)
+                || (qDigits && phoneDigits.includes(qDigits));
             }).sort((a: any, b: any) => {
               const av = a[sortKey] ?? '';
               const bv = b[sortKey] ?? '';
@@ -1404,6 +1436,9 @@ export default function Sales() {
               const isConfirming = confirmingId === r.id;
               return (
                 <tr key={r.id} onClick={() => openDetail(r)} className="clickable-row"
+                  onMouseEnter={(e) => { if ((isAccountant || isMaster) && adminMemosMap[r.id]) setHoveredMemoRow({ id: r.id, x: e.clientX, y: e.clientY }); }}
+                  onMouseMove={(e) => { if (hoveredMemoRow && hoveredMemoRow.id === r.id) setHoveredMemoRow({ id: r.id, x: e.clientX, y: e.clientY }); }}
+                  onMouseLeave={() => { if (hoveredMemoRow && hoveredMemoRow.id === r.id) setHoveredMemoRow(null); }}
                   style={{ cursor: 'pointer', ...(isRefunded ? { color: '#d93025', textDecoration: 'line-through', background: '#fef7f6' } : r.type === '낙찰' ? { background: '#f3f0ff' } : r.type === '계약' ? { background: '#f0f7ff' } : {}) }}>
                   {canDeleteAccounting && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} /></td>}
                   <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{r.contract_date}</td>
@@ -1450,6 +1485,11 @@ export default function Sales() {
                     ) : r.contract_not_submitted && r.contract_not_approved ? (
                       <div style={{ textAlign: 'center' }}>
                         <span style={{ color: '#e65100', fontSize: '0.72rem', fontWeight: 600 }}>미제출</span>
+                        {r.contract_not_reason && (
+                          <div style={{ fontSize: '0.65rem', color: '#5f6368', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.contract_not_reason}>
+                            {r.contract_not_reason}
+                          </div>
+                        )}
                         {(isAccountant || isMaster) && (
                           <div><button style={{ fontSize: '0.55rem', color: '#9aa0a6', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
                             onClick={(e) => { e.preventDefault(); if (confirm(`${getDocLabel(r.type)} 미제출 승인을 취소하시겠습니까?`)) api.sales.contractCheck(r.id, { contract_submitted: 0, contract_not_submitted: 0, contract_not_reason: '', contract_not_approved: 0 }).then(() => load(true)); }}>취소</button></div>
@@ -1501,6 +1541,42 @@ export default function Sales() {
                           <button className="btn btn-sm" onClick={() => setConfirmingId(null)}>취소</button>
                         </div>
                       )}
+                      {/* 세금계산서/현금영수증 발행 기록 (이체/현금 — 총무 메모용) */}
+                      {r.payment_type === '이체' && r.status !== 'refunded' && canApproveAccounting && (() => {
+                        const taxType = r.tax_invoice_type || '';
+                        const taxDate = r.tax_invoice_date || '';
+                        return (
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '0.68rem', color: '#5f6368', whiteSpace: 'nowrap' }}>증빙</span>
+                            <input type="date" className="form-input" defaultValue={taxDate}
+                              min="2020-01-01" max="2099-12-31"
+                              onBlur={async (e) => {
+                                const v = e.target.value;
+                                if (v === taxDate) return;
+                                try { await api.sales.update(r.id, { tax_invoice_date: v }); load(true); } catch (err: any) { alert(err.message); }
+                              }}
+                              style={{ fontSize: '0.72rem', padding: '3px 5px', width: 120 }} />
+                            <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
+                              background: taxType === '영수' ? '#e8f5e9' : '#fff',
+                              color: taxType === '영수' ? '#188038' : '#5f6368',
+                              fontWeight: taxType === '영수' ? 700 : 400,
+                              border: taxType === '영수' ? '1px solid #81c784' : '1px solid #dadce0' }}
+                              onClick={async () => {
+                                const next = taxType === '영수' ? '' : '영수';
+                                try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
+                              }}>영수</button>
+                            <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
+                              background: taxType === '계산' ? '#fff3e0' : '#fff',
+                              color: taxType === '계산' ? '#e65100' : '#5f6368',
+                              fontWeight: taxType === '계산' ? 700 : 400,
+                              border: taxType === '계산' ? '1px solid #ffb74d' : '1px solid #dadce0' }}
+                              onClick={async () => {
+                                const next = taxType === '계산' ? '' : '계산';
+                                try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
+                              }}>계산</button>
+                          </div>
+                        );
+                      })()}
                       {/* 카드결제 정산일 (총무 — 결제확인 후 입력) */}
                       {(r.status === 'card_pending' || (r.status === 'confirmed' && r.payment_type === '카드')) && (() => {
                         const settled = !!r.card_deposit_date;
@@ -1558,7 +1634,12 @@ export default function Sales() {
           const sorted = [...records].filter(r => {
             if (!searchQuery) return true;
             const q = searchQuery.toLowerCase();
-            return (r.client_name || '').toLowerCase().includes(q) || (r.user_name || '').toLowerCase().includes(q);
+            const qDigits = q.replace(/\D/g, '');
+            const phoneDigits = (r.client_phone || '').replace(/\D/g, '');
+            return (r.client_name || '').toLowerCase().includes(q)
+              || (r.user_name || '').toLowerCase().includes(q)
+              || (r.depositor_name || '').toLowerCase().includes(q)
+              || (qDigits && phoneDigits.includes(qDigits));
           }).sort((a: any, b: any) => {
             const av = a[sortKey] ?? '';
             const bv = b[sortKey] ?? '';
@@ -1618,7 +1699,7 @@ export default function Sales() {
                           ) : r.contract_submitted ? (
                             <span style={{ color: '#1a73e8', fontWeight: 600 }}>확인 대기</span>
                           ) : r.contract_not_submitted && r.contract_not_approved ? (
-                            <span style={{ color: '#e65100', fontWeight: 600 }}>미제출</span>
+                            <span style={{ color: '#e65100', fontWeight: 600 }} title={r.contract_not_reason || ''}>미제출{r.contract_not_reason ? ` (${r.contract_not_reason})` : ''}</span>
                           ) : r.contract_not_submitted ? (
                             <span style={{ color: '#d93025', fontWeight: 600 }}>미작성</span>
                           ) : (
@@ -1775,7 +1856,14 @@ export default function Sales() {
                         )}
                       </div>
                     ) : detailRecord.contract_not_submitted && detailRecord.contract_not_approved ? (
-                      <span style={{ color: '#e65100', fontWeight: 600 }}>미제출</span>
+                      <div>
+                        <span style={{ color: '#e65100', fontWeight: 600 }}>미제출</span>
+                        {detailRecord.contract_not_reason && (
+                          <div style={{ fontSize: '0.78rem', color: '#5f6368', marginTop: 4, padding: '6px 10px', background: '#fff3e0', borderRadius: 6 }}>
+                            사유: {detailRecord.contract_not_reason}
+                          </div>
+                        )}
+                      </div>
                     ) : detailRecord.contract_not_submitted ? (
                       <div>
                         <span style={{ color: '#d93025', fontWeight: 600 }}>미작성 (승인 대기)</span>
@@ -2050,6 +2138,18 @@ export default function Sales() {
               })()}
             </div>
           </div>
+        </div>
+      )}
+      {/* 총무메모 hover 팝업 */}
+      {hoveredMemoRow && adminMemosMap[hoveredMemoRow.id] && (
+        <div style={{
+          position: 'fixed', top: hoveredMemoRow.y + 14, left: hoveredMemoRow.x + 14, zIndex: 9999,
+          background: '#fffde7', padding: '8px 12px', borderRadius: 6, border: '1px solid #fbc02d',
+          fontSize: '0.78rem', maxWidth: 320, whiteSpace: 'pre-wrap',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.18)', pointerEvents: 'none',
+        }}>
+          <div style={{ fontSize: '0.66rem', color: '#6d4c00', fontWeight: 700, marginBottom: 3 }}>총무메모</div>
+          {adminMemosMap[hoveredMemoRow.id]}
         </div>
       )}
     </div>

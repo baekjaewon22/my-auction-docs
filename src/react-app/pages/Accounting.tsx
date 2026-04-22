@@ -680,6 +680,20 @@ export default function Accounting() {
                             {r.receipt_type === '현금영수증' ? '현금' : r.receipt_type}
                           </span>
                         ) : <span style={{ color: '#dadce0' }}>-</span>}
+                        {(r.tax_invoice_type || r.tax_invoice_date) && (
+                          <div style={{ marginTop: 3, display: 'flex', gap: 3, alignItems: 'center', flexWrap: 'wrap' }}>
+                            {r.tax_invoice_type && (
+                              <span style={{ padding: '1px 5px', borderRadius: 4, fontSize: '0.64rem', fontWeight: 600,
+                                background: r.tax_invoice_type === '영수' ? '#e8f5e9' : '#fff3e0',
+                                color: r.tax_invoice_type === '영수' ? '#188038' : '#e65100' }}>
+                                {r.tax_invoice_type}
+                              </span>
+                            )}
+                            {r.tax_invoice_date && (
+                              <span style={{ fontSize: '0.64rem', color: '#5f6368' }}>{r.tax_invoice_date.slice(5)}</span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td>
                         <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: '0.72rem', fontWeight: 600, background: st.bg, color: st.color }}>{st.label}</span>

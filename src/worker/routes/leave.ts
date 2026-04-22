@@ -272,6 +272,15 @@ leave.post('/request', async (c) => {
     days = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
   }
 
+  // [중복 방지] 같은 user + 같은 날짜 + 같은 타입의 미취소 신청이 이미 있으면 차단
+  const existingDup = await db.prepare(
+    "SELECT id, status FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
+  ).bind(user.sub, body.leave_type, body.start_date, body.end_date).first<any>();
+  if (existingDup) {
+    const statusLabel = existingDup.status === 'approved' ? '승인됨' : existingDup.status === 'pending' ? '대기 중' : '취소 요청 중';
+    return c.json({ error: `동일 날짜·유형의 휴가가 이미 ${statusLabel}입니다. 중복 신청은 불가합니다.` }, 400);
+  }
+
   // 특별휴가는 연차 차감 안 함 → 잔여 확인 불필요
   if (body.leave_type === '특별휴가') {
     const id = crypto.randomUUID();

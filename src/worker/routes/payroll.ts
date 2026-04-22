@@ -84,10 +84,11 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   // 계약건수: 급여제는 2개월 기준, 비율제는 1개월 기준
   let contractCount: number;
   if (!isCommission) {
-    // 2개월 기준 계약건수 별도 조회
+    // 2개월 기준 계약건수 별도 조회 (220만원 이상은 2건, exclude_from_count=1 제외)
     const ccResult = await db.prepare(`
-      SELECT COUNT(*) as cnt FROM sales_records
+      SELECT SUM(CASE WHEN amount >= 2200000 THEN 2 ELSE 1 END) as cnt FROM sales_records
       WHERE user_id = ? AND type = '계약' AND status = 'confirmed'
+        AND (exclude_from_count IS NULL OR exclude_from_count = 0)
         AND (
           (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
           OR (payment_type != '카드' AND payment_type != '' AND deposit_date >= ? AND deposit_date <= ?)
@@ -96,7 +97,9 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
     `).bind(userId, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd).first<any>();
     contractCount = ccResult?.cnt || 0;
   } else {
-    contractCount = records.filter((r: any) => r.type === '계약' && r.status === 'confirmed').length;
+    contractCount = records
+      .filter((r: any) => r.type === '계약' && r.status === 'confirmed' && !r.exclude_from_count)
+      .reduce((sum: number, r: any) => sum + (r.amount >= 2200000 ? 2 : 1), 0);
   }
   const confirmedRecords = records.filter((r: any) => r.status === 'confirmed');
   const totalSales = confirmedRecords.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
@@ -230,7 +233,7 @@ payroll.get('/branch/summary', requireRole(...ACCOUNTING_ROLES), async (c) => {
       SUM(CASE WHEN sr.status = 'confirmed' THEN sr.amount ELSE 0 END) as confirmed_total,
       SUM(CASE WHEN sr.status = 'refunded' THEN sr.amount ELSE 0 END) as refunded_total,
       SUM(CASE WHEN sr.status = 'pending' THEN sr.amount ELSE 0 END) as pending_total,
-      SUM(CASE WHEN sr.type = '계약' AND sr.status = 'confirmed' THEN 1 ELSE 0 END) as contract_count
+      SUM(CASE WHEN sr.type = '계약' AND sr.status = 'confirmed' AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0) THEN (CASE WHEN sr.amount >= 2200000 THEN 2 ELSE 1 END) ELSE 0 END) as contract_count
     FROM sales_records sr
     WHERE sr.contract_date LIKE ?${branchWhere}
     GROUP BY sr.branch

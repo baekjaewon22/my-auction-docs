@@ -287,9 +287,13 @@ export const api = {
       const qs = q.toString();
       return request<{ records: import('./types').SalesRecord[] }>('/sales' + (qs ? '?' + qs : ''));
     },
+    ranking: (period_start: string, period_end: string) =>
+      request<{ ranking: Array<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }> }>(
+        '/sales/ranking?period_start=' + encodeURIComponent(period_start) + '&period_end=' + encodeURIComponent(period_end)
+      ),
     create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string }) =>
+    update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       request('/sales/' + id, { method: 'DELETE' }),
