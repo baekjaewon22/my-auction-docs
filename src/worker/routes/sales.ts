@@ -156,6 +156,104 @@ sales.get('/', async (c) => {
   return c.json({ records: result.results });
 });
 
+// GET /api/sales/contract-tracker — 실시간 컨설턴트 계약 현황 (대표·총무·정민호 열람)
+// 카드정산·입금확인 무관, contract_date 기준. 환불 제외.
+const CONTRACT_TRACKER_EXTRA_USERS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
+sales.get('/contract-tracker', async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  const allowedRoles = ['master', 'ceo', 'accountant', 'accountant_asst'];
+  if (!allowedRoles.includes(user.role) && !CONTRACT_TRACKER_EXTRA_USERS.includes(user.sub)) {
+    return c.json({ error: '열람 권한이 없습니다.' }, 403);
+  }
+  const period = c.req.query('period') || 'today';
+  const monthParam = c.req.query('month') || ''; // 'YYYY-MM' for period=month
+
+  // KST 기준 오늘
+  const nowMs = Date.now() + 9 * 3600 * 1000;
+  const kstNow = new Date(nowMs);
+  const yyyy = kstNow.getUTCFullYear();
+  const mm = String(kstNow.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(kstNow.getUTCDate()).padStart(2, '0');
+  const today = `${yyyy}-${mm}-${dd}`;
+  const addDays = (base: string, delta: number) => {
+    const [y, m, d] = base.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1, d) + delta * 86400000);
+    return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`;
+  };
+
+  let fromDate: string, toDate: string;
+  if (period === 'today') { fromDate = today; toDate = today; }
+  else if (period === 'yesterday') { fromDate = addDays(today, -1); toDate = addDays(today, -1); }
+  else if (period === 'week') { fromDate = addDays(today, -6); toDate = today; } // 최근 7일 (오늘 포함)
+  else if (period === 'month') {
+    // 'YYYY-MM' 기준 해당 월의 1일 ~ 말일
+    const target = /^\d{4}-\d{2}$/.test(monthParam) ? monthParam : `${yyyy}-${mm}`;
+    const [y, m] = target.split('-').map(Number);
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    fromDate = `${target}-01`;
+    toDate = `${target}-${String(lastDay).padStart(2, '0')}`;
+  }
+  else return c.json({ error: 'period 오류' }, 400);
+
+  // 대상 사용자: 프리랜서·정규직 컨설턴트 (role='member' or 'manager')
+  // 제외: 본사 관리, 명도팀, support
+  const usersResult = await db.prepare(`
+    SELECT id, name, branch, department, position_title, role, login_type
+    FROM users
+    WHERE approved = 1
+      AND role IN ('member', 'manager')
+      AND branch != '본사 관리'
+      AND department != '명도팀'
+  `).all<any>();
+  const eligibleUsers = (usersResult.results || []);
+
+  // 기간 내 계약 집계
+  const salesResult = await db.prepare(`
+    SELECT user_id,
+      SUM(CASE WHEN amount >= 2200000 THEN 2 ELSE 1 END) as contract_count,
+      SUM(amount) as total_amount,
+      COUNT(*) as raw_count
+    FROM sales_records
+    WHERE type = '계약'
+      AND status != 'refunded'
+      AND (exclude_from_count IS NULL OR exclude_from_count = 0)
+      AND contract_date >= ? AND contract_date <= ?
+    GROUP BY user_id
+  `).bind(fromDate, toDate).all<any>();
+
+  const statsMap: Record<string, { contract_count: number; total_amount: number; raw_count: number }> = {};
+  for (const r of (salesResult.results || [])) {
+    statsMap[r.user_id] = {
+      contract_count: Number(r.contract_count) || 0,
+      total_amount: Number(r.total_amount) || 0,
+      raw_count: Number(r.raw_count) || 0,
+    };
+  }
+
+  const users = eligibleUsers.map(u => ({
+    user_id: u.id,
+    user_name: u.name,
+    branch: u.branch || '미지정',
+    department: u.department || '',
+    position_title: u.position_title || '',
+    role: u.role,
+    login_type: u.login_type || 'employee',
+    contract_count: statsMap[u.id]?.contract_count || 0,
+    total_amount: statsMap[u.id]?.total_amount || 0,
+    raw_count: statsMap[u.id]?.raw_count || 0,
+  }));
+
+  // 전직원 합계
+  const totalCount = users.reduce((s, u) => s + u.contract_count, 0);
+  const totalAmount = users.reduce((s, u) => s + u.total_amount, 0);
+
+  return c.json({
+    period, from: fromDate, to: toDate,
+    users, total_count: totalCount, total_amount: totalAmount,
+  });
+});
+
 // GET /api/sales/ranking — 전사 계약건수 랭킹 (집계만, 전 직원 열람 가능)
 sales.get('/ranking', async (c) => {
   const db = c.env.DB;

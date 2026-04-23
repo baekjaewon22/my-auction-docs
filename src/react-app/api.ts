@@ -291,6 +291,15 @@ export const api = {
       request<{ ranking: Array<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }> }>(
         '/sales/ranking?period_start=' + encodeURIComponent(period_start) + '&period_end=' + encodeURIComponent(period_end)
       ),
+    contractTracker: (period: 'today' | 'yesterday' | 'week' | 'month', month?: string) => {
+      const q = new URLSearchParams({ period });
+      if (period === 'month' && month) q.set('month', month);
+      return request<{
+        period: string; from: string; to: string;
+        users: Array<{ user_id: string; user_name: string; branch: string; department: string; position_title: string; role: string; login_type: string; contract_count: number; total_amount: number; raw_count: number }>;
+        total_count: number; total_amount: number;
+      }>('/sales/contract-tracker?' + q.toString());
+    },
     create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
@@ -419,12 +428,30 @@ export const api = {
     save: (data: { user_id: string; period: string; pay_type: string; data: Record<string, unknown> }) =>
       request('/payroll/save', { method: 'POST', body: JSON.stringify(data) }),
     lock: () => request('/payroll/lock', { method: 'POST' }),
+    businessIncome: (month: string) =>
+      request<{
+        month: string;
+        entries: Array<{ id: string; user_id: string | null; name: string; ssn: string; address: string; amount: number; tax: number; net_amount: number; branch: string; department: string; is_ad_hoc: boolean; is_overridden: boolean; note: string }>;
+        total_amount: number; total_tax: number; total_net: number;
+      }>('/payroll/reports/business-income?month=' + encodeURIComponent(month)),
+    saveBusinessIncome: (data: { month: string; id?: string; user_id?: string | null; name: string; ssn?: string; address?: string; amount: number; tax: number; net_amount: number; is_ad_hoc?: boolean; note?: string }) =>
+      request<{ success: boolean; id: string }>('/payroll/reports/business-income/save', { method: 'PUT', body: JSON.stringify(data) }),
+    deleteBusinessIncome: (id: string) =>
+      request('/payroll/reports/business-income/' + id, { method: 'DELETE' }),
+    businessIncomePool: () =>
+      request<{ pool: Array<{ id: string; name: string; ssn: string; address: string; note: string }> }>('/payroll/reports/business-income-pool'),
+    addBusinessIncomePool: (data: { name: string; ssn?: string; address?: string; note?: string }) =>
+      request<{ success: boolean; id: string }>('/payroll/reports/business-income-pool', { method: 'POST', body: JSON.stringify(data) }),
+    updateBusinessIncomePool: (id: string, data: { name: string; ssn?: string; address?: string; note?: string }) =>
+      request('/payroll/reports/business-income-pool/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteBusinessIncomePool: (id: string) =>
+      request('/payroll/reports/business-income-pool/' + id, { method: 'DELETE' }),
   },
 
   accounting: {
     list: () => request<{ accounts: import('./types').UserAccounting[] }>('/accounting'),
     get: (userId: string) => request<{ account: import('./types').UserAccounting | null }>('/accounting/' + userId),
-    update: (userId: string, data: { salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number }) =>
+    update: (userId: string, data: { salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number; ssn?: string; address?: string }) =>
       request<{ success: boolean; salary: number; standard_sales: number; grade: string }>('/accounting/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
     updateGrade: (userId: string, grade: string) =>
       request('/accounting/' + userId + '/grade', { method: 'PUT', body: JSON.stringify({ grade }) }),
@@ -463,6 +490,38 @@ export const api = {
       request<{ photo: { id: string; file_name: string; file_data: string; file_size: number } }>('/cooperation/photos/' + photoId),
     delete: (id: string) =>
       request('/cooperation/' + id, { method: 'DELETE' }),
+  },
+
+  drive: {
+    settings: () =>
+      request<{ settings: any; last_backup_at: string | null; pending_count: number }>('/drive/settings'),
+    saveSettings: (data: Partial<{ root_folder_id: string; root_folder_name: string; folder_pattern: string; filename_pattern: string; connected_email: string }>) =>
+      request<{ success: boolean }>('/drive/settings', { method: 'PUT', body: JSON.stringify(data) }),
+    pending: () =>
+      request<{ documents: Array<{ id: string; title: string; template_id: string | null; template_name: string | null; branch: string; department: string; author_name: string; author_branch: string; author_department: string; author_position: string | null; approved_at: string; created_at: string; updated_at: string }> }>('/drive/pending'),
+    log: (data: { document_id: string; status: 'success' | 'failed'; drive_file_id?: string; drive_folder_path?: string; file_size?: number; error_message?: string }) =>
+      request<{ success: boolean }>('/drive/log', { method: 'POST', body: JSON.stringify(data) }),
+    logs: (limit = 20) =>
+      request<{ logs: any[] }>('/drive/logs?limit=' + limit),
+  },
+
+  rooms: {
+    config: () =>
+      request<{ config: Record<string, string[]> }>('/rooms/config'),
+    list: (params: { branch: string; room?: string; date?: string; from?: string; to?: string; include_cancelled?: boolean }) => {
+      const q = new URLSearchParams();
+      q.set('branch', params.branch);
+      if (params.room) q.set('room', params.room);
+      if (params.date) q.set('date', params.date);
+      if (params.from) q.set('from', params.from);
+      if (params.to) q.set('to', params.to);
+      if (params.include_cancelled) q.set('include_cancelled', '1');
+      return request<{ reservations: Array<{ id: string; user_id: string; branch: string; room_name: string; reservation_date: string; start_time: string; end_time: string; title: string; note: string; status: string; user_name?: string; user_department?: string; user_position?: string; user_branch?: string; created_at: string }> }>('/rooms/reservations?' + q.toString());
+    },
+    create: (data: { branch: string; room_name: string; reservation_date: string; start_time: string; end_time: string; title?: string; note?: string }) =>
+      request<{ success: boolean; id: string }>('/rooms/reservations', { method: 'POST', body: JSON.stringify(data) }),
+    cancel: (id: string) =>
+      request('/rooms/reservations/' + id, { method: 'DELETE' }),
   },
 
   journal: {

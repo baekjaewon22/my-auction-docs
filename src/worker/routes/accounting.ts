@@ -6,7 +6,8 @@ const accounting = new Hono<AuthEnv>();
 accounting.use('*', authMiddleware);
 
 // 총무 역할 체크 헬퍼
-const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+// cc_ref 제외 (회계 열람 제한)
+const ACCOUNTING_ROLES = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'] as const;
 
 // 총무보조(accountant_asst) 열람·수정 제한 — 팀장·관리자급·이사·대표자는 총무담당만
 const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
@@ -61,7 +62,7 @@ accounting.put('/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'acco
   if (!(await canAccessUserAccounting(c.env.DB, viewer, userId))) {
     return c.json({ error: '해당 직원의 회계 정보 수정 권한이 없습니다.' }, 403);
   }
-  const { salary, grade, position_allowance, pay_type, commission_rate } = await c.req.json<{ salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number }>();
+  const { salary, grade, position_allowance, pay_type, commission_rate, ssn, address } = await c.req.json<{ salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number; ssn?: string; address?: string }>();
   const db = c.env.DB;
 
   // 사용자 존재 확인
@@ -80,22 +81,24 @@ accounting.put('/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 'acco
   const newAllowance = position_allowance !== undefined ? position_allowance : (existing as any)?.position_allowance || 0;
   const newPayType = pay_type !== undefined ? pay_type : (existing as any)?.pay_type || 'salary';
   const newCommRate = commission_rate !== undefined ? commission_rate : (existing as any)?.commission_rate || 0;
+  const newSsn = ssn !== undefined ? ssn : (existing as any)?.ssn || '';
+  const newAddress = address !== undefined ? address : (existing as any)?.address || '';
   const standardSales = Math.round(newSalary * 1.3 * 4);
 
   if (existing) {
     await db.prepare(`
-      UPDATE user_accounting SET salary = ?, standard_sales = ?, grade = ?, position_allowance = ?, pay_type = ?, commission_rate = ?, updated_at = datetime('now')
+      UPDATE user_accounting SET salary = ?, standard_sales = ?, grade = ?, position_allowance = ?, pay_type = ?, commission_rate = ?, ssn = ?, address = ?, updated_at = datetime('now')
       WHERE user_id = ?
-    `).bind(newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate, userId).run();
+    `).bind(newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate, newSsn, newAddress, userId).run();
   } else {
     const id = crypto.randomUUID();
     await db.prepare(`
-      INSERT INTO user_accounting (id, user_id, salary, standard_sales, grade, position_allowance, pay_type, commission_rate)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, userId, newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate).run();
+      INSERT INTO user_accounting (id, user_id, salary, standard_sales, grade, position_allowance, pay_type, commission_rate, ssn, address)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, userId, newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate, newSsn, newAddress).run();
   }
 
-  return c.json({ success: true, salary: newSalary, standard_sales: standardSales, grade: newGrade, position_allowance: newAllowance, pay_type: newPayType, commission_rate: newCommRate });
+  return c.json({ success: true, salary: newSalary, standard_sales: standardSales, grade: newGrade, position_allowance: newAllowance, pay_type: newPayType, commission_rate: newCommRate, ssn: newSsn, address: newAddress });
 });
 
 // PUT /api/accounting/:userId/grade - 직급 강등 (관리자급 이상만)

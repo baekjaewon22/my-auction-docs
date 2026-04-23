@@ -21,9 +21,17 @@ import cardRoute from './routes/card';
 import analyticsRoute from './routes/analytics';
 import adminNotesRoute from './routes/admin-notes';
 import cooperationRoute from './routes/cooperation';
+import roomsRoute from './routes/rooms';
+import driveRoute from './routes/drive';
 import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Google Identity Services 팝업이 window.closed 등을 체크할 수 있도록 COOP 완화
+app.use('*', async (c, next) => {
+  await next();
+  c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+});
 
 app.use('/api/*', cors());
 
@@ -55,6 +63,8 @@ app.route('/api/card', cardRoute);
 app.route('/api/analytics', analyticsRoute);
 app.route('/api/admin-notes', adminNotesRoute);
 app.route('/api/cooperation', cooperationRoute);
+app.route('/api/rooms', roomsRoute);
+app.route('/api/drive', driveRoute);
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));

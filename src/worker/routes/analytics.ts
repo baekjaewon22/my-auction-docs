@@ -5,7 +5,8 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 const analytics = new Hono<AuthEnv>();
 analytics.use('*', authMiddleware);
 
-const ANALYTICS_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+// 회계분석: cc_ref·accountant_asst 제외
+const ANALYTICS_ROLES = ['master', 'ceo', 'admin', 'accountant'] as const;
 
 // GET /api/analytics/summary?months=6
 analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {

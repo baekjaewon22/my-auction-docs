@@ -1,4 +1,4 @@
-export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'director' | 'accountant' | 'accountant_asst' | 'manager' | 'member' | 'resigned';
+export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'director' | 'accountant' | 'accountant_asst' | 'manager' | 'member' | 'support' | 'resigned';
 export type DocStatus = 'draft' | 'submitted' | 'approved' | 'rejected';
 
 export const BRANCHES = ['의정부', '서초'] as const;

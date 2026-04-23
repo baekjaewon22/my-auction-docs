@@ -11,7 +11,7 @@ import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingU
 import { useDepartments } from '../hooks/useDepartments';
 const ROLE_OPTS = [...VISIBLE_ROLES, 'resigned' as const].map((v) => ({ value: v, label: ROLE_LABELS[v] }));
 // BRANCH_OPTS는 컴포넌트 내부에서 동적 생성
-const POSITION_TITLES = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴'];
+const POSITION_TITLES = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴', 'PD'];
 const POSITION_OPTS = POSITION_TITLES.map((p) => ({ value: p, label: p }));
 
 const GRADE_OPTIONS = ['M1', 'M2', 'M3', 'M4'] as const;
@@ -48,6 +48,8 @@ export default function UserManagement() {
   const [hireDateInput, setHireDateInput] = useState('');
   const [payType, setPayType] = useState<'salary' | 'commission'>('salary');
   const [commissionRate, setCommissionRate] = useState('');
+  const [ssnInput, setSsnInput] = useState('');
+  const [addressInput, setAddressInput] = useState('');
   const [evaluations, setEvaluations] = useState<SalesEvaluation[]>([]);
   const [saving, setSaving] = useState(false);
   // 알림톡 수신 설정
@@ -159,6 +161,8 @@ export default function UserManagement() {
       setCardNumbers(u.card_number ? u.card_number.split(',').map((s: string) => s.trim()) : ['']);
       setPayType(acc?.pay_type || 'salary');
       setCommissionRate(acc?.commission_rate?.toString() || '');
+      setSsnInput(acc?.ssn || '');
+      setAddressInput(acc?.address || '');
       setEvaluations(evalRes.evaluations);
     } catch {
       setSalaryInput('');
@@ -167,6 +171,8 @@ export default function UserManagement() {
       setCardNumbers(['']);
       setPayType('salary');
       setCommissionRate('');
+      setSsnInput('');
+      setAddressInput('');
       setEvaluations([]);
     }
   };
@@ -185,6 +191,8 @@ export default function UserManagement() {
         position_allowance: Number(posAllowanceInput) || 0,
         pay_type: payType,
         commission_rate: Number(commissionRate) || 0,
+        ssn: payType === 'commission' ? ssnInput : '',
+        address: payType === 'commission' ? addressInput : '',
       });
       // 카드번호도 저장
       await api.card.updateUserCard(selectedUser.id, cardNumbers.filter(c => c.trim()).join(','));
@@ -425,6 +433,25 @@ export default function UserManagement() {
                     <button type="button" className="btn btn-sm" style={{ fontSize: '0.72rem', marginTop: 2 }}
                       onClick={() => setCardNumbers(prev => [...prev, ''])}>+ 카드 추가</button>
                   )}
+                </div>
+                <div style={{ gridColumn: '1 / -1', paddingTop: 14, borderTop: '1px dashed #e0e0e0', marginTop: 4 }}>
+                  <div style={{ fontSize: '0.78rem', color: '#7b1fa2', fontWeight: 700, marginBottom: 10 }}>
+                    📋 사업소득신고용 정보 (세무사 제출)
+                  </div>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>주민등록번호</label>
+                  <input className="form-input" value={ssnInput}
+                    onChange={(e) => setSsnInput(e.target.value)}
+                    disabled={!canEditAccounting} style={{ width: '100%' }}
+                    placeholder="880101-1234567" maxLength={14} />
+                </div>
+                <div style={{ gridColumn: 'span 2' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>주소</label>
+                  <input className="form-input" value={addressInput}
+                    onChange={(e) => setAddressInput(e.target.value)}
+                    disabled={!canEditAccounting} style={{ width: '100%' }}
+                    placeholder="서울특별시 ..." />
                 </div>
               </div>
             )}

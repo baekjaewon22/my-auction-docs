@@ -7,7 +7,7 @@ import type { JournalEntry } from '../journal/types';
 import { ACTIVITY_COLORS, type ActivityType } from '../journal/types';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line,
+  PieChart, Pie, Cell, LineChart, Line, LabelList,
 } from 'recharts';
 import { BarChart3, TrendingUp, AlertTriangle, UserCheck, ChevronLeft, ChevronRight, DollarSign } from 'lucide-react';
 import type { SalesRecord } from '../types';
@@ -70,8 +70,11 @@ export default function Statistics() {
     (!filterDept || m.department === filterDept)
   );
 
-  // 월별 옵션
-  const monthOptions = [...new Set(entries.map((e) => e.target_date.slice(0, 7)))].sort((a, b) => b.localeCompare(a))
+  // 월별 옵션 — 일지(target_date)와 매출(contract_date) 양쪽에서 수집
+  const monthSet = new Set<string>();
+  entries.forEach((e) => { if (e.target_date) monthSet.add(e.target_date.slice(0, 7)); });
+  salesRecords.forEach((r) => { if (r.contract_date) monthSet.add(r.contract_date.slice(0, 7)); });
+  const monthOptions = [...monthSet].filter((m) => /^\d{4}-\d{2}$/.test(m)).sort((a, b) => b.localeCompare(a))
     .map((m) => ({ value: m, label: m }));
 
   // Apply filters
@@ -724,6 +727,18 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
 
   const allCases = Object.values(caseMap);
 
+  // 30일 경과 기준 — 임장 등록일 기준 D+30 이후 입찰이 없으면 '미입찰 이상'으로 간주
+  const DAYS_THRESHOLD = 30;
+  const todayKST = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const todayMs = Date.UTC(todayKST.getUTCFullYear(), todayKST.getUTCMonth(), todayKST.getUTCDate());
+  const daysSince = (dateStr?: string): number => {
+    if (!dateStr) return 0;
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return 0;
+    const t = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+    return Math.max(0, Math.floor((todayMs - t) / 86400000));
+  };
+
   // 1. 임장O → 입찰X (브리핑 여부 무관)
   const inspNoBid = allCases.filter((c) => c.hasInspection && !c.hasBid);
 
@@ -732,6 +747,12 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
 
   // 3. 임장O → 브리핑X (브리핑 미제출)
   const inspNoBrief = allCases.filter((c) => c.hasInspection && !c.hasBriefing);
+
+  // 30일 경과 기준 분류
+  const overdueNoBid = inspNoBid.filter((c) => daysSince(c.inspDate) >= DAYS_THRESHOLD);
+  const waitingNoBid = inspNoBid.filter((c) => daysSince(c.inspDate) < DAYS_THRESHOLD);
+  const overdueBriefNoBid = inspBriefNoBid.filter((c) => daysSince(c.inspDate) >= DAYS_THRESHOLD);
+  const overdueNoBrief = inspNoBrief.filter((c) => daysSince(c.inspDate) >= DAYS_THRESHOLD);
 
   // 4. 제시입찰가 vs 실제입찰가 5% 초과 차이
   const deviationAlerts: { member: Member; date: string; caseNo: string; suggested: number; actual: number; deviation: number; reason: string }[] = [];
@@ -782,41 +803,215 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
 
   const fmtWon = (n: number) => (n / 10000).toLocaleString() + '만원';
 
-  const renderCaseTable = (cases: CasePipeline[], title: string, color: string, desc: string) => (
-    <div className="stats-chart-card">
-      <h4 style={{ color }}>{title} ({cases.length}건)</h4>
-      <p className="stats-desc">{desc}</p>
-      {cases.length > 0 ? (
-        <div className="table-wrapper">
-          <table className="data-table">
-            <thead><tr><th>담당자</th><th>팀</th><th>사건번호</th><th>임장</th><th>브리핑</th><th>입찰</th></tr></thead>
-            <tbody>
-              {cases.map((c, i) => (
-                <tr key={i}>
-                  <td><strong>{c.member?.name}</strong></td>
-                  <td>{c.member?.department || '-'}</td>
-                  <td style={{ fontWeight: 600 }}>{c.caseNo}</td>
-                  <td style={{ color: c.hasInspection ? '#188038' : '#d93025' }}>{c.hasInspection ? `✓ ${c.inspDate}` : '—'}</td>
-                  <td style={{ color: c.hasBriefing ? '#1a73e8' : '#d93025' }}>{c.hasBriefing ? `✓ ${c.briefDate}` : '—'}</td>
-                  <td style={{ color: c.hasBid ? '#188038' : '#d93025', fontWeight: 700 }}>{c.hasBid ? `✓ ${c.bidDate}` : '✗ 미입찰'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="empty-state">해당 건이 없습니다.</div>
-      )}
-    </div>
-  );
+  // ── 이상감지 통계 (임장 → 입찰 전환율 기반) ──
+  const inspCases = allCases.filter((c) => c.hasInspection);
+  const totalInsp = inspCases.length;
+  const convertedBid = inspCases.filter((c) => c.hasBid).length;
+  const waitingBid = inspCases.filter((c) => !c.hasBid && daysSince(c.inspDate) < DAYS_THRESHOLD).length;
+  const overdueBid = inspCases.filter((c) => !c.hasBid && daysSince(c.inspDate) >= DAYS_THRESHOLD).length;
+  const conversionRate = totalInsp > 0 ? (convertedBid / totalInsp * 100) : 0;
+
+  // 상태 도넛 데이터
+  const statusPie = [
+    { name: '입찰 완료', value: convertedBid, color: '#188038' },
+    { name: `대기중(<${DAYS_THRESHOLD}일)`, value: waitingBid, color: '#f9ab00' },
+    { name: `미입찰(${DAYS_THRESHOLD}일 경과)`, value: overdueBid, color: '#d93025' },
+  ].filter((d) => d.value > 0);
+
+  // 파이프라인 퍼널 데이터
+  const briefCount = allCases.filter((c) => c.hasInspection && c.hasBriefing).length;
+  const funnelData = [
+    { stage: '임장', count: totalInsp, fill: '#1a73e8' },
+    { stage: '브리핑', count: briefCount, fill: '#7b1fa2' },
+    { stage: '입찰', count: convertedBid, fill: '#188038' },
+  ];
+
+  // 담당자별 전환율
+  const memberStats: Record<string, { id: string; name: string; dept: string; insp: number; bid: number; overdue: number }> = {};
+  inspCases.forEach((c) => {
+    if (!c.member) return;
+    const k = c.member.id;
+    if (!memberStats[k]) memberStats[k] = { id: k, name: c.member.name, dept: c.member.department || '-', insp: 0, bid: 0, overdue: 0 };
+    memberStats[k].insp++;
+    if (c.hasBid) memberStats[k].bid++;
+    else if (daysSince(c.inspDate) >= DAYS_THRESHOLD) memberStats[k].overdue++;
+  });
+  const memberRates = Object.values(memberStats)
+    .map((m) => ({ ...m, rate: m.insp > 0 ? Math.round(m.bid / m.insp * 100) : 0 }))
+    .sort((a, b) => b.insp - a.insp);
+
+  // 지사별 전환율
+  const branchStats: Record<string, { branch: string; insp: number; bid: number; overdue: number }> = {};
+  inspCases.forEach((c) => {
+    if (!c.member) return;
+    const br = c.member.branch || '미지정';
+    if (!branchStats[br]) branchStats[br] = { branch: br, insp: 0, bid: 0, overdue: 0 };
+    branchStats[br].insp++;
+    if (c.hasBid) branchStats[br].bid++;
+    else if (daysSince(c.inspDate) >= DAYS_THRESHOLD) branchStats[br].overdue++;
+  });
+  const branchRates = Object.values(branchStats).map((b) => ({ ...b, rate: b.insp > 0 ? Math.round(b.bid / b.insp * 100) : 0 }));
+
+  const dayBadge = (days: number) => {
+    const overdue = days >= DAYS_THRESHOLD;
+    return (
+      <span style={{
+        display: 'inline-block', padding: '2px 8px', borderRadius: 10, fontSize: '0.75rem', fontWeight: 700,
+        background: overdue ? '#fce8e6' : '#fef7e0', color: overdue ? '#d93025' : '#b06000',
+      }}>
+        {overdue ? `${days}일 경과` : `D+${days}`}
+      </span>
+    );
+  };
+
+  const renderCaseTable = (cases: CasePipeline[], title: string, color: string, desc: string) => {
+    const sorted = [...cases].sort((a, b) => daysSince(b.inspDate) - daysSince(a.inspDate));
+    return (
+      <div className="stats-chart-card">
+        <h4 style={{ color }}>{title} ({sorted.length}건)</h4>
+        <p className="stats-desc">{desc}</p>
+        {sorted.length > 0 ? (
+          <div className="table-wrapper">
+            <table className="data-table">
+              <thead><tr><th>담당자</th><th>팀</th><th>사건번호</th><th>임장</th><th>경과</th><th>브리핑</th><th>입찰</th></tr></thead>
+              <tbody>
+                {sorted.map((c, i) => {
+                  const d = daysSince(c.inspDate);
+                  return (
+                    <tr key={i}>
+                      <td><strong>{c.member?.name}</strong></td>
+                      <td>{c.member?.department || '-'}</td>
+                      <td style={{ fontWeight: 600 }}>{c.caseNo}</td>
+                      <td style={{ color: c.hasInspection ? '#188038' : '#d93025' }}>{c.hasInspection ? `✓ ${c.inspDate}` : '—'}</td>
+                      <td>{c.hasInspection ? dayBadge(d) : '—'}</td>
+                      <td style={{ color: c.hasBriefing ? '#1a73e8' : '#d93025' }}>{c.hasBriefing ? `✓ ${c.briefDate}` : '—'}</td>
+                      <td style={{ color: c.hasBid ? '#188038' : '#d93025', fontWeight: 700 }}>{c.hasBid ? `✓ ${c.bidDate}` : '✗ 미입찰'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty-state">해당 건이 없습니다.</div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="stats-section-content">
       <h3 className="stats-subtitle"><AlertTriangle size={18} /> 이상 감지 — 업무 파이프라인 (임장 → 브리핑 → 입찰)</h3>
+      <p className="stats-desc">
+        <strong>30일 경과 기준</strong> — 임장 등록일 기준 {DAYS_THRESHOLD}일이 지나도록 입찰 기록이 없으면 <strong style={{ color: '#d93025' }}>이상(미입찰)</strong>으로 분류합니다.
+      </p>
 
-      {renderCaseTable(inspNoBid, '임장 후 미입찰', '#e65100', '임장을 진행했으나 입찰 기록이 없는 사건입니다.')}
-      {renderCaseTable(inspBriefNoBid, '임장 + 브리핑 완료 → 미입찰', '#d93025', '임장과 브리핑까지 했으나 입찰을 하지 않은 사건입니다.')}
-      {renderCaseTable(inspNoBrief, '임장 후 브리핑 미제출', '#7b1fa2', '임장을 진행했으나 브리핑자료를 제출하지 않은 사건입니다.')}
+      {/* KPI 카드 */}
+      <div className="stats-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <div className="stat-card"><div className="stat-number" style={{ color: '#1a73e8' }}>{totalInsp}</div><div className="stat-label">총 임장 건수</div></div>
+        <div className="stat-card"><div className="stat-number" style={{ color: '#188038' }}>{convertedBid}</div><div className="stat-label">입찰 전환</div></div>
+        <div className="stat-card"><div className="stat-number" style={{ color: conversionRate >= 50 ? '#188038' : '#e65100' }}>{conversionRate.toFixed(1)}%</div><div className="stat-label">전환율</div></div>
+        <div className="stat-card"><div className="stat-number" style={{ color: '#f9ab00' }}>{waitingBid}</div><div className="stat-label">{DAYS_THRESHOLD}일내 대기</div></div>
+        <div className="stat-card"><div className="stat-number" style={{ color: '#d93025' }}>{overdueBid}</div><div className="stat-label">{DAYS_THRESHOLD}일 경과 미입찰</div></div>
+      </div>
+
+      {/* 상태 도넛 + 파이프라인 퍼널 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+        <div className="stats-chart-card">
+          <h4>임장 → 입찰 상태 분포</h4>
+          {statusPie.length > 0 ? (
+            <ResponsiveContainer width="100%" height={260}>
+              <PieChart>
+                <Pie data={statusPie} cx="50%" cy="50%" innerRadius={55} outerRadius={95} dataKey="value"
+                  label={({ name, value, cx, cy, midAngle, outerRadius, percent }: any) => {
+                    if (percent < 0.04) return null;
+                    const r = outerRadius + 18;
+                    const x = cx + r * Math.cos(-midAngle * Math.PI / 180);
+                    const y = cy + r * Math.sin(-midAngle * Math.PI / 180);
+                    return <text x={x} y={y} textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontSize={11} fill="#333">{name} {value}</text>;
+                  }}
+                >
+                  {statusPie.map((d, i) => <Cell key={i} fill={d.color} />)}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : (<div className="empty-state">임장 데이터가 없습니다.</div>)}
+        </div>
+
+        <div className="stats-chart-card">
+          <h4>파이프라인 단계 전환</h4>
+          {totalInsp > 0 ? (
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={funnelData} margin={{ top: 20, right: 20, left: 0, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="stage" fontSize={12} />
+                <YAxis fontSize={11} allowDecimals={false} />
+                <Tooltip />
+                <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+                  {funnelData.map((d, i) => <Cell key={i} fill={d.fill} />)}
+                  <LabelList dataKey="count" position="top" fontSize={12} fontWeight={700} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (<div className="empty-state">임장 데이터가 없습니다.</div>)}
+          <div style={{ marginTop: 4, fontSize: '0.8rem', color: '#5f6368', textAlign: 'center' }}>
+            브리핑 전환 {totalInsp > 0 ? Math.round(briefCount / totalInsp * 100) : 0}% · 입찰 전환 {conversionRate.toFixed(1)}%
+          </div>
+        </div>
+      </div>
+
+      {/* 담당자별 전환율 */}
+      {memberRates.length > 0 && (
+        <div className="stats-chart-card">
+          <h4>담당자별 임장 대비 입찰 전환율</h4>
+          <p className="stats-desc">임장 건수가 있는 담당자만 표시됩니다. 막대 길이는 건수, 색상은 전환율을 의미합니다.</p>
+          <ResponsiveContainer width="100%" height={Math.max(240, memberRates.length * 28)}>
+            <BarChart data={memberRates} layout="vertical" margin={{ top: 6, right: 60, left: 0, bottom: 6 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis type="number" fontSize={11} allowDecimals={false} />
+              <YAxis dataKey="name" type="category" width={70} fontSize={11} />
+              <Tooltip formatter={(v: any, n: any, p: any) => {
+                if (n === '입찰 전환') return [`${v}건 (전환율 ${p.payload.rate}%)`, n];
+                if (n === '30일 경과 미입찰') return [`${v}건`, n];
+                return [v, n];
+              }} />
+              <Legend />
+              <Bar dataKey="bid" name="입찰 전환" stackId="a" fill="#188038" radius={[0, 0, 0, 0]} />
+              <Bar dataKey="overdue" name="30일 경과 미입찰" stackId="a" fill="#d93025" radius={[0, 4, 4, 0]}>
+                <LabelList dataKey="rate" position="right" formatter={(v: any) => `${v}%`} fontSize={11} fontWeight={700} fill="#3c4043" />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* 지사별 전환율 */}
+      {branchRates.length > 0 && (
+        <div className="stats-chart-card">
+          <h4>지사별 임장 → 입찰 전환</h4>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={branchRates} margin={{ top: 20, right: 30, left: 0, bottom: 6 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="branch" fontSize={12} />
+              <YAxis yAxisId="left" fontSize={11} allowDecimals={false} />
+              <YAxis yAxisId="right" orientation="right" domain={[0, 100]} unit="%" fontSize={11} />
+              <Tooltip />
+              <Legend />
+              <Bar yAxisId="left" dataKey="insp" name="임장" fill="#1a73e8" radius={[4, 4, 0, 0]} />
+              <Bar yAxisId="left" dataKey="bid" name="입찰 전환" fill="#188038" radius={[4, 4, 0, 0]} />
+              <Bar yAxisId="left" dataKey="overdue" name="30일 경과 미입찰" fill="#d93025" radius={[4, 4, 0, 0]}>
+                <LabelList dataKey="rate" position="top" formatter={(v: any) => `${v}%`} fontSize={11} fontWeight={700} fill="#188038" />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {renderCaseTable(overdueNoBid, `임장 후 30일 경과 미입찰 (이상)`, '#d93025', `임장 등록 후 ${DAYS_THRESHOLD}일이 경과했으나 입찰 기록이 없는 사건입니다.`)}
+      {renderCaseTable(overdueBriefNoBid, `임장+브리핑 완료 후 30일 경과 미입찰 (심각)`, '#b71c1c', '브리핑까지 완료했음에도 30일이 지나도록 입찰하지 않은 사건입니다.')}
+      {renderCaseTable(overdueNoBrief, `임장 후 30일 경과 브리핑 미제출`, '#7b1fa2', `임장 후 ${DAYS_THRESHOLD}일이 지나도록 브리핑 자료가 제출되지 않은 사건입니다.`)}
+      {renderCaseTable(waitingNoBid, `임장 후 ${DAYS_THRESHOLD}일내 대기`, '#f9ab00', `아직 ${DAYS_THRESHOLD}일이 지나지 않아 입찰 여부를 지켜보는 중인 사건입니다.`)}
 
       {/* 제시입찰가 vs 실제입찰가 5% 차이 */}
       <div className="stats-chart-card">

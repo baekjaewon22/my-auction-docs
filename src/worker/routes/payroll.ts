@@ -5,7 +5,8 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 const payroll = new Hono<AuthEnv>();
 payroll.use('*', authMiddleware);
 
-const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+// cc_ref 제외 (회계 열람 제한)
+const ACCOUNTING_ROLES = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'] as const;
 
 // 총무보조(accountant_asst) 열람 제한 — 팀장·관리자급·이사·대표자 정산은 총무담당만 접근 가능
 const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
@@ -331,6 +332,222 @@ payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
   ).bind(periodPattern).run();
 
   return c.json({ success: true, locked: result.meta?.changes || 0 });
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 사업소득신고 (비율제 대상)
+// — /:userId 와 경로 충돌 방지 위해 /reports/business-income 으로 변경
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// GET /api/payroll/reports/business-income?month=YYYY-MM
+payroll.get('/reports/business-income', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const db = c.env.DB;
+  const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
+  const [y, m] = month.split('-').map(Number);
+  const monthStart = `${month}-01`;
+  const lastDay = new Date(y, m, 0).getDate();
+  const monthEnd = `${month}-${String(lastDay).padStart(2, '0')}`;
+
+  // 2026-01·02 특별 규칙: 전원 비율제(기본 50%) 처리 (payroll 로직과 동일)
+  const isJanFeb2026 = month === '2026-01' || month === '2026-02';
+
+  // 비율제 대상 사용자 목록
+  let usersResult;
+  if (isJanFeb2026) {
+    // 전체 활성 컨설턴트 (본사관리/명도팀/support 제외, 퇴사자 포함 → 과거 회차 보고 위해)
+    usersResult = await db.prepare(`
+      SELECT u.id, u.name, u.branch, u.department,
+        COALESCE(ua.commission_rate, 0) as commission_rate,
+        COALESCE(ua.ssn, '') as ssn,
+        COALESCE(ua.address, '') as address
+      FROM users u
+      LEFT JOIN user_accounting ua ON ua.user_id = u.id
+      WHERE u.approved = 1
+        AND u.role IN ('member', 'manager', 'resigned')
+        AND u.branch != '본사 관리'
+        AND u.department != '명도팀'
+      ORDER BY u.branch, u.department, u.name
+    `).all<any>();
+  } else {
+    usersResult = await db.prepare(`
+      SELECT u.id, u.name, u.branch, u.department, ua.commission_rate, ua.ssn, ua.address
+      FROM user_accounting ua
+      JOIN users u ON u.id = ua.user_id
+      WHERE ua.pay_type = 'commission' AND u.approved = 1 AND u.role != 'resigned'
+      ORDER BY u.branch, u.department, u.name
+    `).all<any>();
+  }
+
+  // commission_rate_overrides 일괄 조회 (해당 월)
+  const overridesResult = await db.prepare(
+    'SELECT user_id, commission_rate FROM commission_rate_overrides WHERE year_month = ?'
+  ).bind(month).all<any>().catch(() => ({ results: [] }));
+  const rateOverrides: Record<string, number> = {};
+  for (const r of (overridesResult.results || [])) {
+    rateOverrides[r.user_id] = Number(r.commission_rate);
+  }
+
+  // 각 사용자별 해당월 확정 매출 (정산일 기준) 집계
+  const eligibleUsers = usersResult.results || [];
+  const autoMap: Record<string, { amount: number; tax: number; net: number }> = {};
+  for (const u of eligibleUsers) {
+    // 적용 rate: 1) override > 2) user_accounting.commission_rate > 3) Jan/Feb 2026 기본 50%
+    const rate = rateOverrides[u.id] !== undefined
+      ? rateOverrides[u.id]
+      : (Number(u.commission_rate) || (isJanFeb2026 ? 50 : 0));
+    const salesRes = await db.prepare(`
+      SELECT type, amount, proxy_cost, payment_type, card_deposit_date, deposit_date, contract_date
+      FROM sales_records
+      WHERE user_id = ? AND status = 'confirmed'
+        AND (
+          (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
+          OR (payment_type != '카드' AND payment_type != '' AND deposit_date >= ? AND deposit_date <= ?)
+          OR ((payment_type = '' OR payment_type IS NULL) AND contract_date >= ? AND contract_date <= ?)
+        )
+    `).bind(u.id, monthStart, monthEnd, monthStart, monthEnd, monthStart, monthEnd).all<any>();
+
+    let normalSupply = 0;
+    let proxyIncome = 0;
+    for (const r of (salesRes.results || [])) {
+      if (r.type === '매수신청대리') {
+        const net = (r.amount || 0) - (r.proxy_cost || 0);
+        proxyIncome += Math.max(Math.round(net / 1.1), 0);
+      } else {
+        normalSupply += Math.round((r.amount || 0) / 1.1);
+      }
+    }
+    const commissionAmount = Math.round(normalSupply * rate / 100);
+    const amount = commissionAmount + proxyIncome; // 총 소득
+    const tax = Math.round(amount * 0.033);
+    const net = amount - tax;
+    autoMap[u.id] = { amount, tax, net };
+  }
+
+  // 저장된 오버라이드/ad-hoc 항목
+  const overrideResult = await db.prepare(
+    'SELECT * FROM business_income_entries WHERE month = ? ORDER BY is_ad_hoc, created_at'
+  ).bind(month).all<any>();
+  const overrideByUser: Record<string, any> = {};
+  const adHocList: any[] = [];
+  for (const row of (overrideResult.results || [])) {
+    if (row.is_ad_hoc) adHocList.push(row);
+    else if (row.user_id) overrideByUser[row.user_id] = row;
+  }
+
+  // 병합
+  const entries = eligibleUsers.map((u: any) => {
+    const auto = autoMap[u.id] || { amount: 0, tax: 0, net: 0 };
+    const ov = overrideByUser[u.id];
+    if (ov) {
+      return {
+        id: ov.id, user_id: u.id, name: ov.name || u.name,
+        ssn: ov.ssn || u.ssn || '', address: ov.address || u.address || '',
+        amount: Number(ov.amount), tax: Number(ov.tax), net_amount: Number(ov.net_amount),
+        branch: u.branch, department: u.department,
+        is_ad_hoc: false, is_overridden: true, note: ov.note || '',
+      };
+    }
+    return {
+      id: `auto:${u.id}`, user_id: u.id, name: u.name,
+      ssn: u.ssn || '', address: u.address || '',
+      amount: auto.amount, tax: auto.tax, net_amount: auto.net,
+      branch: u.branch, department: u.department,
+      is_ad_hoc: false, is_overridden: false, note: '',
+    };
+  }).concat(adHocList.map((ov: any) => ({
+    id: ov.id, user_id: null, name: ov.name,
+    ssn: ov.ssn || '', address: ov.address || '',
+    amount: Number(ov.amount), tax: Number(ov.tax), net_amount: Number(ov.net_amount),
+    branch: '', department: '',
+    is_ad_hoc: true, is_overridden: false, note: ov.note || '',
+  })));
+
+  const total_amount = entries.reduce((s, e) => s + (e.amount || 0), 0);
+  const total_tax = entries.reduce((s, e) => s + (e.tax || 0), 0);
+  const total_net = entries.reduce((s, e) => s + (e.net_amount || 0), 0);
+
+  return c.json({ month, entries, total_amount, total_tax, total_net });
+});
+
+// PUT /api/payroll/reports/business-income/save — 항목 저장 (오버라이드 또는 ad-hoc)
+payroll.put('/reports/business-income/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  const body = await c.req.json<{
+    month: string;
+    id?: string;        // 'auto:{user_id}' | 기존 override id | ad-hoc id
+    user_id?: string | null;
+    name: string;
+    ssn?: string; address?: string;
+    amount: number; tax: number; net_amount: number;
+    is_ad_hoc?: boolean;
+    note?: string;
+  }>();
+
+  if (!body.month || !/^\d{4}-\d{2}$/.test(body.month)) return c.json({ error: 'month 형식 오류' }, 400);
+  const isAdHoc = body.is_ad_hoc || !body.user_id;
+
+  // 기존 entry 찾기
+  let existingId: string | null = null;
+  if (body.id && !body.id.startsWith('auto:')) existingId = body.id;
+  else if (body.user_id) {
+    const r = await db.prepare('SELECT id FROM business_income_entries WHERE user_id = ? AND month = ? AND is_ad_hoc = 0').bind(body.user_id, body.month).first<any>();
+    if (r) existingId = r.id;
+  }
+
+  if (existingId) {
+    await db.prepare(`
+      UPDATE business_income_entries SET name = ?, ssn = ?, address = ?, amount = ?, tax = ?, net_amount = ?, note = ?, updated_by = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(body.name, body.ssn || '', body.address || '', body.amount, body.tax, body.net_amount, body.note || '', user.sub, existingId).run();
+    return c.json({ success: true, id: existingId });
+  } else {
+    const newId = crypto.randomUUID();
+    await db.prepare(`
+      INSERT INTO business_income_entries (id, month, user_id, name, ssn, address, amount, tax, net_amount, is_ad_hoc, note, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(newId, body.month, isAdHoc ? null : body.user_id, body.name, body.ssn || '', body.address || '', body.amount, body.tax, body.net_amount, isAdHoc ? 1 : 0, body.note || '', user.sub).run();
+    return c.json({ success: true, id: newId });
+  }
+});
+
+// DELETE /api/payroll/reports/business-income/:id — 오버라이드/ad-hoc 삭제
+payroll.delete('/reports/business-income/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const id = c.req.param('id');
+  await c.env.DB.prepare('DELETE FROM business_income_entries WHERE id = ?').bind(id).run();
+  return c.json({ success: true });
+});
+
+// ━━ 사업소득신고 추가리스트 (풀) CRUD ━━
+payroll.get('/reports/business-income-pool', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const result = await c.env.DB.prepare('SELECT * FROM business_income_pool ORDER BY name').all();
+  return c.json({ pool: result.results || [] });
+});
+
+payroll.post('/reports/business-income-pool', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  const { name, ssn, address, note } = await c.req.json<{ name: string; ssn?: string; address?: string; note?: string }>();
+  if (!name?.trim()) return c.json({ error: '이름을 입력하세요.' }, 400);
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    'INSERT INTO business_income_pool (id, name, ssn, address, note, created_by) VALUES (?, ?, ?, ?, ?, ?)'
+  ).bind(id, name.trim(), ssn || '', address || '', note || '', user.sub).run();
+  return c.json({ success: true, id });
+});
+
+payroll.put('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const id = c.req.param('id');
+  const { name, ssn, address, note } = await c.req.json<{ name: string; ssn?: string; address?: string; note?: string }>();
+  if (!name?.trim()) return c.json({ error: '이름을 입력하세요.' }, 400);
+  await c.env.DB.prepare(
+    "UPDATE business_income_pool SET name = ?, ssn = ?, address = ?, note = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(name.trim(), ssn || '', address || '', note || '', id).run();
+  return c.json({ success: true });
+});
+
+payroll.delete('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  await c.env.DB.prepare('DELETE FROM business_income_pool WHERE id = ?').bind(c.req.param('id')).run();
+  return c.json({ success: true });
 });
 
 export default payroll;

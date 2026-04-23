@@ -114,6 +114,7 @@ export default function Dashboard() {
   const [pendingSalesBranch, setPendingSalesBranch] = useState('');
   const [accountantLeaves, setAccountantLeaves] = useState<any[]>([]);
   const [coopAlerts, setCoopAlerts] = useState<any[]>([]);
+  const [driveStatus, setDriveStatus] = useState<{ last_backup_at: string | null; pending_count: number; connected: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '');
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
@@ -157,6 +158,18 @@ export default function Dashboard() {
   ) : null;
 
   // dismissedKeys가 업데이트되면 각 state에서 해당 항목 제거
+  // Drive 백업 상태 로드 (총무·관리자급만)
+  useEffect(() => {
+    if (!canSeeAccountingAlerts) return;
+    api.drive.settings()
+      .then(s => setDriveStatus({
+        last_backup_at: s.last_backup_at,
+        pending_count: s.pending_count,
+        connected: !!s.settings?.connected_email,
+      }))
+      .catch(() => { /* ignore */ });
+  }, [canSeeAccountingAlerts]);
+
   useEffect(() => {
     if (dismissedKeys.size === 0) return;
     setCoopAlerts(prev => prev.filter((a: any) => !dismissedKeys.has(`coop_${a.id}`)));
@@ -214,8 +227,8 @@ export default function Dashboard() {
           setScheduleGaps(detectScheduleGaps(canApprove ? entries : entries.filter(e => e.user_id === user?.id)));
         }
 
-        // 계약서 확인 대기 알림 (관리자/회계)
-        if (canApprove || isAdmin) {
+        // 계약서 확인 대기 알림 (관리자/회계/총무)
+        if (canApprove || isAdmin || canSeeAccountingAlerts) {
           try {
             const sRes = await api.sales.list({});
             const pending = (sRes.records as SalesRecord[]).filter(r =>
@@ -227,14 +240,20 @@ export default function Dashboard() {
           } catch { /* */ }
         }
 
-        // 본인 계약서/보고서 미작성 경고 (모든 권한자 본인 건만)
+        // 계약서/보고서 미작성 경고 (역할별 범위 — 백엔드가 이미 범위 제한)
         try {
           const mine = await api.sales.list({});
-          const myMissing = (mine.records as SalesRecord[]).filter(r =>
-            r.user_id === user?.id && r.status !== 'refunded'
-              && (r.type === '계약' || r.type === '낙찰')  // 계약·낙찰 유형만 보고서 제출 대상
-              && !r.contract_submitted && !r.contract_not_submitted
-          );
+          const role = user?.role || '';
+          const scopedRoles = ['manager', 'admin', 'director', 'master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'];
+          const myMissing = (mine.records as SalesRecord[]).filter(r => {
+            if (r.status === 'refunded') return false;
+            if (r.type !== '계약' && r.type !== '낙찰') return false;
+            if (r.contract_submitted || r.contract_not_submitted) return false;
+            // 팀장·지사장·총괄이사·최상위: 백엔드 범위 내 전체
+            if (scopedRoles.includes(role)) return true;
+            // 일반 팀원/프리랜서: 본인 건만
+            return r.user_id === user?.id;
+          });
           setMyMissingDocs(myMissing);
         } catch { /* */ }
 
@@ -373,6 +392,25 @@ export default function Dashboard() {
         <div className="stat-card stat-rejected"><FileX size={28} className="stat-icon" /><div className="stat-number">{stats.rejected}</div><div className="stat-label">반려</div></div>
       </div>
 
+      {/* Drive 백업 지연 경고 (7일 이상) — 총무·관리자급만 */}
+      {canSeeAccountingAlerts && driveStatus && (() => {
+        const pending = driveStatus.pending_count;
+        const last = driveStatus.last_backup_at ? new Date(driveStatus.last_backup_at) : null;
+        const daysSince = last ? Math.floor((Date.now() - last.getTime()) / 86400000) : Infinity;
+        const overdue = !last || daysSince >= 7;
+        if (!overdue || pending === 0) return null;
+        return (
+          <Link to="/archive?drive=1" className="drive-alert-strip">
+            <span className="drive-alert-icon">☁️</span>
+            <span className="drive-alert-text">
+              <strong>문서보관함 Drive 백업이 {last ? `${daysSince}일째 미실행` : '아직 한 번도 실행되지 않았습니다'}</strong>
+              <span className="drive-alert-sub"> · 대기 문서 <strong>{pending}건</strong>{last && <> · 마지막 {driveStatus.last_backup_at!.slice(0, 10)}</>}</span>
+            </span>
+            <span className="drive-alert-cta">지금 백업 →</span>
+          </Link>
+        );
+      })()}
+
       {/* 총무 휴가 알림 (전체 직원에게 노출) */}
       {accountantLeaves.length > 0 && (
         <section className="section">
@@ -480,11 +518,19 @@ export default function Dashboard() {
         );
       })()}
 
-      {/* 본인 계약서/보고서 미작성 경고 */}
-      {myMissingDocs.length > 0 && (
+      {/* 계약서/보고서 미작성 경고 (역할별 범위) */}
+      {myMissingDocs.length > 0 && (() => {
+        const role = user?.role || '';
+        const scopeTitle = role === 'manager' ? '팀 미작성 알림'
+          : role === 'admin' ? '지사 미작성 알림'
+          : role === 'director' ? '관할지사 미작성 알림'
+          : ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(role) ? '전체 미작성 알림'
+          : '본인 미작성 알림';
+        const showOwner = ['manager', 'admin', 'director', 'master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(role);
+        return (
         <section className="section">
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <AlertTriangle size={18} color="#d93025" /> 본인 미작성 알림
+            <AlertTriangle size={18} color="#d93025" /> {scopeTitle}
             <span className="missing-alert-count" style={{ background: '#fce4ec', color: '#d93025' }}>{myMissingDocs.length}건</span>
             <MasterCloseBtn alertType="my_doc_missing" keys={myMissingDocs.map(r => `my_doc_missing_${r.id}`)} onClose={() => setMyMissingDocs([])} />
           </h3>
@@ -497,6 +543,7 @@ export default function Dashboard() {
                     <div style={{ flex: 1 }}>
                       <div className="missing-alert-main">
                         <span className="missing-alert-doc" style={{ color: '#d93025' }}>{docLabel} 미작성</span>
+                        {showOwner && r.user_name && <span style={{ marginLeft: 8, padding: '1px 6px', borderRadius: 6, fontSize: '0.72rem', fontWeight: 600, background: '#f3e5f5', color: '#7b1fa2' }}>{r.user_name}</span>}
                         <span style={{ marginLeft: 8, fontSize: '0.78rem', color: '#5f6368' }}>{r.client_name}</span>
                       </div>
                       <div className="missing-alert-detail">{r.contract_date} · {r.type} · {r.amount?.toLocaleString()}원</div>
@@ -509,7 +556,8 @@ export default function Dashboard() {
             {myMissingDocs.length > 10 && <div className="missing-alert-more">외 {myMissingDocs.length - 10}건 더 있음</div>}
           </div>
         </section>
-      )}
+        );
+      })()}
 
       {/* 미제출 알림 (팀장/관리자용 — 팀원에겐 비노출) */}
       {alerts.length > 0 && canApprove && (

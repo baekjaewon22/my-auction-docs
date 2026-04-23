@@ -161,6 +161,7 @@ export default function Sales() {
   const [rankingRecords, setRankingRecords] = useState<SalesRecord[]>([]);
   const [rankingData, setRankingData] = useState<Array<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>>([]);
   const [settleDate, setSettleDate] = useState('');
+  const [invoiceDrafts, setInvoiceDrafts] = useState<Record<string, string>>({});
   // 2개월 기간 선택 (1-2, 3-4, 5-6, 7-8, 9-10, 11-12)
   const [rankingPeriodIdx, setRankingPeriodIdx] = useState(() => {
     const mo = new Date().getMonth() + 1;
@@ -1545,17 +1546,42 @@ export default function Sales() {
                       {r.payment_type === '이체' && r.status !== 'refunded' && canApproveAccounting && (() => {
                         const taxType = r.tax_invoice_type || '';
                         const taxDate = r.tax_invoice_date || '';
+                        const isSet = !!taxDate;
+                        const canEditInvoice = role === 'master' || role === 'accountant' || role === 'accountant_asst';
+                        const draft = invoiceDrafts[r.id] ?? '';
                         return (
                           <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
                             <span style={{ fontSize: '0.68rem', color: '#5f6368', whiteSpace: 'nowrap' }}>증빙</span>
-                            <input type="date" className="form-input" defaultValue={taxDate}
-                              min="2020-01-01" max="2099-12-31"
-                              onBlur={async (e) => {
-                                const v = e.target.value;
-                                if (v === taxDate) return;
-                                try { await api.sales.update(r.id, { tax_invoice_date: v }); load(true); } catch (err: any) { alert(err.message); }
-                              }}
-                              style={{ fontSize: '0.72rem', padding: '3px 5px', width: 120 }} />
+                            {isSet ? (
+                              <>
+                                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#188038', padding: '2px 6px', background: '#e8f5e9', borderRadius: 6 }}>{taxDate}</span>
+                                {canEditInvoice && (
+                                  <button className="btn btn-sm" style={{ fontSize: '0.6rem', padding: '1px 4px', color: '#9aa0a6' }}
+                                    onClick={async () => {
+                                      if (!confirm('증빙일자를 초기화하시겠습니까?')) return;
+                                      try { await api.sales.update(r.id, { tax_invoice_date: '' }); load(true); } catch (err: any) { alert(err.message); }
+                                    }}>초기화</button>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <input type="date" className="form-input" value={draft}
+                                  min="2020-01-01" max="2099-12-31"
+                                  onChange={(e) => setInvoiceDrafts(p => ({ ...p, [r.id]: e.target.value }))}
+                                  style={{ fontSize: '0.72rem', padding: '3px 5px', width: 120 }} />
+                                <button className="btn btn-sm btn-primary" style={{ fontSize: '0.65rem', padding: '2px 6px' }}
+                                  onClick={async () => {
+                                    if (!draft) { alert('증빙일자를 선택하세요.'); return; }
+                                    const [y] = draft.split('-');
+                                    if (!y || y.length !== 4 || Number(y) < 2020 || Number(y) > 2099) { alert('증빙일자 년도는 4자리(2020~2099)로 입력하세요.'); return; }
+                                    try {
+                                      await api.sales.update(r.id, { tax_invoice_date: draft });
+                                      setInvoiceDrafts(p => { const n = { ...p }; delete n[r.id]; return n; });
+                                      load(true);
+                                    } catch (err: any) { alert(err.message); }
+                                  }}>확인</button>
+                              </>
+                            )}
                             <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
                               background: taxType === '영수' ? '#e8f5e9' : '#fff',
                               color: taxType === '영수' ? '#188038' : '#5f6368',
@@ -1580,7 +1606,7 @@ export default function Sales() {
                       {/* 카드결제 정산일 (총무 — 결제확인 후 입력) */}
                       {(r.status === 'card_pending' || (r.status === 'confirmed' && r.payment_type === '카드')) && (() => {
                         const settled = !!r.card_deposit_date;
-                        const canEditSettle = role === 'master' || role === 'accountant'; // 총무담당만 수정 가능
+                        const canEditSettle = role === 'master' || role === 'accountant' || role === 'accountant_asst';
                         const canSetSettle = canApproveAccounting && !settled; // 미적용 시 총무급 적용 가능
                         return (
                           <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
@@ -1913,7 +1939,7 @@ export default function Sales() {
                 )}
                 {detailRecord.payment_type === '카드' && (() => {
                   const settled = !!detailRecord.card_deposit_date;
-                  const canEditSettle = role === 'master' || role === 'accountant';
+                  const canEditSettle = role === 'master' || role === 'accountant' || role === 'accountant_asst';
                   return (
                     <div>
                       <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>카드 정산일</span>

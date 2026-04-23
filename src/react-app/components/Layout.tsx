@@ -6,8 +6,11 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, Handshake
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, Handshake, DoorOpen, FileSignature
 } from 'lucide-react';
+
+// 컨설턴트 계약관리: 대표/마스터/총무급 + 정민호 예외
+const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 
 export default function Layout() {
   const { user, logout } = useAuthStore();
@@ -22,15 +25,25 @@ export default function Layout() {
 
   const role = (user?.role || 'member') as Role;
   const isFreelancer = (user as any)?.login_type === 'freelancer';
-  const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(role);
+  const isSupport = role === 'support';
+  const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'support'].includes(role);
   const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-  const canAccounting = !isFreelancer && (
-    ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(role) ||
+  const canAccounting = !isFreelancer && !isSupport && (
+    ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role) ||
+    (role === 'admin' && user?.branch === '의정부')
+  );
+  // 회계분석은 총무보조 제외 (cc_ref도 제외)
+  const canFinanceAnalytics = !isFreelancer && !isSupport && (
+    ['master', 'ceo', 'accountant'].includes(role) ||
     (role === 'admin' && user?.branch === '의정부')
   );
   const isAccountingOnly = !isFreelancer && ['accountant', 'accountant_asst'].includes(role);
   const isDirector = role === 'director';
+  const canViewContractTracker = !isFreelancer && (
+    ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role) ||
+    CONTRACT_TRACKER_EXTRA_IDS.includes(user?.id || '')
+  );
 
   const sidebarContent = (
     <>
@@ -58,17 +71,27 @@ export default function Layout() {
 
         {!isFreelancer && <div className="nav-divider" />}
         {!isFreelancer && !collapsed && <span className="nav-label">마이페이지</span>}
-        {!isAccountingOnly && !isFreelancer && !isDirector && (
+        {!isAccountingOnly && !isFreelancer && !isDirector && !isSupport && (
           <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
             <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
           </Link>
         )}
-        <Link to="/sales" className={`nav-item ${isActive('/sales') ? 'active' : ''}`} title="업무성과" onClick={() => setMobileOpen(false)}>
-          <DollarSign size={18} /> {!collapsed && '업무성과'}
-        </Link>
+        {!isSupport && (
+          <Link to="/sales" className={`nav-item ${isActive('/sales') ? 'active' : ''}`} title="업무성과" onClick={() => setMobileOpen(false)}>
+            <DollarSign size={18} /> {!collapsed && '업무성과'}
+          </Link>
+        )}
         {!isFreelancer && (
           <Link to="/leave" className={`nav-item ${isActive('/leave') ? 'active' : ''}`} title="연차관리" onClick={() => setMobileOpen(false)}>
             <CalendarCheck size={18} /> {!collapsed && '연차관리'}
+          </Link>
+        )}
+        <Link to="/rooms" className={`nav-item ${isActive('/rooms') ? 'active' : ''}`} title="회의실 예약" onClick={() => setMobileOpen(false)}>
+          <DoorOpen size={18} /> {!collapsed && '회의실 예약'}
+        </Link>
+        {canViewContractTracker && (
+          <Link to="/contract-tracker" className={`nav-item ${isActive('/contract-tracker') ? 'active' : ''}`} title="컨설턴트 계약관리" onClick={() => setMobileOpen(false)}>
+            <FileSignature size={18} /> {!collapsed && '컨설턴트 계약관리'}
           </Link>
         )}
 
@@ -125,7 +148,7 @@ export default function Layout() {
           </Link>
         )}
 
-        {['master', 'ceo', 'cc_ref', 'admin', 'director'].includes(role) && (
+        {['master', 'ceo', 'cc_ref', 'admin', 'director', 'support'].includes(role) && (
           <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
             <BookOpen size={18} /> {!collapsed && '회의록'}
           </Link>
@@ -138,7 +161,7 @@ export default function Layout() {
         <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="관리자 노트" onClick={() => setMobileOpen(false)}>
           <StickyNote size={18} /> {!collapsed && '관리자 노트'}
         </Link>
-        {!isFreelancer && (
+        {!isFreelancer && !isSupport && (
           <Link to="/cooperation" className={`nav-item ${isActive('/cooperation') ? 'active' : ''}`} title="업무협조요청" onClick={() => setMobileOpen(false)}>
             <Handshake size={18} /> {!collapsed && '업무협조요청'}
           </Link>
@@ -154,9 +177,11 @@ export default function Layout() {
             <Link to="/payroll" className={`nav-item ${isActive('/payroll') ? 'active' : ''}`} title="급여정산" onClick={() => setMobileOpen(false)}>
               <Receipt size={18} /> {!collapsed && '급여정산'}
             </Link>
-            <Link to="/finance-analytics" className={`nav-item ${isActive('/finance-analytics') ? 'active' : ''}`} title="회계분석" onClick={() => setMobileOpen(false)}>
-              <PieChart size={18} /> {!collapsed && '회계분석'}
-            </Link>
+            {canFinanceAnalytics && (
+              <Link to="/finance-analytics" className={`nav-item ${isActive('/finance-analytics') ? 'active' : ''}`} title="회계분석" onClick={() => setMobileOpen(false)}>
+                <PieChart size={18} /> {!collapsed && '회계분석'}
+              </Link>
+            )}
           </>
         )}
       </nav>

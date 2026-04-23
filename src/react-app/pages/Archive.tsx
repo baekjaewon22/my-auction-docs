@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { Document } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { useDepartments } from '../hooks/useDepartments';
 import { useBranches } from '../hooks/useBranches';
-import { Archive, FileCheck, FileText, Search, Trash2, MapPin } from 'lucide-react';
+import { Archive, FileCheck, FileText, Search, Trash2, MapPin, Cloud, CloudOff } from 'lucide-react';
+import DriveBackupModal from '../components/DriveBackupModal';
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   draft: { label: '작성중', className: 'status-draft' },
@@ -47,6 +48,25 @@ export default function ArchivePage() {
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'admin';
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
   const isAccountant = ['accountant', 'accountant_asst'].includes(user?.role || '');
+  const canDrive = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [driveModalOpen, setDriveModalOpen] = useState(searchParams.get('drive') === '1' && canDrive);
+  useEffect(() => {
+    if (driveModalOpen && searchParams.get('drive') === '1') {
+      // 쿼리 파라미터 정리 (뒤로가기 시 재오픈 방지)
+      const next = new URLSearchParams(searchParams);
+      next.delete('drive');
+      setSearchParams(next, { replace: true });
+    }
+  }, [driveModalOpen]);
+  const [driveStatus, setDriveStatus] = useState<{ last_backup_at: string | null; pending_count: number; connected: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!canDrive) return;
+    api.drive.settings()
+      .then(s => setDriveStatus({ last_backup_at: s.last_backup_at, pending_count: s.pending_count, connected: !!s.settings?.connected_email }))
+      .catch(() => { /* ignore */ });
+  }, [canDrive, driveModalOpen]);
   const canFilterAll = isCeoPlus || isAdmin || isAccountant;
 
   // 다운로드 체크 (localStorage)
@@ -142,7 +162,29 @@ export default function ArchivePage() {
   return (
     <div className="page">
       <div className="page-header">
-        <h2><Archive size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 문서 보관함</h2>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Archive size={24} style={{ verticalAlign: 'middle' }} /> 문서 보관함
+          {canDrive && (() => {
+            const ds = driveStatus;
+            const stale = ds?.last_backup_at && (Date.now() - new Date(ds.last_backup_at).getTime() > 7 * 86400 * 1000);
+            const connected = !!ds?.connected;
+            const pending = ds?.pending_count || 0;
+            const color = !ds ? '#9aa0a6' : !connected ? '#9aa0a6' : (pending > 0 || stale) ? '#e65100' : '#188038';
+            const Icon = !connected ? CloudOff : Cloud;
+            const title = !ds ? 'Google Drive 백업 (로드 중)'
+              : !connected ? 'Google Drive 연결 필요'
+              : pending > 0 ? `${pending}건 백업 대기`
+              : ds.last_backup_at ? `최근 동기화: ${ds.last_backup_at.slice(0, 10)}`
+              : '첫 백업 대기';
+            return (
+              <button className="archive-cloud-btn" title={title} onClick={() => setDriveModalOpen(true)}
+                style={{ color }}>
+                <Icon size={18} />
+                {pending > 0 && <span className="archive-cloud-dot" />}
+              </button>
+            );
+          })()}
+        </h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           {(['all', 'approved', 'cancelled'] as const).map(tab => {
             const labels = { all: '전체', approved: '승인', cancelled: '취소' };
@@ -298,6 +340,8 @@ export default function ArchivePage() {
           <button className="btn btn-sm" disabled={page >= totalPages} onClick={() => setPage(totalPages)} style={{ opacity: page >= totalPages ? 0.4 : 1 }}>»</button>
         </div>
       )}
+
+      {driveModalOpen && <DriveBackupModal onClose={() => setDriveModalOpen(false)} />}
     </div>
   );
 }

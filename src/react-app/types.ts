@@ -1,4 +1,4 @@
-export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'director' | 'accountant' | 'accountant_asst' | 'manager' | 'member' | 'resigned';
+export type Role = 'master' | 'ceo' | 'cc_ref' | 'admin' | 'director' | 'accountant' | 'accountant_asst' | 'manager' | 'member' | 'support' | 'resigned';
 export type DocStatus = 'draft' | 'submitted' | 'approved' | 'rejected';
 
 export const BRANCHES = ['의정부', '서초'] as const;
@@ -14,11 +14,12 @@ export const ROLE_LABELS: Record<Role, string> = {
   accountant_asst: '총무보조',
   manager: '팀장',
   member: '팀원',
+  support: '지원',
   resigned: '퇴사자',
 };
 
 // UI에서 표시할 역할 (master 제외)
-export const VISIBLE_ROLES: Role[] = ['ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst', 'manager', 'member'];
+export const VISIBLE_ROLES: Role[] = ['ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst', 'manager', 'member', 'support'];
 
 export interface User {
   id: string;
@@ -139,6 +140,8 @@ export interface UserAccounting {
   position_allowance: number;
   pay_type?: 'salary' | 'commission';
   commission_rate?: number;
+  ssn?: string;
+  address?: string;
   created_at?: string;
   updated_at?: string;
 }

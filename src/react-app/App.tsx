@@ -27,6 +27,19 @@ import FinanceAnalytics from './pages/FinanceAnalytics';
 import AlimtalkLogs from './pages/AlimtalkLogs';
 import AdminNotes from './pages/AdminNotes';
 import Cooperation from './pages/Cooperation';
+import RoomReservation from './pages/RoomReservation';
+import ContractTracker from './pages/ContractTracker';
+
+// 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
+const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+function ContractTrackerRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
+  if (!user || (!allowed.includes(user.role) && !CONTRACT_TRACKER_EXTRA_IDS.includes(user.id))) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore();
@@ -86,7 +99,15 @@ function NonAccountingRoute({ children }: { children: React.ReactNode }) {
 
 function AccountingRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
+  const allowed = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'];
+  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function FinanceAnalyticsRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  // 회계분석은 cc_ref·총무보조 제외
+  const allowed = ['master', 'ceo', 'admin', 'accountant'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
@@ -192,9 +213,9 @@ export default function App() {
           <Route
             path="finance-analytics"
             element={
-              <AccountingRoute>
+              <FinanceAnalyticsRoute>
                 <FinanceAnalytics />
-              </AccountingRoute>
+              </FinanceAnalyticsRoute>
             }
           />
           <Route
@@ -227,6 +248,22 @@ export default function App() {
               <PrivateRoute>
                 <Cooperation />
               </PrivateRoute>
+            }
+          />
+          <Route
+            path="rooms"
+            element={
+              <PrivateRoute>
+                <RoomReservation />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="contract-tracker"
+            element={
+              <ContractTrackerRoute>
+                <ContractTracker />
+              </ContractTrackerRoute>
             }
           />
         </Route>

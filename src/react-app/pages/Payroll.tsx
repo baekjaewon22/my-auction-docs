@@ -4,6 +4,7 @@ import { useAuthStore } from '../store';
 import type { User } from '../types';
 import { useBranches } from '../hooks/useBranches';
 import Select from '../components/Select';
+import BusinessIncomeTab from '../components/BusinessIncomeTab';
 import { Receipt, Camera } from 'lucide-react';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
@@ -24,7 +25,7 @@ export default function Payroll() {
   const [filterBranch, setFilterBranch] = useState('');
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<'payroll' | 'summary' | 'branch'>('payroll');
+  const [tab, setTab] = useState<'payroll' | 'summary' | 'branch' | 'business_income'>('payroll');
 
   // 회계 수동 입력 필드
   const [deduction, setDeduction] = useState('0');
@@ -212,6 +213,9 @@ export default function Payroll() {
         {currentUser?.role !== 'accountant_asst' && <button className={`filter-btn ${tab === 'branch' ? 'active' : ''}`} onClick={() => setTab('branch')}>
           지사별 합산
         </button>}
+        <button className={`filter-btn ${tab === 'business_income' ? 'active' : ''}`} onClick={() => setTab('business_income')}>
+          사업소득신고
+        </button>
       </div>
 
       {loading && <div className="page-loading">로딩중...</div>}
@@ -1071,6 +1075,8 @@ export default function Payroll() {
       {tab === 'payroll' && !data && !loading && !selectedUserId && (
         <div className="empty-state">담당자를 선택하면 급여정산 내역이 표시됩니다.</div>
       )}
+
+      {tab === 'business_income' && <BusinessIncomeTab month={selectedMonth} />}
     </div>
   );
 }

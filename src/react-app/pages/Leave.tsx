@@ -19,13 +19,17 @@ const FORM_LEAVE_TYPES: { value: FormLeaveType; label: string; desc: string; col
 ];
 
 // 특별휴가 세부 유형
-type SpecialLeaveSubtype = '특별유급휴가' | '기타';
+type SpecialLeaveSubtype = '특별유급휴가' | '여름휴가' | '기타';
 
 const SPECIAL_LEAVE_ITEMS = [
   { label: '본인 결혼', days: 5 },
   { label: '부모/배우자부모/배우자/자녀 장례', days: 3 },
   { label: '조부모/배우자조부모/형제자매 장례', days: 1 },
 ];
+
+// 여름휴가 규정
+const SUMMER_TOTAL_DAYS = 3;       // 연간 총 3일
+const SUMMER_MAX_CHAIN = 2;         // 연차와 이어쓸 수 있는 최대 일수
 
 // 타입 색상 매핑 (목록 표시용)
 function getTypeColor(leaveType: string): string {
@@ -74,6 +78,10 @@ export default function Leave() {
   const [specialSubtype, setSpecialSubtype] = useState<SpecialLeaveSubtype>('특별유급휴가');
   const [specialItem, setSpecialItem] = useState(0); // SPECIAL_LEAVE_ITEMS index
   const [specialEtcReason, setSpecialEtcReason] = useState('');
+  // 여름휴가 폼
+  const [summerDays, setSummerDays] = useState(1); // 1~3 (잔여에 따라 제한)
+  const [summerChain, setSummerChain] = useState(0); // 0/1/2 연차 연결
+  const [summerChainPos, setSummerChainPos] = useState<'after' | 'before'>('after');
 
   // 반려 사유
   const [rejectingId, setRejectingId] = useState<string | null>(null);
@@ -97,14 +105,19 @@ export default function Leave() {
     if (canViewOthers) {
       // 총무보조는 팀장·관리자급·이사·대표자 목록에서 제외
       const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
-      api.users.list().then(res => setMembers(
-        (res.users || []).filter((u: User) =>
+      api.users.list().then(res => {
+        const filtered = (res.users || []).filter((u: User) =>
           u.role !== 'master'
           && (u as any).login_type !== 'freelancer'
           && u.id !== user?.id
           && !(role === 'accountant_asst' && RESTRICTED_ROLES_FOR_ASST.includes(u.role as string))
-        )
-      )).catch(() => {});
+        );
+        // 퇴사자는 목록 하단으로
+        setMembers([
+          ...filtered.filter((u: User) => u.role !== 'resigned'),
+          ...filtered.filter((u: User) => u.role === 'resigned'),
+        ]);
+      }).catch(() => {});
     }
   }, []);
 
@@ -175,6 +188,68 @@ export default function Leave() {
       if (specialSubtype === '기타' && !specialEtcReason.trim()) {
         alert('기타 사유를 입력하세요.'); return;
       }
+      if (specialSubtype === '여름휴가') {
+        if (summerDays < 1 || summerDays > summerRemaining) {
+          alert(`여름휴가 잔여일(${summerRemaining}일)을 초과할 수 없습니다.`); return;
+        }
+        if (summerChain < 0 || summerChain > SUMMER_MAX_CHAIN) {
+          alert(`연차 연결은 최대 ${SUMMER_MAX_CHAIN}일까지 가능합니다.`); return;
+        }
+        if (summerChain > 0 && (balance?.total_remaining ?? 0) < summerChain) {
+          alert(`연차 잔여(${balance?.total_remaining ?? 0}일)가 부족합니다.`); return;
+        }
+      }
+    }
+
+    // ━━━ 여름휴가 전용 제출 (2 API: 특별휴가 + 옵션 연차) ━━━
+    if (formType === '특별휴가' && specialSubtype === '여름휴가') {
+      const baseStart = new Date(formStartDate);
+      // 여름휴가 구간 계산
+      let summerStart: Date, summerEnd: Date, chainStart: Date | null = null, chainEnd: Date | null = null;
+      if (summerChain === 0) {
+        summerStart = baseStart;
+        summerEnd = new Date(baseStart); summerEnd.setDate(summerStart.getDate() + summerDays - 1);
+      } else if (summerChainPos === 'after') {
+        summerStart = baseStart;
+        summerEnd = new Date(baseStart); summerEnd.setDate(summerStart.getDate() + summerDays - 1);
+        chainStart = new Date(summerEnd); chainStart.setDate(summerEnd.getDate() + 1);
+        chainEnd = new Date(chainStart); chainEnd.setDate(chainStart.getDate() + summerChain - 1);
+      } else {
+        chainStart = baseStart;
+        chainEnd = new Date(baseStart); chainEnd.setDate(chainStart.getDate() + summerChain - 1);
+        summerStart = new Date(chainEnd); summerStart.setDate(chainEnd.getDate() + 1);
+        summerEnd = new Date(summerStart); summerEnd.setDate(summerStart.getDate() + summerDays - 1);
+      }
+      const fmt = (d: Date) => d.toISOString().slice(0, 10);
+      const annualType = balance?.entitlement?.type === 'monthly' ? '월차' : '연차';
+      const summerReason = summerChain > 0
+        ? `[여름휴가] ${summerDays}일 (${annualType} ${summerChain}일 연결 ${summerChainPos === 'after' ? '뒤' : '앞'})`
+        : `[여름휴가] ${summerDays}일`;
+
+      setSubmitting(true);
+      try {
+        await api.leave.createRequest({
+          leave_type: '특별휴가',
+          start_date: fmt(summerStart),
+          end_date: fmt(summerEnd),
+          hours: 8,
+          reason: summerReason,
+        });
+        if (summerChain > 0 && chainStart && chainEnd) {
+          await api.leave.createRequest({
+            leave_type: annualType,
+            start_date: fmt(chainStart),
+            end_date: fmt(chainEnd),
+            hours: 8,
+            reason: `[여름휴가 연결] ${summerChain}일`,
+          });
+        }
+        setShowForm(false); setFormReason(''); setSpecialEtcReason('');
+        setSummerChain(0); setSummerDays(1);
+        load();
+      } catch (err: any) { alert(err.message); }
+      finally { setSubmitting(false); }
+      return;
     }
 
     // 사유 조합
@@ -251,12 +326,29 @@ export default function Leave() {
     catch (err: any) { alert(err.message); }
   };
 
+  // 여름휴가 — 올해 사용량 집계 (pending + approved)
+  const summerUsed = (() => {
+    const yr = new Date().getFullYear();
+    return requests
+      .filter(r => r.leave_type === '특별휴가' && ['pending', 'approved'].includes(r.status)
+        && (r.reason || '').includes('[여름휴가]')
+        && r.start_date >= `${yr}-01-01` && r.start_date <= `${yr}-12-31`)
+      .reduce((sum, r) => {
+        const m = (r.reason || '').match(/\[여름휴가\].*?(\d+)일/);
+        return sum + (m ? Number(m[1]) : Number(r.days || 0));
+      }, 0);
+  })();
+  const summerRemaining = Math.max(0, SUMMER_TOTAL_DAYS - summerUsed);
+
   // 차감일수 미리보기
   const previewDays = (): number => {
     if (formType === '반차') return 0.5;
     if (formType === '시간차') return Math.round((formHours / 8) * 1000) / 1000;
     if (formType === '특별휴가' && specialSubtype === '특별유급휴가') {
       return SPECIAL_LEAVE_ITEMS[specialItem].days;
+    }
+    if (formType === '특별휴가' && specialSubtype === '여름휴가') {
+      return summerDays; // 여름휴가 자체는 연차 차감 없음, 이어붙인 연차는 별도 계산
     }
     const start = new Date(formStartDate);
     const end = new Date(formEndDate);
@@ -503,8 +595,8 @@ export default function Leave() {
               {formType === '특별휴가' && (
                 <div style={{ marginBottom: 16 }}>
                   <label className="form-label">구분</label>
-                  <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                    {(['특별유급휴가', '기타'] as SpecialLeaveSubtype[]).map(s => (
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                    {(['특별유급휴가', '여름휴가', '기타'] as SpecialLeaveSubtype[]).map(s => (
                       <button key={s} type="button" onClick={() => setSpecialSubtype(s)}
                         style={{ padding: '6px 14px', borderRadius: 6, border: specialSubtype === s ? '2px solid #7b1fa2' : '1px solid #dadce0', background: specialSubtype === s ? '#f3e5f5' : '#fff', cursor: 'pointer', fontWeight: specialSubtype === s ? 600 : 400, fontSize: '0.85rem', color: specialSubtype === s ? '#7b1fa2' : '#202124' }}>
                         {s}
@@ -525,6 +617,63 @@ export default function Leave() {
                       <div style={{ marginTop: 8, padding: '8px 12px', borderRadius: 6, background: '#fff3e0', fontSize: '0.75rem', color: '#e65100', lineHeight: 1.4 }}>
                         ※ 가족관계증명원상의 기록을 전제로 합니다.
                       </div>
+                    </div>
+                  )}
+
+                  {specialSubtype === '여름휴가' && (
+                    <div style={{ background: '#fafafa', padding: 14, borderRadius: 8, border: '1px solid #e8eaed' }}>
+                      <div style={{ padding: '8px 12px', borderRadius: 6, background: '#fff3e0', fontSize: '0.8rem', color: '#e65100', marginBottom: 12, lineHeight: 1.5 }}>
+                        · 연간 <strong>총 {SUMMER_TOTAL_DAYS}일</strong> · 올해 사용 <strong>{summerUsed}일</strong> · <strong style={{ color: '#188038' }}>잔여 {summerRemaining}일</strong><br/>
+                        · 연차와 이어서 최대 {SUMMER_MAX_CHAIN}일 연결 사용 가능 (연차 잔여에서 차감)
+                      </div>
+
+                      {summerRemaining === 0 ? (
+                        <div style={{ padding: 12, background: '#fce4ec', color: '#d93025', borderRadius: 6, fontSize: '0.85rem' }}>
+                          올해 여름휴가를 모두 사용하셨습니다.
+                        </div>
+                      ) : (
+                        <>
+                          <div style={{ marginBottom: 12 }}>
+                            <label className="form-label">여름휴가 일수</label>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              {Array.from({ length: summerRemaining }, (_, i) => i + 1).map(n => (
+                                <button key={n} type="button" onClick={() => setSummerDays(n)}
+                                  style={{ padding: '8px 16px', borderRadius: 6, border: summerDays === n ? '2px solid #7b1fa2' : '1px solid #dadce0', background: summerDays === n ? '#f3e5f5' : '#fff', cursor: 'pointer', fontWeight: summerDays === n ? 700 : 400, fontSize: '0.88rem' }}>
+                                  {n}일
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div style={{ marginBottom: 12 }}>
+                            <label className="form-label">연차 이어서 사용 (선택)</label>
+                            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                              {[0, 1, 2].map(n => (
+                                <button key={n} type="button" onClick={() => setSummerChain(n)}
+                                  style={{ padding: '8px 16px', borderRadius: 6, border: summerChain === n ? '2px solid #1a73e8' : '1px solid #dadce0', background: summerChain === n ? '#e8f0fe' : '#fff', cursor: 'pointer', fontWeight: summerChain === n ? 700 : 400, fontSize: '0.88rem' }}>
+                                  {n === 0 ? '없음' : `${n}일`}
+                                </button>
+                              ))}
+                            </div>
+                            {summerChain > 0 && (
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                {(['before', 'after'] as const).map(p => (
+                                  <button key={p} type="button" onClick={() => setSummerChainPos(p)}
+                                    style={{ padding: '6px 12px', borderRadius: 6, border: summerChainPos === p ? '2px solid #1a73e8' : '1px solid #dadce0', background: summerChainPos === p ? '#e8f0fe' : '#fff', cursor: 'pointer', fontSize: '0.8rem', fontWeight: summerChainPos === p ? 600 : 400 }}>
+                                    {p === 'before' ? '여름휴가 앞에' : '여름휴가 뒤에'}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div style={{ padding: '10px 12px', background: '#fff', border: '1px dashed #bdbdbd', borderRadius: 6, fontSize: '0.82rem', color: '#5f6368', lineHeight: 1.5 }}>
+                            <strong>합계 {summerDays + summerChain}일 연속 휴가</strong><br/>
+                            · 여름휴가 {summerDays}일 (특별유급, 연차 차감 없음)
+                            {summerChain > 0 && <><br/>· 연차 {summerChain}일 ({summerChainPos === 'before' ? '앞에' : '뒤에'} 연결, 연차 차감)</>}
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -553,18 +702,28 @@ export default function Leave() {
               )}
 
               {/* 날짜 */}
-              <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
-                <div style={{ flex: 1 }}>
-                  <label className="form-label">{formType === '반차' || formType === '시간차' ? '날짜' : '시작일'}</label>
-                  <input type="date" className="form-input" value={formStartDate} onChange={(e) => { setFormStartDate(e.target.value); if (formType === '반차' || formType === '시간차') setFormEndDate(e.target.value); }} style={{ width: '100%' }} />
-                </div>
-                {formType !== '반차' && formType !== '시간차' && (
-                  <div style={{ flex: 1 }}>
-                    <label className="form-label">종료일</label>
-                    <input type="date" className="form-input" value={formEndDate} onChange={(e) => setFormEndDate(e.target.value)} min={formStartDate} style={{ width: '100%' }} />
+              {(() => {
+                const isSummer = formType === '특별휴가' && specialSubtype === '여름휴가';
+                const singleDate = formType === '반차' || formType === '시간차' || isSummer;
+                const label = isSummer ? '시작일 (전체 연속 휴가의 첫날)'
+                  : singleDate ? '날짜' : '시작일';
+                return (
+                  <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+                    <div style={{ flex: 1 }}>
+                      <label className="form-label">{label}</label>
+                      <input type="date" className="form-input" value={formStartDate}
+                        onChange={(e) => { setFormStartDate(e.target.value); if (singleDate) setFormEndDate(e.target.value); }}
+                        style={{ width: '100%' }} />
+                    </div>
+                    {!singleDate && (
+                      <div style={{ flex: 1 }}>
+                        <label className="form-label">종료일</label>
+                        <input type="date" className="form-input" value={formEndDate} onChange={(e) => setFormEndDate(e.target.value)} min={formStartDate} style={{ width: '100%' }} />
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
 
               {/* 차감 미리보기 */}
               <div style={{ padding: '10px 14px', borderRadius: 8, background: '#f8f9fa', marginBottom: 16, fontSize: '0.85rem' }}>
@@ -857,7 +1016,14 @@ function RefundCalc() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    api.journal.members().then(res => setMembers((res.members || []).filter((m: any) => m.login_type !== 'freelancer' && m.role !== 'freelancer'))).catch(() => {});
+    api.journal.members().then(res => {
+      const filtered = (res.members || []).filter((m: any) => m.login_type !== 'freelancer' && m.role !== 'freelancer');
+      // 퇴사자는 목록 하단으로
+      setMembers([
+        ...filtered.filter((m: any) => m.role !== 'resigned'),
+        ...filtered.filter((m: any) => m.role === 'resigned'),
+      ]);
+    }).catch(() => {});
   }, []);
 
   const calculate = async () => {

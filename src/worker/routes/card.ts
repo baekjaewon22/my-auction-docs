@@ -5,7 +5,8 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 const card = new Hono<AuthEnv>();
 card.use('*', authMiddleware);
 
-const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+// cc_ref 제외 (회계장부 카드내역 열람 제한)
+const ACCOUNTING_ROLES = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'] as const;
 const EDIT_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 const DELETE_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'] as const; // 삭제는 보조 제외
 
@@ -16,7 +17,38 @@ card.put('/user/:userId', requireRole(...EDIT_ROLES), async (c) => {
   const db = c.env.DB;
   await db.prepare("UPDATE users SET card_number = ?, updated_at = datetime('now') WHERE id = ?")
     .bind(card_number || '', userId).run();
-  return c.json({ success: true });
+
+  // 카드번호 변경 시 전체 card_transactions 재매칭 (last-4 기준)
+  const usersResult = await db.prepare(
+    "SELECT id, card_number, branch FROM users WHERE card_number != '' AND approved = 1"
+  ).all();
+  const last4Map: Record<string, { user_id: string; branch: string }> = {};
+  for (const u of usersResult.results as any[]) {
+    const cards = (u.card_number || '').split(',');
+    for (const card of cards) {
+      const num = card.trim().replace(/[^0-9]/g, '');
+      if (num.length >= 4) last4Map[num.slice(-4)] = { user_id: u.id, branch: u.branch };
+      else if (num.length > 0) last4Map[num] = { user_id: u.id, branch: u.branch };
+    }
+  }
+
+  const allTxns = await db.prepare("SELECT id, card_number, user_id, branch FROM card_transactions").all();
+  let rematched = 0;
+  for (const t of allTxns.results as any[]) {
+    const numOnly = (t.card_number || '').replace(/[^0-9]/g, '');
+    const last4 = numOnly.length >= 4 ? numOnly.slice(-4) : numOnly;
+    const match = last4 ? last4Map[last4] : null;
+    const newUserId = match?.user_id ?? null;
+    const newBranch = match?.branch || '';
+    const newCategory = newBranch || '기타';
+    if ((t.user_id || null) !== newUserId || (t.branch || '') !== newBranch) {
+      await db.prepare("UPDATE card_transactions SET user_id = ?, branch = ?, category = ? WHERE id = ?")
+        .bind(newUserId, newBranch, newCategory, t.id).run();
+      rematched++;
+    }
+  }
+
+  return c.json({ success: true, rematched });
 });
 
 // POST /api/card/upload — 신한은행 엑셀 업로드 (JSON 파싱 후 전달)

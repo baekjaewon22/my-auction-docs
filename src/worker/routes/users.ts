@@ -94,7 +94,7 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   const { role, branch, department } = await c.req.json<{ role?: string; branch?: string; department?: string }>();
   const db = c.env.DB;
 
-  if (role && !['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst', 'manager', 'member', 'resigned'].includes(role)) {
+  if (role && !['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst', 'manager', 'member', 'support', 'resigned'].includes(role)) {
     return c.json({ error: '유효하지 않은 역할입니다.' }, 400);
   }
 
