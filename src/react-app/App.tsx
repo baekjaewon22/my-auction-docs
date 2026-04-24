@@ -29,6 +29,7 @@ import AdminNotes from './pages/AdminNotes';
 import Cooperation from './pages/Cooperation';
 import RoomReservation from './pages/RoomReservation';
 import ContractTracker from './pages/ContractTracker';
+import Print from './pages/Print';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -125,6 +126,8 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* 인쇄 전용 (서버 Puppeteer가 접근) — 인증 불필요, printToken으로 데이터 조회 */}
+        <Route path="/print/:docId" element={<Print />} />
         <Route
           path="/"
           element={

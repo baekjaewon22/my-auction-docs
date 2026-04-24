@@ -513,9 +513,11 @@ leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'admin',
   await db.prepare("UPDATE leave_requests SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
     .bind(requestId).run();
 
-  // 차감된 연차 복원
+  // 차감된 휴가 복원 — 차감과 동일 기준으로 복원 (monthly 유형 사용자는 monthly_used에서)
   if (req.leave_type !== '특별휴가') {
-    if (req.leave_type === '월차') {
+    const al = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(req.user_id).first<{ leave_type: string }>();
+    const userType = al?.leave_type || 'annual';
+    if (userType === 'monthly' || req.leave_type === '월차') {
       await db.prepare("UPDATE annual_leave SET monthly_used = MAX(0, monthly_used - ?), updated_at = datetime('now') WHERE user_id = ?")
         .bind(req.days, req.user_id).run();
     } else {
@@ -630,9 +632,12 @@ leave.delete('/requests/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'a
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(id).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
 
-  // 승인된 건이면 차감된 연차 복원
+  // 승인된 건이면 차감된 휴가 복원 — 차감 당시와 동일한 기준(사용자의 annual_leave.leave_type)으로 복원
   if (req.status === 'approved' && req.leave_type !== '특별휴가') {
-    if (req.leave_type === '월차') {
+    const al = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(req.user_id).first<{ leave_type: string }>();
+    const userType = al?.leave_type || 'annual';
+    if (userType === 'monthly' || req.leave_type === '월차') {
+      // 월차형 사용자는 모든 반차/연차/시간차를 monthly_used로 차감했으므로 동일하게 복원
       await db.prepare("UPDATE annual_leave SET monthly_used = MAX(0, monthly_used - ?), updated_at = datetime('now') WHERE user_id = ?")
         .bind(req.days, req.user_id).run();
     } else {

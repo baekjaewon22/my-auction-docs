@@ -196,15 +196,28 @@ sales.get('/contract-tracker', async (c) => {
   }
   else return c.json({ error: 'period 오류' }, 400);
 
-  // 대상 사용자: 프리랜서·정규직 컨설턴트 (role='member' or 'manager')
+  // 대상 사용자: 프리랜서·정규직 컨설턴트 (member/manager) + 영업 참여 admin/director (본부장·이사 등)
   // 제외: 본사 관리, 명도팀, support
+  // admin/director는 실제 계약 기록이 있는 경우에만 포함 — 비영업 관리자는 자동 제외
   const usersResult = await db.prepare(`
     SELECT id, name, branch, department, position_title, role, login_type
     FROM users
     WHERE approved = 1
-      AND role IN ('member', 'manager')
       AND branch != '본사 관리'
       AND department != '명도팀'
+      AND (
+        role IN ('member', 'manager')
+        OR (
+          role IN ('admin', 'director')
+          AND EXISTS (
+            SELECT 1 FROM sales_records sr
+            WHERE sr.user_id = users.id
+              AND sr.type = '계약'
+              AND sr.status != 'refunded'
+              AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
+          )
+        )
+      )
   `).all<any>();
   const eligibleUsers = (usersResult.results || []);
 

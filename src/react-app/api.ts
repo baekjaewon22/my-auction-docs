@@ -494,15 +494,26 @@ export const api = {
 
   drive: {
     settings: () =>
-      request<{ settings: any; last_backup_at: string | null; pending_count: number }>('/drive/settings'),
-    saveSettings: (data: Partial<{ root_folder_id: string; root_folder_name: string; folder_pattern: string; filename_pattern: string; connected_email: string }>) =>
+      request<{ settings: any; last_backup_at: string | null; pending_count: number; failed_last_7d: number }>('/drive/settings'),
+    saveSettings: (data: Partial<{ root_folder_name: string; folder_pattern: string; filename_pattern: string; auto_enabled: boolean }>) =>
       request<{ success: boolean }>('/drive/settings', { method: 'PUT', body: JSON.stringify(data) }),
+    disconnect: () =>
+      request<{ success: boolean }>('/drive/disconnect', { method: 'POST' }),
+    oauthStart: () =>
+      request<{ url: string; state: string }>('/drive/oauth/start'),
     pending: () =>
       request<{ documents: Array<{ id: string; title: string; template_id: string | null; template_name: string | null; branch: string; department: string; author_name: string; author_branch: string; author_department: string; author_position: string | null; approved_at: string; created_at: string; updated_at: string }> }>('/drive/pending'),
-    log: (data: { document_id: string; status: 'success' | 'failed'; drive_file_id?: string; drive_folder_path?: string; file_size?: number; error_message?: string }) =>
-      request<{ success: boolean }>('/drive/log', { method: 'POST', body: JSON.stringify(data) }),
-    logs: (limit = 20) =>
+    logs: (limit = 30) =>
       request<{ logs: any[] }>('/drive/logs?limit=' + limit),
+    runNow: () =>
+      request<{ processed: number; success: number; failed: number; skipped: number; error?: string }>('/drive/run-now', { method: 'POST' }),
+    testSend: (document_ids: string[]) =>
+      request<{ processed: number; success: number; failed: number; error?: string; details?: Array<{ id: string; title: string; status: 'success' | 'failed'; folder?: string; file_id?: string; error?: string }> }>('/drive/test-send', {
+        method: 'POST',
+        body: JSON.stringify({ document_ids }),
+      }),
+    testToken: () =>
+      request<{ success: boolean; expires_in?: number; error?: string }>('/drive/test-access-token'),
   },
 
   rooms: {

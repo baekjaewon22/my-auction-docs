@@ -467,7 +467,7 @@ export default function Leave() {
 
       {/* 잔여 현황 카드 */}
       {balance && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
+        <div className="leave-balance-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
           {balance.entitlement.type === 'annual' ? (
             <>
               <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #1a73e8' }}>
@@ -544,7 +544,7 @@ export default function Leave() {
       </div>
 
       {/* 탭 */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e8eaed', marginBottom: 20 }}>
+      <div className="leave-tabs" style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e8eaed', marginBottom: 20 }}>
         <button onClick={() => setTab('my')} style={{ padding: '10px 20px', fontWeight: tab === 'my' ? 700 : 400, color: tab === 'my' ? '#1a73e8' : '#5f6368', background: 'none', border: 'none', borderBottomWidth: 2, borderBottomStyle: 'solid', borderBottomColor: tab === 'my' ? '#1a73e8' : 'transparent', cursor: 'pointer', fontSize: '0.9rem' }}>
           <Calendar size={14} style={{ marginRight: 4, verticalAlign: 'middle' }} /> 내 신청 내역
         </button>

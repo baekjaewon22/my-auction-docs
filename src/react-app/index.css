@@ -1550,6 +1550,38 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   box-shadow: var(--shadow-lg);
 }
 
+.modal-content {
+  background: #fff;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--gray-100);
+}
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.modal-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--gray-500);
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+}
+.modal-close:hover { background: var(--gray-100); color: var(--gray-700); }
+
 .modal h3 {
   margin-bottom: 16px;
   font-size: 1.1rem;
@@ -2983,37 +3015,25 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   background: #f1f3f4;
 }
 
-/* 호버 팝업 */
+/* 확대 버전: 전체이력 테이블에 적용 */
+.journal-month-table-lg {
+  font-size: 0.85rem;
+}
+.journal-month-table-lg th,
+.journal-month-table-lg td {
+  padding: 6px 4px;
+}
+.journal-month-table-lg th {
+  font-size: 0.8rem;
+}
+.journal-month-table-lg tbody tr {
+  height: 40px;
+}
+
+/* 호버 팝업 — JS fixed-position 렌더링으로 처리 (컨테이너 overflow 영향 제거) */
 .journal-month-dot-wrap {
   display: flex; flex-direction: column; align-items: center; gap: 1;
   cursor: pointer;
-}
-.journal-hover-popup {
-  display: none;
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  background: #fff;
-  border: 1px solid var(--gray-200);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
-  padding: 8px 10px;
-  min-width: 200px;
-  max-width: 280px;
-  z-index: 100;
-  text-align: left;
-  font-size: 0.72rem;
-  pointer-events: none;
-}
-.journal-month-dot-wrap:hover .journal-hover-popup {
-  display: block;
-}
-/* 팝업이 위로 잘리면 아래로 */
-.journal-month-table tr:first-child .journal-hover-popup,
-.journal-month-table tr:nth-child(2) .journal-hover-popup {
-  bottom: auto;
-  top: 100%;
 }
 
 @keyframes journalSlideIn {
@@ -3692,6 +3712,107 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   /* 업무성과 모바일: 테이블 숨기고 카드 표시 */
   .sales-desktop-table { display: none !important; }
   .sales-mobile-cards { display: flex !important; }
+
+  /* 업무성과 모바일 최적화 — 레이아웃만 조정, 클릭 영역 건드리지 않음 */
+  .sales-summary-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
+  .sales-summary-grid .card {
+    padding: 10px 12px !important;
+    border-left-width: 3px !important;
+  }
+  .sales-summary-grid .card > div:first-child { font-size: 0.7rem !important; }
+  .sales-summary-grid .card > div:last-child { font-size: 1.05rem !important; }
+
+  /* 필터 바: 월 입력만 가로 전체로 분리, 나머지는 기본 flex-wrap에 맡김 */
+  .sales-filter-bar input[type="month"] {
+    font-size: 0.8rem;
+  }
+
+  /* 페이지 헤더의 버튼들이 모바일에서 너무 크지 않게 */
+  .page-header .btn { font-size: 0.8rem; padding: 6px 10px; }
+
+  /* 계약건수 랭킹 — 모바일 원형 압축 */
+  .sales-ranking > div:nth-child(2) {
+    gap: 6px !important;
+    justify-content: center;
+    flex-wrap: nowrap !important;
+  }
+  .sales-ranking > div:nth-child(2) > div {
+    flex: 0 0 auto !important;
+    min-width: 0 !important;
+    width: 92px !important;
+    height: 92px !important;
+    padding: 4px !important;
+    border-radius: 50% !important;
+    border-width: 2px !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 1px !important;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+  /* 메달(순위) 원 */
+  .sales-ranking > div:nth-child(2) > div > div:first-child {
+    width: 18px !important;
+    height: 18px !important;
+    min-width: 18px !important;
+    font-size: 0.68rem !important;
+  }
+  /* 이름 */
+  .sales-ranking > div:nth-child(2) > div > div:nth-child(2) > div:first-child {
+    font-size: 0.72rem !important;
+    line-height: 1.1 !important;
+    white-space: nowrap;
+    overflow: hidden;
+    max-width: 84px;
+  }
+  /* 지사·금액 라인 (공간 확보 위해 숨김) */
+  .sales-ranking > div:nth-child(2) > div > div:nth-child(2) > div:nth-child(2) {
+    display: none !important;
+  }
+  /* 건수 (가장 강조) */
+  .sales-ranking > div:nth-child(2) > div > div:last-child {
+    margin: 0 !important;
+    font-size: 0.95rem !important;
+    line-height: 1 !important;
+  }
+
+  /* 프리미엄 필터 바 — 모바일 폰트/패딩 축소 */
+  .premium-filter-bar {
+    gap: 3px !important;
+    padding: 3px !important;
+  }
+  .premium-filter-btn {
+    padding: 5px 10px !important;
+    font-size: 0.72rem !important;
+  }
+
+  /* 연차관리 — 잔여 현황 카드 2×2 */
+  .leave-balance-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 8px !important;
+    margin-bottom: 16px !important;
+  }
+  .leave-balance-grid .card {
+    padding: 10px 12px !important;
+    border-left-width: 3px !important;
+  }
+  .leave-balance-grid .card > div:first-child { font-size: 0.68rem !important; }
+  .leave-balance-grid .card > div:nth-child(2) { font-size: 1.1rem !important; }
+
+  /* 연차관리 — 탭 버튼 폰트·패딩 축소 */
+  .leave-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap !important;
+  }
+  .leave-tabs button {
+    padding: 8px 10px !important;
+    font-size: 0.75rem !important;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .leave-tabs button svg { width: 12px !important; height: 12px !important; }
 }
 
 /* ========================= */
@@ -4915,7 +5036,40 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   margin-top: 8px;
 }
 @media (max-width: 720px) {
-  .rr-branch-grid { grid-template-columns: 1fr; }
+  .rr-branch-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .rr-branch-tile {
+    padding: 16px 14px 14px !important;
+    min-height: 150px !important;
+    border-radius: 14px !important;
+  }
+  .rr-branch-tile-icon-box {
+    width: 36px !important;
+    height: 36px !important;
+  }
+  .rr-branch-tile-icon-box svg { width: 18px !important; height: 18px !important; }
+  .rr-branch-tile-code {
+    font-size: 0.62rem !important;
+    padding: 3px 7px !important;
+  }
+  .rr-branch-tile-name {
+    font-size: 1rem !important;
+    margin-top: 10px !important;
+  }
+  .rr-branch-tile-sub {
+    font-size: 0.7rem !important;
+    margin: 2px 0 8px !important;
+  }
+  .rr-branch-tile-rooms { gap: 4px !important; }
+  .rr-branch-tile-rooms > * {
+    font-size: 0.62rem !important;
+    padding: 2px 6px !important;
+  }
+  .rr-branch-tile-arrow {
+    display: none !important;
+  }
 }
 .rr-branch-tile {
   position: relative;

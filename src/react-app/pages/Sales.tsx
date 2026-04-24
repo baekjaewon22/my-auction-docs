@@ -77,17 +77,26 @@ export default function Sales() {
   const [branchDefaultApplied, setBranchDefaultApplied] = useState(false);
 
   // 총무 담당/보조: 알림톡 설정(담당 지사)의 첫 번째 지사를 기본 필터로 적용
+  // race condition 방지 — 사용자가 이미 지사를 선택했으면 덮어쓰지 않음
   useEffect(() => {
     if (branchDefaultApplied) return;
     if (!currentUser?.id) return;
     if (!['accountant', 'accountant_asst'].includes(currentUser.role || '')) return;
     api.users.getAlimtalkSettings(currentUser.id).then(res => {
-      const branches = (res.branches || '').split(',').filter(Boolean);
-      if (branches.length > 0) setFilterBranch(branches[0]);
-      else if (currentUser.branch) setFilterBranch(currentUser.branch);
+      setFilterBranch(prev => {
+        if (prev) return prev; // 사용자 수동 선택 우선
+        const branches = (res.branches || '').split(',').filter(Boolean);
+        if (branches.length > 0) return branches[0];
+        if (currentUser.branch) return currentUser.branch;
+        return prev;
+      });
       setBranchDefaultApplied(true);
     }).catch(() => {
-      if (currentUser.branch) setFilterBranch(currentUser.branch);
+      setFilterBranch(prev => {
+        if (prev) return prev;
+        if (currentUser.branch) return currentUser.branch;
+        return prev;
+      });
       setBranchDefaultApplied(true);
     });
   }, [currentUser?.id]);
@@ -473,7 +482,7 @@ export default function Sales() {
       </div>
 
       {/* 요약 카드 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+      <div className="sales-summary-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #1a73e8' }}>
           <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>계약건수 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({rankingYearly ? `${new Date().getFullYear()}년` : `${rankingPeriodIdx * 2 + 1}~${rankingPeriodIdx * 2 + 2}월`})</span></div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#1a73e8' }}>{contractCount}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>건</span></div>
@@ -628,7 +637,7 @@ export default function Sales() {
       })()}
 
       {/* 필터 */}
-      <div className="filter-bar" style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div className="filter-bar sales-filter-bar" style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           <input type="month" className="form-input" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} style={{ width: 140 }} title="시작월" />
           <span style={{ color: '#9aa0a6' }}>~</span>
@@ -1657,7 +1666,7 @@ export default function Sales() {
       {/* 매출 목록 (모바일 카드) */}
       <div className="sales-mobile-cards">
         {(() => {
-          const sorted = [...records].filter(r => {
+          const sorted = [...branchRecords].filter(r => {
             if (!searchQuery) return true;
             const q = searchQuery.toLowerCase();
             const qDigits = q.replace(/\D/g, '');

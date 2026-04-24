@@ -34,13 +34,17 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
   if (signatures.length > 0 && authorSig) usedSigIds.add((authorSig as any).id || '');
   if (approvalSteps.length > 0) {
     for (const step of approvalSteps) {
-      // 해당 step의 서명 찾기
-      let stepSig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1 && !usedSigIds.has((s as any).id || ''));
-      // 대리 승인: CEO step이면 직인 매칭
-      if (!stepSig && step.status === 'approved' && (step as any).approver_role === 'ceo') {
+      const isCeoStep = (step as any).approver_role === 'ceo';
+      let stepSig: Signature | undefined;
+      // CEO step은 대표 직인(/LNCstemp.png)을 최우선 매칭
+      if (isCeoStep) {
         stepSig = signatures.find(s => s.signature_data === '/LNCstemp.png' && !usedSigIds.has((s as any).id || ''));
       }
-      // 그래도 없으면 남은 서명 중 순서대로
+      // 일반: 해당 step의 approver 본인 서명
+      if (!stepSig) {
+        stepSig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1 && !usedSigIds.has((s as any).id || ''));
+      }
+      // 그래도 없으면 남은 서명 순서대로
       if (!stepSig && step.status === 'approved') {
         stepSig = signatures.find(s => signatures.indexOf(s) >= 1 && !usedSigIds.has((s as any).id || ''));
       }
@@ -108,7 +112,9 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
                 <div className="approval-slot-empty">
                   {slot.canSign && (
                     <button className="approval-sign-btn" onClick={() => onSign(idx === 0 ? 'author' : 'approver', slot.approverRole)}>
-                      서명
+                      {slot.approverRole === 'ceo' && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUserRole || '')
+                        ? '대표 직인'
+                        : '서명'}
                     </button>
                   )}
                 </div>

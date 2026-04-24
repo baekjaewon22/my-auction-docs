@@ -35,6 +35,20 @@ function toDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+const MONTH_TYPE_COLORS: Record<string, string> = {
+  '입찰': '#1a73e8', '임장': '#188038', '미팅': '#e65100',
+  '사무': '#7b1fa2', '브리핑자료제출': '#0d47a1', '개인': '#9aa0a6',
+};
+
+interface HoverCellInfo {
+  memberName: string;
+  dateStr: string;
+  hasCheckIn: boolean;
+  hasCheckOut: boolean;
+  dayEntries: JournalEntry[];
+  rect: { left: number; top: number; bottom: number; width: number };
+}
+
 export default function Journal() {
   const { user } = useAuthStore();
   const [entries, setEntries] = useState<JournalEntry[]>([]);
@@ -45,6 +59,7 @@ export default function Journal() {
   const [formDate, setFormDate] = useState(getToday());
   const [activeBranch, setActiveBranch] = useState(0);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [hoverCell, setHoverCell] = useState<HoverCellInfo | null>(null);
 
   // 캘린더 선택 날짜
   const [selectedDate, setSelectedDate] = useState<Date>(() => {
@@ -107,7 +122,13 @@ export default function Journal() {
   const currentBranch = isCeoPlus ? branches[activeBranch] : (user?.branch || '');
 
   const renderBranchView = (branch: string) => {
-    const branchMembers = members.filter((m) => (m.branch === branch || (!branch && !m.branch)) && m.login_type !== 'freelancer' && m.role !== 'resigned');
+    const HIDDEN_DEPTS = ['명도팀', '지원팀'];
+    const branchMembers = members.filter((m) =>
+      (m.branch === branch || (!branch && !m.branch))
+      && m.login_type !== 'freelancer'
+      && m.role !== 'resigned'
+      && !HIDDEN_DEPTS.includes(m.department)
+    );
     const departments = [...new Set(branchMembers.map((m) => m.department).filter(Boolean))].sort();
     const noDeptMembers = branchMembers.filter((m) => !m.department);
 
@@ -295,7 +316,10 @@ export default function Journal() {
             <div style={{ display: 'flex', gap: 4 }}>
               {(() => {
                 const hBranch = isCeoPlus && branches.length > 1 ? branches[historyBranch] : (user?.branch || '');
-                const depts = [...new Set(members.filter(m => m.branch === hBranch && m.department).map(m => m.department))].sort();
+                const HIDDEN_DEPTS = ['명도팀', '지원팀'];
+                const depts = [...new Set(
+                  members.filter(m => m.branch === hBranch && m.department && !HIDDEN_DEPTS.includes(m.department)).map(m => m.department)
+                )].sort();
                 return (
                   <>
                     <button className={`filter-btn ${historyDept === '' ? 'active' : ''}`} onClick={() => setHistoryDept('')}>전체</button>
@@ -340,10 +364,12 @@ export default function Journal() {
               if (day !== 0 && day !== 6) bizDays.push(d);
             }
 
+            const HIDDEN_DEPTS = ['명도팀', '지원팀'];
             const deptGroups: Record<string, typeof deptMembers> = {};
             deptMembers.forEach(m => {
               const dept = m.department || '경영진';
               if (dept === '경영진' && !canSeeAll) return;
+              if (HIDDEN_DEPTS.includes(dept)) return;
               if (!deptGroups[dept]) deptGroups[dept] = [];
               deptGroups[dept].push(m);
             });
@@ -355,24 +381,24 @@ export default function Journal() {
 
             const monthEntries = entries.filter(e => e.target_date.startsWith(historyMonth));
             const dayLabels = ['일', '월', '화', '수', '목', '금', '토'];
-            const typeColors: Record<string, string> = { '입찰': '#1a73e8', '임장': '#188038', '미팅': '#e65100', '사무': '#7b1fa2', '브리핑자료제출': '#0d47a1', '개인': '#9aa0a6' };
+            const typeColors = MONTH_TYPE_COLORS;
 
             return (
               <div style={{ overflowX: 'auto' }}>
                 {Object.entries(deptGroups).map(([dept, dMembers]) => (
-                  <div key={dept} style={{ marginBottom: 20 }}>
-                    <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#5f6368', marginBottom: 6, padding: '4px 8px', background: '#f1f3f4', borderRadius: 6, display: 'inline-block' }}>{dept}</div>
-                    <table className="journal-month-table">
+                  <div key={dept} style={{ marginBottom: 24 }}>
+                    <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#3c4043', marginBottom: 8, padding: '6px 12px', background: '#f1f3f4', borderRadius: 6, display: 'inline-block' }}>{dept}</div>
+                    <table className="journal-month-table journal-month-table-lg">
                       <thead>
                         <tr>
-                          <th style={{ minWidth: 80, position: 'sticky', left: 0, background: '#fff', zIndex: 2 }}>이름</th>
+                          <th style={{ minWidth: 110, position: 'sticky', left: 0, background: '#fff', zIndex: 2, fontSize: '0.82rem' }}>이름</th>
                           {bizDays.map(d => {
                             const date = new Date(year, month - 1, d);
                             const dayName = dayLabels[date.getDay()];
                             return (
-                              <th key={d} style={{ minWidth: 44, textAlign: 'center', fontSize: '0.68rem' }}>
+                              <th key={d} style={{ minWidth: 56, textAlign: 'center', fontSize: '0.78rem' }}>
                                 <div>{d}</div>
-                                <div style={{ color: '#9aa0a6', fontWeight: 400 }}>{dayName}</div>
+                                <div style={{ color: '#9aa0a6', fontWeight: 400, fontSize: '0.72rem' }}>{dayName}</div>
                               </th>
                             );
                           })}
@@ -381,9 +407,9 @@ export default function Journal() {
                       <tbody>
                         {dMembers.map(m => (
                           <tr key={m.id} style={m.role === 'manager' ? { background: '#f8faff' } : undefined}>
-                            <td style={{ fontWeight: 600, fontSize: '0.75rem', position: 'sticky', left: 0, background: m.role === 'manager' ? '#f8faff' : '#fff', zIndex: 1, whiteSpace: 'nowrap' }}>
+                            <td style={{ fontWeight: 600, fontSize: '0.88rem', position: 'sticky', left: 0, background: m.role === 'manager' ? '#f8faff' : '#fff', zIndex: 1, whiteSpace: 'nowrap', padding: '6px 8px' }}>
                               {m.name}
-                              <span style={{ color: '#9aa0a6', fontSize: '0.65rem', marginLeft: 4 }}>{m.position_title || ''}</span>
+                              <span style={{ color: '#9aa0a6', fontSize: '0.72rem', marginLeft: 4 }}>{m.position_title || ''}</span>
                             </td>
                             {bizDays.map(d => {
                               const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
@@ -392,47 +418,34 @@ export default function Journal() {
                               const types = [...new Set(dayEntries.map(e => e.activity_type))];
 
                               return (
-                                <td key={d} className="journal-month-cell" style={{ textAlign: 'center', padding: 2, position: 'relative' }}>
+                                <td key={d} className="journal-month-cell" style={{ textAlign: 'center', padding: 4, position: 'relative' }}>
                                   {count > 0 ? (() => {
-                                    // 현장출퇴근 여부 확인
                                     const hasCheckIn = dayEntries.some(e => { try { return JSON.parse(e.data).fieldCheckIn; } catch { return false; } });
                                     const hasCheckOut = dayEntries.some(e => { try { return JSON.parse(e.data).fieldCheckOut; } catch { return false; } });
                                     return (
-                                    <div className="journal-month-dot-wrap">
-                                      <div style={{ display: 'flex', gap: 1, justifyContent: 'center', alignItems: 'center' }}>
-                                        {hasCheckIn && <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#188038', display: 'inline-block', border: '1px solid #fff' }} title="현장출근" />}
+                                    <div
+                                      className="journal-month-dot-wrap"
+                                      onMouseEnter={(e) => {
+                                        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                        setHoverCell({
+                                          memberName: m.name, dateStr, hasCheckIn, hasCheckOut, dayEntries,
+                                          rect: { left: r.left, top: r.top, bottom: r.bottom, width: r.width },
+                                        });
+                                      }}
+                                      onMouseLeave={() => setHoverCell(null)}
+                                    >
+                                      <div style={{ display: 'flex', gap: 2, justifyContent: 'center', alignItems: 'center' }}>
+                                        {hasCheckIn && <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#188038', display: 'inline-block', border: '1px solid #fff' }} title="현장출근" />}
                                         {types.slice(0, 3).map((t, i) => (
-                                          <span key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: typeColors[t] || '#999', display: 'inline-block' }} />
+                                          <span key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: typeColors[t] || '#999', display: 'inline-block' }} />
                                         ))}
-                                        {hasCheckOut && <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#d93025', display: 'inline-block', border: '1px solid #fff' }} title="현장퇴근" />}
+                                        {hasCheckOut && <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#d93025', display: 'inline-block', border: '1px solid #fff' }} title="현장퇴근" />}
                                       </div>
-                                      <span style={{ fontSize: '0.6rem', color: '#5f6368' }}>{count}</span>
-                                      <div className="journal-hover-popup">
-                                        <div style={{ fontWeight: 600, marginBottom: 4 }}>{m.name} — {dateStr}</div>
-                                        {/* 현장출퇴근 표시 */}
-                                        {(hasCheckIn || hasCheckOut) && (
-                                          <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
-                                            {hasCheckIn && <span style={{ padding: '1px 6px', borderRadius: 8, fontSize: '0.6rem', fontWeight: 600, background: '#e8f5e9', color: '#188038' }}>현장출근</span>}
-                                            {hasCheckOut && <span style={{ padding: '1px 6px', borderRadius: 8, fontSize: '0.6rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>현장퇴근</span>}
-                                          </div>
-                                        )}
-                                        {dayEntries.map(entry => {
-                                          const ed = (() => { try { return JSON.parse(entry.data); } catch { return {}; } })();
-                                          return (
-                                            <div key={entry.id} style={{ padding: '3px 0', borderBottom: '1px solid #f0f0f0', fontSize: '0.7rem' }}>
-                                              <span style={{ background: (typeColors[entry.activity_type] || '#999') + '18', color: typeColors[entry.activity_type] || '#999', padding: '1px 6px', borderRadius: 8, fontSize: '0.65rem', fontWeight: 600 }}>{entry.activity_type}</span>
-                                              {entry.activity_subtype && <span style={{ marginLeft: 4, color: '#5f6368' }}>{entry.activity_subtype}</span>}
-                                              {ed.timeFrom && <span style={{ marginLeft: 4, color: '#9aa0a6' }}>{ed.timeFrom}~{ed.timeTo}</span>}
-                                              {(ed.client || ed.bidder) && <div style={{ color: '#333', marginTop: 1 }}>고객: {ed.client || ed.bidder}</div>}
-                                              {ed.caseNo && <div style={{ color: '#9aa0a6' }}>사건: {ed.caseNo}</div>}
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
+                                      <span style={{ fontSize: '0.72rem', color: '#5f6368', fontWeight: 600 }}>{count}</span>
                                     </div>);
                                     })()
                                   : (
-                                    <span style={{ color: '#e0e0e0', fontSize: '0.65rem' }}>-</span>
+                                    <span style={{ color: '#e0e0e0', fontSize: '0.8rem' }}>-</span>
                                   )}
                                 </td>
                               );
@@ -464,6 +477,59 @@ export default function Journal() {
           onClose={() => setShowForm(false)}
         />
       )}
+
+      {hoverCell && (() => {
+        const POPUP_W = 260;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const cx = hoverCell.rect.left + hoverCell.rect.width / 2;
+        const spaceAbove = hoverCell.rect.top;
+        const preferBelow = spaceAbove < 180;
+        const style: React.CSSProperties = {
+          position: 'fixed',
+          left: Math.max(8, Math.min(vw - POPUP_W - 8, cx - POPUP_W / 2)),
+          zIndex: 9999,
+          width: POPUP_W,
+          maxWidth: POPUP_W,
+          maxHeight: vh - 20,
+          overflowY: 'auto',
+          background: '#fff',
+          border: '1px solid #e8eaed',
+          borderRadius: 8,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+          padding: '8px 10px',
+          fontSize: '0.72rem',
+          textAlign: 'left',
+          pointerEvents: 'none',
+        };
+        if (preferBelow) style.top = hoverCell.rect.bottom + 6;
+        else style.top = Math.max(8, hoverCell.rect.top - 6 - 200);
+        const tc = MONTH_TYPE_COLORS;
+        return (
+          <div style={style}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>{hoverCell.memberName} — {hoverCell.dateStr}</div>
+            {(hoverCell.hasCheckIn || hoverCell.hasCheckOut) && (
+              <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+                {hoverCell.hasCheckIn && <span style={{ padding: '1px 6px', borderRadius: 8, fontSize: '0.6rem', fontWeight: 600, background: '#e8f5e9', color: '#188038' }}>현장출근</span>}
+                {hoverCell.hasCheckOut && <span style={{ padding: '1px 6px', borderRadius: 8, fontSize: '0.6rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>현장퇴근</span>}
+              </div>
+            )}
+            {hoverCell.dayEntries.map(entry => {
+              const ed = (() => { try { return JSON.parse(entry.data); } catch { return {} as any; } })();
+              const color = tc[entry.activity_type] || '#999';
+              return (
+                <div key={entry.id} style={{ padding: '3px 0', borderBottom: '1px solid #f0f0f0' }}>
+                  <span style={{ background: color + '18', color, padding: '1px 6px', borderRadius: 8, fontSize: '0.65rem', fontWeight: 600 }}>{entry.activity_type}</span>
+                  {entry.activity_subtype && <span style={{ marginLeft: 4, color: '#5f6368' }}>{entry.activity_subtype}</span>}
+                  {ed.timeFrom && <span style={{ marginLeft: 4, color: '#9aa0a6' }}>{ed.timeFrom}~{ed.timeTo}</span>}
+                  {(ed.client || ed.bidder) && <div style={{ color: '#333', marginTop: 1 }}>고객: {ed.client || ed.bidder}</div>}
+                  {ed.caseNo && <div style={{ color: '#9aa0a6' }}>사건: {ed.caseNo}</div>}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -27,9 +27,10 @@ async function buildApprovalChain(db: D1Database, authorId: string): Promise<str
     if (!parentNode) break;
 
     if (parentNode.user_id) {
-      // 프리랜서는 결재선에서 제외
-      const approver = await db.prepare('SELECT login_type FROM users WHERE id = ?').bind(parentNode.user_id).first<{ login_type: string }>();
+      // 프리랜서·지원(support) 역할은 결재선에서 제외 — 지원팀/명도팀처럼 보고체계상 중간 노드는 건너뛰고 상위 결재자로 직행
+      const approver = await db.prepare('SELECT login_type, role FROM users WHERE id = ?').bind(parentNode.user_id).first<{ login_type: string; role: string }>();
       if (approver?.login_type === 'freelancer') { currentParentId = parentNode.parent_id; continue; }
+      if (approver?.role === 'support') { currentParentId = parentNode.parent_id; continue; }
       chain.push(parentNode.user_id);
     }
     currentParentId = parentNode.parent_id;
@@ -355,12 +356,44 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
   ).bind(id, user.sub).first<{ id: string; step_order: number }>();
 
   if (!myStep) {
-    // 결재선에 없어도 권한자는 대리 승인 가능
-    if (['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'manager'].includes(user.role)) {
-      // 모든 pending 단계를 승인 처리 (대리 서명자 기록)
+    // 대리 승인은 상위 권한(master/ceo/cc_ref/admin/accountant)만 가능 — manager 제외
+    // 현재 진행중 단계 1개만 승인 (cascade 방지). 프론트 double-submit 가드와 단일 단계 진행 조합으로
+    // 더블클릭 시에도 전체 일괄 승인은 발생하지 않음. 정당한 연쇄 프록시(관리자→CEO)는 허용.
+    if (['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role)) {
+      const headStep = await db.prepare(
+        "SELECT id, approver_id FROM approval_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order ASC LIMIT 1"
+      ).bind(id).first<{ id: string; approver_id: string }>();
+      if (!headStep) return c.json({ error: '승인 대기 중인 단계가 없습니다.' }, 400);
       await db.prepare(
-        "UPDATE approval_steps SET status = 'approved', signed_at = datetime('now'), comment = ? WHERE document_id = ? AND status = 'pending'"
-      ).bind('proxy:' + user.sub, id).run();
+        "UPDATE approval_steps SET status = 'approved', signed_at = datetime('now'), comment = ? WHERE id = ?"
+      ).bind('proxy:' + user.sub, headStep.id).run();
+
+      // 대리 승인 시 서명 자동 삽입 — CEO는 대표 직인, 그 외는 본인 saved_signature
+      // 단, 이미 해당 결재자(또는 CEO 직인)의 서명이 있으면 건너뛰기 (중복 방지)
+      const approverInfo = await db.prepare('SELECT role, saved_signature FROM users WHERE id = ?')
+        .bind(headStep.approver_id).first<{ role: string; saved_signature: string }>();
+      const isCeoStep = approverInfo?.role === 'ceo';
+      if (isCeoStep) {
+        // CEO 슬롯: 대표 직인 이미 있는지 체크
+        const existingStamp = await db.prepare(
+          "SELECT id FROM signatures WHERE document_id = ? AND signature_data = '/LNCstemp.png'"
+        ).bind(id).first();
+        if (!existingStamp) {
+          await db.prepare(
+            "INSERT INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent) VALUES (?, ?, ?, '/LNCstemp.png', 'proxy-auto', ?)"
+          ).bind(crypto.randomUUID(), id, user.sub, 'proxy-by:' + user.sub).run();
+        }
+      } else if (approverInfo?.saved_signature) {
+        // 비 CEO: 원래 결재자의 저장 서명 (user_id는 결재자 본인)
+        const existingSig = await db.prepare(
+          'SELECT id FROM signatures WHERE document_id = ? AND user_id = ?'
+        ).bind(id, headStep.approver_id).first();
+        if (!existingSig) {
+          await db.prepare(
+            "INSERT INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent) VALUES (?, ?, ?, ?, 'proxy-auto', ?)"
+          ).bind(crypto.randomUUID(), id, headStep.approver_id, approverInfo.saved_signature, 'proxy-by:' + user.sub).run();
+        }
+      }
     } else {
       return c.json({ error: '현재 승인 차례가 아니거나 결재선에 포함되지 않았습니다.' }, 403);
     }

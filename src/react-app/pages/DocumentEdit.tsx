@@ -37,6 +37,8 @@ export default function DocumentEdit() {
   const [showCancelRequest, setShowCancelRequest] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [approving, setApproving] = useState(false);
+  const approvingRef = useRef(false);
 
   const STAMP_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
   const canUseStamp = STAMP_ROLES.includes(user?.role || '');
@@ -181,29 +183,42 @@ export default function DocumentEdit() {
 
   const handleApprove = async () => {
     if (!id) return;
-    // 승인 전 서명 필수 확인
-    const alreadySigned = signatures.some(s => s.user_id === user?.id);
-    if (!alreadySigned) {
-      // 저장된 서명이 있으면 자동 서명 후 승인
-      if (hasSavedSignature()) {
-        try {
-          await quickSign(id, 'approver', handleSignComplete);
-        } catch {
-          alert('서명 처리 중 오류가 발생했습니다.');
+    // 동시 클릭·중복 호출 방지 (ref로 동기 차단)
+    if (approvingRef.current) return;
+    approvingRef.current = true;
+    setApproving(true);
+    try {
+      const alreadySigned = signatures.some(s => s.user_id === user?.id);
+      if (!alreadySigned) {
+        if (hasSavedSignature()) {
+          try {
+            await quickSign(id, 'approver', handleSignComplete);
+          } catch {
+            alert('서명 처리 중 오류가 발생했습니다.');
+            return;
+          }
+        } else {
+          alert('승인 전 결재란에서 서명을 먼저 완료해주세요.');
           return;
         }
-      } else {
-        alert('승인 전 결재란에서 서명을 먼저 완료해주세요.');
+      }
+      const result = await api.documents.approve(id) as any;
+      if (result?.error) {
+        alert(result.error);
         return;
       }
+      if (result.final) {
+        alert('문서가 최종 승인되었습니다.');
+      } else {
+        alert('승인 완료. 다음 단계 결재자에게 전달됩니다.');
+      }
+      window.location.reload();
+    } catch (err: any) {
+      alert(err?.message || '승인 처리 중 오류가 발생했습니다.');
+    } finally {
+      approvingRef.current = false;
+      setApproving(false);
     }
-    const result = await api.documents.approve(id) as any;
-    if (result.final) {
-      alert('문서가 최종 승인되었습니다.');
-    } else {
-      alert('승인 완료. 다음 단계 결재자에게 전달됩니다.');
-    }
-    window.location.reload();
   };
 
   const handleReject = async () => {
@@ -317,9 +332,12 @@ export default function DocumentEdit() {
   // ApprovalBar에서 서명 버튼 클릭 시 — approverRole로 자동 판단
   const handleApprovalSign = async (type: 'author' | 'approver', approverRole?: string) => {
     if (!id) return;
+    if (approvingRef.current) return;
 
     // CEO 결재란 → 자동으로 대표 직인 (선택 팝업 없이)
     if (canUseStamp && approverRole === 'ceo') {
+      approvingRef.current = true;
+      setApproving(true);
       try {
         await api.signatures.sign(id, '/LNCstemp.png');
         if (type === 'approver') {
@@ -328,11 +346,14 @@ export default function DocumentEdit() {
         }
         window.location.reload();
       } catch (err: any) { alert(err.message); }
+      finally { approvingRef.current = false; setApproving(false); }
       return;
     }
 
     // 그 외 결재란 → 본인 서명 + (결재자면) 승인 처리
     if (hasSavedSignature()) {
+      approvingRef.current = true;
+      setApproving(true);
       try {
         await quickSign(id, type, async (sig: string, t: SignatureType) => {
           // 서명 완료 후: 결재자 슬롯이면 자동으로 승인 API 호출
@@ -350,6 +371,9 @@ export default function DocumentEdit() {
         });
       } catch (err: any) {
         alert(err.message || '서명 처리 중 오류가 발생했습니다.');
+      } finally {
+        approvingRef.current = false;
+        setApproving(false);
       }
       return;
     }
@@ -444,8 +468,10 @@ export default function DocumentEdit() {
 
           {canApprove && (
             <>
-              <button className="btn btn-success btn-sm" onClick={handleApprove}>승인</button>
-              <button className="btn btn-danger btn-sm" onClick={() => setShowReject(true)}>반려</button>
+              <button className="btn btn-success btn-sm" onClick={handleApprove} disabled={approving}>
+                {approving ? '승인 중...' : '승인'}
+              </button>
+              <button className="btn btn-danger btn-sm" onClick={() => setShowReject(true)} disabled={approving}>반려</button>
             </>
           )}
 

@@ -22,7 +22,10 @@ import analyticsRoute from './routes/analytics';
 import adminNotesRoute from './routes/admin-notes';
 import cooperationRoute from './routes/cooperation';
 import roomsRoute from './routes/rooms';
-import driveRoute from './routes/drive';
+import driveRoute, { OAUTH_STATE_SECRET } from './routes/drive';
+import { jwtVerify } from 'jose';
+import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
+import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
 import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -65,6 +68,117 @@ app.route('/api/admin-notes', adminNotesRoute);
 app.route('/api/cooperation', cooperationRoute);
 app.route('/api/rooms', roomsRoute);
 app.route('/api/drive', driveRoute);
+
+// OAuth 콜백 — Google이 /oauth/drive/callback 으로 redirect (최상위 경로)
+app.get('/oauth/drive/callback', async (c) => {
+  const code = c.req.query('code');
+  const state = c.req.query('state');
+  const error = c.req.query('error');
+  const db = c.env.DB;
+  const clientSecret = (c.env as any).GOOGLE_CLIENT_SECRET as string | undefined;
+
+  const renderPage = (title: string, body: string, color = '#d93025') => c.html(`
+    <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${title}</title></head>
+    <body style="font-family: sans-serif; padding: 40px; text-align: center;">
+      <h2 style="color:${color};">${title}</h2>
+      <div style="max-width:600px; margin:0 auto; color:#444; line-height:1.6;">${body}</div>
+      <p style="margin-top:24px;"><a href="/archive?drive=1" style="color:#1a73e8;">문서보관함으로 돌아가기</a></p>
+    </body></html>
+  `);
+
+  if (error) return renderPage('연결 취소됨', `사유: <code>${error}</code>`);
+  if (!code) return renderPage('연결 실패', '<code>code</code> 파라미터가 없습니다.', '#d93025');
+  if (!clientSecret) return renderPage('서버 설정 오류', 'GOOGLE_CLIENT_SECRET이 Worker에 설정되어 있지 않습니다.', '#d93025');
+
+  // state JWT 서명 검증 (CSRF) — 쿠키 대신 서명 토큰 사용
+  if (!state) return renderPage('state 누락', 'OAuth state가 전달되지 않았습니다. 다시 연결을 시도해 주세요.');
+  try {
+    await jwtVerify(state, OAUTH_STATE_SECRET);
+  } catch (err: any) {
+    return renderPage('state 검증 실패', `
+      OAuth state 서명 검증 실패. 토큰이 만료됐거나 변조됐습니다.<br/>
+      <small>${(err?.message || err).toString().slice(0, 200)}</small><br/>
+      다시 연결을 시도해 주세요.
+    `);
+  }
+
+  try {
+    const redirectUri = resolveRedirectUri(c.req.raw);
+    const tok = await exchangeCodeForTokens(code, clientSecret, redirectUri);
+    if (!tok.refresh_token) {
+      return renderPage('refresh_token 미발급', `
+        Google이 refresh_token을 발급하지 않았습니다. <a href="https://myaccount.google.com/permissions" target="_blank">Google 계정 권한</a>에서 기존 앱 권한을 삭제 후 다시 시도해 주세요.
+      `);
+    }
+    const email = await fetchUserEmail(tok.access_token) || '';
+    const { ct, iv } = await encryptToken(tok.refresh_token, clientSecret);
+
+    await db.prepare(`
+      UPDATE drive_settings SET
+        refresh_token_encrypted = ?, token_iv = ?,
+        connected_email = ?, connected_at = datetime('now'),
+        auto_enabled = 1, updated_at = datetime('now')
+      WHERE id = 'default'
+    `).bind(ct, iv, email).run();
+
+    return c.html(`
+      <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>연결 완료</title>
+      <meta http-equiv="refresh" content="2;url=/archive?drive=1"></head>
+      <body style="font-family: sans-serif; padding: 40px; text-align: center;">
+        <h2 style="color:#188038;">✓ Google Drive 연결 완료</h2>
+        <p>연결 계정: <strong>${email}</strong></p>
+        <p>이제 매주 토요일 03:00 KST에 자동으로 문서가 백업됩니다.</p>
+        <p><a href="/archive?drive=1" style="color:#1a73e8;">지금 문서보관함으로 이동</a></p>
+      </body></html>
+    `);
+  } catch (err: any) {
+    return renderPage('연결 실패', `<pre style="text-align:left;white-space:pre-wrap;">${(err.message || err).toString().slice(0, 800)}</pre>`);
+  }
+});
+
+// 인쇄 전용 라우트 — Browser Rendering이 PDF 생성 시 navigate
+// /print/:docId?token=<printJwt> — 정적 HTML 반환 (SPA가 /print 경로를 렌더링)
+// 실제로는 SPA 라우팅으로 처리되므로 여기선 별도 핸들러 불필요
+// 토큰 검증은 SPA 측 api.print.render 엔드포인트에서 수행
+
+// /api/print/verify — Browser Rendering이 토큰 유효성 체크용으로 호출 가능
+app.get('/api/print/verify', async (c) => {
+  const token = c.req.query('token') || '';
+  const result = await verifyPrintToken(token);
+  if (!result) return c.json({ valid: false }, 401);
+  return c.json({ valid: true, docId: result.docId });
+});
+
+// /api/print/data/:docId — print 라우트에서 공개적으로 호출 (printToken 검증)
+app.get('/api/print/data/:docId', async (c) => {
+  const docId = c.req.param('docId');
+  const token = c.req.query('token') || '';
+  const verified = await verifyPrintToken(token);
+  if (!verified || verified.docId !== docId) {
+    return c.json({ error: 'invalid token' }, 401);
+  }
+  const db = c.env.DB;
+  const doc = await db.prepare(`
+    SELECT d.*, u.name as author_name, u.branch as author_branch, u.department as author_department,
+      u.position_title as author_position
+    FROM documents d LEFT JOIN users u ON u.id = d.author_id WHERE d.id = ?
+  `).bind(docId).first<any>();
+  if (!doc) return c.json({ error: 'not found' }, 404);
+  const sigs = await db.prepare(`
+    SELECT s.*, u.name as user_name FROM signatures s
+    LEFT JOIN users u ON u.id = s.user_id WHERE s.document_id = ? ORDER BY s.signed_at ASC
+  `).bind(docId).all<any>();
+  const steps = await db.prepare(`
+    SELECT s.*, u.name as approver_name, u.position_title as approver_title, u.role as approver_role
+    FROM approval_steps s LEFT JOIN users u ON u.id = s.approver_id
+    WHERE s.document_id = ? ORDER BY s.step_order
+  `).bind(docId).all<any>();
+  return c.json({
+    document: doc,
+    signatures: sigs.results || [],
+    approval_steps: steps.results || [],
+  });
+});
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
@@ -110,4 +224,15 @@ app.post('/api/_test-alimtalk-all', async (c) => {
   return c.json({ phone: targetPhone, total: results.length, sent: results.filter(r => r.ok).length, results });
 });
 
-export default app;
+// Cron: 매주 금요일 18:00 UTC (= 토요일 03:00 KST) Drive 백업 자동 실행 — 최대 50건
+async function scheduled(_event: ScheduledEvent, env: any, ctx: ExecutionContext) {
+  ctx.waitUntil(runBackupBatch(env, { triggered_by: 'cron', limit: 50 }).then(
+    (r) => console.log('[cron drive] done', r),
+    (err) => console.error('[cron drive] error', err),
+  ));
+}
+
+export default {
+  fetch: app.fetch,
+  scheduled,
+};
