@@ -35,6 +35,12 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
   const [testTargetId, setTestTargetId] = useState<string>('');
   const [testSending, setTestSending] = useState(false);
   const [testResult, setTestResult] = useState<{ status: 'success' | 'failed'; title: string; folder?: string; error?: string } | null>(null);
+  // 실행 결과 상세 + 에러 요약
+  const [runDetails, setRunDetails] = useState<Array<{ id: string; title: string; status: 'success' | 'failed'; folder?: string; error?: string }>>([]);
+  const [errorSummary, setErrorSummary] = useState<Array<{ category: string; cnt: number; sample_message: string }>>([]);
+  const [retrying, setRetrying] = useState(false);
+  // 수동 실행 시 처리 건수 (5/15/30/50)
+  const [runLimit, setRunLimit] = useState<number>(5);
 
   const load = () => {
     setLoading(true);
@@ -42,13 +48,15 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
       api.drive.settings().catch(() => null),
       api.drive.logs(30).catch(() => ({ logs: [] })),
       api.drive.pending().catch(() => ({ documents: [] })),
-    ]).then(([s, l, p]: any) => {
+      api.drive.errorSummary().catch(() => ({ summary: [] })),
+    ]).then(([s, l, p, es]: any) => {
       setPendingDocs(p?.documents || []);
       setSettings(s);
       setLastBackupAt(s?.last_backup_at || null);
       setPendingCount(s?.pending_count || 0);
       setFailedLast7d(s?.failed_last_7d || 0);
       setLogs(l?.logs || []);
+      setErrorSummary(es?.summary || []);
       if (s?.settings) {
         setFolderPattern(s.settings.folder_pattern || '{yyyy-mm}/{branch}');
         setFilenamePattern(s.settings.filename_pattern || '[{yyyy-mm-dd}] {doc_type} {author} {position}');
@@ -105,16 +113,33 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
   };
 
   const handleRunNow = async () => {
-    if (!confirm(`지금 즉시 백업 배치를 실행하시겠습니까? (최대 30건)`)) return;
+    const estMinutes = Math.ceil((runLimit * 12) / 60); // 1건당 ~12초 추정
+    const warnMsg = runLimit >= 30
+      ? `\n\n⚠️ 약 ${estMinutes}분 소요 예정. 처리 중 페이지를 닫지 마세요.\n(닫아도 백엔드는 계속 처리되지만 결과를 못 봅니다)`
+      : '';
+    if (!confirm(`지금 즉시 백업 배치를 실행하시겠습니까? (${runLimit}건)${warnMsg}`)) return;
     setRunning(true);
     setRunResult('');
+    setRunDetails([]);
     try {
-      const r: any = await api.drive.runNow();
+      const r: any = await api.drive.runNow(runLimit);
       setRunResult(`처리 ${r.processed}건 · 성공 ${r.success} · 실패 ${r.failed}${r.error ? ` · 오류: ${r.error}` : ''}`);
+      setRunDetails(r.details || []);
       load();
     } catch (err: any) {
       setRunResult(`오류: ${err.message}`);
     } finally { setRunning(false); }
+  };
+
+  const handleRetryAllFailed = async () => {
+    if (!confirm('이전에 실패한 문서들의 실패 로그를 모두 삭제하고 다음 실행 시 재시도하도록 큐에 다시 넣을까요?\n(코드 수정 이후 다시 시도하기 위함)')) return;
+    setRetrying(true);
+    try {
+      const r = await api.drive.retryFailed({ all: true });
+      alert(`실패 로그 ${r.deleted || 0}건 정리 완료. "지금 실행"으로 재시도하세요.`);
+      load();
+    } catch (err: any) { alert('재시도 준비 실패: ' + err.message); }
+    finally { setRetrying(false); }
   };
 
   const handleTestSend = async () => {
@@ -224,17 +249,74 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
                 <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                     <input type="checkbox" checked={autoEnabled} onChange={e => handleToggleAuto(e.target.checked)} />
-                    <span style={{ fontSize: 14 }}>자동 백업 (매주 토요일 03:00 KST)</span>
+                    <span style={{ fontSize: 14 }}>자동 백업 (30분마다 5건씩)</span>
                   </label>
                   <div style={{ flex: 1 }} />
+                  <select
+                    value={runLimit}
+                    onChange={(e) => setRunLimit(parseInt(e.target.value, 10))}
+                    disabled={running}
+                    style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #dadce0' }}
+                  >
+                    <option value={5}>5건 (안전)</option>
+                    <option value={15}>15건</option>
+                    <option value={30}>30건 (권장 대량)</option>
+                    <option value={50}>50건 (최대)</option>
+                  </select>
                   <button className="btn btn-primary btn-sm" onClick={handleRunNow} disabled={running || pendingCount === 0}>
-                    {running ? <><Loader size={14} className="spin" /> 실행 중...</> : <><Play size={14} /> 지금 실행 (30건)</>}
+                    {running ? <><Loader size={14} className="spin" /> 실행 중...</> : <><Play size={14} /> 지금 실행 ({runLimit}건)</>}
                   </button>
                 </div>
 
                 {runResult && (
                   <div style={{ padding: 10, background: '#f1f3f4', borderRadius: 6, fontSize: 13, marginBottom: 16 }}>
                     {runResult}
+                  </div>
+                )}
+
+                {/* 실행 결과 상세 — 실패 건 별 에러 메시지 */}
+                {runDetails.filter(d => d.status === 'failed').length > 0 && (
+                  <details open style={{ marginBottom: 16, padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6 }}>
+                    <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13, color: '#991b1b' }}>
+                      실패 건 상세 ({runDetails.filter(d => d.status === 'failed').length}건)
+                    </summary>
+                    <div style={{ marginTop: 8, maxHeight: 200, overflowY: 'auto', fontSize: 11 }}>
+                      {runDetails.filter(d => d.status === 'failed').map(d => (
+                        <div key={d.id} style={{ padding: '4px 0', borderBottom: '1px solid #fee2e2' }}>
+                          <div style={{ fontWeight: 600 }}>{d.title}</div>
+                          <code style={{ color: '#991b1b', fontSize: 10, wordBreak: 'break-all' }}>{d.error}</code>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+
+                {/* 누적 에러 패턴 요약 (최근 7일) + 재시도 버튼 */}
+                {errorSummary.length > 0 && (
+                  <div style={{ marginBottom: 16, padding: 10, background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <strong style={{ fontSize: 13, color: '#9a3412' }}>실패 패턴 분석 (최근 7일)</strong>
+                      <button
+                        className="btn btn-sm"
+                        onClick={handleRetryAllFailed}
+                        disabled={retrying}
+                        style={{ fontSize: 11, padding: '4px 10px', background: '#dc2626', color: '#fff', border: 'none' }}
+                      >
+                        {retrying ? '정리 중...' : '실패 로그 초기화 + 재시도 허용'}
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 12 }}>
+                      {errorSummary.map((s, i) => (
+                        <div key={i} style={{ padding: '3px 0', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                          <span style={{ minWidth: 120, fontWeight: 600 }}>{s.category}</span>
+                          <span style={{ color: '#dc2626' }}>{s.cnt}건</span>
+                          <code style={{ flex: 1, fontSize: 10, color: '#78350f', wordBreak: 'break-all' }}>{s.sample_message?.slice(0, 120)}</code>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 11, color: '#78350f' }}>
+                      ※ 같은 문서가 5회 실패 시 자동으로 큐에서 제외됩니다. "실패 로그 초기화" 버튼으로 다시 시도 가능합니다.
+                    </div>
                   </div>
                 )}
 

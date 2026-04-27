@@ -19,6 +19,7 @@ import salesRoute from './routes/sales';
 import payrollRoute from './routes/payroll';
 import cardRoute from './routes/card';
 import analyticsRoute from './routes/analytics';
+import comprehensiveRoute from './routes/analytics-comprehensive';
 import adminNotesRoute from './routes/admin-notes';
 import cooperationRoute from './routes/cooperation';
 import roomsRoute from './routes/rooms';
@@ -64,6 +65,7 @@ app.route('/api/sales', salesRoute);
 app.route('/api/payroll', payrollRoute);
 app.route('/api/card', cardRoute);
 app.route('/api/analytics', analyticsRoute);
+app.route('/api/analytics/comprehensive', comprehensiveRoute);
 app.route('/api/admin-notes', adminNotesRoute);
 app.route('/api/cooperation', cooperationRoute);
 app.route('/api/rooms', roomsRoute);
@@ -224,12 +226,34 @@ app.post('/api/_test-alimtalk-all', async (c) => {
   return c.json({ phone: targetPhone, total: results.length, sent: results.filter(r => r.ok).length, results });
 });
 
-// Cron: 매주 금요일 18:00 UTC (= 토요일 03:00 KST) Drive 백업 자동 실행 — 최대 50건
-async function scheduled(_event: ScheduledEvent, env: any, ctx: ExecutionContext) {
-  ctx.waitUntil(runBackupBatch(env, { triggered_by: 'cron', limit: 50 }).then(
-    (r) => console.log('[cron drive] done', r),
-    (err) => console.error('[cron drive] error', err),
-  ));
+// Cron 분기:
+//   */30 * * * *  → Drive 백업 (5건씩, browser 재사용)
+//   0 15 * * *    → 매일 자정 KST: 종합분석 통계 일일 갱신
+//   30 15 1 * *   → 매월 1일 00:30 KST: 종합분석 통계 월간 확정 + sales_evaluations 자동 생성
+async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext) {
+  const cron = event.cron;
+  if (cron === '*/30 * * * *') {
+    ctx.waitUntil(runBackupBatch(env, { triggered_by: 'cron', limit: 5 }).then(
+      (r) => console.log('[cron drive] done', r),
+      (err) => console.error('[cron drive] error', err),
+    ));
+  } else if (cron === '0 15 * * *') {
+    ctx.waitUntil(import('./analytics-cron').then(({ runDailyAggregation }) =>
+      runDailyAggregation(env).then(
+        (r) => console.log('[cron analytics-daily] done', r),
+        (err) => console.error('[cron analytics-daily] error', err),
+      ),
+    ));
+  } else if (cron === '30 15 1 * *') {
+    ctx.waitUntil(import('./analytics-cron').then(({ runMonthlyAggregation }) =>
+      runMonthlyAggregation(env).then(
+        (r) => console.log('[cron analytics-monthly] done', r),
+        (err) => console.error('[cron analytics-monthly] error', err),
+      ),
+    ));
+  } else {
+    console.warn('[scheduled] unknown cron pattern', cron);
+  }
 }
 
 export default {

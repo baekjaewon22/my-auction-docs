@@ -275,6 +275,15 @@ export const api = {
 
   analytics: {
     summary: (months?: number) => request<any>('/analytics/summary' + (months ? '?months=' + months : '')),
+    comprehensive: (params: { branch?: string; department?: string; user_id?: string; month?: string; month_end?: string }) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v) q.set(k, v); });
+      return request<{
+        members: Array<any>;
+        benchmarks: { org_activity_avg: number; freelancer_avg_sales: number; member_count: number; full_time_count: number; freelancer_count: number };
+        metadata: { period_start: string; period_end: string };
+      }>(`/analytics/comprehensive${q.toString() ? '?' + q.toString() : ''}`);
+    },
   },
 
   sales: {
@@ -505,8 +514,11 @@ export const api = {
       request<{ documents: Array<{ id: string; title: string; template_id: string | null; template_name: string | null; branch: string; department: string; author_name: string; author_branch: string; author_department: string; author_position: string | null; approved_at: string; created_at: string; updated_at: string }> }>('/drive/pending'),
     logs: (limit = 30) =>
       request<{ logs: any[] }>('/drive/logs?limit=' + limit),
-    runNow: () =>
-      request<{ processed: number; success: number; failed: number; skipped: number; error?: string }>('/drive/run-now', { method: 'POST' }),
+    runNow: (limit?: number) =>
+      request<{ processed: number; success: number; failed: number; skipped: number; error?: string; details?: Array<{ id: string; title: string; status: 'success' | 'failed'; folder?: string; file_id?: string; error?: string }> }>(
+        `/drive/run-now${limit ? `?limit=${limit}` : ''}`,
+        { method: 'POST' },
+      ),
     testSend: (document_ids: string[]) =>
       request<{ processed: number; success: number; failed: number; error?: string; details?: Array<{ id: string; title: string; status: 'success' | 'failed'; folder?: string; file_id?: string; error?: string }> }>('/drive/test-send', {
         method: 'POST',
@@ -514,6 +526,13 @@ export const api = {
       }),
     testToken: () =>
       request<{ success: boolean; expires_in?: number; error?: string }>('/drive/test-access-token'),
+    retryFailed: (params: { document_ids?: string[]; all?: boolean }) =>
+      request<{ success: boolean; deleted?: number; error?: string }>('/drive/retry-failed', {
+        method: 'POST',
+        body: JSON.stringify(params),
+      }),
+    errorSummary: () =>
+      request<{ summary: Array<{ category: string; cnt: number; sample_message: string }> }>('/drive/error-summary'),
   },
 
   rooms: {

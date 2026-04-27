@@ -82,37 +82,43 @@ export async function verifyPrintToken(token: string): Promise<{ docId: string }
 // PDF 생성 (Browser Rendering)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async function generatePdfForDoc(
-  env: any,
+// browser 인스턴스를 재사용하여 PDF 생성 — Cloudflare Browser Rendering Rate limit(429) 회피
+// 한 invocation 안에서 launch 1번 + 여러 page 처리하는 패턴
+async function generatePdfWithBrowser(
+  browser: any,
   doc: { id: string; title: string },
   baseUrl: string,
 ): Promise<ArrayBuffer> {
   const printToken = await issuePrintToken(doc.id);
   const url = `${baseUrl}/print/${doc.id}?token=${encodeURIComponent(printToken)}`;
 
-  const browser = await puppeteer.launch(env.BROWSER);
+  const page = await browser.newPage();
   try {
-    const page = await browser.newPage();
-    // A4: 210mm × 297mm = 794px × 1123px at 96dpi. deviceScaleFactor=2로 고해상도 렌더링
     await page.setViewport({ width: 794, height: 1123, deviceScaleFactor: 2 });
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 45_000 });
 
-    // 물건분석보고서는 외부 이미지가 많아 추가 대기
-    const isPropertyReport = (doc.title || '').includes('물건') || (doc.title || '').includes('분석');
-    if (isPropertyReport) {
-      await new Promise(r => setTimeout(r, 4_000));
-    } else {
-      await new Promise(r => setTimeout(r, 1_500));
+    // networkidle0(모든 네트워크 종료)는 외부 이미지가 있는 SPA에서 자주 도달 못해 timeout.
+    // 'load' 이벤트로 완화하고 이후 명시적 이미지/__printReady 대기로 보강.
+    try {
+      await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
+    } catch (gotoErr: any) {
+      // load 실패 시 domcontentloaded 로 한 번 더 시도 — 콘텐츠는 React가 그릴 것
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      console.log(`[drive-pdf] goto fallback for ${doc.id}: ${gotoErr.message || gotoErr}`);
     }
 
-    // 이미지 로딩 완료 대기 + SPA의 __printReady 신호 대기
+    const isPropertyReport = (doc.title || '').includes('물건') || (doc.title || '').includes('분석');
+    await new Promise(r => setTimeout(r, isPropertyReport ? 4_000 : 1_500));
+
+    // 이미지 로딩 + __printReady 대기 (각 단계 8초 hard cap)
     await page.evaluate(`new Promise(resolve => {
       const imgs = Array.from(document.querySelectorAll('img'));
       const waitImgs = Promise.all(imgs.map(img => {
         if (img.complete) return Promise.resolve();
         return new Promise(r => {
-          img.addEventListener('load', () => r(null), { once: true });
-          img.addEventListener('error', () => r(null), { once: true });
+          const done = () => r(null);
+          img.addEventListener('load', done, { once: true });
+          img.addEventListener('error', done, { once: true });
+          setTimeout(done, 8000); // 개별 이미지 8s 한도
         });
       }));
       const waitReady = new Promise(r => {
@@ -123,25 +129,35 @@ async function generatePdfForDoc(
         setTimeout(() => { clearInterval(iv); r(null); }, 10000);
       });
       Promise.all([waitImgs, waitReady]).then(() => resolve(null));
+      setTimeout(() => resolve(null), 15000); // 전체 안전 한도
     })`);
 
-    // 마진은 HTML에서 내부 padding으로 제어 — Puppeteer 마진 0으로 설정하여
-    // 뷰포트(210mm) 와 PDF 페이지(210mm)가 1:1 매칭되도록 함 (스케일링으로 잘리는 문제 방지)
     const pdf = await page.pdf({
       format: 'A4',
       printBackground: true,
       margin: { top: '0', right: '0', bottom: '0', left: '0' },
       preferCSSPageSize: true,
     });
-    // @cloudflare/puppeteer는 Uint8Array 반환 — ArrayBuffer로 정규화
-    const pdfBuffer: ArrayBuffer = pdf.buffer.slice(
-      pdf.byteOffset,
-      pdf.byteOffset + pdf.byteLength,
-    );
-    return pdfBuffer;
+    // pdf.buffer는 ArrayBuffer | SharedArrayBuffer 유니온 — copy로 ArrayBuffer 보장
+    const out = new ArrayBuffer(pdf.byteLength);
+    new Uint8Array(out).set(new Uint8Array(pdf.buffer as ArrayBuffer, pdf.byteOffset, pdf.byteLength));
+    return out;
   } finally {
-    await browser.close();
+    await page.close().catch(() => {});
   }
+}
+
+// 에러 객체를 사람이 읽을 수 있는 메시지로 정규화 — Error 외에도 puppeteer/HTTP/문자열 예외 포함
+function formatError(err: any, ctx: string): string {
+  if (err == null) return `${ctx}: (null error)`;
+  if (err instanceof Error) {
+    const name = err.name || 'Error';
+    const msg = err.message || '(no message)';
+    return `${ctx}: ${name}: ${msg}`.slice(0, 800);
+  }
+  if (typeof err === 'string') return `${ctx}: ${err}`.slice(0, 800);
+  try { return `${ctx}: ${JSON.stringify(err)}`.slice(0, 800); }
+  catch { return `${ctx}: ${String(err)}`.slice(0, 800); }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -192,7 +208,9 @@ export async function runBackupBatch(
 
   const folderPattern = s.folder_pattern || '{yyyy-mm}/{branch}';
   const filenamePattern = s.filename_pattern || '[{yyyy-mm-dd}] {author} {doc_type}';
-  const limit = Math.min(50, Math.max(1, opts.limit || 30));
+  // Cloudflare Workers Subrequest 한도(1000) + Browser Rendering Rate limit(429) 회피를 위해
+  // 한 번에 5건씩만 처리. 빈도를 높여 cron이 자주 돌도록 함 (스케줄: 30분마다)
+  const limit = Math.min(10, Math.max(1, opts.limit || 5));
 
   // 특정 문서 ID 지정 시: 해당 문서만 처리 (중복 체크 무시하여 재백업 허용)
   let docs: any[] = [];
@@ -211,18 +229,22 @@ export async function runBackupBatch(
     `).bind(...opts.document_ids).all<any>();
     docs = selected.results || [];
   } else {
+    // 재시도 제한: 같은 문서가 5회 이상 실패하면 큐에서 제외 (영원히 재시도되어 큐를 막는 문제 방지)
+    // 사용자가 명시적 테스트 발송으로 재시도 가능
     const pending = await db.prepare(`
       SELECT d.id, d.title, d.template_id, d.branch, d.department, d.created_at, d.updated_at,
         u.name as author_name, u.branch as author_branch, u.department as author_department,
         u.position_title as author_position,
         t.title as template_name,
-        (SELECT MAX(s.signed_at) FROM approval_steps s WHERE s.document_id = d.id AND s.status = 'approved') as approved_at
+        (SELECT MAX(s.signed_at) FROM approval_steps s WHERE s.document_id = d.id AND s.status = 'approved') as approved_at,
+        (SELECT COUNT(*) FROM drive_backup_logs b WHERE b.document_id = d.id AND b.status = 'failed') as fail_count
       FROM documents d
       LEFT JOIN users u ON u.id = d.author_id
       LEFT JOIN templates t ON t.id = d.template_id
       WHERE d.status = 'approved' AND d.cancelled = 0
         AND NOT EXISTS (SELECT 1 FROM approval_steps s WHERE s.document_id = d.id AND s.status != 'approved')
         AND NOT EXISTS (SELECT 1 FROM drive_backup_logs b WHERE b.document_id = d.id AND b.status = 'success')
+        AND (SELECT COUNT(*) FROM drive_backup_logs b WHERE b.document_id = d.id AND b.status = 'failed') < 5
       ORDER BY approved_at ASC
       LIMIT ?
     `).bind(limit).all<any>();
@@ -232,22 +254,51 @@ export async function runBackupBatch(
   const skipped = 0;
   const details: Array<{ id: string; title: string; status: 'success' | 'failed'; folder?: string; file_id?: string; error?: string }> = [];
 
-  for (const doc of docs) {
+  // 처리할 문서가 있으면 browser를 한 번만 launch하여 재사용 (Rate limit 429 회피)
+  let browser: any = null;
+  if (docs.length > 0) {
     try {
-      // 폴더 해결
-      const segments = buildFolderSegments(folderPattern, doc);
+      browser = await puppeteer.launch(env.BROWSER);
+    } catch (err: any) {
+      console.error('[drive-backup] browser launch failed', err);
+      // 모든 문서 실패 처리
+      for (const doc of docs) {
+        const errMsg = formatError(err, '[browser-launch]');
+        await db.prepare(`
+          INSERT INTO drive_backup_logs (id, document_id, run_at, status, error_message, triggered_by)
+          VALUES (?, ?, datetime('now'), 'failed', ?, ?)
+        `).bind(crypto.randomUUID(), doc.id, errMsg, opts.triggered_by || 'cron').run();
+        failed++;
+        details.push({ id: doc.id, title: doc.title, status: 'failed', error: errMsg });
+      }
+      return { processed: docs.length, success: 0, failed, skipped, details };
+    }
+  }
+
+  try {
+  for (let i = 0; i < docs.length; i++) {
+    const doc = docs[i];
+    if (i > 0) await new Promise(r => setTimeout(r, 1_500));
+    let stage = 'init';
+    let segments: string[] = [];
+    try {
+      stage = 'folder';
+      segments = buildFolderSegments(folderPattern, doc);
       const folderId = segments.length > 0
         ? await resolveFolderPath(accessToken, rootId, segments)
         : rootId;
       const filename = buildFilename(filenamePattern, doc);
 
-      // PDF 생성
-      const pdfBuffer = await generatePdfForDoc(env, doc, baseUrl);
+      stage = 'pdf';
+      const pdfBuffer = await generatePdfWithBrowser(browser, doc, baseUrl);
+      if (!pdfBuffer || pdfBuffer.byteLength < 1000) {
+        throw new Error(`PDF 크기 비정상: ${pdfBuffer?.byteLength || 0} bytes`);
+      }
 
-      // 업로드
+      stage = 'upload';
       const uploaded = await uploadPdfBuffer(accessToken, folderId, filename, pdfBuffer);
 
-      // 로그
+      stage = 'log';
       await db.prepare(`
         INSERT INTO drive_backup_logs (id, document_id, run_at, status, drive_file_id, drive_folder_path, file_size, triggered_by)
         VALUES (?, ?, datetime('now'), 'success', ?, ?, ?, ?)
@@ -256,19 +307,28 @@ export async function runBackupBatch(
         opts.triggered_by || 'cron',
       ).run();
       success++;
+      console.log(`[drive-backup] ✓ ${doc.id} (${doc.title}) → ${segments.join('/') || '/'}`);
       details.push({ id: doc.id, title: doc.title, status: 'success', folder: segments.join('/') || '/', file_id: uploaded.id });
     } catch (err: any) {
-      const errMsg = String(err.message || err).slice(0, 500);
-      await db.prepare(`
-        INSERT INTO drive_backup_logs (id, document_id, run_at, status, error_message, triggered_by)
-        VALUES (?, ?, datetime('now'), 'failed', ?, ?)
-      `).bind(
-        crypto.randomUUID(), doc.id, errMsg,
-        opts.triggered_by || 'cron',
-      ).run();
+      const errMsg = formatError(err, `[${stage}]`);
+      console.error(`[drive-backup] ✗ ${doc.id} (${doc.title}) ${errMsg}`);
+      try {
+        await db.prepare(`
+          INSERT INTO drive_backup_logs (id, document_id, run_at, status, error_message, triggered_by)
+          VALUES (?, ?, datetime('now'), 'failed', ?, ?)
+        `).bind(
+          crypto.randomUUID(), doc.id, errMsg,
+          opts.triggered_by || 'cron',
+        ).run();
+      } catch (logErr) {
+        console.error(`[drive-backup] log insert failed for ${doc.id}:`, logErr);
+      }
       failed++;
       details.push({ id: doc.id, title: doc.title, status: 'failed', error: errMsg });
     }
+  }
+  } finally {
+    if (browser) await browser.close().catch(() => {});
   }
 
   const summary = `성공 ${success} / 실패 ${failed} / 대기 ${docs.length === limit ? '50+' : 0}`;

@@ -24,7 +24,7 @@ function getMonthsSinceHire(hireDate: string): number {
  *  - 입사일이 MONTHLY_BASE_DATE 이후 & 1년 미만 → 입사일 기준 월차
  *  - 1년 이상 → 연차 15일 + 2년마다 1일 추가 (최대 25일)
  */
-function calculateLeaveEntitlement(hireDate: string) {
+export function calculateLeaveEntitlement(hireDate: string) {
   if (!hireDate) return { type: 'annual' as const, totalAnnual: 15, totalMonthly: 0 };
   const months = getMonthsSinceHire(hireDate);
   const years = Math.floor(months / 12);

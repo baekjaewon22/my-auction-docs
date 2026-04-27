@@ -137,7 +137,8 @@ drive.get('/pending', requireRole(...DRIVE_ROLES), async (c) => {
       u.name as author_name, u.branch as author_branch, u.department as author_department,
       u.position_title as author_position,
       t.title as template_name,
-      (SELECT MAX(s.signed_at) FROM approval_steps s WHERE s.document_id = d.id AND s.status = 'approved') as approved_at
+      (SELECT MAX(s.signed_at) FROM approval_steps s WHERE s.document_id = d.id AND s.status = 'approved') as approved_at,
+      (SELECT COUNT(*) FROM drive_backup_logs b WHERE b.document_id = d.id AND b.status = 'failed') as fail_count
     FROM documents d
     LEFT JOIN users u ON u.id = d.author_id
     LEFT JOIN templates t ON t.id = d.template_id
@@ -152,6 +153,48 @@ drive.get('/pending', requireRole(...DRIVE_ROLES), async (c) => {
     LIMIT 500
   `).all();
   return c.json({ documents: result.results || [] });
+});
+
+// POST /api/drive/retry-failed — 5회 이상 실패로 제외된 문서들의 실패 로그를 삭제하여 재시도 허용
+drive.post('/retry-failed', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
+  const db = c.env.DB;
+  const body = await c.req.json<{ document_ids?: string[]; all?: boolean }>().catch(() => ({} as { document_ids?: string[]; all?: boolean }));
+  if (body.all) {
+    const r = await db.prepare(`DELETE FROM drive_backup_logs WHERE status = 'failed'`).run();
+    return c.json({ success: true, deleted: r.meta?.changes || 0 });
+  }
+  if (body.document_ids && body.document_ids.length > 0) {
+    const placeholders = body.document_ids.map(() => '?').join(',');
+    const r = await db.prepare(
+      `DELETE FROM drive_backup_logs WHERE status = 'failed' AND document_id IN (${placeholders})`,
+    ).bind(...body.document_ids).run();
+    return c.json({ success: true, deleted: r.meta?.changes || 0 });
+  }
+  return c.json({ error: 'document_ids 또는 all=true 필요' }, 400);
+});
+
+// GET /api/drive/error-summary — 최근 실패 로그를 에러 패턴별로 집계
+drive.get('/error-summary', requireRole(...DRIVE_ROLES), async (c) => {
+  const db = c.env.DB;
+  const result = await db.prepare(`
+    SELECT
+      CASE
+        WHEN error_message LIKE '%timeout%' OR error_message LIKE '%TimeoutError%' THEN 'PDF 렌더 타임아웃'
+        WHEN error_message LIKE '%[pdf]%' THEN 'PDF 생성 실패'
+        WHEN error_message LIKE '%[upload]%' OR error_message LIKE '%Drive upload%' OR error_message LIKE '%Drive API%' THEN 'Drive 업로드 실패'
+        WHEN error_message LIKE '%[folder]%' THEN '폴더 생성 실패'
+        WHEN error_message LIKE '%PDF 크기 비정상%' THEN 'PDF 빈 파일'
+        WHEN error_message LIKE '%refresh_token%' OR error_message LIKE '%token%' THEN '토큰 갱신 실패'
+        ELSE '기타'
+      END as category,
+      COUNT(*) as cnt,
+      MAX(error_message) as sample_message
+    FROM drive_backup_logs
+    WHERE status = 'failed' AND run_at > datetime('now', '-7 days')
+    GROUP BY category
+    ORDER BY cnt DESC
+  `).all();
+  return c.json({ summary: result.results || [] });
 });
 
 // GET /api/drive/logs — 최근 로그
@@ -169,12 +212,16 @@ drive.get('/logs', requireRole(...DRIVE_ROLES), async (c) => {
   return c.json({ logs: result.results || [] });
 });
 
-// POST /api/drive/run-now — 관리자가 수동으로 cron과 동일한 배치 실행 트리거
+// POST /api/drive/run-now — 관리자가 수동으로 즉시 배치 실행
+// query param `limit` (1~50) 으로 처리 건수 지정. 미지정 시 기본 5건
+// browser 인스턴스 재사용으로 launch rate limit 회피 → 30건 안전, 50건 marginal
 drive.post('/run-now', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
   const { runBackupBatch } = await import('../drive-backup-runner');
   const env = c.env as any;
   const user = c.get('user');
-  const result = await runBackupBatch(env, { triggered_by: user.sub, limit: 30 });
+  const limitRaw = parseInt(c.req.query('limit') || '5', 10);
+  const limit = Math.min(50, Math.max(1, isNaN(limitRaw) ? 5 : limitRaw));
+  const result = await runBackupBatch(env, { triggered_by: user.sub, limit });
   return c.json(result);
 });
 

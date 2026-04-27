@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv, Document, OrgNode } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
+import { calculateLeaveEntitlement } from './leave';
 
 // 결재선 자동 계산: 조직도를 위로 탐색하여 승인자 목록 반환
 async function buildApprovalChain(db: D1Database, authorId: string): Promise<string[]> {
@@ -426,51 +427,100 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
     await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
       .bind(crypto.randomUUID(), id, user.sub, 'approved', '문서가 최종 승인되었습니다.').run();
 
-    // 연차/월차/반차 문서 승인 시 자동 차감 + leave_requests 등록
+    // 연차/월차/반차/특별휴가 문서 승인 시 leave_requests 자동 등록
+    // - 연차/월차/반차: annual_leave 차감 + 입사일 기반 entitlement 보장
+    // - 특별휴가: 차감 없이 기록만 (유급)
     const title = doc.title || '';
-    if (title.includes('연차') || title.includes('월차') || title.includes('반차')) {
-      const days = title.includes('반차') ? 0.5 : 1;
-      const leaveType = title.includes('반차') ? '반차' : title.includes('월차') ? '월차' : '연차';
+    const isSpecial = title.includes('특별') || title.includes('경조');
+    const isLeaveDoc = title.includes('연차') || title.includes('월차') || title.includes('반차') || isSpecial;
+    if (isLeaveDoc) {
+      const leaveType = isSpecial
+        ? '특별휴가'
+        : title.includes('반차') ? '반차' : title.includes('월차') ? '월차' : '연차';
 
-      // 날짜 결정 (문서 내용에서 추출, 없으면 오늘)
+      // 날짜 결정: "휴가 기간 : 2026년 4월 28일 ~ 2026년 4월 30일" 처럼 시작/종료가 다르면 다일로 처리
       const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const contentText = (doc.content || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
       let startDate = today;
       let endDate = today;
-      const dateMatch = contentText.match(/(\d{4})\s*년?\s*(\d{1,2})\s*월?\s*(\d{1,2})\s*일/);
-      if (dateMatch) {
-        startDate = `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`;
-        endDate = startDate;
+
+      // "휴가 기간"/"기간" 키워드 뒤 200자에서 우선 추출 (작성일자 오인 방지)
+      const periodMatch = contentText.match(/(?:휴가\s*기간|기간|일자)\s*[:：]?\s*([^]{0,200})/);
+      const scanText = periodMatch ? periodMatch[1] : contentText;
+      const dateRe = /(\d{4})\s*[년.\-]\s*(\d{1,2})\s*[월.\-]\s*(\d{1,2})/g;
+      const found: string[] = [];
+      let dm;
+      while ((dm = dateRe.exec(scanText)) !== null) {
+        found.push(`${dm[1]}-${dm[2].padStart(2, '0')}-${dm[3].padStart(2, '0')}`);
+        if (found.length >= 2) break;
+      }
+      if (found.length >= 1) {
+        startDate = found[0];
+        endDate = found[1] || found[0];
+        if (endDate < startDate) endDate = startDate;
       }
 
-      // [중복 방지] 같은 user + 같은 날짜 + 같은 타입 + 미취소 상태이면 스킵
+      // days 계산: 반차 0.5 / 특별휴가는 본문 "총 N일" 우선, 못 찾으면 (end-start)+1 / 그 외 연차 동일
+      let days: number;
+      if (leaveType === '반차') {
+        days = 0.5;
+        endDate = startDate;
+      } else if (leaveType === '특별휴가') {
+        const totalMatch = scanText.match(/총\s*(\d+(?:\.\d+)?)\s*일/);
+        if (totalMatch) {
+          days = Math.min(31, Math.max(1, parseFloat(totalMatch[1])));
+        } else {
+          const diff = Math.round(
+            (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24),
+          ) + 1;
+          days = Math.min(31, Math.max(1, diff));
+        }
+      } else {
+        const diff = Math.round(
+          (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24),
+        ) + 1;
+        days = Math.min(31, Math.max(1, diff));
+      }
+
+      // [중복 방지]
       const dup = await db.prepare(
         "SELECT id FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
       ).bind(doc.author_id, leaveType, startDate, endDate).first();
 
       if (!dup) {
+        // annual_leave 레코드 보장 — 입사일 기반 entitlement 사용 (15일 하드코딩 X)
         const existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
         if (!existing) {
-          await db.prepare('INSERT INTO annual_leave (id, user_id, total_days, used_days, leave_type, monthly_days, monthly_used) VALUES (?, ?, 15, 0, \'annual\', 0, 0)')
-            .bind(crypto.randomUUID(), doc.author_id).run();
+          const u = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(doc.author_id).first<{ hire_date: string; created_at: string }>();
+          const hireDate = u?.hire_date || u?.created_at?.slice(0, 10) || '';
+          const ent = calculateLeaveEntitlement(hireDate);
+          await db.prepare('INSERT INTO annual_leave (id, user_id, total_days, used_days, leave_type, monthly_days, monthly_used) VALUES (?, ?, ?, 0, ?, ?, 0)')
+            .bind(crypto.randomUUID(), doc.author_id, ent.totalAnnual, ent.type, ent.totalMonthly).run();
         }
-        // 월차 사용자면 monthly_used 차감, 연차 사용자면 used_days 차감
-        const leaveData = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
-        if (leaveData?.leave_type === 'monthly') {
-          await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-            .bind(days, doc.author_id).run();
-        } else {
-          await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
-            .bind(days, doc.author_id).run();
+
+        // 차감: 특별휴가는 차감 안 함 / 그 외는 leave_type 따라 monthly_used 또는 used_days
+        if (leaveType !== '특별휴가') {
+          const leaveData = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
+          if (leaveData?.leave_type === 'monthly') {
+            await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
+              .bind(days, doc.author_id).run();
+          } else {
+            await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
+              .bind(days, doc.author_id).run();
+          }
         }
+
+        // 특별휴가는 사유에 [기타] 접두사 미부여 → Leave.tsx에서 "유급"으로 표시됨
+        const reason = leaveType === '특별휴가'
+          ? `특별휴가 (${doc.title})`
+          : `문서결재 자동등록 (${doc.title})`;
         await db.prepare(
           "INSERT INTO leave_requests (id, user_id, leave_type, start_date, end_date, days, reason, status, approved_by, approved_at, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), ?, ?)"
         ).bind(
           crypto.randomUUID(), doc.author_id, leaveType, startDate, endDate, days,
-          `문서결재 자동등록 (${doc.title})`, user.sub, doc.branch || '', doc.department || ''
+          reason, user.sub, doc.branch || '', doc.department || ''
         ).run();
       }
-      // dup이 있으면 이미 leave_request가 존재하므로 문서만 승인 상태로 남기고 차감·등록 생략
     }
     // 알림톡: 최종 승인 → 작성자에게 DOC_FINAL_APPROVED
     const author = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(doc.author_id).first<{ phone: string }>();

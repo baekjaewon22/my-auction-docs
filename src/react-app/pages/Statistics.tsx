@@ -13,6 +13,7 @@ import { BarChart3, TrendingUp, AlertTriangle, UserCheck, ChevronLeft, ChevronRi
 import type { SalesRecord } from '../types';
 import Select from '../components/Select';
 import { useBranches } from '../hooks/useBranches';
+import ComprehensiveAnalysis from '../components/ComprehensiveAnalysis';
 
 interface Member {
   id: string; name: string; role: string; branch: string; department: string;
@@ -43,8 +44,8 @@ export default function Statistics() {
   const isDirector = user?.role === 'director';
   const isSalesVisible = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || (user?.role === 'admin' && user?.branch === '의정부') || isDirector;
   const tabs = isDirector
-    ? ['매출/환불']
-    : (isSalesVisible ? ['입찰 분석', '브리핑 분석', '근태 분석', '이상 감지', '매출/환불'] : ['입찰 분석', '브리핑 분석', '근태 분석', '이상 감지']);
+    ? ['매출/환불', '종합분석']
+    : (isSalesVisible ? ['입찰 분석', '브리핑 분석', '근태 분석', '이상 감지', '매출/환불', '종합분석'] : ['입찰 분석', '브리핑 분석', '근태 분석', '이상 감지', '종합분석']);
 
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || (user?.role === 'admin' && user?.branch === '의정부');
 
@@ -204,6 +205,7 @@ export default function Statistics() {
         {tabs[tab] === '근태 분석' && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
         {tabs[tab] === '이상 감지' && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m) && m.role !== 'freelancer' && (m as any).login_type !== 'freelancer')} />}
         {tabs[tab] === '매출/환불' && <SalesAnalysis records={isDirector ? salesRecords.filter(r => { const eb = r.attribution_branch || r.branch; return eb === '대전' || eb === '부산' || r.user_id === user?.id; }) : salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
+        {tabs[tab] === '종합분석' && <ComprehensiveAnalysis filterBranch={filterBranch} filterDept={filterDept} filterUser={filterUser} filterMonth={filterMonth} filterMonthEnd={filterMonthEnd} />}
       </div>
     </div>
   );
