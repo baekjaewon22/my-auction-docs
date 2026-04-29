@@ -219,12 +219,24 @@ export default function Dashboard() {
 
         if (journalRes) {
           const entries = (journalRes as { entries: JournalEntry[] }).entries;
-          // member는 본인 entries만으로 미제출 판정 (팀 일지 전체가 들어오지만 문서는 본인 것만 있으므로)
-          const entriesForDetect = canApprove ? entries : entries.filter(e => e.user_id === user?.id);
+          // 미제출 감지 범위 — 사용자가 볼 수 있는 문서 범위와 일치시켜야 함
+          // - member: 본인만 (팀 일지가 들어와도 본인 문서만 매칭 가능)
+          // - manager: 본인 팀(department)만 — 일지는 지사 전체로 들어오나 문서는 팀 단위라 비대칭
+          // - admin/director/master 등: 그대로 (일지·문서 권한 동일 범위)
+          let entriesForDetect: JournalEntry[];
+          if (!canApprove) {
+            entriesForDetect = entries.filter(e => e.user_id === user?.id);
+          } else if (user?.role === 'manager') {
+            entriesForDetect = entries.filter(e =>
+              e.branch === user.branch && e.department === user.department,
+            );
+          } else {
+            entriesForDetect = entries;
+          }
           // 미제출 감지 시 draft 문서는 제외 (작성 중인 보고서는 제출 완료가 아니므로)
           const docsForDetect = allDocs.filter(d => d.status !== 'draft');
           setAlerts(detectMissing(entriesForDetect, docsForDetect));
-          setScheduleGaps(detectScheduleGaps(canApprove ? entries : entries.filter(e => e.user_id === user?.id)));
+          setScheduleGaps(detectScheduleGaps(entriesForDetect));
         }
 
         // 계약서 확인 대기 알림 (관리자/회계/총무)
@@ -607,14 +619,15 @@ export default function Dashboard() {
         </section>
       )}
 
-      {/* 일정 공백 알림 (팀장/관리자용) */}
-      {canApprove && (() => {
+      {/* 일정 공백 알림 — 본인은 본인 것만, 팀장+는 팀/지사 전체 (entriesForDetect가 권한별로 이미 필터링됨) */}
+      {(() => {
         const filteredGaps = scheduleGaps.filter(g => !dismissedKeys.has(`gap_${g.userName}_${g.date}`));
         if (filteredGaps.length === 0) return null;
+        const gapTitle = canApprove ? '일정 공백 알림' : '내 일정 공백';
         return (
         <section className="section">
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Clock size={18} color="#e65100" /> 일정 공백 알림
+            <Clock size={18} color="#e65100" /> {gapTitle}
             <span className="missing-alert-count">{filteredGaps.length}건</span>
             {user?.role === 'master' && (
               <button className="btn btn-sm" style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#9aa0a6' }}
@@ -1073,8 +1086,8 @@ function isOutdoorEntry(entry: JournalEntry): boolean {
     const d = JSON.parse(entry.data);
     // 임장: 항상 외근
     if (entry.activity_type === '임장') return true;
-    // 미팅: 항상 외근
-    if (entry.activity_type === '미팅') return true;
+    // 미팅: 회사 미팅(internalMeeting)은 제외, 그 외는 외근
+    if (entry.activity_type === '미팅') return !d.internalMeeting;
     // 입찰: 현장출근 + 대리입찰 아닌 경우
     if (entry.activity_type === '입찰' && (d.fieldCheckIn || d.fieldCheckOut) && !d.bidProxy) return true;
   } catch { /* */ }
@@ -1160,7 +1173,38 @@ function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[
     byUserDate[key].push(e);
   });
 
-  Object.values(byUserDate).forEach((dayEntries) => {
+  // 외근보고서 본문에서 "외근 일자: YYYY년 M월 D일" 추출 (없으면 created_at fallback)
+  // 연도는 2자리(26) 또는 4자리(2026) 모두 허용 — 2자리는 20XX로 자동 변환
+  const extractOutingDate = (d: Document): string => {
+    const html = d.content || '';
+    const text = html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+    const m = text.match(/외근\s*일자[\s:：]*(\d{2,4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+    if (m) {
+      let y = m[1];
+      if (y.length === 2) y = '20' + y; // 26 → 2026
+      return `${y}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    }
+    return (d.created_at || '').slice(0, 10);
+  };
+
+  // 사용자별 외근보고서 외근일자 풀 (1:1 매칭으로 한 번만 사용)
+  // 외근일 ±N일 윈도우 매칭에 사용
+  const userOutingReportPool: Record<string, string[]> = {};
+  docs.forEach((d) => {
+    if (!d.title.includes('외근') || !d.title.includes('보고')) return;
+    const dt = extractOutingDate(d);
+    if (!dt) return;
+    if (!userOutingReportPool[d.author_id]) userOutingReportPool[d.author_id] = [];
+    userOutingReportPool[d.author_id].push(dt);
+  });
+
+  // 외근일 오름차순으로 처리 (오래된 외근부터 매칭) — 익일 작성 보고서 흡수
+  const sortedKeys = Object.keys(byUserDate).sort((a, b) => {
+    return byUserDate[a][0].target_date.localeCompare(byUserDate[b][0].target_date);
+  });
+
+  sortedKeys.forEach((mapKey) => {
+    const dayEntries = byUserDate[mapKey];
     const userId = dayEntries[0].user_id;
     const userName = dayEntries[0].user_name || '';
     const date = dayEntries[0].target_date;
@@ -1204,6 +1248,8 @@ function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[
     });
 
     // 1-2. 입찰 건: 작성입찰가/제시입찰가/낙찰가 미작성 감지
+    // 낙찰가는 입찰일이 오늘 또는 과거인 건만 (미래 예약은 결과 미정)
+    const todayKst = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
     dayEntries.forEach((entry) => {
       if (entry.activity_type !== '입찰') return;
       try {
@@ -1211,6 +1257,7 @@ function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[
         const missing: string[] = [];
         if (!d.bidPrice) missing.push('작성입찰가');
         if (!d.suggestedPrice) missing.push('제시입찰가');
+        if (!d.winPrice && !d.bidWon && entry.target_date <= todayKst) missing.push('낙찰가');
         if (missing.length > 0) {
           alerts.push({ userName, userId, date, activity: `입찰 — ${d.caseNo || ''}`, missingDoc: `${missing.join(', ')} 미작성`, dDay });
         }
@@ -1218,17 +1265,27 @@ function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[
     });
 
     // 2. 외근 블록(입찰/임장/미팅) → 외근 보고서 매칭
+    // 정책: 외근일 1일 = 보고서 1건 (블록 수 무관 — 하루에 여러 외근이라도 보고서 1건이면 충족)
+    // 윈도우: 외근일 -3 ~ +7 범위에서 가장 가까운 미사용 보고서
+    //   - 사전 작성 -3일까지: 4/16 작성한 보고서가 4/17 외근에 대한 것이라 표기되는 케이스 인정
+    //   - 사후 작성 +7일까지: 외근 후 1주 내 작성하는 운영 패턴 흡수
     const blockCount = countOutdoorBlocks(dayEntries);
     if (blockCount > 0) {
-      const outingReportCount = userDocs.filter((doc) =>
-        doc.title.includes('외근') && doc.title.includes('보고')
-      ).length;
-
-      const missing = blockCount - outingReportCount;
-      if (missing > 0) {
-        for (let i = 0; i < missing; i++) {
-          alerts.push({ userName, userId, date, activity: `외근(${blockCount}블록)`, missingDoc: '외근 보고서 미제출', dDay });
+      const pool = userOutingReportPool[userId] || [];
+      const outingMs = new Date(date).getTime();
+      let bestIdx = -1;
+      let bestDist = Infinity;
+      for (let j = 0; j < pool.length; j++) {
+        const diff = Math.round((new Date(pool[j]).getTime() - outingMs) / 86400000);
+        if (diff >= -3 && diff <= 7) {
+          const dist = Math.abs(diff);
+          if (dist < bestDist) { bestIdx = j; bestDist = dist; }
         }
+      }
+      if (bestIdx >= 0) {
+        pool.splice(bestIdx, 1); // 사용된 보고서는 풀에서 제거 (다른 외근일 매칭에 재사용 X)
+      } else {
+        alerts.push({ userName, userId, date, activity: `외근(${blockCount}블록)`, missingDoc: '외근 보고서 미제출', dDay });
       }
     }
 

@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, Handshake, DoorOpen, FileSignature
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, Handshake, DoorOpen, FileSignature, Briefcase
 } from 'lucide-react';
 
 // 컨설턴트 계약관리: 대표/마스터/총무급 + 정민호 예외
@@ -127,6 +127,13 @@ export default function Layout() {
         {['master', 'ceo', 'admin', 'director'].includes(role) && (
           <Link to="/statistics" className={`nav-item ${isActive('/statistics') ? 'active' : ''}`} title="통계" onClick={() => setMobileOpen(false)}>
             <BarChart3 size={18} /> {!collapsed && '통계'}
+          </Link>
+        )}
+
+        {/* 명도 사건 (외부 수신): 관리자급 + 팀장 (본인 사건 조회) */}
+        {['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'director'].includes(role) && (
+          <Link to="/cases" className={`nav-item ${isActive('/cases') ? 'active' : ''}`} title="명도 사건" onClick={() => setMobileOpen(false)}>
+            <Briefcase size={18} /> {!collapsed && '명도 사건'}
           </Link>
         )}
 

@@ -9,6 +9,12 @@ sales.use('*', authMiddleware);
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 const EDIT_ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 
+// admin 권한 확장: 본인 지사 외 추가 지사 열람 가능 (특정 사용자 예외)
+// 진성헌(서초·admin·본부장): 서초 + 대전 매출 열람
+const ADMIN_EXTRA_BRANCHES: Record<string, string[]> = {
+  'c32c3021-b8f6-42f8-b977-7e6e53a7e6f6': ['대전'], // 진성헌
+};
+
 // 활동 내역 로그 기록 대상 역할 (총무/총무보조만)
 const LOGGED_ROLES = new Set(['accountant', 'accountant_asst']);
 
@@ -116,9 +122,17 @@ sales.get('/', async (c) => {
       params.push(user.sub);
     }
   } else if (role === 'admin' && user.branch !== '의정부') {
-    // 일반 관리자: 본인 지사
-    conditions.push('sr.branch = ?');
-    params.push(user.branch);
+    // 일반 관리자: 본인 지사 (+ 예외 사용자에겐 추가 지사 허용)
+    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
+    if (extra.length > 0) {
+      const allBranches = [user.branch, ...extra];
+      const placeholders = allBranches.map(() => '?').join(',');
+      conditions.push(`(sr.branch IN (${placeholders}) OR sr.attribution_branch IN (${placeholders}))`);
+      params.push(...allBranches, ...allBranches);
+    } else {
+      conditions.push('sr.branch = ?');
+      params.push(user.branch);
+    }
   }
 
   // 담당자 필터
@@ -157,7 +171,7 @@ sales.get('/', async (c) => {
 });
 
 // GET /api/sales/contract-tracker — 실시간 컨설턴트 계약 현황 (대표·총무·정민호 열람)
-// 카드정산·입금확인 무관, contract_date 기준. 환불 제외.
+// 결제일(deposit_date) 단일 기준 — 카드/이체 무관. 결제일 미입력 건은 카운트 제외. 환불 제외.
 const CONTRACT_TRACKER_EXTRA_USERS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
 sales.get('/contract-tracker', async (c) => {
   const db = c.env.DB;
@@ -221,7 +235,7 @@ sales.get('/contract-tracker', async (c) => {
   `).all<any>();
   const eligibleUsers = (usersResult.results || []);
 
-  // 기간 내 계약 집계
+  // 기간 내 계약 집계 — 결제일(deposit_date) 단일 기준
   const salesResult = await db.prepare(`
     SELECT user_id,
       SUM(CASE WHEN amount >= 2200000 THEN 2 ELSE 1 END) as contract_count,
@@ -231,7 +245,8 @@ sales.get('/contract-tracker', async (c) => {
     WHERE type = '계약'
       AND status != 'refunded'
       AND (exclude_from_count IS NULL OR exclude_from_count = 0)
-      AND contract_date >= ? AND contract_date <= ?
+      AND deposit_date IS NOT NULL AND deposit_date != ''
+      AND deposit_date >= ? AND deposit_date <= ?
     GROUP BY user_id
   `).bind(fromDate, toDate).all<any>();
 
@@ -668,8 +683,16 @@ sales.get('/dashboard/pending', async (c) => {
   const params: any[] = [];
 
   if (user.role === 'admin' && user.branch !== '의정부') {
-    query += ' AND sr.branch = ?';
-    params.push(user.branch);
+    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
+    if (extra.length > 0) {
+      const allBranches = [user.branch, ...extra];
+      const placeholders = allBranches.map(() => '?').join(',');
+      query += ` AND sr.branch IN (${placeholders})`;
+      params.push(...allBranches);
+    } else {
+      query += ' AND sr.branch = ?';
+      params.push(user.branch);
+    }
   }
 
   query += ' ORDER BY sr.created_at DESC LIMIT 20';
@@ -810,7 +833,16 @@ sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'
 
   // 관리자 지사 제한
   if (user.role === 'admin' && user.branch !== '의정부') {
-    query += ' AND sr.branch = ?'; params.push(user.branch);
+    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
+    if (extra.length > 0) {
+      const allBranches = [user.branch, ...extra];
+      const placeholders = allBranches.map(() => '?').join(',');
+      query += ` AND sr.branch IN (${placeholders})`;
+      params.push(...allBranches);
+    } else {
+      query += ' AND sr.branch = ?';
+      params.push(user.branch);
+    }
   }
 
   query += ' ORDER BY sr.contract_date DESC';
@@ -1009,6 +1041,36 @@ sales.delete('/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant
     before: record,
   });
 
+  return c.json({ success: true });
+});
+
+// PUT /api/sales/:id/phone — 전화번호만 수정 (확정된 매출도 가능)
+// 권한: master, accountant, accountant_asst, 본인(매출 등록자)
+sales.put('/:id/phone', async (c) => {
+  const id = c.req.param('id');
+  const user = c.get('user');
+  const { client_phone } = await c.req.json<{ client_phone: string }>();
+  const db = c.env.DB;
+
+  const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
+  if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
+
+  const isOwner = record.user_id === user.sub;
+  const allowed = isOwner || ['master', 'accountant', 'accountant_asst'].includes(user.role);
+  if (!allowed) return c.json({ error: '권한이 없습니다.' }, 403);
+
+  const newPhone = (client_phone || '').trim();
+  await db.prepare("UPDATE sales_records SET client_phone = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(newPhone, id).run();
+
+  if ((record.client_phone || '') !== newPhone) {
+    await logActivity(db, user as LogUser, {
+      action: 'update', target_id: id, target_label: recordLabel(record),
+      diff_summary: `전화번호: ${record.client_phone || '(없음)'} → ${newPhone || '(없음)'}`,
+      before: { client_phone: record.client_phone || '' },
+      after: { client_phone: newPhone },
+    });
+  }
   return c.json({ success: true });
 });
 

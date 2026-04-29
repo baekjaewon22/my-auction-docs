@@ -20,6 +20,7 @@ import payrollRoute from './routes/payroll';
 import cardRoute from './routes/card';
 import analyticsRoute from './routes/analytics';
 import comprehensiveRoute from './routes/analytics-comprehensive';
+import casesRoute from './routes/cases';
 import adminNotesRoute from './routes/admin-notes';
 import cooperationRoute from './routes/cooperation';
 import roomsRoute from './routes/rooms';
@@ -66,6 +67,7 @@ app.route('/api/payroll', payrollRoute);
 app.route('/api/card', cardRoute);
 app.route('/api/analytics', analyticsRoute);
 app.route('/api/analytics/comprehensive', comprehensiveRoute);
+app.route('/api/cases', casesRoute);
 app.route('/api/admin-notes', adminNotesRoute);
 app.route('/api/cooperation', cooperationRoute);
 app.route('/api/rooms', roomsRoute);
@@ -251,6 +253,28 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
         (err) => console.error('[cron analytics-monthly] error', err),
       ),
     ));
+  } else if (cron === '45 15 1 * *') {
+    // 매월 1일 00:45 KST: 전월이 짝수월이면 명도성과금 매출 자동 INSERT
+    const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const prevMonth = nowKst.getUTCMonth(); // 0=1월. 5월 1일 KST면 0-base 4=5월 → prev=3=4월
+    // 1일 00:45 KST 시점에선 이미 다음달 1일이므로, "방금 끝난 달" = (현재 - 1달)
+    const refDate = new Date(nowKst);
+    refDate.setUTCDate(0); // 어제 = 전월 말일
+    const py = refDate.getUTCFullYear();
+    const pm = refDate.getUTCMonth() + 1; // 1-12
+    void prevMonth;
+    if (pm % 2 === 0) {
+      const m1 = pm - 1;
+      const period = `${py}-${String(m1).padStart(2, '0')}_${String(pm).padStart(2, '0')}`;
+      ctx.waitUntil(import('./routes/cases').then(({ finalizeMyungdoBonus }) =>
+        finalizeMyungdoBonus(env, period).then(
+          (r) => console.log('[cron myungdo-bonus] done', r),
+          (err) => console.error('[cron myungdo-bonus] error', err),
+        ),
+      ));
+    } else {
+      console.log('[cron myungdo-bonus] skipped (전월이 홀수월)');
+    }
   } else {
     console.warn('[scheduled] unknown cron pattern', cron);
   }

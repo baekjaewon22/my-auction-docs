@@ -40,6 +40,8 @@ export default function Payroll() {
   const [commDeductions, setCommDeductions] = useState<{ label: string; amount: string; isFood?: boolean; skipTax?: boolean }[]>([]);
   const [isLocked, setIsLocked] = useState(false);
   const [saving, setSaving] = useState(false);
+  // 명도 성과금 (외부 사건 수신 — 2개월 단위 짝수월에만 지급, 정액-15만/실비÷1.1 조정 후 등급 산정)
+  const [myungdoBonus, setMyungdoBonus] = useState<{ total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; period_label: string } | null>(null);
 
   // 지사별 합산
   const [branchData, setBranchData] = useState<any[]>([]);
@@ -85,6 +87,26 @@ export default function Payroll() {
           setIsLocked(!!saveRes.save.locked);
         }
       } catch { /* 저장 없음 */ }
+
+      // 명도 성과금 — 짝수월에만 (예: 4월 → 3~4월 합계)
+      try {
+        if (res.is_payout_month) {
+          const [y, mStr] = selectedMonth.split('-');
+          const m = parseInt(mStr, 10);
+          const mdPeriod = `${y}-${String(m - 1).padStart(2, '0')}_${String(m).padStart(2, '0')}`;
+          const bonusRes = await api.cases.bonusSummary(mdPeriod);
+          const mine = bonusRes.summary.find((x: any) => x.consultant_user_id === selectedUserId);
+          setMyungdoBonus({
+            total_fee_raw: mine?.total_fee_raw || 0,
+            total_fee_adjusted: mine?.total_fee_adjusted || mine?.total_fee || 0,
+            case_count: mine?.cnt || 0,
+            bonus: mine?.bonus || 0,
+            period_label: bonusRes.period_label,
+          });
+        } else {
+          setMyungdoBonus(null);
+        }
+      } catch { setMyungdoBonus(null); }
     } catch (err: any) { alert(err.message); }
     finally { setLoading(false); }
   };
@@ -171,7 +193,9 @@ export default function Payroll() {
   const unpaidDeduction = s?.unpaid_leave_deduction || 0;
   const basePay = s ? s.salary + s.position_allowance : 0;
   const afterDeduction = basePay - deductionNum - unpaidDeduction - extraDeductionNum;
-  const totalPay = s ? afterDeduction + s.bonus + extraPayNum : 0;
+  const myungdoBonusAmount = myungdoBonus?.bonus || 0;
+  const contractAwardAmount = (data?.is_payout_month && data?.contract_award?.rank) ? (data.contract_award.award || 0) : 0;
+  const totalPay = s ? afterDeduction + s.bonus + extraPayNum + myungdoBonusAmount + contractAwardAmount : 0;
 
   return (
     <div className="page">
@@ -460,6 +484,72 @@ export default function Payroll() {
                         </div>
                       </div>
 
+                      {/* 명도 성과금 — 짝수월에만, 외부 명승 사건 기반 (commission rate 미적용, 33% 세금만 차감) */}
+                      {data.is_payout_month && myungdoBonus && myungdoBonus.case_count > 0 && (
+                        <>
+                          <div className="payroll-section-title" style={{ marginTop: 16 }}>
+                            명도 성과금 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({myungdoBonus.period_label} · 외부 명승 사건)</span>
+                          </div>
+                          <div className="payroll-bonus-box">
+                            <div className="payroll-bonus-row">
+                              <span>명도 사건 수</span>
+                              <span className="num">{myungdoBonus.case_count}건</span>
+                            </div>
+                            <div className="payroll-bonus-row">
+                              <span>수임료 원본 합계</span>
+                              <span className="num" style={{ color: '#9aa0a6' }}>{fmtWon(myungdoBonus.total_fee_raw)}</span>
+                            </div>
+                            <div className="payroll-bonus-row">
+                              <span>조정 후 매출 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(정액 −15만 / 실비 ÷1.1)</span></span>
+                              <span className="num" style={{ fontWeight: 600 }}>{fmtWon(myungdoBonus.total_fee_adjusted)}</span>
+                            </div>
+                            <div className="payroll-bonus-row">
+                              <span>등급 성과금 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(부가세 없음)</span></span>
+                              <span className="num" style={{ fontWeight: 600, color: '#188038' }}>+{fmtWon(myungdoBonus.bonus)}</span>
+                            </div>
+                            <div className="payroll-bonus-row" style={{ color: '#d93025', fontSize: '0.85rem' }}>
+                              <span>　└ 원천세 (3.3%)</span>
+                              <span className="num">−{fmtWon(Math.round(myungdoBonus.bonus * 0.033))}</span>
+                            </div>
+                            <div className="payroll-bonus-row total">
+                              <span>명도 성과금</span>
+                              <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(myungdoBonus.bonus - Math.round(myungdoBonus.bonus * 0.033))}</span>
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      {/* 계약포상 — 짝수월 + 계약 랭킹 1·2·3등 (최저 10건 이상) — 비율제는 33% 차감 */}
+                      {data.is_payout_month && data.contract_award?.rank && data.contract_award.award > 0 && (
+                        <>
+                          <div className="payroll-section-title" style={{ marginTop: 16 }}>
+                            계약포상 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({data.bonus_period_label} · 계약 랭킹 {data.contract_award.rank}등)</span>
+                          </div>
+                          <div className="payroll-bonus-box">
+                            <div className="payroll-bonus-row">
+                              <span>계약 건수</span>
+                              <span className="num">{data.contract_award.count}건</span>
+                            </div>
+                            <div className="payroll-bonus-row">
+                              <span>랭킹</span>
+                              <span className="num" style={{ fontWeight: 600, color: '#1a73e8' }}>{data.contract_award.rank}등</span>
+                            </div>
+                            <div className="payroll-bonus-row">
+                              <span>등급 포상금</span>
+                              <span className="num" style={{ fontWeight: 600, color: '#188038' }}>+{fmtWon(data.contract_award.award)}</span>
+                            </div>
+                            <div className="payroll-bonus-row" style={{ color: '#d93025', fontSize: '0.85rem' }}>
+                              <span>　└ 원천세 (3.3%)</span>
+                              <span className="num">−{fmtWon(Math.round(data.contract_award.award * 0.033))}</span>
+                            </div>
+                            <div className="payroll-bonus-row total">
+                              <span>계약포상</span>
+                              <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(data.contract_award.award - Math.round(data.contract_award.award * 0.033))}</span>
+                            </div>
+                          </div>
+                        </>
+                      )}
+
                       {/* 법인카드 */}
                       {cardUsage > 0 && (
                         <div style={{ marginTop: 12, padding: '10px 16px', background: '#fff3e0', borderRadius: 8, border: '1px solid #ffd699', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -599,12 +689,30 @@ export default function Payroll() {
             <div className="payroll-section-title">성과금 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({data.bonus_period_label} 기준)</span></div>
             <div className="payroll-bonus-box">
               <div className="payroll-bonus-row">
-                <span>기준매출</span>
+                <span>기준매출 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(공급가액)</span></span>
                 <span className="num">{fmtWon(s.standard_sales)}</span>
               </div>
+              <div className="payroll-bonus-row" style={{ color: '#9aa0a6' }}>
+                <span>2개월 매출 원본 <span style={{ fontSize: '0.7rem' }}>(부가세 포함)</span></span>
+                <span className="num">{fmtWon(s.bonus_regular_raw || 0)}</span>
+              </div>
+              <div className="payroll-bonus-row" style={{ color: '#9aa0a6', fontSize: '0.8rem' }}>
+                <span>　└ 부가세</span>
+                <span className="num">−{fmtWon(s.bonus_regular_vat || 0)}</span>
+              </div>
               <div className="payroll-bonus-row">
-                <span>2개월 매출 합계</span>
-                <span className="num">{fmtWon(s.bonus_total_sales || 0)}</span>
+                <span>2개월 매출 합계 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(공급가액)</span></span>
+                <span className="num">{fmtWon(s.bonus_regular_supply || 0)}</span>
+              </div>
+              {(s.bonus_myungdo_sum || 0) > 0 && (
+                <div className="payroll-bonus-row" style={{ background: '#fff8e1', padding: '4px 8px', borderRadius: 4 }}>
+                  <span>＋ 명도포상 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(부가세 없음)</span></span>
+                  <span className="num" style={{ color: '#e65100', fontWeight: 600 }}>{fmtWon(s.bonus_myungdo_sum)}</span>
+                </div>
+              )}
+              <div className="payroll-bonus-row" style={{ borderTop: '1px solid #e0e0e0', paddingTop: 6 }}>
+                <span>산정 기준 합계 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(공급가 + 명도)</span></span>
+                <span className="num" style={{ fontWeight: 700 }}>{fmtWon(s.bonus_total_sales || 0)}</span>
               </div>
               <div className="payroll-bonus-row">
                 <span>초과매출</span>
@@ -629,6 +737,56 @@ export default function Payroll() {
               <div style={{ margin: '12px 0', padding: '10px 16px', background: '#f5f5f5', borderRadius: 8, fontSize: '0.82rem', color: '#9aa0a6', textAlign: 'center' }}>
                 성과금은 짝수월(2개월 기준)에 지급됩니다.
               </div>
+            )}
+
+            {/* 명도 성과금 — 짝수월에만, 외부 명승 사건 기반 */}
+            {!data.is_hq && data.is_payout_month && myungdoBonus && myungdoBonus.case_count > 0 && (
+              <>
+                <div className="payroll-section-title">
+                  명도 성과금 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({myungdoBonus.period_label} · 외부 명승 사건)</span>
+                </div>
+                <div className="payroll-bonus-box">
+                  <div className="payroll-bonus-row">
+                    <span>명도 사건 수</span>
+                    <span className="num">{myungdoBonus.case_count}건</span>
+                  </div>
+                  <div className="payroll-bonus-row">
+                    <span>수임료 원본 합계</span>
+                    <span className="num" style={{ color: '#9aa0a6' }}>{fmtWon(myungdoBonus.total_fee_raw)}</span>
+                  </div>
+                  <div className="payroll-bonus-row">
+                    <span>조정 후 매출 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(정액 −15만 / 실비 ÷1.1)</span></span>
+                    <span className="num" style={{ fontWeight: 600 }}>{fmtWon(myungdoBonus.total_fee_adjusted)}</span>
+                  </div>
+                  <div className="payroll-bonus-row total">
+                    <span>명도 성과금</span>
+                    <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(myungdoBonus.bonus)}</span>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* 계약포상 — 짝수월 + 계약 랭킹 1·2·3등 (최저 10건 이상) — 급여제는 그대로 지급 */}
+            {!data.is_hq && data.is_payout_month && data.contract_award?.rank && data.contract_award.award > 0 && (
+              <>
+                <div className="payroll-section-title">
+                  계약포상 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({data.bonus_period_label} · 계약 랭킹 {data.contract_award.rank}등)</span>
+                </div>
+                <div className="payroll-bonus-box">
+                  <div className="payroll-bonus-row">
+                    <span>계약 건수</span>
+                    <span className="num">{data.contract_award.count}건</span>
+                  </div>
+                  <div className="payroll-bonus-row">
+                    <span>랭킹</span>
+                    <span className="num" style={{ fontWeight: 600, color: '#1a73e8' }}>{data.contract_award.rank}등</span>
+                  </div>
+                  <div className="payroll-bonus-row total">
+                    <span>계약포상</span>
+                    <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(data.contract_award.award)}</span>
+                  </div>
+                </div>
+              </>
             )}
 
             {/* 급여 정산 */}
@@ -666,6 +824,18 @@ export default function Payroll() {
               <div className="payroll-bonus-row">
                 <span>성과금 ({data.bonus_period_label})</span>
                 <span className="num">{fmtWon(s.bonus)}</span>
+              </div>
+              )}
+              {!data.is_hq && data.is_payout_month && myungdoBonusAmount > 0 && (
+              <div className="payroll-bonus-row" style={{ color: '#188038' }}>
+                <span>명도 성과금 ({myungdoBonus?.period_label})</span>
+                <span className="num">+{fmtWon(myungdoBonusAmount)}</span>
+              </div>
+              )}
+              {!data.is_hq && data.is_payout_month && contractAwardAmount > 0 && (
+              <div className="payroll-bonus-row" style={{ color: '#188038' }}>
+                <span>계약포상 ({data.bonus_period_label} · {data.contract_award.rank}등)</span>
+                <span className="num">+{fmtWon(contractAwardAmount)}</span>
               </div>
               )}
               {extraPayNum > 0 && (

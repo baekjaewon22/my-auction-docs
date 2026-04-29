@@ -302,13 +302,35 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <div className="journal-edit-form">
                             <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>유형</label><input value={ed('meetingType')} onChange={(e) => setEd('meetingType', e.target.value)} /></div>
-                            <div className="journal-edit-row"><label>장소</label><input value={ed('place')} onChange={(e) => setEd('place', e.target.value)} /></div>
+                            <div className="journal-edit-row" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <label>장소</label>
+                              <input style={{ flex: 1 }}
+                                value={ed('place')}
+                                disabled={!!ed('internalMeeting')}
+                                placeholder={ed('internalMeeting') ? '회사' : '장소'}
+                                onChange={(e) => setEd('place', e.target.value)} />
+                              <button type="button"
+                                style={{ flex: 1, cursor: 'pointer', padding: '5px 8px', borderRadius: 6, border: '1px solid #dadce0', fontSize: '0.78rem',
+                                  background: ed('internalMeeting') ? '#e8f5e9' : '#fff',
+                                  color: ed('internalMeeting') ? '#188038' : '#3c4043',
+                                  fontWeight: ed('internalMeeting') ? 600 : 400 }}
+                                onClick={() => {
+                                  const next = !ed('internalMeeting');
+                                  if (next) {
+                                    setEditData({ ...editData, internalMeeting: true, place: '회사', fieldCheckIn: false, fieldCheckOut: false });
+                                  } else {
+                                    setEditData({ ...editData, internalMeeting: false, place: '' });
+                                  }
+                                }}>
+                                {ed('internalMeeting') ? '✓ 회사 미팅 (외근 X)' : '회사 미팅'}
+                              </button>
+                            </div>
                             <FieldCheckEdit ed={ed} setEd={setEd} />
                           </div>
                         ) : (
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
-                            <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.meetingType}{d.etcReason ? ` - ${d.etcReason}` : ''}</span></div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.meetingType}{d.etcReason ? ` - ${d.etcReason}` : ''}{d.internalMeeting && <span style={{ marginLeft: 6, padding: '1px 6px', background: '#e8f5e9', color: '#188038', borderRadius: 8, fontSize: '0.7rem', fontWeight: 600 }}>회사 미팅</span>}</span></div>
                             {d.caseNo && <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>}
                             {d.client && <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.client)}</div>}
                             {d.place && <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>}

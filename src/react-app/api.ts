@@ -319,6 +319,8 @@ export const api = {
       request('/sales/by-entry/' + entryId, { method: 'DELETE' }),
     updatePaymentMethod: (id: string, payment_method: string) =>
       request('/sales/' + id + '/payment-method', { method: 'PUT', body: JSON.stringify({ payment_method }) }),
+    updatePhone: (id: string, client_phone: string) =>
+      request('/sales/' + id + '/phone', { method: 'PUT', body: JSON.stringify({ client_phone }) }),
     updateExcludeCount: (id: string, exclude: boolean) =>
       request('/sales/' + id + '/exclude-count', { method: 'PUT', body: JSON.stringify({ exclude }) }),
     confirm: (id: string, deposit_date?: string) =>
@@ -533,6 +535,19 @@ export const api = {
       }),
     errorSummary: () =>
       request<{ summary: Array<{ category: string; cnt: number; sample_message: string }> }>('/drive/error-summary'),
+  },
+
+  cases: {
+    list: (params: { search?: string; period?: string; manager_id?: string; limit?: number } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
+      return request<{ cases: any[] }>(`/cases${q.toString() ? '?' + q.toString() : ''}`);
+    },
+    detail: (id: string) => request<{ case: any }>(`/cases/${id}`),
+    bonusSummary: (period: string) => request<{ period: string; period_label: string; summary: Array<{ consultant_user_id: string | null; consultant_name: string; consultant_position: string | null; consultant_branch: string | null; consultant_department: string | null; cnt: number; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; bonus: number }> }>(`/cases/bonus/summary?period=${period}`),
+    bonusMe: (period: string) => request<{ period: string; period_label: string; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number }>(`/cases/bonus/me?period=${period}`),
+    finalizeBonus: (period: string) =>
+      request<{ success: boolean; period: string; period_label: string; inserted: number; skipped: number; ineligible: number; details: Array<{ user_id: string; user_name: string; bonus: number; status: string; reason?: string }> }>(`/cases/finalize-bonus`, { method: 'POST', body: JSON.stringify({ period }) }),
   },
 
   rooms: {

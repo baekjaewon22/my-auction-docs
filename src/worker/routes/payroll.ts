@@ -1,6 +1,49 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { calculateMyungdoBonus } from './cases';
+
+// ───── 계약포상 (신설) ─────
+// 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
+// 최저 10건 이상이어야 자격 (220만 이상은 2건 카운트, exclude_from_count 제외)
+// 매출포상(일반 성과금) 산정에는 합산 X — 별도 항목으로만 표시
+const CONTRACT_AWARD_TIERS = [300_000, 200_000, 100_000];
+const CONTRACT_AWARD_MIN_COUNT = 10;
+async function calcContractAwardForUser(
+  db: D1Database, userId: string, periodStart: string, periodEnd: string,
+): Promise<{ rank: number | null; count: number; award: number; total_amount: number }> {
+  const result = await db.prepare(`
+    SELECT u.id as user_id, u.name as user_name,
+      SUM(CASE WHEN sr.amount >= 2200000 THEN 2 ELSE 1 END) as cnt,
+      SUM(sr.amount) as total_amount
+    FROM sales_records sr
+    JOIN users u ON u.id = sr.user_id
+    WHERE sr.type = '계약' AND sr.status = 'confirmed'
+      AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
+      AND (
+        (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
+        OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
+        OR ((sr.payment_type = '' OR sr.payment_type IS NULL) AND sr.contract_date >= ? AND sr.contract_date <= ?)
+      )
+    GROUP BY u.id
+    HAVING cnt >= ?
+    ORDER BY cnt DESC, total_amount DESC
+    LIMIT 3
+  `).bind(
+    periodStart, periodEnd, periodStart, periodEnd, periodStart, periodEnd,
+    CONTRACT_AWARD_MIN_COUNT,
+  ).all<any>();
+
+  const top3 = result.results || [];
+  const idx = top3.findIndex((r: any) => r.user_id === userId);
+  if (idx === -1) return { rank: null, count: 0, award: 0, total_amount: 0 };
+  return {
+    rank: idx + 1,
+    count: top3[idx].cnt,
+    award: CONTRACT_AWARD_TIERS[idx] || 0,
+    total_amount: top3[idx].total_amount || 0,
+  };
+}
 
 const payroll = new Hono<AuthEnv>();
 payroll.use('*', authMiddleware);
@@ -124,9 +167,18 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   // 본사관리 인원은 실적 기반 성과금 없음
   const isHQ = user.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
 
-  // 성과금: 2개월 매출 기준 (급여제만, 비율제는 성과금 없음)
+  // 성과금: 2개월 일반매출(공급가액) + 명도포상(amount 그대로) 합산 (급여제만)
   let bonus = 0;
-  let bonusTotalSales = totalSales;
+  // 일반매출 (부가세 분리 대상)
+  let bonusRegularRaw = totalSales;                          // 일반 원본
+  let bonusRegularSupply = Math.round(totalSales / 1.1);     // 일반 공급가액
+  let bonusRegularVat = totalSales - bonusRegularSupply;     // 일반 부가세
+  // 명도포상 (부가세 X)
+  let bonusMyungdoSum = 0;
+  // 합계 (성과금 산정 기준 = 일반공급가 + 명도포상)
+  let bonusTotalSalesRaw = bonusRegularRaw;                  // 호환: raw = 일반 원본 + 명도
+  let bonusTotalSales = bonusRegularSupply;                  // 호환: 합계 = 일반공급가 + 명도
+  let bonusTotalVat = bonusRegularVat;                       // 호환: 부가세
   let bonusExcess = 0;
   const isPayoutMonth = m % 2 === 0; // 짝수월 = 성과금 지급월
 
@@ -135,7 +187,27 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
     const bonusSalesResult = await db.prepare(salesQuery)
       .bind(userId, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd).all();
     const bonusConfirmed = (bonusSalesResult.results as any[]).filter((r: any) => r.status === 'confirmed');
-    bonusTotalSales = bonusConfirmed.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
+    // sales_records의 명도성과금은 일반매출 합산에서 제외 (cases 직접 조회로 중복 방지)
+    const isMyungdoSalesRow = (r: any) => (r.type_detail || '').startsWith('명도성과금');
+    bonusRegularRaw = bonusConfirmed.filter((r: any) => !isMyungdoSalesRow(r)).reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
+    bonusRegularSupply = Math.round(bonusRegularRaw / 1.1);
+    bonusRegularVat = bonusRegularRaw - bonusRegularSupply;
+
+    // 명도포상: cases 테이블에서 직접 등급 성과금 계산 (트리거 INSERT 여부 무관)
+    const periodKey = `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}_${String(bonusPeriodEndMonth).padStart(2, '0')}`;
+    const myungdoCases = await db.prepare(`
+      SELECT COALESCE(SUM(
+        CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
+             ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER) END
+      ), 0) as total_fee_adjusted
+      FROM cases
+      WHERE consultant_user_id = ? AND bimonthly_period = ?
+    `).bind(userId, periodKey).first<any>();
+    bonusMyungdoSum = calculateMyungdoBonus(myungdoCases?.total_fee_adjusted || 0);
+
+    bonusTotalSalesRaw = bonusRegularRaw + bonusMyungdoSum;
+    bonusTotalSales = bonusRegularSupply + bonusMyungdoSum;  // 산정 기준
+    bonusTotalVat = bonusRegularVat;
     bonusExcess = Math.max(bonusTotalSales - standardSales, 0);
 
     if (bonusExcess > 0) {
@@ -178,6 +250,11 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
     return { ...r, supply_amount: supply, recovery_amount: recovery };
   });
 
+  // 계약포상: 짝수월 + 본사관리 아닌 인원 한해 산정 (급여제·비율제 모두)
+  const contractAward = (isPayoutMonth && !isHQ)
+    ? await calcContractAwardForUser(db, userId, bonusPeriodStart, bonusPeriodEnd)
+    : { rank: null, count: 0, award: 0, total_amount: 0 };
+
   return c.json({
     user,
     accounting: isJanFeb2026
@@ -194,6 +271,7 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
     records: recordsWithVat,
     refunded_records: refundedRecords,
     refund_recoveries: refundRecoveries,
+    contract_award: contractAward, // { rank, count, award, total_amount } — rank null이면 자격 미달
     summary: {
       contract_count: contractCount,
       total_sales: totalSales,
@@ -202,7 +280,13 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
       total_refund: totalRefund,
       net_sales: totalSales - totalRefund,
       standard_sales: standardSales,
-      bonus_total_sales: bonusTotalSales,
+      bonus_regular_raw: bonusRegularRaw,            // 일반매출 원본(부가세 포함)
+      bonus_regular_vat: bonusRegularVat,            // 일반매출 부가세
+      bonus_regular_supply: bonusRegularSupply,      // 일반매출 공급가액
+      bonus_myungdo_sum: bonusMyungdoSum,            // 명도포상 합계 (부가세 X)
+      bonus_total_sales_raw: bonusTotalSalesRaw,    // 합계: 일반원본 + 명도
+      bonus_total_vat: bonusTotalVat,                // 호환
+      bonus_total_sales: bonusTotalSales,            // 산정 기준: 일반공급가 + 명도
       bonus_excess: bonusExcess,
       excess: bonusExcess,
       bonus,
@@ -396,7 +480,7 @@ payroll.get('/reports/business-income', requireRole(...ACCOUNTING_ROLES), async 
       ? rateOverrides[u.id]
       : (Number(u.commission_rate) || (isJanFeb2026 ? 50 : 0));
     const salesRes = await db.prepare(`
-      SELECT type, amount, proxy_cost, payment_type, card_deposit_date, deposit_date, contract_date
+      SELECT type, type_detail, amount, proxy_cost, payment_type, card_deposit_date, deposit_date, contract_date
       FROM sales_records
       WHERE user_id = ? AND status = 'confirmed'
         AND (
@@ -409,15 +493,37 @@ payroll.get('/reports/business-income', requireRole(...ACCOUNTING_ROLES), async 
     let normalSupply = 0;
     let proxyIncome = 0;
     for (const r of (salesRes.results || [])) {
-      if (r.type === '매수신청대리') {
+      if ((r.type_detail || '').startsWith('명도성과금')) {
+        // sales_records의 명도성과금 INSERT 건은 제외 (cases 직접 조회로 중복 방지)
+        continue;
+      } else if (r.type === '매수신청대리') {
         const net = (r.amount || 0) - (r.proxy_cost || 0);
         proxyIncome += Math.max(Math.round(net / 1.1), 0);
       } else {
         normalSupply += Math.round((r.amount || 0) / 1.1);
       }
     }
+
+    // 명도성과금: 짝수월 정산 시 cases 직접 조회로 등급 성과금 자동 합산
+    // (commission rate 미적용, 부가세 없음, 33% 세금만 차감)
+    let myungdoIncome = 0;
+    if (m % 2 === 0) {
+      const m1 = m - 1;
+      const m2 = m;
+      const periodKey = `${y}-${String(m1).padStart(2, '0')}_${String(m2).padStart(2, '0')}`;
+      const myungdoCases = await db.prepare(`
+        SELECT COALESCE(SUM(
+          CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
+               ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER) END
+        ), 0) as total_fee_adjusted
+        FROM cases
+        WHERE consultant_user_id = ? AND bimonthly_period = ?
+      `).bind(u.id, periodKey).first<any>();
+      myungdoIncome = calculateMyungdoBonus(myungdoCases?.total_fee_adjusted || 0);
+    }
+
     const commissionAmount = Math.round(normalSupply * rate / 100);
-    const amount = commissionAmount + proxyIncome; // 총 소득
+    const amount = commissionAmount + proxyIncome + myungdoIncome; // 총 소득
     const tax = Math.round(amount * 0.033);
     const net = amount - tax;
     autoMap[u.id] = { amount, tax, net };

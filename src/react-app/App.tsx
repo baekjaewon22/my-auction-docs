@@ -15,6 +15,7 @@ import Profile from './pages/Profile';
 import Journal from './pages/Journal';
 import ArchivePage from './pages/Archive';
 import Statistics from './pages/Statistics';
+import Cases from './pages/Cases';
 import OrgChart from './pages/OrgChart';
 import MeetingMinutes from './pages/MeetingMinutes';
 // import Commissions from './pages/Commissions'; // 매출확인으로 통합됨
@@ -153,6 +154,7 @@ export default function App() {
               </StatsRoute>
             }
           />
+          <Route path="cases" element={<Cases />} />
           <Route path="profile" element={<Profile />} />
           <Route
             path="templates/:id"

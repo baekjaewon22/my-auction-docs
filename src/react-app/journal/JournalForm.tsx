@@ -158,6 +158,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [meetingCaseYear, setMeetingCaseYear] = useState('2026');
   const [meetingCaseNo, setMeetingCaseNo] = useState('');
   const [meetingItemNo, setMeetingItemNo] = useState('');
+  const [meetingInternal, setMeetingInternal] = useState(false); // 회사 미팅 — 외근 X, 외근보고서 매칭 제외
 
   // 사무
   const [officeType, setOfficeType] = useState('고객관리');
@@ -181,7 +182,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     if (activityType === '임장' && inspClientType === '고객명' && !inspClient.trim()) { alert('계약자명을 입력해주세요.'); return null; }
     if (activityType === '임장' && inspClientType === '기타' && !inspEtcReason.trim()) { alert('사유를 입력해주세요.'); return null; }
     if (activityType === '미팅' && !meetingClient.trim()) { alert('계약자명을 입력해주세요.'); return null; }
-    if (activityType === '미팅' && !meetingPlace.trim()) { alert('장소를 입력해주세요.'); return null; }
+    if (activityType === '미팅' && !meetingInternal && !meetingPlace.trim()) { alert('장소를 입력해주세요.'); return null; }
     if (activityType === '미팅' && meetingType === '브리핑' && !meetingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '브리핑자료제출' && !briefingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '브리핑자료제출' && !briefingCourt) { alert('법원을 선택해주세요.'); return null; }
@@ -213,9 +214,10 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
         break;
       case '미팅':
         data = { ...data, meetingType, etcReason: meetingEtc, place: meetingPlace, client: meetingClient,
+          internalMeeting: meetingInternal, // 회사 미팅 플래그 — 외근 X, 외근보고서 매칭 제외
           ...(meetingType === '브리핑' ? { caseNo: `${meetingCaseYear}타경${meetingCaseNo}`, itemNo: meetingItemNo } : {}) };
         subtype = meetingType === '기타' ? meetingEtc : meetingType;
-        label = `미팅(${subtype}) — ${meetingClient}${meetingType === '브리핑' ? ` | ${meetingCaseYear}타경${meetingCaseNo}${meetingItemNo ? ` | ${meetingItemNo}` : ''}` : ''}`;
+        label = `미팅(${subtype})${meetingInternal ? ' [회사]' : ''} — ${meetingClient}${meetingType === '브리핑' ? ` | ${meetingCaseYear}타경${meetingCaseNo}${meetingItemNo ? ` | ${meetingItemNo}` : ''}` : ''}`;
         break;
       case '사무':
         data = { ...data, officeType, etcReason: officeEtc };
@@ -256,7 +258,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     setBidCaseNo(''); setBidItemNo(''); setBidBidder(''); setBidBidderName(''); setBidSuggestedPrice(''); setBidPrice('');
     setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidDeviationReason('');
     setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient('');
-    setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo(''); setMeetingItemNo('');
+    setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo(''); setMeetingItemNo(''); setMeetingInternal(false);
     setOfficeEtc('');
     setPersonalReason('');
     setBriefingSubmit(false); setBriefingCaseNo(''); setBriefingItemNo(''); setBriefingCourt(''); setBriefingClient('');
@@ -509,7 +511,34 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
               ) : (
                 <div className="form-group"><label>계약자명 *</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="계약자명" required /></div>
               )}
-              <div className="form-group"><label>장소</label><input type="text" value={meetingPlace} onChange={(e) => setMeetingPlace(e.target.value)} required /></div>
+              <div className="form-row form-row-inline">
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>장소</label>
+                  <input type="text" value={meetingPlace} onChange={(e) => setMeetingPlace(e.target.value)}
+                    placeholder={meetingInternal ? '회사' : '장소'}
+                    disabled={meetingInternal}
+                    required={!meetingInternal} />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>&nbsp;</label>
+                  <button type="button"
+                    className={`field-check-label ${meetingInternal ? 'checked' : ''}`}
+                    style={{ width: '100%', cursor: 'pointer', padding: '6px 10px', borderRadius: 6, border: '1px solid #dadce0', background: meetingInternal ? '#e8f5e9' : '#fff', color: meetingInternal ? '#188038' : '#3c4043', fontWeight: meetingInternal ? 600 : 400 }}
+                    onClick={() => {
+                      const next = !meetingInternal;
+                      setMeetingInternal(next);
+                      if (next) {
+                        setMeetingPlace('회사');
+                        setFieldCheckIn(false);
+                        setFieldCheckOut(false);
+                      } else {
+                        setMeetingPlace('');
+                      }
+                    }}>
+                    {meetingInternal ? '✓ 회사 미팅 (외근 X)' : '회사 미팅'}
+                  </button>
+                </div>
+              </div>
             </>
           )}
 

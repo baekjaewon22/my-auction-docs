@@ -195,7 +195,10 @@ export default function Sales() {
   const [claimClient, setClaimClient] = useState('');
 
   // [6-3] 활동내역
-  const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'upload' | 'auditlog'>('list');
+  const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'myungdo' | 'upload' | 'auditlog'>('list');
+  // 명도계약 (외부 명승 사건 — 매출 시스템과 분리, 표시만)
+  const [myungdoCases, setMyungdoCases] = useState<any[]>([]);
+  const [myungdoLoading, setMyungdoLoading] = useState(false);
   const [activityEntries, setActivityEntries] = useState<JournalEntry[]>([]);
   const [activityBranch, setActivityBranch] = useState('');
   const [activityUser, setActivityUser] = useState('');
@@ -409,6 +412,16 @@ export default function Sales() {
     } catch { setActivityEntries([]); setAllRecords([]); }
   };
   useEffect(() => { if (salesTab === 'activity') loadActivity(activityUser || undefined); }, [salesTab, activityUser]);
+
+  // 명도계약 fetch — 매출 합계와 무관, 표시 전용
+  useEffect(() => {
+    if (salesTab !== 'myungdo') return;
+    setMyungdoLoading(true);
+    api.cases.list({ limit: 500 })
+      .then((r: any) => setMyungdoCases(r.cases || []))
+      .catch(() => setMyungdoCases([]))
+      .finally(() => setMyungdoLoading(false));
+  }, [salesTab]);
   useEffect(() => {
     if (salesTab !== 'auditlog' || !canViewAuditLog) return;
     (async () => {
@@ -701,6 +714,9 @@ export default function Sales() {
               <Activity size={14} style={{ marginRight: 4 }} /> 활동내역
             </button>
           )}
+          <button className={`premium-filter-btn ${salesTab === 'myungdo' ? 'active' : ''}`} onClick={() => setSalesTab('myungdo')} title="외부 명승 사건 (매출 합계와 별개)">
+            명도계약
+          </button>
           {canDepositUpload && (
             <button className={`premium-filter-btn ${salesTab === 'upload' ? 'active' : ''}`} onClick={() => setSalesTab('upload')}>
               <Upload size={14} style={{ marginRight: 4 }} /> 엑셀 업로드
@@ -863,6 +879,140 @@ export default function Sales() {
             )}
             <div style={{ fontSize: '0.78rem', color: '#9aa0a6', marginTop: 8, textAlign: 'center' }}>총 {clientList.length}명</div>
           </div>
+        );
+      })()}
+
+      {/* ━━━ 명도계약 탭 (외부 명승 사건 — 매출 합계와 분리, 담당자별 그룹화) ━━━ */}
+      {salesTab === 'myungdo' && (() => {
+        // 조정 금액 계산: 정액제 -150,000 / 실비제 ÷1.1 (부가세 제외)
+        const adjustedFeeOf = (r: any) => r.fee_type === 'fixed'
+          ? Math.max(0, (r.fee_amount || 0) - 150_000)
+          : Math.round((r.fee_amount || 0) / 1.1);
+
+        // 권한별 가시 범위 — 일반 직원은 본인 컨설턴트로 등록된 사건만
+        const myId = currentUser?.id;
+        const role = currentUser?.role || '';
+        const adminPlus = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst', 'director', 'manager'].includes(role);
+        let scopedCases = myungdoCases;
+        if (!adminPlus && myId) {
+          scopedCases = myungdoCases.filter((r: any) => r.consultant_user_id === myId);
+        }
+
+        // 검색/지사 필터
+        const filtered = scopedCases.filter((r: any) => {
+          if (filterUser && r.consultant_user_id !== filterUser) return false;
+          if (filterBranch && r.consultant_branch !== filterBranch) return false;
+          if (searchQuery) {
+            const q = searchQuery.toLowerCase();
+            const hay = `${r.consultant_name || ''} ${r.client_name || ''} ${r.manager_name || ''} ${r.external_id || ''}`.toLowerCase();
+            if (!hay.includes(q)) return false;
+          }
+          return true;
+        });
+
+        // 담당자(컨설턴트) 별 그룹화
+        const byConsultant = new Map<string, { id: string | null; name: string; position: string | null; branch: string | null; department: string | null; rows: any[]; totalRaw: number; totalAdjusted: number }>();
+        filtered.forEach((r: any) => {
+          const key = r.consultant_user_id || `name:${r.consultant_name || '미지정'}`;
+          if (!byConsultant.has(key)) {
+            byConsultant.set(key, {
+              id: r.consultant_user_id || null,
+              name: r.consultant_name || '미지정',
+              position: r.consultant_position || null,
+              branch: r.consultant_branch || null,
+              department: r.consultant_department || null,
+              rows: [], totalRaw: 0, totalAdjusted: 0,
+            });
+          }
+          const g = byConsultant.get(key)!;
+          g.rows.push(r);
+          g.totalRaw += r.fee_amount || 0;
+          g.totalAdjusted += adjustedFeeOf(r);
+        });
+        const groups = Array.from(byConsultant.values()).sort((a, b) => b.totalAdjusted - a.totalAdjusted);
+
+        const totalCases = filtered.length;
+        const totalRawSum = filtered.reduce((s: number, r: any) => s + (r.fee_amount || 0), 0);
+        const totalAdjustedSum = filtered.reduce((s: number, r: any) => s + adjustedFeeOf(r), 0);
+
+        return (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
+              <div className="card" style={{ padding: 12 }}>
+                <div style={{ fontSize: 11, color: '#5f6368' }}>표시 사건</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#1a73e8' }}>{totalCases}건</div>
+              </div>
+              <div className="card" style={{ padding: 12 }}>
+                <div style={{ fontSize: 11, color: '#5f6368' }}>수임료 원본 합계</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#5f6368' }}>{formatCurrency(totalRawSum)}</div>
+              </div>
+              <div className="card" style={{ padding: 12 }}>
+                <div style={{ fontSize: 11, color: '#5f6368' }}>성과금 산정 매출 (조정 후)</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#188038' }}>{formatCurrency(totalAdjustedSum)}</div>
+              </div>
+              <div className="card" style={{ padding: 12 }}>
+                <div style={{ fontSize: 11, color: '#5f6368' }}>담당자 수</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#7b1fa2' }}>{groups.length}명</div>
+              </div>
+            </div>
+            {myungdoLoading ? (
+              <div style={{ padding: 40, textAlign: 'center', color: '#5f6368' }}>로딩중...</div>
+            ) : groups.length === 0 ? (
+              <div style={{ padding: 40, textAlign: 'center', color: '#9aa0a6' }}>표시할 명도 사건이 없습니다.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {groups.map((g) => (
+                  <details key={g.id || g.name} className="card" style={{ padding: 10 }} open={groups.length <= 3}>
+                    <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6 }}>
+                        <strong style={{ fontSize: 14 }}>{g.name}</strong>
+                        {g.position && <span style={{ fontSize: 11, color: '#5f6368' }}>{g.position}</span>}
+                        {g.branch && <span style={{ fontSize: 11, color: '#9aa0a6' }}>{g.branch}{g.department ? '·' + g.department : ''}</span>}
+                        {!g.id && <span style={{ fontSize: 10, color: '#d93025' }}>(미매칭)</span>}
+                      </span>
+                      <span style={{ fontSize: 12 }}>
+                        <span style={{ marginRight: 14, color: '#5f6368' }}>{g.rows.length}건</span>
+                        <span style={{ marginRight: 14, color: '#5f6368' }}>원본 {formatCurrency(g.totalRaw)}</span>
+                        <strong style={{ color: '#188038' }}>조정 {formatCurrency(g.totalAdjusted)}</strong>
+                      </span>
+                    </summary>
+                    <div className="table-wrapper" style={{ marginTop: 8 }}>
+                      <table className="data-table" style={{ fontSize: '0.78rem' }}>
+                        <thead>
+                          <tr>
+                            <th>등록일</th>
+                            <th>구간</th>
+                            <th>위임인</th>
+                            <th>담당자 (명도팀)</th>
+                            <th>유형</th>
+                            <th style={{ textAlign: 'right' }}>수임료(원본)</th>
+                            <th style={{ textAlign: 'right' }}>조정 후 (성과금기준)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {g.rows.map((r: any) => (
+                            <tr key={r.id}>
+                              <td style={{ fontSize: 11 }}>{(r.registered_at || '').slice(0, 10)}</td>
+                              <td style={{ fontSize: 11, color: '#5f6368' }}>{r.bimonthly_period?.replace('_', '~')}</td>
+                              <td>{r.client_name}</td>
+                              <td style={{ fontSize: 11, color: '#5f6368' }}>{r.manager_name}{r.manager_branch ? ' · ' + r.manager_branch : ''}</td>
+                              <td>
+                                <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, background: r.fee_type === 'fixed' ? '#e8f0fe' : '#fff3e0', color: r.fee_type === 'fixed' ? '#1a73e8' : '#e65100' }}>
+                                  {r.fee_type === 'fixed' ? '정액' : '실비'}
+                                </span>
+                              </td>
+                              <td style={{ textAlign: 'right', color: '#5f6368' }}>{formatCurrency(r.fee_amount)}</td>
+                              <td style={{ textAlign: 'right', fontWeight: 700, color: '#188038' }}>{formatCurrency(adjustedFeeOf(r))}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
+          </>
         );
       })()}
 
@@ -1981,6 +2131,22 @@ export default function Sales() {
                   );
                 })()}
               </div>
+              {/* 전화번호 수정 (본인/마스터/총무담당/총무보조 — 확정 매출도 가능) */}
+              {(detailRecord.type === '계약' || detailRecord.type === '낙찰') && (detailRecord.user_id === currentUser?.id || ['master', 'accountant', 'accountant_asst'].includes(role)) && (
+                <div style={{ borderTop: '1px solid #e8eaed', paddingTop: 12, marginBottom: 12 }}>
+                  <div style={{ fontSize: '0.78rem', color: '#3c4043', fontWeight: 600, marginBottom: 8 }}>
+                    전화번호 <span style={{ fontSize: '0.7rem', color: '#9aa0a6', fontWeight: 400 }}>(언제든 수정 가능)</span>
+                  </div>
+                  <input className="form-input" defaultValue={detailRecord.client_phone || ''}
+                    style={{ width: '100%', fontSize: '0.82rem' }} placeholder="010-XXXX-XXXX"
+                    onBlur={async (e) => {
+                      const val = e.target.value.trim();
+                      if (val !== (detailRecord.client_phone || '')) {
+                        try { await api.sales.updatePhone(detailRecord.id, val); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
+                      }
+                    }} />
+                </div>
+              )}
               {/* 수정 영역 (본인 pending건 또는 관리자/총무) */}
               {((detailRecord.user_id === currentUser?.id && detailRecord.status === 'pending') || canModifyAccounting) && (
                 <div style={{ borderTop: '1px solid #e8eaed', paddingTop: 12, marginBottom: 12 }}>
