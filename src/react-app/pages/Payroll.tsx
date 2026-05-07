@@ -5,6 +5,7 @@ import type { User } from '../types';
 import { useBranches } from '../hooks/useBranches';
 import Select from '../components/Select';
 import BusinessIncomeTab from '../components/BusinessIncomeTab';
+import EmployeeBonusTab from '../components/EmployeeBonusTab';
 import { Receipt, Camera } from 'lucide-react';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
@@ -25,7 +26,7 @@ export default function Payroll() {
   const [filterBranch, setFilterBranch] = useState('');
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<'payroll' | 'summary' | 'branch' | 'business_income'>('payroll');
+  const [tab, setTab] = useState<'payroll' | 'summary' | 'branch' | 'business_income' | 'employee_bonus'>('payroll');
 
   // 회계 수동 입력 필드
   const [deduction, setDeduction] = useState('0');
@@ -68,6 +69,8 @@ export default function Payroll() {
       setDeduction('0');
       setExtraPay('0');
       setExtraLabel('');
+      setExtraDeduction('0');
+      setExtraDeductionLabel('');
       setCommExtras([]);
       setCommDeductions([]);
       setIsLocked(false);
@@ -77,13 +80,13 @@ export default function Payroll() {
         const saveRes = await api.payroll.getSave(selectedUserId, period);
         if (saveRes.save) {
           const sd = JSON.parse(saveRes.save.data || '{}');
-          if (sd.deduction) setDeduction(sd.deduction);
-          if (sd.extraPay) setExtraPay(sd.extraPay);
-          if (sd.extraLabel) setExtraLabel(sd.extraLabel);
-          if (sd.extraDeduction) setExtraDeduction(sd.extraDeduction);
-          if (sd.extraDeductionLabel) setExtraDeductionLabel(sd.extraDeductionLabel);
-          if (sd.commExtras) setCommExtras(sd.commExtras);
-          if (sd.commDeductions) setCommDeductions(sd.commDeductions);
+          setDeduction(sd.deduction ?? '0');
+          setExtraPay(sd.extraPay ?? '0');
+          setExtraLabel(sd.extraLabel ?? '');
+          setExtraDeduction(sd.extraDeduction ?? '0');
+          setExtraDeductionLabel(sd.extraDeductionLabel ?? '');
+          setCommExtras(Array.isArray(sd.commExtras) ? sd.commExtras : []);
+          setCommDeductions(Array.isArray(sd.commDeductions) ? sd.commDeductions : []);
           setIsLocked(!!saveRes.save.locked);
         }
       } catch { /* 저장 없음 */ }
@@ -239,6 +242,9 @@ export default function Payroll() {
         </button>}
         <button className={`filter-btn ${tab === 'business_income' ? 'active' : ''}`} onClick={() => setTab('business_income')}>
           사업소득신고
+        </button>
+        <button className={`filter-btn ${tab === 'employee_bonus' ? 'active' : ''}`} onClick={() => setTab('employee_bonus')}>
+          정직원 성과금내역
         </button>
       </div>
 
@@ -1247,6 +1253,7 @@ export default function Payroll() {
       )}
 
       {tab === 'business_income' && <BusinessIncomeTab month={selectedMonth} />}
+      {tab === 'employee_bonus' && <EmployeeBonusTab month={selectedMonth} users={filteredUsers} />}
     </div>
   );
 }
@@ -1271,4 +1278,3 @@ function getBonusBreakdown(excess: number) {
   }
   return tiers;
 }
-

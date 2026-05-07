@@ -134,9 +134,9 @@ export default function MeetingMinutes() {
     catch (err: any) { alert(err.message); }
   };
 
-  // 관리자 노트로 이동
+  // 사내 커뮤니티로 이동
   const handleMoveToNote = async (item: MinuteItem) => {
-    if (!confirm(`"${item.title}" 회의록을 관리자 노트로 이동하시겠습니까?`)) return;
+    if (!confirm(`"${item.title}" 회의록을 사내 커뮤니티로 이동하시겠습니까?`)) return;
     try {
       // txt 변환된 회의록: converted_content 사용, PDF: 설명+파일명으로 구성
       let content = '';
@@ -156,7 +156,7 @@ export default function MeetingMinutes() {
         source_type: 'minutes',
         source_id: item.id,
       });
-      alert('관리자 노트로 이동되었습니다.');
+      alert('사내 커뮤니티로 이동되었습니다.');
       navigate('/admin-notes');
     } catch (err: any) { alert(err.message); }
   };
@@ -415,7 +415,7 @@ export default function MeetingMinutes() {
                 <button className="btn btn-sm" onClick={() => { setSharingId(item.id); setShareTargets([]); }} title="공유">
                   <Share2 size={14} />
                 </button>
-                <button className="btn btn-sm" onClick={() => handleMoveToNote(item)} title="관리자 노트로 이동" style={{ color: '#f9a825' }}>
+                <button className="btn btn-sm" onClick={() => handleMoveToNote(item)} title="사내 커뮤니티로 이동" style={{ color: '#f9a825' }}>
                   <StickyNote size={14} />
                 </button>
                 {user && ['master', 'ceo', 'cc_ref'].includes(user.role) && (

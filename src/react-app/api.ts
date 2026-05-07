@@ -4,10 +4,17 @@ function getToken(): string | null {
   return localStorage.getItem('token');
 }
 
+// 활동 로그 페이지 식별: 'sales' | 'accounting' (각 페이지가 mount 시 setSourcePage 호출)
+let currentSourcePage: string = 'sales';
+export function setSourcePage(page: 'sales' | 'accounting'): void {
+  currentSourcePage = page;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    'X-Source-Page': currentSourcePage,
     ...(options.headers as Record<string, string> || {}),
   };
   if (token) {
@@ -122,8 +129,24 @@ export const api = {
   },
 
   documents: {
-    list: (status?: string) =>
-      request<{ documents: import('./types').Document[] }>('/documents' + (status ? '?status=' + status : '')),
+    list: (statusOrOpts?: string | { status?: string; author_id?: string; since?: string; exclude_drafts?: boolean; fields?: string; limit?: number }) => {
+      // 하위 호환: 문자열로 status만 받던 이전 시그니처 유지
+      let qs = '';
+      if (typeof statusOrOpts === 'string') {
+        qs = statusOrOpts ? '?status=' + encodeURIComponent(statusOrOpts) : '';
+      } else if (statusOrOpts) {
+        const params = new URLSearchParams();
+        if (statusOrOpts.status) params.set('status', statusOrOpts.status);
+        if (statusOrOpts.author_id) params.set('author_id', statusOrOpts.author_id);
+        if (statusOrOpts.since) params.set('since', statusOrOpts.since);
+        if (statusOrOpts.exclude_drafts) params.set('exclude_drafts', 'true');
+        if (statusOrOpts.fields) params.set('fields', statusOrOpts.fields);
+        if (statusOrOpts.limit) params.set('limit', String(statusOrOpts.limit));
+        const s = params.toString();
+        qs = s ? '?' + s : '';
+      }
+      return request<{ documents: import('./types').Document[] }>('/documents' + qs);
+    },
     get: (id: string) => request<{ document: import('./types').Document }>('/documents/' + id),
     create: (data: { title: string; content?: string; template_id?: string }) =>
       request<{ document: import('./types').Document }>('/documents', {
@@ -142,6 +165,10 @@ export const api = {
       }),
     logs: (id: string) => request<{ logs: import('./types').DocumentLog[] }>('/documents/' + id + '/logs'),
     steps: (id: string) => request<{ steps: import('./types').ApprovalStep[] }>('/documents/' + id + '/steps'),
+    stepsBatch: (ids: string[]) =>
+      request<{ steps: Record<string, import('./types').ApprovalStep[]> }>('/documents/steps-batch', {
+        method: 'POST', body: JSON.stringify({ ids }),
+      }),
     cancelRequest: (id: string, reason: string) =>
       request('/documents/' + id + '/cancel-request', { method: 'POST', body: JSON.stringify({ reason }) }),
     cancelApprove: (id: string) =>
@@ -210,6 +237,23 @@ export const api = {
       request('/leave/requests/' + id + '/cancel-approve', { method: 'POST' }),
     deleteRequest: (id: string) =>
       request('/leave/requests/' + id, { method: 'DELETE' }),
+    // 연차 사용량 재계산 (이력 기반 정합성)
+    recalculate: (userId: string) =>
+      request<{ success: boolean; before: { used_days: number; monthly_used: number }; after: { used_days: number; monthly_used: number } }>(
+        '/leave/recalculate/' + userId, { method: 'POST' }
+      ),
+    recalculateAll: () =>
+      request<{ success: boolean; total: number; updated: number; changes: Array<{ user_id: string; name: string; before: any; after: any }> }>(
+        '/leave/recalculate-all', { method: 'POST' }
+      ),
+    reinit: (userId: string) =>
+      request<{ success: boolean; before: any; after: any }>(
+        '/leave/reinit/' + userId, { method: 'POST' }
+      ),
+    reinitAll: () =>
+      request<{ success: boolean; total: number; updated: number; changes: Array<{ user_id: string; name: string; before: any; after: any }> }>(
+        '/leave/reinit-all', { method: 'POST' }
+      ),
     // 환급
     refund: (userId: string) => request<any>('/leave/refund/' + userId),
     // 알림
@@ -300,9 +344,16 @@ export const api = {
       request<{ ranking: Array<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }> }>(
         '/sales/ranking?period_start=' + encodeURIComponent(period_start) + '&period_end=' + encodeURIComponent(period_end)
       ),
-    contractTracker: (period: 'today' | 'yesterday' | 'week' | 'month', month?: string) => {
-      const q = new URLSearchParams({ period });
-      if (period === 'month' && month) q.set('month', month);
+    contractTracker: (
+      params: { month_from?: string; month_to?: string; period?: 'today' | 'yesterday' | 'week' | 'month'; month?: string } = {}
+    ) => {
+      const q = new URLSearchParams();
+      if (params.month_from) q.set('month_from', params.month_from);
+      if (params.month_to) q.set('month_to', params.month_to);
+      if (!params.month_from && !params.month_to) {
+        q.set('period', params.period || 'month');
+        if (params.month) q.set('month', params.month);
+      }
       return request<{
         period: string; from: string; to: string;
         users: Array<{ user_id: string; user_name: string; branch: string; department: string; position_title: string; role: string; login_type: string; contract_count: number; total_amount: number; raw_count: number }>;
@@ -311,7 +362,7 @@ export const api = {
     },
     create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
+    update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; deposit_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       request('/sales/' + id, { method: 'DELETE' }),
@@ -366,13 +417,14 @@ export const api = {
       request('/sales/' + id + '/contract-not-approve', { method: 'PUT' }),
     bulkImport: (records: any[]) =>
       request<{ success: boolean; count: number }>('/sales/bulk-import', { method: 'POST', body: JSON.stringify({ records }) }),
-    // 활동 내역 (master, accountant)
-    activityLogs: (params?: { month?: string; actor_id?: string; action?: string; limit?: number }) => {
+    // 활동 내역 (master, accountant) — source_page='sales'|'accounting' 으로 페이지별 필터
+    activityLogs: (params?: { month?: string; actor_id?: string; action?: string; limit?: number; source_page?: 'sales' | 'accounting' }) => {
       const q = new URLSearchParams();
       if (params?.month) q.set('month', params.month);
       if (params?.actor_id) q.set('actor_id', params.actor_id);
       if (params?.action) q.set('action', params.action);
       if (params?.limit) q.set('limit', String(params.limit));
+      if (params?.source_page) q.set('source_page', params.source_page);
       const qs = q.toString();
       return request<{ logs: any[] }>('/sales/activity-logs' + (qs ? '?' + qs : ''));
     },
@@ -420,6 +472,63 @@ export const api = {
       request<{ success: boolean; count: number }>('/card/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
     rematch: () =>
       request<{ success: boolean; total: number; updated: number }>('/card/rematch', { method: 'POST' }),
+    lastUpload: () =>
+      request<{ last_upload: string | null; count: number; batch_id: string | null }>('/card/last-upload'),
+  },
+
+  links: {
+    myOutdoorEntries: (forDocId?: string) => {
+      const q = forDocId ? '?for_doc_id=' + encodeURIComponent(forDocId) : '';
+      return request<{ entries: Array<{
+        id: string; target_date: string; activity_type: string; activity_subtype: string;
+        time_from: string; time_to: string; place: string; case_no: string; client: string; court: string;
+        linked_to_other_doc: string | null; linked_to_current_doc: boolean;
+      }> }>('/links/my-outdoor-entries' + q);
+    },
+    create: (data: { document_id: string; journal_entry_ids: string[]; link_type?: string }) =>
+      request<{ success: boolean; links: any[] }>('/links', { method: 'POST', body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      request<{ success: boolean }>('/links/' + id, { method: 'DELETE' }),
+    byDocument: (docId: string) =>
+      request<{ links: Array<{ link_id: string; journal_entry_id: string; link_type: string; created_at: string;
+        target_date: string; activity_type: string; activity_subtype: string; data: string }> }>('/links/by-document/' + docId),
+    effectiveEntryIds: (since?: string, linkType: string = 'outdoor') => {
+      const q = new URLSearchParams();
+      if (since) q.set('since', since);
+      q.set('link_type', linkType);
+      return request<{ entry_ids: string[] }>('/links/effective-entry-ids?' + q.toString());
+    },
+    reviewQueue: (status: 'pending' | 'resolved' | 'skipped' = 'pending') =>
+      request<{ items: Array<{
+        id: string; document_id: string; doc_title: string; doc_status: string; doc_created_at: string;
+        author_id: string; author_name: string; match_tier: number;
+        body_outing_text: string | null; body_outing_parsed: string | null;
+        candidates: Array<{ id: string; target_date: string; activity_type: string; activity_subtype: string;
+          time_from: string; time_to: string; place: string; case_no: string; client: string }>;
+        created_at: string;
+      }> }>('/links/review-queue?status=' + status),
+    resolveReview: (id: string, journalEntryIds: string[]) =>
+      request<{ success: boolean; action: string; linked_count?: number }>('/links/review/' + id + '/resolve', {
+        method: 'POST', body: JSON.stringify({ journal_entry_ids: journalEntryIds })
+      }),
+  },
+
+  approvalAlerts: {
+    list: () =>
+      request<{ alerts: Array<{
+        id: string; document_id: string; approver_id: string; cycle_no: number; step_order: number;
+        my_status: 'need_approve' | 'waiting_final';
+        document_title: string; document_template_id: string; document_author_id: string; document_author_name: string;
+        document_branch: string; document_department: string; document_submitted_at: string;
+        status: string; detected_at: string;
+      }> }>('/approval-alerts'),
+    dismiss: (id: string) =>
+      request<{ success: boolean }>('/approval-alerts/' + id + '/dismiss', { method: 'POST' }),
+    backfill: (dryRun: boolean) =>
+      request<{ dry_run: boolean; docs_processed: number; alerts_created: number; skipped: number; samples: any[] }>(
+        '/approval-alerts/backfill',
+        { method: 'POST', body: JSON.stringify({ dryRun }) }
+      ),
   },
 
   payroll: {
@@ -581,7 +690,7 @@ export const api = {
     },
     create: (data: { target_date: string; activity_type: string; activity_subtype?: string; data: Record<string, unknown> }) =>
       request<{ entry: { id: string } }>('/journal', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { activity_subtype?: string; data?: Record<string, unknown>; completed?: number; fail_reason?: string }) =>
+    update: (id: string, data: { activity_subtype?: string; data?: Record<string, unknown>; completed?: number; fail_reason?: string; bid_field_only?: boolean }) =>
       request('/journal/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       request('/journal/' + id, { method: 'DELETE' }),

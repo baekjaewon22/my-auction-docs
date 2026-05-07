@@ -4722,7 +4722,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 /* ============================= */
-/* 관리자 노트 (Admin Notes)     */
+/* 사내 커뮤니티 (Admin Notes)   */
 /* ============================= */
 .admin-notes-list {
   display: flex;
@@ -5500,6 +5500,64 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 .ct-month-today:hover { background: #1a73e8; color: #fff; }
 
+.ct-range-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.ct-range-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #1e293b;
+  white-space: nowrap;
+}
+.ct-range-controls {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ct-range-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ct-range-field span {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #64748b;
+}
+.ct-range-field input {
+  min-width: 140px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 0.84rem;
+}
+@media (max-width: 720px) {
+  .ct-range-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .ct-range-controls,
+  .ct-range-field,
+  .ct-range-field input {
+    width: 100%;
+  }
+}
+
 .ct-summary {
   display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 10px; margin-bottom: 20px;
 }
@@ -5804,5 +5862,250 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .rr-history-row { grid-template-columns: 1fr 1fr; gap: 6px; }
   .rr-history-title { grid-column: 1 / -1; }
   .rr-history-user { grid-column: 1 / -1; }
+}
+
+/* ============================================ */
+/* 명승 진단 — 우측 vertical-center 플로팅 카드 */
+/* (상단 헤더/필터, 하단 외부 chat 위젯 모두 안 가림) */
+/* ============================================ */
+.diagnosis-floating-box {
+  position: fixed;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 156px;
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 12px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* 다층 그림자 — 미세한 hairline + 부드러운 깊이 */
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.04),
+    0 4px 14px rgba(15, 23, 42, 0.08),
+    0 14px 28px rgba(15, 23, 42, 0.04);
+  animation: diagnosisFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes diagnosisFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+  }
+}
+
+.diagnosis-floating-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 0.66rem;
+  color: var(--gray-500);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--gray-100);
+}
+
+.diagnosis-floating-title svg {
+  opacity: 0.55;
+  stroke-width: 2.5;
+}
+
+.diagnosis-floating-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--gray-800);
+  font-size: 0.82rem;
+  font-weight: 600;
+  background: linear-gradient(180deg, #fbfcfd 0%, #f3f4f6 100%);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  text-decoration: none;
+  border: 1px solid var(--gray-200);
+}
+
+.diagnosis-floating-link svg {
+  flex-shrink: 0;
+  opacity: 0.6;
+  transition: all 0.2s ease;
+  stroke-width: 2.2;
+}
+
+.diagnosis-floating-link:hover {
+  transform: translateY(-2px);
+  background: linear-gradient(180deg, #f0f6ff 0%, #e8f0fe 100%);
+  color: var(--primary);
+  border-color: rgba(26, 115, 232, 0.28);
+  box-shadow:
+    0 1px 2px rgba(26, 115, 232, 0.08),
+    0 6px 14px rgba(26, 115, 232, 0.18);
+}
+
+.diagnosis-floating-link:hover svg {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+.diagnosis-floating-link:active {
+  transform: translateY(-1px);
+  transition: transform 0.06s ease;
+}
+
+.diagnosis-floating-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* 박스 우상단 접기 버튼 */
+.diagnosis-collapse-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--gray-400);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: all 0.15s ease;
+}
+
+.diagnosis-collapse-btn:hover {
+  background: var(--gray-100);
+  color: var(--gray-700);
+}
+
+.diagnosis-collapse-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+/* 접힌 상태 — 동그란 토글 버튼 */
+.diagnosis-floating-toggle {
+  position: fixed;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--gray-500);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.04),
+    0 4px 14px rgba(15, 23, 42, 0.08),
+    0 14px 28px rgba(15, 23, 42, 0.04);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: diagnosisToggleFadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes diagnosisToggleFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+  }
+}
+
+.diagnosis-floating-toggle svg {
+  opacity: 0.7;
+  stroke-width: 2.2;
+  transition: all 0.2s ease;
+}
+
+.diagnosis-floating-toggle:hover {
+  background: linear-gradient(180deg, #f0f6ff 0%, #e8f0fe 100%);
+  color: var(--primary);
+  transform: translateY(-50%) translateX(-3px);
+  box-shadow:
+    0 0 0 1px rgba(26, 115, 232, 0.1),
+    0 4px 14px rgba(26, 115, 232, 0.18),
+    0 14px 28px rgba(26, 115, 232, 0.08);
+}
+
+.diagnosis-floating-toggle:hover svg {
+  opacity: 1;
+  transform: scale(1.1);
+}
+
+.diagnosis-floating-toggle:active {
+  transform: translateY(-50%) translateX(-1px);
+  transition: transform 0.06s ease;
+}
+
+.diagnosis-floating-toggle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+/* 좁은 데스크톱: 사이즈 약간 축소 */
+@media (max-width: 1280px) {
+  .diagnosis-floating-box {
+    right: 14px;
+    width: 142px;
+    padding: 10px;
+  }
+  .diagnosis-floating-link {
+    padding: 9px 10px;
+    font-size: 0.78rem;
+  }
+}
+
+/* 모바일: 숨김 */
+@media (max-width: 768px) {
+  .diagnosis-floating-box,
+  .diagnosis-floating-toggle {
+    display: none;
+  }
+}
+
+/* 접근성: 모션 줄임 환경 */
+@media (prefers-reduced-motion: reduce) {
+  .diagnosis-floating-box,
+  .diagnosis-floating-toggle {
+    animation: none;
+  }
+  .diagnosis-floating-link,
+  .diagnosis-floating-link svg,
+  .diagnosis-floating-toggle,
+  .diagnosis-floating-toggle svg {
+    transition: none;
+  }
+  .diagnosis-floating-link:hover {
+    transform: none;
+  }
+  .diagnosis-floating-toggle:hover {
+    transform: translateY(-50%);
+  }
+  .diagnosis-floating-link:hover svg,
+  .diagnosis-floating-toggle:hover svg {
+    transform: none;
+  }
 }
 

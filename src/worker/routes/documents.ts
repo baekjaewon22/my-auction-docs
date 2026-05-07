@@ -3,6 +3,14 @@ import type { AuthEnv, Document, OrgNode } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { calculateLeaveEntitlement } from './leave';
+import {
+  recreateAlertsForDoc,
+  markAlertActedApproved,
+  markAlertActedRejected,
+  cancelAllAlertsForDoc,
+} from '../lib/approval-alerts';
+import { dispatchApprovalAlerts } from '../lib/approval-alerts-dispatcher';
+import { recheckAlertsAfterDocumentChange } from '../lib/journal-alerts';
 
 // 결재선 자동 계산: 조직도를 위로 탐색하여 승인자 목록 반환
 async function buildApprovalChain(db: D1Database, authorId: string): Promise<string[]> {
@@ -74,12 +82,32 @@ documents.get('/cancel-requests', requireRole('master', 'ceo', 'cc_ref', 'admin'
 });
 
 // GET /api/documents
+// Query params (모두 선택):
+//   ?status=draft|submitted|approved|rejected
+//   ?author_id=me                 — 본인 문서만 (Dashboard 등 본인 위주 조회 최적화)
+//   ?since=YYYY-MM-DD             — updated_at 기준 이 날짜 이후만
+//   ?exclude_drafts=true          — 권한 룰 외에 draft 전부 제외 (개인 신청서 알림 검사용)
+//   ?fields=meta_only             — content 컬럼 제외 (응답 크기 대폭 축소)
+//   ?limit=N                      — 최대 N개
 documents.get('/', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const status = c.req.query('status');
+  const authorIdParam = c.req.query('author_id');
+  const since = c.req.query('since');
+  const excludeDrafts = c.req.query('exclude_drafts') === 'true';
+  const fields = c.req.query('fields');
+  const limitRaw = c.req.query('limit');
 
-  let query = 'SELECT d.*, u.name as author_name FROM documents d LEFT JOIN users u ON d.author_id = u.id';
+  // SELECT 절 — meta_only 모드는 content 제외
+  const metaOnly = fields === 'meta_only';
+  const selectCols = metaOnly
+    ? `d.id, d.title, d.template_id, d.author_id, d.team_id, d.branch, d.department,
+       d.status, d.reject_reason, d.created_at, d.updated_at,
+       d.cancel_requested, d.cancel_reason, d.cancelled, u.name as author_name`
+    : 'd.*, u.name as author_name';
+
+  let query = `SELECT ${selectCols} FROM documents d LEFT JOIN users u ON d.author_id = u.id`;
   const conditions: string[] = [];
   const params: string[] = [];
 
@@ -118,6 +146,24 @@ documents.get('/', async (c) => {
     params.push(user.sub);
   }
 
+  // 추가 필터
+  if (authorIdParam === 'me') {
+    conditions.push('d.author_id = ?');
+    params.push(user.sub);
+  } else if (authorIdParam) {
+    conditions.push('d.author_id = ?');
+    params.push(authorIdParam);
+  }
+
+  if (since) {
+    conditions.push('d.updated_at >= ?');
+    params.push(since);
+  }
+
+  if (excludeDrafts) {
+    conditions.push("d.status != 'draft'");
+  }
+
   if (status) {
     conditions.push('d.status = ?');
     params.push(status);
@@ -127,6 +173,13 @@ documents.get('/', async (c) => {
     query += ' WHERE ' + conditions.join(' AND ');
   }
   query += ' ORDER BY d.updated_at DESC';
+
+  // limit 파라미터 (안전 상한 1000)
+  const limit = limitRaw ? Math.min(parseInt(limitRaw, 10) || 0, 1000) : 0;
+  if (limit > 0) {
+    query += ' LIMIT ?';
+    params.push(String(limit));
+  }
 
   const stmt = db.prepare(query);
   const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all();
@@ -299,16 +352,25 @@ documents.post('/:id/submit', async (c) => {
   ).bind(today, today).all();
   const onLeaveIds = new Set((todayLeaves.results || []).map((r: any) => r.user_id));
 
-  // 결재선 INSERT (팀장+휴가중 → skipped 상태로 기록)
+  // 결재선 INSERT (팀장+휴가중 → 자동 승인 + saved_signature 자동 첨부)
   for (let i = 0; i < chain.length; i++) {
     const approverId = chain[i];
-    const approverInfo = await db.prepare('SELECT role FROM users WHERE id = ?').bind(approverId).first<{ role: string }>();
+    const approverInfo = await db.prepare('SELECT role, saved_signature FROM users WHERE id = ?')
+      .bind(approverId).first<{ role: string; saved_signature: string | null }>();
     const isManagerOnLeave = approverInfo?.role === 'manager' && onLeaveIds.has(approverId);
     const status = isManagerOnLeave ? 'approved' : 'pending';
     const comment = isManagerOnLeave ? '팀장 휴무로 자동 승인' : null;
+    const signedAt = isManagerOnLeave ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null;
     await db.prepare(
       'INSERT INTO approval_steps (id, document_id, step_order, approver_id, status, comment, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(crypto.randomUUID(), id, i + 1, approverId, status, comment, isManagerOnLeave ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null).run();
+    ).bind(crypto.randomUUID(), id, i + 1, approverId, status, comment, signedAt).run();
+
+    // 휴무 자동 승인 시 본인 saved_signature 도 함께 INSERT (슬롯 시각 일관성)
+    if (isManagerOnLeave && approverInfo?.saved_signature) {
+      await db.prepare(
+        "INSERT INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent) VALUES (?, ?, ?, ?, 'auto-leave', ?)"
+      ).bind(crypto.randomUUID(), id, approverId, approverInfo.saved_signature, 'auto-leave-skip').run();
+    }
   }
 
   await db.prepare("UPDATE documents SET status = 'submitted', reject_reason = NULL, updated_at = datetime('now') WHERE id = ?").bind(id).run();
@@ -325,17 +387,31 @@ documents.post('/:id/submit', async (c) => {
   await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
     .bind(crypto.randomUUID(), id, user.sub, 'submitted', details).run();
 
-  // 알림톡: 결재선 첫 번째 결재자에게 DOC_SUBMITTED
-  if (chain.length > 0) {
-    const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const firstApprover = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(chain[0]).first<{ phone: string }>();
-    if (firstApprover?.phone) {
-      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
-        c.env as unknown as Record<string, unknown>, 'DOC_SUBMITTED',
-        { author_name: user.name, doc_title: doc.title, department: user.department || '', submit_date: today, link: `${APP_URL}/documents/${id}` },
-        [firstApprover.phone],
-      ).catch(() => {}));
-    }
+  // 영속 알림 테이블: alert 행 재구성 (notification_sent=0)
+  // - 'rejected' 상태에서 재제출이면 cycle_no +1 (이력 보존)
+  // - 그 외 (draft 첫 제출)는 cycle_no=1
+  const isResubmit = doc.status === 'rejected';
+  await recreateAlertsForDoc(db, id, { isResubmit }).catch((err) => {
+    // INSERT 실패 시 cron의 reconciler가 30분 이내 자동 보강하므로 로그만 강화
+    console.error('[ALERT-FAIL] recreateAlertsForDoc 실패 — reconciler가 보강 예정', {
+      docId: id, isResubmit, err: String(err)
+    });
+  });
+
+  // 즉시 알림톡 발송 (waitUntil로 응답 차단 X) — 미발송 alert dispatcher 호출
+  // cron은 안전망으로 30분마다 한 번 더 돌며 누락분 처리
+  c.executionCtx.waitUntil(
+    dispatchApprovalAlerts(c.env as unknown as { DB: D1Database } & Record<string, unknown>)
+      .catch((err) => console.error('[immediate dispatch on submit] error', err))
+  );
+
+  // 휴가/출장 문서 제출 시 → 작성자의 personal/trip alert 재매칭 (해소될 수 있음)
+  const titleLow = (doc.title || '').toLowerCase();
+  if (/연차|반차|휴가|시간차|지각|조퇴|외출|병가|결근|출장/.test(titleLow)) {
+    c.executionCtx.waitUntil(
+      recheckAlertsAfterDocumentChange(db, doc.author_id)
+        .catch((err) => console.error('[recheckAlerts on submit]', err))
+    );
   }
 
   return c.json({ success: true, chain: chain.length });
@@ -380,9 +456,10 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
           "SELECT id FROM signatures WHERE document_id = ? AND signature_data = '/LNCstemp.png'"
         ).bind(id).first();
         if (!existingStamp) {
+          // user_id 는 CEO 본인(headStep.approver_id) — 슬롯 매칭 시 user_id 일치로도 식별 가능하도록
           await db.prepare(
             "INSERT INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent) VALUES (?, ?, ?, '/LNCstemp.png', 'proxy-auto', ?)"
-          ).bind(crypto.randomUUID(), id, user.sub, 'proxy-by:' + user.sub).run();
+          ).bind(crypto.randomUUID(), id, headStep.approver_id, 'proxy-by:' + user.sub).run();
         }
       } else if (approverInfo?.saved_signature) {
         // 비 CEO: 원래 결재자의 저장 서명 (user_id는 결재자 본인)
@@ -537,21 +614,20 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
     await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
       .bind(crypto.randomUUID(), id, user.sub, 'step_approved', `${user.name}님이 승인하였습니다.`).run();
 
-    // 알림톡: 단계 승인 → 다음 결재자에게 DOC_STEP_APPROVED
-    const nextStep = await db.prepare(
-      "SELECT approver_id FROM approval_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order ASC LIMIT 1"
-    ).bind(id).first<{ approver_id: string }>();
-    if (nextStep) {
-      const nextUser = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(nextStep.approver_id).first<{ phone: string }>();
-      if (nextUser?.phone) {
-        c.executionCtx.waitUntil(sendAlimtalkByTemplate(
-          c.env as unknown as Record<string, unknown>, 'DOC_STEP_APPROVED',
-          { approver_name: user.name, doc_title: doc.title, author_name: (await db.prepare('SELECT name FROM users WHERE id = ?').bind(doc.author_id).first<{ name: string }>())?.name || '', department: doc.department || '', link: `${APP_URL}/documents/${id}` },
-          [nextUser.phone],
-        ).catch(() => {}));
-      }
-    }
+    // 다음 결재자 알림톡은 cron(`*/30`)이 alert_approval_pending 기반으로 발송
+    // (기존 인라인 DOC_STEP_APPROVED 발송 제거됨 — 중복 방지)
   }
+
+  // 영속 알림: 승인 액션 반영 (현재 approver acted, 다음 차례 알림 생성)
+  await markAlertActedApproved(db, id, user.sub).catch((err) => {
+    console.error('markAlertActedApproved 실패:', err);
+  });
+
+  // 다음 결재자 알림톡 즉시 발송 (waitUntil)
+  c.executionCtx.waitUntil(
+    dispatchApprovalAlerts(c.env as unknown as { DB: D1Database } & Record<string, unknown>)
+      .catch((err) => console.error('[immediate dispatch on approve] error', err))
+  );
 
   return c.json({ success: true, final: allDone });
 });
@@ -596,6 +672,11 @@ documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager'), 
     ).catch(() => {}));
   }
 
+  // 영속 알림: 모든 미종결 alert acted/rejected
+  await markAlertActedRejected(db, id).catch((err) => {
+    console.error('markAlertActedRejected 실패:', err);
+  });
+
   return c.json({ success: true });
 });
 
@@ -639,6 +720,35 @@ documents.get('/:id/steps', async (c) => {
     'SELECT s.*, u.name as approver_name, u.position_title as approver_title, u.role as approver_role FROM approval_steps s LEFT JOIN users u ON s.approver_id = u.id WHERE s.document_id = ? ORDER BY s.step_order'
   ).bind(id).all();
   return c.json({ steps: result.results });
+});
+
+// POST /api/documents/steps-batch — 여러 문서의 결재선 단계를 한 번에 조회 (대시보드 N+1 방지)
+documents.post('/steps-batch', async (c) => {
+  const { ids } = await c.req.json<{ ids: string[] }>().catch(() => ({ ids: [] as string[] }));
+  if (!ids || ids.length === 0) return c.json({ steps: {} });
+  const db = c.env.DB;
+  // 안전 상한 (한 요청에 200개까지)
+  const safeIds = ids.slice(0, 200);
+  const placeholders = safeIds.map(() => '?').join(',');
+  const result = await db.prepare(
+    `SELECT s.*, u.name as approver_name, u.position_title as approver_title, u.role as approver_role
+     FROM approval_steps s
+     LEFT JOIN users u ON s.approver_id = u.id
+     WHERE s.document_id IN (${placeholders})
+     ORDER BY s.document_id, s.step_order`
+  ).bind(...safeIds).all();
+
+  const grouped: Record<string, any[]> = {};
+  for (const row of (result.results || []) as any[]) {
+    const docId = row.document_id as string;
+    if (!grouped[docId]) grouped[docId] = [];
+    grouped[docId].push(row);
+  }
+  // 빈 배열도 채워줌 (요청한 모든 id에 대해 키 존재 보장)
+  for (const id of safeIds) {
+    if (!grouped[id]) grouped[id] = [];
+  }
+  return c.json({ steps: grouped });
 });
 
 // GET /api/documents/:id/logs
@@ -711,6 +821,11 @@ documents.post('/:id/cancel-approve', requireRole('master', 'ceo', 'cc_ref', 'ad
 
   await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
     .bind(crypto.randomUUID(), id, user.sub, 'cancelled', `취소 승인 처리. 사유: ${doc.cancel_reason || '없음'}`).run();
+
+  // 영속 알림: 모든 미종결 alert cancelled
+  await cancelAllAlertsForDoc(db, id).catch((err) => {
+    console.error('cancelAllAlertsForDoc 실패:', err);
+  });
 
   return c.json({ success: true });
 });

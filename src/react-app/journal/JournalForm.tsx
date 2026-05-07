@@ -62,6 +62,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [bidWinPrice, setBidWinPrice] = useState('');
   const [bidWon, setBidWon] = useState(false);
   const [bidProxy, setBidProxy] = useState(false); // 대리입찰
+  const [bidCancelled, setBidCancelled] = useState(false); // 취하/변경 — 작성입찰가/낙찰가 미작성 허용
   const [bidDeviationReason, setBidDeviationReason] = useState('');
   const [bidItemNo, setBidItemNo] = useState('');
   const [bidBidderName, setBidBidderName] = useState(''); // 입찰자명 (고객명과 다를 때)
@@ -187,7 +188,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     if (activityType === '브리핑자료제출' && !briefingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '브리핑자료제출' && !briefingCourt) { alert('법원을 선택해주세요.'); return null; }
     if (activityType === '브리핑자료제출' && !briefingClient.trim()) { alert('계약자명을 입력해주세요.'); return null; }
-    if (activityType === '입찰' && showDeviationWarning && !bidDeviationReason.trim()) {
+    if (activityType === '입찰' && !bidCancelled && showDeviationWarning && !bidDeviationReason.trim()) {
       alert('제시입찰가 대비 실제입찰가가 5% 이상 낮습니다. 사유를 입력해주세요.');
       return null;
     }
@@ -201,9 +202,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
         const actualBidder = bidBidderName.trim() || bidBidder;
         data = { ...data, caseNo: `${bidYear}타경${bidCaseNo}`, itemNo: bidItemNo, bidder: actualBidder, client: bidBidder, court: bidCourt,
           suggestedPrice: bidSuggestedPrice, bidPrice, winPrice: bidWon ? bidPrice : bidWinPrice,
-          bidWon, bidProxy, deviationReason: bidDeviationReason };
+          bidWon, bidProxy, bidCancelled, deviationReason: bidDeviationReason };
         subtype = `${bidYear}타경${bidCaseNo}`;
-        label = `입찰 — ${subtype}${bidItemNo ? ` | ${bidItemNo}` : ''} | ${bidBidder}${actualBidder !== bidBidder ? `(입찰자:${actualBidder})` : ''}${bidProxy ? ' (대리)' : ''}`;
+        label = `입찰 — ${subtype}${bidItemNo ? ` | ${bidItemNo}` : ''} | ${bidBidder}${actualBidder !== bidBidder ? `(입찰자:${actualBidder})` : ''}${bidProxy ? ' (대리)' : ''}${bidCancelled ? ' (취하/변경)' : ''}`;
         break;
       }
       case '임장':
@@ -256,7 +257,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     setFieldCheckIn(false); setFieldCheckOut(false);
     setTimeFrom(''); setTimeTo('');
     setBidCaseNo(''); setBidItemNo(''); setBidBidder(''); setBidBidderName(''); setBidSuggestedPrice(''); setBidPrice('');
-    setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidDeviationReason('');
+    setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidCancelled(false); setBidDeviationReason('');
     setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient('');
     setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo(''); setMeetingItemNo(''); setMeetingInternal(false);
     setOfficeEtc('');
@@ -411,11 +412,15 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                   <label className={`field-check-label ${bidProxy ? 'checked' : ''}`} style={{ display: 'inline-flex' }}>
                     <input type="checkbox" checked={bidProxy} onChange={(e) => setBidProxy(e.target.checked)} />대리입찰
                   </label>
+                  <label className={`field-check-label ${bidCancelled ? 'checked' : ''}`} style={{ display: 'inline-flex', fontSize: '0.78rem', padding: '4px 8px' }}>
+                    <input type="checkbox" checked={bidCancelled} onChange={(e) => setBidCancelled(e.target.checked)} />취하/변경
+                  </label>
                   {bidWon && <span style={{ fontSize: '0.75rem', color: '#188038' }}>실제입찰가가 낙찰가로 자동 적용됩니다.</span>}
                   {bidProxy && <span style={{ fontSize: '0.75rem', color: '#7b1fa2' }}>외근보고서 제출 불필요</span>}
+                  {bidCancelled && <span style={{ fontSize: '0.75rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용</span>}
                 </div>
               </div>
-              {!bidWon && (
+              {!bidWon && !bidCancelled && (
                 <div className="form-group">
                   <label>낙찰가 (원, 추후입력)</label>
                   <input type="text" value={bidWinPrice} onChange={(e) => setBidWinPrice(fmtCurrency(e.target.value))} placeholder="추후 작성" />

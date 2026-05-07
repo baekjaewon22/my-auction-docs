@@ -393,6 +393,59 @@ export default function Leave() {
             <span style={{ fontWeight: 700, color: '#7b1fa2', fontSize: '1rem' }}>
               {members.find(m => m.id === viewUserId)?.name} 연차 현황
             </span>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!viewUserId) return;
+                if (!confirm('휴가 신청 이력 기준으로 사용일수를 재계산해서 정정합니다. 계속하시겠습니까?')) return;
+                try {
+                  const r = await api.leave.recalculate(viewUserId);
+                  alert(
+                    `재계산 완료\n\n` +
+                    `사용일수: ${r.before.used_days} → ${r.after.used_days}\n` +
+                    `월차사용: ${r.before.monthly_used} → ${r.after.monthly_used}`
+                  );
+                  loadViewUser(viewUserId);
+                } catch (err: any) { alert('실패: ' + err.message); }
+              }}
+              style={{
+                marginLeft: 'auto', padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600,
+                background: '#fff', border: '1px solid #e8eaed', borderRadius: 6,
+                color: '#5f6368', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
+              }}
+              title="휴가 이력 기반으로 사용일수 정합성 재계산"
+            >
+              ↻ 사용일수 재계산
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!viewUserId) return;
+                if (!confirm('입사일 기반으로 부여 일수·타입까지 모두 재초기화합니다.\n\n관리자가 수동 부여한 추가 일수가 있다면 사라질 수 있습니다.\n계속하시겠습니까?')) return;
+                try {
+                  const r = await api.leave.reinit(viewUserId);
+                  const b = r.before, a = r.after;
+                  alert(
+                    `재초기화 완료\n\n` +
+                    `타입: ${b?.leave_type || '-'} → ${a.leave_type}\n` +
+                    `연차 부여: ${b?.total_days ?? 0} → ${a.total_days}\n` +
+                    `월차 부여: ${b?.monthly_days ?? 0} → ${a.monthly_days}\n` +
+                    `연차 사용: ${b?.used_days ?? 0} → ${a.used_days}\n` +
+                    `월차 사용: ${b?.monthly_used ?? 0} → ${a.monthly_used}\n` +
+                    `입사일: ${a.hire_date}`
+                  );
+                  loadViewUser(viewUserId);
+                } catch (err: any) { alert('실패: ' + err.message); }
+              }}
+              style={{
+                padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600,
+                background: '#fff8e1', border: '1px solid #ffd54f', borderRadius: 6,
+                color: '#e65100', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
+              }}
+              title="입사일 기반 entitlement(부여일수·타입)까지 재초기화"
+            >
+              ⟳ 입사일 기반 재초기화
+            </button>
           </div>
 
           {viewLoading ? (

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api } from '../api';
+import { api, setSourcePage } from '../api';
 import { useAuthStore } from '../store';
 import type { SalesRecord, DepositNotice } from '../types';
 import { useBranches } from '../hooks/useBranches';
@@ -422,6 +422,9 @@ export default function Sales() {
       .catch(() => setMyungdoCases([]))
       .finally(() => setMyungdoLoading(false));
   }, [salesTab]);
+  // 페이지 진입 시 sourcePage='sales' (모든 API 요청 헤더에 X-Source-Page 자동 첨부)
+  useEffect(() => { setSourcePage('sales'); }, []);
+
   useEffect(() => {
     if (salesTab !== 'auditlog' || !canViewAuditLog) return;
     (async () => {
@@ -431,6 +434,7 @@ export default function Sales() {
           action: auditAction || undefined,
           actor_id: auditActor || undefined,
           limit: 300,
+          source_page: 'sales',  // 업무성과 페이지 활동만 표시
         }) as any;
         setAuditLogs(res.logs || []);
       } catch { setAuditLogs([]); }
@@ -1214,11 +1218,15 @@ export default function Sales() {
           deposit_claim_approve: '입금신청승인',
           deposit_delete: '입금등록삭제',
           payment_method_change: '결제방법변경',
+          memo_add: '메모추가',
+          memo_update: '메모수정',
+          memo_delete: '메모삭제',
         };
         const ACTION_COLOR: Record<string, string> = {
           update: '#1a73e8', delete: '#d93025', status_change: '#188038',
           refund_approve: '#f9ab00', deposit_claim_approve: '#188038',
           deposit_delete: '#d93025', payment_method_change: '#1a73e8',
+          memo_add: '#9333ea', memo_update: '#9333ea', memo_delete: '#d93025',
         };
         const actorOptions = Array.from(new Set(auditLogs.map(l => l.actor_id + '|' + (l.actor_display_name || l.actor_name || '?'))))
           .map(s => { const [id, name] = s.split('|'); return { value: id, label: name }; });
@@ -1603,7 +1611,14 @@ export default function Sales() {
                   {canDeleteAccounting && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} /></td>}
                   <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{r.contract_date}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{r.user_name}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}><span style={{ fontSize: '0.78rem' }}>{r.type}</span>{r.type === '기타' && r.type_detail && <span style={{ color: '#9aa0a6', fontSize: '0.72rem' }}> ({r.type_detail})</span>}</td>
+                  <td style={{ whiteSpace: 'nowrap', maxWidth: 110 }}>
+                    <div style={{ fontSize: '0.78rem' }}>{r.type}</div>
+                    {r.type === '기타' && r.type_detail && (
+                      <div style={{ color: '#9aa0a6', fontSize: '0.7rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.type_detail}>
+                        {r.type_detail}
+                      </div>
+                    )}
+                  </td>
                   <td style={{ whiteSpace: 'nowrap', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.client_name + (r.client_phone ? ' / ' + r.client_phone : '') + (r.depositor_different === 1 && r.depositor_name ? ' / 입금자: ' + r.depositor_name : '')}>
                     {r.client_name}
                     {isDuplicate(r) && <span style={{ fontSize: '0.66rem', padding: '0 4px', borderRadius: 6, background: '#fce4ec', color: '#d93025', fontWeight: 700, marginLeft: 4 }}>중복</span>}
@@ -2186,13 +2201,13 @@ export default function Sales() {
                         }} />
                     </div>
                     <div>
-                      <label className="form-label" style={{ fontSize: '0.72rem' }}>일자</label>
-                      <input className="form-input" type="date" defaultValue={detailRecord.contract_date || ''}
+                      <label className="form-label" style={{ fontSize: '0.72rem' }}>결제일</label>
+                      <input className="form-input" type="date" defaultValue={detailRecord.deposit_date || ''}
                         style={{ width: '100%', fontSize: '0.82rem' }}
                         onBlur={async (e) => {
                           const val = e.target.value;
-                          if (val && val !== detailRecord.contract_date) {
-                            try { await api.sales.update(detailRecord.id, { contract_date: val }); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
+                          if (val && val !== detailRecord.deposit_date) {
+                            try { await api.sales.update(detailRecord.id, { deposit_date: val }); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
                           }
                         }} />
                     </div>

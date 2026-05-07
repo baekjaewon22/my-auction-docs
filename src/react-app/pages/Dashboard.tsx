@@ -198,13 +198,17 @@ export default function Dashboard() {
       setDismissedKeys(localDismissed);
     } catch { /* */ }
 
+    // 본인 문서 (stats + 최근 5개) — 빠른 작은 응답 (limit 50, content 제외)
+    // 알림 검사용 문서 (개인 신청서/출장 매칭) — 60일 이내, content 제외
+    const sinceDate = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 19).replace('T', ' ');
     const promises: Promise<any>[] = [
-      api.documents.list(),
+      api.documents.list({ author_id: 'me', fields: 'meta_only', limit: 50 }),
+      api.documents.list({ since: sinceDate, exclude_drafts: true, fields: 'meta_only', limit: 1000 }),
       api.journal.list({ range: 'month' }),
     ];
-    // 승인 권한자면 submitted 문서도 조회
+    // 승인 권한자면 submitted 문서도 조회 (top role 분기에서 사용)
     if (canApprove) {
-      promises.push(api.documents.list('submitted'));
+      promises.push(api.documents.list({ status: 'submitted', fields: 'meta_only', limit: 200 }));
     }
     // 관리자면 취소신청 목록도 조회
     if (isAdmin) {
@@ -212,10 +216,11 @@ export default function Dashboard() {
     }
 
     Promise.all(promises)
-      .then(async ([docRes, journalRes, submittedRes, cancelRes]) => {
-        const allDocs = docRes.documents as Document[];
-        const myDocs = allDocs.filter((d: any) => d.author_id === user?.id);
+      .then(async ([myDocsRes, alertDocsRes, journalRes, submittedRes, cancelRes]) => {
+        const myDocs = (myDocsRes.documents as Document[]) || [];
         setDocuments(myDocs);
+        // 알림 매칭용 문서 (60일치, draft 제외)
+        const allDocs = (alertDocsRes.documents as Document[]) || [];
 
         if (journalRes) {
           const entries = (journalRes as { entries: JournalEntry[] }).entries;
@@ -235,133 +240,166 @@ export default function Dashboard() {
           }
           // 미제출 감지 시 draft 문서는 제외 (작성 중인 보고서는 제출 완료가 아니므로)
           const docsForDetect = allDocs.filter(d => d.status !== 'draft');
-          setAlerts(detectMissing(entriesForDetect, docsForDetect));
+          // 외근 link 활성 entry IDs 조회 (cutoff 이후)
+          let linkedEntryIds = new Set<string>();
+          try {
+            const linkRes = await api.links.effectiveEntryIds(OUTDOOR_LINK_ENFORCE_FROM, 'outdoor');
+            linkedEntryIds = new Set(linkRes.entry_ids);
+          } catch { /* */ }
+          setAlerts(detectMissing(entriesForDetect, docsForDetect, linkedEntryIds));
           setScheduleGaps(detectScheduleGaps(entriesForDetect));
         }
 
-        // 계약서 확인 대기 알림 (관리자/회계/총무)
-        if (canApprove || isAdmin || canSeeAccountingAlerts) {
-          try {
-            const sRes = await api.sales.list({});
-            const pending = (sRes.records as SalesRecord[]).filter(r =>
-              // 계약·낙찰 유형만 보고서 제출 대상 (권리분석보증서/매수신청대리/중개/기타 제외)
-              (r.type === '계약' || r.type === '낙찰') &&
-              ((r.contract_submitted && !r.contract_not_approved) || (r.contract_not_submitted && !r.contract_not_approved))
-            );
-            setContractAlerts(pending);
-          } catch { /* */ }
-        }
-
-        // 계약서/보고서 미작성 경고 (역할별 범위 — 백엔드가 이미 범위 제한)
-        try {
-          const mine = await api.sales.list({});
-          const role = user?.role || '';
-          const scopedRoles = ['manager', 'admin', 'director', 'master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'];
-          const myMissing = (mine.records as SalesRecord[]).filter(r => {
-            if (r.status === 'refunded') return false;
-            if (r.type !== '계약' && r.type !== '낙찰') return false;
-            if (r.contract_submitted || r.contract_not_submitted) return false;
-            // 팀장·지사장·총괄이사·최상위: 백엔드 범위 내 전체
-            if (scopedRoles.includes(role)) return true;
-            // 일반 팀원/프리랜서: 본인 건만
-            return r.user_id === user?.id;
-          });
-          setMyMissingDocs(myMissing);
-        } catch { /* */ }
-
-        // 승인 대기 문서 + 결재선 확인
-        if (submittedRes && canApprove) {
-          const submitted = (submittedRes.documents as Document[]).filter((d: any) => d.author_id !== user?.id);
-          const pending: (Document & { steps?: ApprovalStep[]; myStatus?: string })[] = [];
-          const isTopRole = ['master', 'ceo', 'cc_ref'].includes(user?.role || '');
-
-          for (const doc of submitted.slice(0, 20)) {
-            try {
-              const stepsRes = await api.documents.steps(doc.id);
-              const steps = stepsRes.steps || [];
-              // 내 차례인지 확인
-              const myStep = steps.find((s: ApprovalStep) => s.approver_id === user?.id && s.status === 'pending');
-              const prevDone = myStep ? steps.filter((s: ApprovalStep) => s.step_order < myStep.step_order).every((s: ApprovalStep) => s.status === 'approved') : false;
-              // 내가 이미 승인했지만 최종 승인 전인 문서
-              const myApproved = steps.find((s: ApprovalStep) => s.approver_id === user?.id && s.status === 'approved');
-              const hasPending = steps.some((s: ApprovalStep) => s.status === 'pending');
-
-              if ((myStep && prevDone) || isTopRole) {
-                pending.push({ ...doc, steps, myStatus: 'need_approve' });
-              } else if (myApproved && hasPending) {
-                pending.push({ ...doc, steps, myStatus: 'waiting_final' });
-              }
-            } catch { /* */ }
-          }
-          setPendingApprovals(pending);
-        }
-
-        // 취소 신청 목록
+        // 취소 신청 목록 (Phase 1 결과 — 즉시 처리 가능)
         if (cancelRes && isAdmin) {
           setCancelRequests(cancelRes.documents || []);
         }
 
+        // ─── Phase 2: 의존성 없는 API들을 모두 병렬 실행 ───
+        // sales.list({})는 한 번만 호출하고 두 곳(contractAlerts + myMissingDocs)에 재사용
+        const needSalesList = canApprove || isAdmin || canSeeAccountingAlerts || true; // myMissingDocs는 모든 사용자 필요
 
-        // 매출 미달/강등 경고 (총무/관리자급만 — 담당자 본인에게는 비노출)
-        if (canSeeAccountingAlerts) {
-          try {
-            const alertRes = await api.accounting.alerts();
-            setSalesAlerts(alertRes.current_period_alerts || []);
-            setDemotionCandidates(alertRes.demotion_candidates || []);
-          } catch { /* */ }
+        // 승인 대기 알림: top role(master/ceo/cc_ref)은 documents.list('submitted') + stepsBatch (감독 view)
+        // 그 외 권한자는 alert_approval_pending 영속 테이블 단일 조회
+        const isTopRoleForApproval = ['master', 'ceo', 'cc_ref'].includes(user?.role || '');
+        const needSubmittedSteps = !!(submittedRes && canApprove && isTopRoleForApproval);
+        const submittedDocsForSteps = needSubmittedSteps
+          ? (submittedRes!.documents as Document[]).filter((d: any) => d.author_id !== user?.id).slice(0, 20)
+          : [];
+
+        const [
+          salesListRes,
+          stepsBatchRes,
+          approvalPendingRes,
+          accountingAlertsRes,
+          dashPendingRes,
+          dashRefundReqRes,
+          refundImpactsRes,
+          depositsRes,
+          accountantLeavesRes,
+          coopRes,
+          dupRes,
+          alimtalkRes,
+        ] = await Promise.all([
+          needSalesList ? api.sales.list({}).catch(() => null) : Promise.resolve(null),
+          submittedDocsForSteps.length > 0
+            ? api.documents.stepsBatch(submittedDocsForSteps.map(d => d.id)).catch(() => null)
+            : Promise.resolve(null),
+          // 일반 결재자: 본인의 결재 대기 alert만 조회 (인덱스 hit, 매우 빠름)
+          (!isTopRoleForApproval && canApprove) ? api.approvalAlerts.list().catch(() => null) : Promise.resolve(null),
+          canSeeAccountingAlerts ? api.accounting.alerts().catch(() => null) : Promise.resolve(null),
+          canSeeAccountingAlerts ? api.sales.dashboardPending().catch(() => null) : Promise.resolve(null),
+          canSeeAccountingAlerts ? api.sales.dashboardRefundRequests().catch(() => null) : Promise.resolve(null),
+          canSeeAccountingAlerts ? api.sales.dashboardRefundImpacts().catch(() => null) : Promise.resolve(null),
+          api.sales.deposits().catch(() => null),
+          api.leave.accountantLeaves().catch(() => null),
+          (user as any)?.login_type !== 'freelancer'
+            ? api.cooperation.dashboard().catch(() => null)
+            : Promise.resolve(null),
+          api.journal.duplicateInspections(dupAllBranches).catch(() => null),
+          (canSeeAccountingAlerts && ['accountant', 'accountant_asst'].includes(user?.role || '') && user?.id)
+            ? api.users.getAlimtalkSettings(user.id).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+
+        // ─── 결과 처리 ───
+
+        // 1. 계약서 확인 대기 + 본인 매출 미작성 (sales.list 재사용)
+        if (salesListRes) {
+          const records = salesListRes.records as SalesRecord[];
+
+          if (canApprove || isAdmin || canSeeAccountingAlerts) {
+            const pending = records.filter(r =>
+              (r.type === '계약' || r.type === '낙찰') &&
+              ((r.contract_submitted && !r.contract_not_approved) || (r.contract_not_submitted && !r.contract_not_approved))
+            );
+            setContractAlerts(pending);
+          }
+
+          const role = user?.role || '';
+          const scopedRoles = ['manager', 'admin', 'director', 'master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'];
+          const myMissing = records.filter(r => {
+            if (r.status === 'refunded') return false;
+            if (r.type !== '계약' && r.type !== '낙찰') return false;
+            if (r.contract_submitted || r.contract_not_submitted) return false;
+            if (scopedRoles.includes(role)) return true;
+            return r.user_id === user?.id;
+          });
+          setMyMissingDocs(myMissing);
         }
 
-        // 매출 입금대기/환불신청 알림 (회계/관리자급)
-        if (canSeeAccountingAlerts) {
-          try {
-            const [pendRes, refRes] = await Promise.all([
-              api.sales.dashboardPending(),
-              api.sales.dashboardRefundRequests(),
-            ]);
-            setPendingSales(pendRes.records || []);
-            setRefundRequests(refRes.records || []);
-            // 총무: alimtalk_branches 기본 필터 설정
-            if (['accountant', 'accountant_asst'].includes(user?.role || '') && user?.id) {
-              try {
-                const alimRes = await api.users.getAlimtalkSettings(user.id);
-                const branches = alimRes.branches ? alimRes.branches.split(',') : [];
-                if (branches.length > 0) setPendingSalesBranch(branches[0]);
-              } catch { /* */ }
+        // 2. 승인 대기 문서
+        if (isTopRoleForApproval) {
+          // Top role: 모든 submitted 문서 감독 view (기존 stepsBatch 방식)
+          if (needSubmittedSteps && stepsBatchRes) {
+            const stepsByDoc = stepsBatchRes.steps;
+            const pending: (Document & { steps?: ApprovalStep[]; myStatus?: string })[] = [];
+            for (const doc of submittedDocsForSteps) {
+              const steps = stepsByDoc[doc.id] || [];
+              pending.push({ ...doc, steps, myStatus: 'need_approve' });
             }
-          } catch { /* */ }
-
-          // 환불 영향 알림
-          try {
-            const impactRes = await api.sales.dashboardRefundImpacts();
-            setRefundImpacts((impactRes.impacts || []).filter((i: any) => i.is_previous_period && !localDismissed.has(`refund_impact_${i.id}`)));
-          } catch { /* */ }
+            setPendingApprovals(pending);
+          }
+        } else if (approvalPendingRes) {
+          // 일반 결재자: alert_approval_pending 테이블 단일 조회 결과 사용
+          const alerts = approvalPendingRes.alerts || [];
+          const pending: (Document & { steps?: ApprovalStep[]; myStatus?: string })[] = alerts.map((a) => ({
+            id: a.document_id,
+            title: a.document_title,
+            template_id: a.document_template_id,
+            author_id: a.document_author_id,
+            author_name: a.document_author_name,
+            branch: a.document_branch,
+            department: a.document_department,
+            status: 'submitted',
+            content: '',
+            created_at: a.document_submitted_at,
+            updated_at: a.document_submitted_at,
+            myStatus: a.my_status,
+          } as any));
+          setPendingApprovals(pending);
         }
 
-        // 입금등록 알림 (전체 — 회계가 등록한 입금내역)
-        try {
-          const depRes = await api.sales.deposits();
-          setDepositNotices((depRes.deposits || []).filter((d: DepositNotice) => d.status === 'pending'));
-        } catch { /* */ }
-
-        // 총무 휴가 알림
-        try {
-          const acLeaveRes = await api.leave.accountantLeaves();
-          setAccountantLeaves(acLeaveRes.leaves || []);
-        } catch { /* */ }
-
-        // 업무협조요청 알림 (프리랜서 제외)
-        if ((user as any)?.login_type !== 'freelancer') {
-          try {
-            const coopRes = await api.cooperation.dashboard();
-            setCoopAlerts(coopRes.alerts || []);
-          } catch { /* */ }
+        // 3. 매출 미달/강등
+        if (accountingAlertsRes) {
+          setSalesAlerts(accountingAlertsRes.current_period_alerts || []);
+          setDemotionCandidates(accountingAlertsRes.demotion_candidates || []);
         }
 
-        // 중복 임장 사건번호 조회
-        try {
-          const dupRes = await api.journal.duplicateInspections(dupAllBranches);
+        // 4. 매출 입금대기 / 환불신청
+        if (dashPendingRes) setPendingSales(dashPendingRes.records || []);
+        if (dashRefundReqRes) setRefundRequests(dashRefundReqRes.records || []);
+
+        // 5. 알림톡 기본 지사 (총무)
+        if (alimtalkRes) {
+          const branches = alimtalkRes.branches ? alimtalkRes.branches.split(',') : [];
+          if (branches.length > 0) setPendingSalesBranch(branches[0]);
+        }
+
+        // 6. 환불 영향
+        if (refundImpactsRes) {
+          setRefundImpacts((refundImpactsRes.impacts || []).filter((i: any) => i.is_previous_period && !localDismissed.has(`refund_impact_${i.id}`)));
+        }
+
+        // 7. 입금등록
+        if (depositsRes) {
+          setDepositNotices((depositsRes.deposits || []).filter((d: DepositNotice) => d.status === 'pending'));
+        }
+
+        // 8. 총무 휴가
+        if (accountantLeavesRes) {
+          setAccountantLeaves(accountantLeavesRes.leaves || []);
+        }
+
+        // 9. 업무협조요청
+        if (coopRes) {
+          setCoopAlerts(coopRes.alerts || []);
+        }
+
+        // 10. 중복 임장
+        if (dupRes) {
           setDupInspections((dupRes.duplicates || []).filter((d: any) => !localDismissed.has(`dup_${d.case_no}_${d.court}_${d.branch || ''}`)));
-        } catch { /* */ }
+        }
       })
       .finally(() => setLoading(false));
     })();
@@ -1100,7 +1138,8 @@ function timeToMin(t: string): number {
   return (h || 0) * 60 + (m || 0);
 }
 
-// 외근 블록 계산: 연속된 외근 활동을 하나의 블록으로 묶기
+// 외근 블록 계산: 연속된 외근 활동을 하나의 블록으로 묶기 (현재 미사용 — link 전환 후 보류)
+// @ts-expect-error: legacy 함수 — 향후 타 알림에서 재사용 가능성 있어 보존
 function countOutdoorBlocks(dayEntries: JournalEntry[]): number {
   // 외근 일정만 추출 + 시간 파싱
   const outdoors: { from: number; to: number }[] = [];
@@ -1160,9 +1199,12 @@ function calcDDay(dateStr: string): number {
   return Math.floor((now.getTime() - target.getTime()) / 86400000);
 }
 
+// 외근보고서 link 강제 시작일 (이 날짜 이전 외근은 link 없어도 알림 안 뜸 — legacy 보호)
+const OUTDOOR_LINK_ENFORCE_FROM = '2026-05-01';
+
 // [5-1] 일지 ↔ 문서 교차검증
-// 입찰/임장/미팅 → 외근보고서, 개인 → 연차/반차/시간차/병가
-function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[] {
+// 입찰/임장/미팅 → 외근보고서 (link 기반), 개인 → 연차/반차/시간차/병가 (제목 매칭)
+function detectMissing(entries: JournalEntry[], docs: Document[], linkedEntryIds: Set<string> = new Set()): MissingAlert[] {
   const alerts: MissingAlert[] = [];
 
   // 사용자+날짜별 일지 그룹
@@ -1173,32 +1215,10 @@ function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[
     byUserDate[key].push(e);
   });
 
-  // 외근보고서 본문에서 "외근 일자: YYYY년 M월 D일" 추출 (없으면 created_at fallback)
-  // 연도는 2자리(26) 또는 4자리(2026) 모두 허용 — 2자리는 20XX로 자동 변환
-  const extractOutingDate = (d: Document): string => {
-    const html = d.content || '';
-    const text = html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
-    const m = text.match(/외근\s*일자[\s:：]*(\d{2,4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-    if (m) {
-      let y = m[1];
-      if (y.length === 2) y = '20' + y; // 26 → 2026
-      return `${y}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
-    }
-    return (d.created_at || '').slice(0, 10);
-  };
+  // 외근 매칭은 link 기반으로 전환됨 (regex/풀 매칭 제거)
+  // docs는 개인 신청서 매칭에만 사용
 
-  // 사용자별 외근보고서 외근일자 풀 (1:1 매칭으로 한 번만 사용)
-  // 외근일 ±N일 윈도우 매칭에 사용
-  const userOutingReportPool: Record<string, string[]> = {};
-  docs.forEach((d) => {
-    if (!d.title.includes('외근') || !d.title.includes('보고')) return;
-    const dt = extractOutingDate(d);
-    if (!dt) return;
-    if (!userOutingReportPool[d.author_id]) userOutingReportPool[d.author_id] = [];
-    userOutingReportPool[d.author_id].push(dt);
-  });
-
-  // 외근일 오름차순으로 처리 (오래된 외근부터 매칭) — 익일 작성 보고서 흡수
+  // 외근일 오름차순으로 처리
   const sortedKeys = Object.keys(byUserDate).sort((a, b) => {
     return byUserDate[a][0].target_date.localeCompare(byUserDate[b][0].target_date);
   });
@@ -1249,43 +1269,42 @@ function detectMissing(entries: JournalEntry[], docs: Document[]): MissingAlert[
 
     // 1-2. 입찰 건: 작성입찰가/제시입찰가/낙찰가 미작성 감지
     // 낙찰가는 입찰일이 오늘 또는 과거인 건만 (미래 예약은 결과 미정)
+    // 취하/변경(bidCancelled)인 경우 작성입찰가/낙찰가 검사는 스킵 (제시입찰가는 사전 입력값이라 그대로 검사)
     const todayKst = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
     dayEntries.forEach((entry) => {
       if (entry.activity_type !== '입찰') return;
       try {
         const d = JSON.parse(entry.data);
         const missing: string[] = [];
-        if (!d.bidPrice) missing.push('작성입찰가');
+        if (!d.bidPrice && !d.bidCancelled) missing.push('작성입찰가');
         if (!d.suggestedPrice) missing.push('제시입찰가');
-        if (!d.winPrice && !d.bidWon && entry.target_date <= todayKst) missing.push('낙찰가');
+        if (!d.winPrice && !d.bidWon && !d.bidCancelled && entry.target_date <= todayKst) missing.push('낙찰가');
         if (missing.length > 0) {
           alerts.push({ userName, userId, date, activity: `입찰 — ${d.caseNo || ''}`, missingDoc: `${missing.join(', ')} 미작성`, dDay });
         }
       } catch { /* */ }
     });
 
-    // 2. 외근 블록(입찰/임장/미팅) → 외근 보고서 매칭
-    // 정책: 외근일 1일 = 보고서 1건 (블록 수 무관 — 하루에 여러 외근이라도 보고서 1건이면 충족)
-    // 윈도우: 외근일 -3 ~ +7 범위에서 가장 가까운 미사용 보고서
-    //   - 사전 작성 -3일까지: 4/16 작성한 보고서가 4/17 외근에 대한 것이라 표기되는 케이스 인정
-    //   - 사후 작성 +7일까지: 외근 후 1주 내 작성하는 운영 패턴 흡수
-    const blockCount = countOutdoorBlocks(dayEntries);
-    if (blockCount > 0) {
-      const pool = userOutingReportPool[userId] || [];
-      const outingMs = new Date(date).getTime();
-      let bestIdx = -1;
-      let bestDist = Infinity;
-      for (let j = 0; j < pool.length; j++) {
-        const diff = Math.round((new Date(pool[j]).getTime() - outingMs) / 86400000);
-        if (diff >= -3 && diff <= 7) {
-          const dist = Math.abs(diff);
-          if (dist < bestDist) { bestIdx = j; bestDist = dist; }
+    // 2. 외근 블록(입찰/임장/미팅) → link 기반 검증
+    // 정책: 외근일 ≥ cutoff 일 때만 검사. 외근 entry 단위 link 필수.
+    //   - 모든 외근 entry에 link 있음 → 충족
+    //   - 1개라도 누락 → "외근 보고서 미제출 (N건 중 M건 미연결)"
+    //   - cutoff 이전 외근은 backfill 결과만 활용 + 알림 비활성화
+    if (date >= OUTDOOR_LINK_ENFORCE_FROM) {
+      const outdoorEntries = dayEntries.filter((e) => isOutdoorEntry(e));
+      if (outdoorEntries.length > 0) {
+        const unlinkedCount = outdoorEntries.filter((e) => !linkedEntryIds.has(e.id)).length;
+        if (unlinkedCount > 0) {
+          const totalText = outdoorEntries.length === unlinkedCount
+            ? `${outdoorEntries.length}건 미연결`
+            : `${outdoorEntries.length}건 중 ${unlinkedCount}건 미연결`;
+          alerts.push({
+            userName, userId, date,
+            activity: `외근(${outdoorEntries.length}건)`,
+            missingDoc: `외근 보고서 미제출 (${totalText})`,
+            dDay,
+          });
         }
-      }
-      if (bestIdx >= 0) {
-        pool.splice(bestIdx, 1); // 사용된 보고서는 풀에서 제거 (다른 외근일 매칭에 재사용 X)
-      } else {
-        alerts.push({ userName, userId, date, activity: `외근(${blockCount}블록)`, missingDoc: '외근 보고서 미제출', dDay });
       }
     }
 

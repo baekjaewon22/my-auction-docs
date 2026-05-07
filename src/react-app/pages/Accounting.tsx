@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { api } from '../api';
+import React, { useEffect, useState } from 'react';
+import { api, setSourcePage } from '../api';
 import { useAuthStore } from '../store';
 import type { User, UserAccounting, SalesEvaluation, SalesRecord } from '../types';
 import { ROLE_LABELS } from '../types';
@@ -58,7 +58,7 @@ function getEvaluationPeriods(count: number = 3) {
 export default function Accounting() {
   const { user: currentUser } = useAuthStore();
   const { branches: BRANCHES } = useBranches();
-  const [mainTab, setMainTab] = useState<'sales' | 'staff' | 'card' | 'bank'>('sales');
+  const [mainTab, setMainTab] = useState<'sales' | 'staff' | 'card' | 'bank' | 'auditlog'>('sales');
 
   // ━━ 공통 ━━
   const [users, setUsers] = useState<User[]>([]);
@@ -68,6 +68,14 @@ export default function Accounting() {
   // canApprove: 최종승인만 (총무담당만, 보조 불가)
   const canModify = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
+  const canViewAuditLog = currentUser?.role === 'master' || currentUser?.role === 'accountant';
+
+  // ━━ 활동 이력 ━━
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [auditMonth, setAuditMonth] = useState<string>(() => new Date().toISOString().slice(0, 7));
+  const [auditAction, setAuditAction] = useState('');
+  const [auditActor, setAuditActor] = useState('');
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const canEdit = canModify; // 하위 호환
   // 총무보조 급여 열람 제한 — 팀장·관리자급·이사·대표자
   const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
@@ -111,6 +119,7 @@ export default function Accounting() {
   const [uploading, setUploading] = useState(false);
   const [previewRows, setPreviewRows] = useState<any[] | null>(null);
   const [excelColumns, setExcelColumns] = useState<string[]>([]);
+  const [cardLastUpload, setCardLastUpload] = useState<{ last_upload: string | null; count: number } | null>(null);
 
   // ━━ 거래내역 첨부 탭 ━━
   const [bankItems, setBankItems] = useState<any[]>([]);
@@ -177,12 +186,14 @@ export default function Accounting() {
 
   const loadCard = async () => {
     try {
-      const [txRes, sumRes] = await Promise.all([
+      const [txRes, sumRes, lastRes] = await Promise.all([
         api.card.transactions({ month: cardMonth, branch: cardFilterBranch || undefined, user_id: cardFilterUser || undefined }),
         api.card.summary(cardMonth),
+        api.card.lastUpload().catch(() => null),
       ]);
       setCardTxns(txRes.transactions || []);
       setCardSummary(sumRes);
+      setCardLastUpload(lastRes);
     } catch { setCardTxns([]); }
   };
 
@@ -242,21 +253,24 @@ export default function Accounting() {
         // 가맹점
         const merchant = colMerchant ? String(row[colMerchant] || '') : '';
 
-        // 금액: 키 매칭 → 없으면 숫자 큰 값
+        // 금액: 키 매칭 → 없으면 숫자 큰 값 (음수 포함)
         let amountRaw = colAmount ? row[colAmount] : null;
         if (amountRaw === null || amountRaw === undefined || amountRaw === '') {
           for (const { key, val } of allVals) {
             const n = Number(val.replace(/[^0-9.-]/g, ''));
-            if (n >= 100 && !key.includes('번호') && !key.includes('잔액')) { amountRaw = val; break; }
+            if (Math.abs(n) >= 100 && !key.includes('번호') && !key.includes('잔액')) { amountRaw = val; break; }
           }
         }
-        const amount = Math.abs(Number(String(amountRaw || '0').replace(/[^0-9.-]/g, '')) || 0);
+        // 부호 반전: 엑셀(사용=음수, 취소=양수) → 시스템(사용=양수, 취소=음수)
+        // 합산 시 취소가 자연 상쇄됨
+        const raw = Number(String(amountRaw || '0').replace(/[^0-9.-]/g, '')) || 0;
+        const amount = -raw;
 
         // 비고
         const desc = colDesc && colDesc !== colMerchant ? String(row[colDesc] || '') : '';
 
         return { card_number: cardNum, transaction_date: normalizedDate, merchant_name: merchant, amount, description: desc };
-      }).filter((r: any) => r.amount > 0);
+      }).filter((r: any) => r.amount !== 0);
 
       if (rows.length === 0) { alert('유효한 금액 데이터가 없습니다.\n감지된 컬럼: ' + cols.join(', ')); return; }
 
@@ -285,6 +299,24 @@ export default function Accounting() {
   useEffect(() => { if (mainTab === 'sales') loadSales(); }, [mainTab, filterMonth, filterMonthEnd, filterUser]);
   useEffect(() => { if (mainTab === 'card') loadCard(); }, [mainTab, cardMonth, cardFilterBranch, cardFilterUser]);
   useEffect(() => { if (mainTab === 'bank') loadBank(); }, [mainTab, bankMonth]);
+  // 페이지 진입 시 sourcePage='accounting' (모든 API 요청 헤더에 X-Source-Page 자동 첨부)
+  useEffect(() => { setSourcePage('accounting'); }, []);
+
+  useEffect(() => {
+    if (mainTab !== 'auditlog' || !canViewAuditLog) return;
+    (async () => {
+      try {
+        const res = await api.sales.activityLogs({
+          month: auditMonth || undefined,
+          action: auditAction || undefined,
+          actor_id: auditActor || undefined,
+          limit: 300,
+          source_page: 'accounting',  // 회계장부 페이지 활동만 표시
+        }) as any;
+        setAuditLogs(res.logs || []);
+      } catch { setAuditLogs([]); }
+    })();
+  }, [mainTab, auditMonth, auditAction, auditActor, canViewAuditLog]);
 
   // ━━ 매출 전체 탭 핸들러 ━━
   const handleRefundApprove = async (id: string) => {
@@ -576,6 +608,11 @@ export default function Accounting() {
         <button className={`premium-filter-btn ${mainTab === 'bank' ? 'active' : ''}`} onClick={() => setMainTab('bank')}>
           거래내역 첨부 {bankItems.length > 0 && <span style={{ background: '#e65100', color: '#fff', padding: '1px 6px', borderRadius: 8, fontSize: '0.65rem', marginLeft: 4 }}>{bankItems.length}</span>}
         </button>
+        {canViewAuditLog && (
+          <button className={`premium-filter-btn ${mainTab === 'auditlog' ? 'active' : ''}`} onClick={() => setMainTab('auditlog')}>
+            활동 이력
+          </button>
+        )}
       </div>
 
       {/* ━━ 매출 전체 탭 ━━ */}
@@ -961,10 +998,18 @@ export default function Accounting() {
                 }}>전체 삭제 ({cardTxns.length}건)</button>
               )}
               {canModify && (
-                <label className="btn btn-sm btn-primary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                  <Plus size={13} /> {uploading ? '업로드 중...' : '엑셀 업로드'}
-                  <input type="file" accept=".xlsx,.xls,.csv" onChange={handleExcelUpload} style={{ display: 'none' }} disabled={uploading} />
-                </label>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                  <label className="btn btn-sm btn-primary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <Plus size={13} /> {uploading ? '업로드 중...' : '엑셀 업로드'}
+                    <input type="file" accept=".xlsx,.xls,.csv" onChange={handleExcelUpload} style={{ display: 'none' }} disabled={uploading} />
+                  </label>
+                  {cardLastUpload?.last_upload && (
+                    <div style={{ fontSize: '0.7rem', color: '#5f6368' }}>
+                      최근 업로드: {cardLastUpload.last_upload.slice(0, 16).replace('T', ' ')}
+                      {cardLastUpload.count > 0 && <span style={{ marginLeft: 4, color: '#9aa0a6' }}>({cardLastUpload.count}건)</span>}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -1150,6 +1195,116 @@ export default function Accounting() {
           </div>
         </>
       )}
+
+      {/* ━━ 활동 이력 탭 (회계 수정·삭제·상태변경 감사) ━━ */}
+      {mainTab === 'auditlog' && canViewAuditLog && (() => {
+        const ACTION_LABELS: Record<string, string> = {
+          update: '수정',
+          delete: '삭제',
+          status_change: '상태변경',
+          refund_approve: '환불승인',
+          deposit_claim_approve: '입금신청승인',
+          deposit_delete: '입금등록삭제',
+          payment_method_change: '결제방법변경',
+          memo_add: '메모추가',
+          memo_update: '메모수정',
+          memo_delete: '메모삭제',
+        };
+        const ACTION_COLOR: Record<string, string> = {
+          update: '#1a73e8', delete: '#d93025', status_change: '#188038',
+          refund_approve: '#f9ab00', deposit_claim_approve: '#188038',
+          deposit_delete: '#d93025', payment_method_change: '#1a73e8',
+          memo_add: '#9333ea', memo_update: '#9333ea', memo_delete: '#d93025',
+        };
+        const actorOptions = Array.from(new Set(auditLogs.map((l: any) => l.actor_id + '|' + (l.actor_display_name || l.actor_name || '?'))))
+          .map(s => { const [id, name] = s.split('|'); return { value: id, label: name }; });
+
+        return (
+          <div className="card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+              <h3 style={{ margin: 0, fontSize: '1rem' }}>활동 이력 (총무·총무보조)</h3>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input type="month" className="form-input" value={auditMonth}
+                  onChange={(e) => setAuditMonth(e.target.value)}
+                  style={{ width: 130, fontSize: '0.82rem', padding: '6px 10px' }} />
+                <select className="form-input" value={auditAction} onChange={(e) => setAuditAction(e.target.value)}
+                  style={{ width: 140, fontSize: '0.82rem', padding: '6px 10px' }}>
+                  <option value="">전체 작업</option>
+                  {Object.entries(ACTION_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+                <select className="form-input" value={auditActor} onChange={(e) => setAuditActor(e.target.value)}
+                  style={{ width: 140, fontSize: '0.82rem', padding: '6px 10px' }}>
+                  <option value="">전체 작업자</option>
+                  {actorOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+                <button className="btn btn-sm" onClick={() => { setAuditAction(''); setAuditActor(''); }}>초기화</button>
+              </div>
+            </div>
+            <div style={{ fontSize: '0.78rem', color: '#9aa0a6', marginBottom: 10 }}>
+              총무·총무보조의 회계 수정/삭제/상태변경 이력입니다. 총 {auditLogs.length}건
+            </div>
+            {auditLogs.length === 0 ? (
+              <div style={{ padding: 30, textAlign: 'center', color: '#9aa0a6', fontSize: '0.85rem' }}>조회된 기록이 없습니다.</div>
+            ) : (
+              <div className="table-wrapper">
+                <table className="data-table" style={{ fontSize: '0.82rem' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 140, whiteSpace: 'nowrap' }}>일시</th>
+                      <th style={{ width: 100, whiteSpace: 'nowrap' }}>작업자</th>
+                      <th style={{ width: 90, whiteSpace: 'nowrap' }}>역할</th>
+                      <th style={{ width: 110, whiteSpace: 'nowrap' }}>작업</th>
+                      <th style={{ minWidth: 180 }}>대상</th>
+                      <th>변경 내용</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditLogs.map((l: any) => {
+                      const isOpen = expandedLogId === l.id;
+                      return (
+                        <React.Fragment key={l.id}>
+                          <tr style={{ cursor: 'pointer' }} onClick={() => setExpandedLogId(isOpen ? null : l.id)}>
+                            <td style={{ whiteSpace: 'nowrap' }}>{(l.created_at || '').replace('T', ' ').slice(0, 16)}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>{l.actor_display_name || l.actor_name || '?'}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>{l.actor_role === 'accountant' ? '총무' : l.actor_role === 'accountant_asst' ? '총무보조' : l.actor_role}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>
+                              <span style={{ padding: '2px 8px', borderRadius: 4, background: (ACTION_COLOR[l.action] || '#5f6368') + '22', color: ACTION_COLOR[l.action] || '#5f6368', fontWeight: 600 }}>
+                                {ACTION_LABELS[l.action] || l.action}
+                              </span>
+                            </td>
+                            <td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>{l.target_label}</td>
+                            <td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 400, color: '#3c4043' }}>{l.diff_summary}</td>
+                          </tr>
+                          {isOpen && (l.before_snapshot || l.after_snapshot) && (
+                            <tr>
+                              <td colSpan={6} style={{ background: '#f8f9fa', padding: 12 }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: '0.75rem' }}>
+                                  {l.before_snapshot && (
+                                    <div>
+                                      <div style={{ fontWeight: 600, marginBottom: 4, color: '#d93025' }}>변경 전</div>
+                                      <pre style={{ margin: 0, padding: 8, background: '#fff', border: '1px solid #e8eaed', borderRadius: 4, overflow: 'auto', maxHeight: 300, fontSize: '0.72rem' }}>{(() => { try { return JSON.stringify(JSON.parse(l.before_snapshot), null, 2); } catch { return l.before_snapshot; } })()}</pre>
+                                    </div>
+                                  )}
+                                  {l.after_snapshot && (
+                                    <div>
+                                      <div style={{ fontWeight: 600, marginBottom: 4, color: '#188038' }}>변경 후</div>
+                                      <pre style={{ margin: 0, padding: 8, background: '#fff', border: '1px solid #e8eaed', borderRadius: 4, overflow: 'auto', maxHeight: 300, fontSize: '0.72rem' }}>{(() => { try { return JSON.stringify(JSON.parse(l.after_snapshot), null, 2); } catch { return l.after_snapshot; } })()}</pre>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

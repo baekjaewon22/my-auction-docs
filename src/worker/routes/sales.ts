@@ -20,7 +20,7 @@ const LOGGED_ROLES = new Set(['accountant', 'accountant_asst']);
 
 type LogUser = { sub: string; name?: string; role: string };
 type LogInput = {
-  action: 'update' | 'delete' | 'status_change' | 'refund_approve' | 'deposit_claim_approve' | 'deposit_delete' | 'payment_method_change';
+  action: 'update' | 'delete' | 'status_change' | 'refund_approve' | 'deposit_claim_approve' | 'deposit_delete' | 'payment_method_change' | 'memo_add' | 'memo_update' | 'memo_delete';
   target_type?: string;
   target_id: string;
   target_label: string;
@@ -29,23 +29,31 @@ type LogInput = {
   after?: any;
 };
 
-async function logActivity(db: D1Database, user: LogUser, input: LogInput) {
+async function logActivity(db: D1Database, user: LogUser, input: LogInput, sourcePage: string = 'sales') {
   if (!LOGGED_ROLES.has(user.role)) return;
   try {
     await db.prepare(`
       INSERT INTO accounting_activity_logs
-        (id, actor_id, actor_name, actor_role, action, target_type, target_id, target_label, diff_summary, before_snapshot, after_snapshot)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, actor_id, actor_name, actor_role, action, target_type, target_id, target_label, diff_summary, before_snapshot, after_snapshot, source_page)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       crypto.randomUUID(), user.sub, user.name || '', user.role,
       input.action, input.target_type || 'sales_record', input.target_id,
       input.target_label || '', input.diff_summary || '',
       input.before ? JSON.stringify(input.before) : null,
       input.after ? JSON.stringify(input.after) : null,
+      sourcePage || 'sales',
     ).run();
   } catch (e) {
     console.error('[activity-log] failed:', e);
   }
+}
+
+// 컨텍스트(c)에서 X-Source-Page 헤더를 읽어 'sales' | 'accounting' 반환 (기본 'sales')
+function getSourcePage(c: any): string {
+  const v = c.req.header('X-Source-Page') || c.req.header('x-source-page');
+  if (v === 'accounting' || v === 'sales') return v;
+  return 'sales';
 }
 
 // 매출 레코드를 사람이 읽기 쉬운 라벨로 변환
@@ -182,6 +190,8 @@ sales.get('/contract-tracker', async (c) => {
   }
   const period = c.req.query('period') || 'today';
   const monthParam = c.req.query('month') || ''; // 'YYYY-MM' for period=month
+  const monthFromParam = c.req.query('month_from') || '';
+  const monthToParam = c.req.query('month_to') || '';
 
   // KST 기준 오늘
   const nowMs = Date.now() + 9 * 3600 * 1000;
@@ -196,17 +206,34 @@ sales.get('/contract-tracker', async (c) => {
     return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`;
   };
 
+  const monthRangeToDates = (fromMonthRaw: string, toMonthRaw: string) => {
+    const fallback = `${yyyy}-${mm}`;
+    const fromMonth = /^\d{4}-\d{2}$/.test(fromMonthRaw) ? fromMonthRaw : fallback;
+    const toMonth = /^\d{4}-\d{2}$/.test(toMonthRaw) ? toMonthRaw : fromMonth;
+    const start = fromMonth <= toMonth ? fromMonth : toMonth;
+    const end = fromMonth <= toMonth ? toMonth : fromMonth;
+    const [endY, endM] = end.split('-').map(Number);
+    const lastDay = new Date(Date.UTC(endY, endM, 0)).getUTCDate();
+    return {
+      fromDate: `${start}-01`,
+      toDate: `${end}-${String(lastDay).padStart(2, '0')}`,
+    };
+  };
+
   let fromDate: string, toDate: string;
-  if (period === 'today') { fromDate = today; toDate = today; }
+  if (monthFromParam || monthToParam) {
+    const range = monthRangeToDates(monthFromParam, monthToParam);
+    fromDate = range.fromDate;
+    toDate = range.toDate;
+  }
+  else if (period === 'today') { fromDate = today; toDate = today; }
   else if (period === 'yesterday') { fromDate = addDays(today, -1); toDate = addDays(today, -1); }
   else if (period === 'week') { fromDate = addDays(today, -6); toDate = today; } // 최근 7일 (오늘 포함)
   else if (period === 'month') {
     // 'YYYY-MM' 기준 해당 월의 1일 ~ 말일
-    const target = /^\d{4}-\d{2}$/.test(monthParam) ? monthParam : `${yyyy}-${mm}`;
-    const [y, m] = target.split('-').map(Number);
-    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
-    fromDate = `${target}-01`;
-    toDate = `${target}-${String(lastDay).padStart(2, '0')}`;
+    const range = monthRangeToDates(monthParam, monthParam);
+    fromDate = range.fromDate;
+    toDate = range.toDate;
   }
   else return c.json({ error: 'period 오류' }, 400);
 
@@ -277,7 +304,7 @@ sales.get('/contract-tracker', async (c) => {
   const totalAmount = users.reduce((s, u) => s + u.total_amount, 0);
 
   return c.json({
-    period, from: fromDate, to: toDate,
+    period: monthFromParam || monthToParam ? 'month_range' : period, from: fromDate, to: toDate,
     users, total_count: totalCount, total_amount: totalAmount,
   });
 });
@@ -384,7 +411,7 @@ sales.put('/:id', async (c) => {
   const body = await c.req.json<{
     type?: string; type_detail?: string;
     client_name?: string; depositor_name?: string; depositor_different?: boolean;
-    amount?: number; contract_date?: string;
+    amount?: number; contract_date?: string; deposit_date?: string;
     payment_type?: string; receipt_type?: string; receipt_phone?: string;
     card_deposit_date?: string;
     tax_invoice_date?: string; tax_invoice_type?: string;
@@ -419,6 +446,7 @@ sales.put('/:id', async (c) => {
     depositor_name: body.depositor_name ?? record.depositor_name,
     amount: body.amount ?? record.amount,
     contract_date: body.contract_date ?? record.contract_date,
+    deposit_date: body.deposit_date ?? record.deposit_date,
     payment_type: body.payment_type ?? record.payment_type ?? '',
     card_deposit_date: newCardDepDate,
     status: statusUpdate,
@@ -426,7 +454,7 @@ sales.put('/:id', async (c) => {
 
   await db.prepare(`
     UPDATE sales_records SET type = ?, type_detail = ?, client_name = ?, depositor_name = ?,
-      depositor_different = ?, amount = ?, contract_date = ?,
+      depositor_different = ?, amount = ?, contract_date = ?, deposit_date = ?,
       payment_type = ?, receipt_type = ?, receipt_phone = ?, card_deposit_date = ?,
       tax_invoice_date = ?, tax_invoice_type = ?,
       appraisal_rate = ?, winning_rate = ?, client_phone = ?, proxy_cost = ?,
@@ -437,6 +465,7 @@ sales.put('/:id', async (c) => {
     body.client_name ?? record.client_name, body.depositor_name ?? record.depositor_name,
     body.depositor_different !== undefined ? (body.depositor_different ? 1 : 0) : record.depositor_different,
     body.amount ?? record.amount, body.contract_date ?? record.contract_date,
+    body.deposit_date ?? record.deposit_date ?? '',
     body.payment_type ?? record.payment_type ?? '', body.receipt_type ?? record.receipt_type ?? '',
     body.receipt_phone ?? record.receipt_phone ?? '', newCardDepDate,
     body.tax_invoice_date ?? record.tax_invoice_date ?? '',
@@ -454,7 +483,7 @@ sales.put('/:id', async (c) => {
       action: record.status !== nextRecord.status ? 'status_change' : 'update',
       target_id: id, target_label: recordLabel(nextRecord),
       diff_summary: diff, before: record, after: nextRecord,
-    });
+    }, getSourcePage(c));
   }
 
   // 알림톡: 카드 정산일 입력으로 card_pending → confirmed 전환 시 담당자에게 ACCOUNTING_CONFIRMED
@@ -498,7 +527,7 @@ sales.post('/:id/confirm', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
     diff_summary: `상태: ${record.status} → ${newStatus}${depDate ? `, 입금일: ${depDate}` : ''}`,
     before: { status: record.status, deposit_date: record.deposit_date },
     after: { status: newStatus, deposit_date: depDate },
-  });
+  }, getSourcePage(c));
 
   // 알림톡: 담당자에게 결제확인 완료 (이체 → confirmed 일 때만; 카드는 정산일 입력 시점에 발송)
   if (newStatus === 'confirmed') {
@@ -535,7 +564,7 @@ sales.post('/:id/unconfirm', requireRole('master', 'accountant', 'accountant_ass
     diff_summary: `확정취소: ${record.status} → pending`,
     before: { status: record.status, deposit_date: record.deposit_date, card_deposit_date: record.card_deposit_date },
     after: { status: 'pending', deposit_date: '', card_deposit_date: '' },
-  });
+  }, getSourcePage(c));
 
   return c.json({ success: true });
 });
@@ -583,7 +612,7 @@ sales.post('/:id/refund-approve', requireRole(...EDIT_ACCOUNTING_ROLES), async (
     diff_summary: `환불승인: ${record.status} → refunded`,
     before: { status: record.status },
     after: { status: 'refunded' },
-  });
+  }, getSourcePage(c));
 
   // 알림톡: 환불 승인 → 해당 지사 총무에게 REFUND_NOTICE
   const consultant = await db.prepare('SELECT name FROM users WHERE id = ?').bind(record.user_id).first<{ name: string }>();
@@ -965,7 +994,7 @@ sales.post('/deposits/:id/approve', requireRole(...EDIT_ACCOUNTING_ROLES), async
     target_label: `${notice.depositor} ${Number(notice.amount || 0).toLocaleString('ko-KR')}원 (${notice.deposit_date || ''})`,
     diff_summary: `입금신청 최종승인 (담당자 매출 확정 처리)`,
     before: notice, after: { ...notice, status: 'approved' },
-  });
+  }, getSourcePage(c));
 
   return c.json({ success: true });
 });
@@ -988,7 +1017,7 @@ sales.delete('/deposits/:id', requireRole('master', 'accountant', 'accountant_as
     target_label: `${notice.depositor} ${Number(notice.amount || 0).toLocaleString('ko-KR')}원 (${notice.deposit_date || ''})`,
     diff_summary: `입금등록 삭제`,
     before: notice,
-  });
+  }, getSourcePage(c));
 
   return c.json({ success: true });
 });
@@ -1039,7 +1068,7 @@ sales.delete('/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant
     target_label: `[${record.user_name || '?'}] ${recordLabel(record)}`,
     diff_summary: `매출 삭제 (유형: ${record.type || ''}, 상태: ${record.status || ''})`,
     before: record,
-  });
+  }, getSourcePage(c));
 
   return c.json({ success: true });
 });
@@ -1069,7 +1098,7 @@ sales.put('/:id/phone', async (c) => {
       diff_summary: `전화번호: ${record.client_phone || '(없음)'} → ${newPhone || '(없음)'}`,
       before: { client_phone: record.client_phone || '' },
       after: { client_phone: newPhone },
-    });
+    }, getSourcePage(c));
   }
   return c.json({ success: true });
 });
@@ -1091,7 +1120,7 @@ sales.put('/:id/exclude-count', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
       diff_summary: `계약미포함: ${record.exclude_from_count ? 'ON' : 'OFF'} → ${newVal ? 'ON' : 'OFF'}`,
       before: { exclude_from_count: record.exclude_from_count || 0 },
       after: { exclude_from_count: newVal },
-    });
+    }, getSourcePage(c));
   }
   return c.json({ success: true });
 });
@@ -1113,7 +1142,7 @@ sales.put('/:id/payment-method', requireRole(...EDIT_ACCOUNTING_ROLES), async (c
       diff_summary: `결제방법: ${record.payment_method || '(없음)'} → ${payment_method || '(없음)'}`,
       before: { payment_method: record.payment_method },
       after: { payment_method: payment_method || '' },
-    });
+    }, getSourcePage(c));
   }
 
   return c.json({ success: true });
@@ -1366,7 +1395,7 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
 // ━━━ 활동 내역 조회 (master, accountant만) ━━━
 sales.get('/activity-logs', requireRole('master', 'accountant'), async (c) => {
   const db = c.env.DB;
-  const { month, actor_id, action, limit } = c.req.query();
+  const { month, actor_id, action, limit, source_page } = c.req.query();
   const limitNum = Math.min(Number(limit) || 200, 500);
 
   const conditions: string[] = [];
@@ -1381,6 +1410,10 @@ sales.get('/activity-logs', requireRole('master', 'accountant'), async (c) => {
   }
   if (actor_id) { conditions.push('l.actor_id = ?'); params.push(actor_id); }
   if (action) { conditions.push('l.action = ?'); params.push(action); }
+  if (source_page === 'sales' || source_page === 'accounting') {
+    conditions.push('l.source_page = ?');
+    params.push(source_page);
+  }
 
   let query = `
     SELECT l.*, u.name as actor_display_name, u.branch as actor_branch
@@ -1426,24 +1459,57 @@ sales.post('/memos', requireRole('master', 'accountant', 'accountant_asst'), asy
   if (!content?.trim()) return c.json({ error: '내용을 입력하세요.' }, 400);
 
   const id = crypto.randomUUID();
+  const trimmed = content.trim();
   await db.prepare(
     'INSERT INTO admin_memos (id, related_type, related_id, content, created_by) VALUES (?, ?, ?, ?, ?)'
-  ).bind(id, related_type, related_id, content.trim(), user.sub).run();
+  ).bind(id, related_type, related_id, trimmed, user.sub).run();
+
+  // 활동 로깅: 메모 추가
+  await logActivity(db, user as LogUser, {
+    action: 'memo_add', target_type: 'memo', target_id: id,
+    target_label: `${related_type}/${related_id} 메모 추가`,
+    diff_summary: trimmed.slice(0, 100),
+    after: { content: trimmed, related_type, related_id },
+  }, getSourcePage(c));
 
   return c.json({ success: true, id });
 });
 
 // PUT /api/sales/memos/:id (총무만 수정)
 sales.put('/memos/:id', requireRole('master', 'accountant', 'accountant_asst'), async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
   const id = c.req.param('id');
   const { content } = await c.req.json<{ content: string }>();
-  await c.env.DB.prepare("UPDATE admin_memos SET content = ?, updated_at = datetime('now') WHERE id = ?").bind(content.trim(), id).run();
+  const before = await db.prepare('SELECT * FROM admin_memos WHERE id = ?').bind(id).first<any>();
+  const trimmed = (content || '').trim();
+  await db.prepare("UPDATE admin_memos SET content = ?, updated_at = datetime('now') WHERE id = ?").bind(trimmed, id).run();
+  if (before) {
+    await logActivity(db, user as LogUser, {
+      action: 'memo_update', target_type: 'memo', target_id: id,
+      target_label: `${before.related_type}/${before.related_id} 메모 수정`,
+      diff_summary: `${(before.content || '').slice(0, 50)} → ${trimmed.slice(0, 50)}`,
+      before, after: { ...before, content: trimmed },
+    }, getSourcePage(c));
+  }
   return c.json({ success: true });
 });
 
 // DELETE /api/sales/memos/:id (총무만 삭제)
 sales.delete('/memos/:id', requireRole('master', 'accountant', 'accountant_asst'), async (c) => {
-  await c.env.DB.prepare('DELETE FROM admin_memos WHERE id = ?').bind(c.req.param('id')).run();
+  const user = c.get('user');
+  const db = c.env.DB;
+  const id = c.req.param('id');
+  const before = await db.prepare('SELECT * FROM admin_memos WHERE id = ?').bind(id).first<any>();
+  await db.prepare('DELETE FROM admin_memos WHERE id = ?').bind(id).run();
+  if (before) {
+    await logActivity(db, user as LogUser, {
+      action: 'memo_delete', target_type: 'memo', target_id: id,
+      target_label: `${before.related_type}/${before.related_id} 메모 삭제`,
+      diff_summary: (before.content || '').slice(0, 100),
+      before,
+    }, getSourcePage(c));
+  }
   return c.json({ success: true });
 });
 

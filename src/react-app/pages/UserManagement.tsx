@@ -11,7 +11,7 @@ import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingU
 import { useDepartments } from '../hooks/useDepartments';
 const ROLE_OPTS = [...VISIBLE_ROLES, 'resigned' as const].map((v) => ({ value: v, label: ROLE_LABELS[v] }));
 // BRANCH_OPTS는 컴포넌트 내부에서 동적 생성
-const POSITION_TITLES = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴', 'PD'];
+const POSITION_TITLES = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '사무장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴', 'PD'];
 const POSITION_OPTS = POSITION_TITLES.map((p) => ({ value: p, label: p }));
 
 const GRADE_OPTIONS = ['M1', 'M2', 'M3', 'M4'] as const;
@@ -58,7 +58,7 @@ export default function UserManagement() {
 
   const hierarchy: Record<string, number> = { master: 1, ceo: 2, cc_ref: 2, admin: 3, accountant: 3, accountant_asst: 4, manager: 4, member: 5 };
   const myLevel = hierarchy[currentUser?.role || ''] || 99;
-  const canManagePending = ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser?.role || '');
+  const canManagePending = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
   // 회계 정보 편집 가능한 역할
   const canEditAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   // 총무보조 정산 열람/수정 제한 — 팀장·관리자급·이사·대표자

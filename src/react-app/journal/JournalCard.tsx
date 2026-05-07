@@ -122,6 +122,16 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     } catch (err: any) { alert(err.message); }
   };
 
+  const toggleBidCancelled = async (entry: JournalEntry) => {
+    const d = parseData(entry.data);
+    const updated = { ...d, bidCancelled: !d.bidCancelled };
+    try {
+      // bid_field_only: true → 백엔드 과거일정 입찰 필드 수정 허용
+      await api.journal.update(entry.id, { data: updated, bid_field_only: true });
+      onUpdate?.();
+    } catch (err: any) { alert(err.message); }
+  };
+
   const fmtCurrency = (val: string) => {
     const num = (val || '').replace(/[^0-9]/g, '');
     return num ? Number(num).toLocaleString() : '';
@@ -248,15 +258,33 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                                 : showVal(d.winPrice, '원')}
                             </div>
                             {d.bidProxy && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#7b1fa2' }}>대리입찰</span><span style={{ color: '#7b1fa2' }}>대리입찰</span></div>}
+                            {d.bidCancelled && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#e65100' }}>상태</span><span style={{ color: '#e65100', fontWeight: 600 }}>취하/변경</span></div>}
                             {d.deviationReason && <div className="journal-detail-row"><span className="journal-detail-label" style={{ color: '#d93025' }}>차이사유</span><span style={{ color: '#d93025' }}>{d.deviationReason}</span></div>}
                             {/* 낙찰/입찰가/낙찰가 버튼 — 과거 일정이어도 항상 가능 */}
-                            <button
-                              type="button"
-                              className={`btn btn-sm journal-bid-won-btn ${d.bidWon ? 'active' : ''}`}
-                              onClick={() => toggleBidWon(entry)}
-                            >
-                              <Trophy size={13} /> {d.bidWon ? '낙찰 취소' : '낙찰'}
-                            </button>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              <button
+                                type="button"
+                                className={`btn btn-sm journal-bid-won-btn ${d.bidWon ? 'active' : ''}`}
+                                onClick={() => toggleBidWon(entry)}
+                              >
+                                <Trophy size={13} /> {d.bidWon ? '낙찰 취소' : '낙찰'}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{
+                                  fontSize: '0.72rem', padding: '4px 8px',
+                                  background: d.bidCancelled ? '#fff3e0' : '#fff',
+                                  border: '1px solid ' + (d.bidCancelled ? '#ffb74d' : '#dadce0'),
+                                  color: d.bidCancelled ? '#e65100' : '#5f6368',
+                                  fontWeight: d.bidCancelled ? 600 : 400,
+                                }}
+                                onClick={() => toggleBidCancelled(entry)}
+                                title="작성입찰가/낙찰가 미입력 허용"
+                              >
+                                {d.bidCancelled ? '✓ 취하/변경' : '취하/변경'}
+                              </button>
+                            </div>
                             {!d.winPrice && (
                               <button type="button" className="btn btn-sm" style={{ marginTop: 4 }}
                                 onClick={() => startEdit(entry)}>
@@ -442,6 +470,13 @@ function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd
         </div>
       )}
       <div className="journal-edit-row"><label>낙찰가</label><input value={ed('winPrice')} onChange={(e) => setEd('winPrice', fmtCurrency(e.target.value))} /></div>
+      <div className="journal-edit-row">
+        <label>상태</label>
+        <label className={`field-check-label ${ed('bidCancelled') ? 'checked' : ''}`} style={{ cursor: 'pointer', fontSize: '0.78rem', padding: '4px 8px' }}>
+          <input type="checkbox" checked={!!ed('bidCancelled')} onChange={(e) => setEd('bidCancelled', e.target.checked)} /> 취하/변경
+        </label>
+        {ed('bidCancelled') && <span style={{ marginLeft: 6, fontSize: '0.72rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용</span>}
+      </div>
       <FieldCheckEdit ed={ed} setEd={setEd} />
     </div>
   );

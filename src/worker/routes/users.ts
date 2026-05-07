@@ -33,8 +33,8 @@ users.get('/', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_a
   return c.json({ users: result.results });
 });
 
-// GET /api/users/pending - 승인 대기 목록 (admin+)
-users.get('/pending', requireRole('master', 'ceo', 'admin'), async (c) => {
+// GET /api/users/pending - 승인 대기 목록 (admin+ 및 총무)
+users.get('/pending', requireRole('master', 'ceo', 'admin', 'accountant'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
@@ -52,8 +52,8 @@ users.get('/pending', requireRole('master', 'ceo', 'admin'), async (c) => {
   return c.json({ users: result.results });
 });
 
-// POST /api/users/:id/approve - 가입 승인 (admin+)
-users.post('/:id/approve', requireRole('master', 'ceo', 'admin'), async (c) => {
+// POST /api/users/:id/approve - 가입 승인 (admin+ 및 총무)
+users.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'accountant'), async (c) => {
   const id = c.req.param('id');
   const { department } = await c.req.json<{ department?: string }>();
   const db = c.env.DB;
@@ -78,8 +78,8 @@ users.post('/:id/approve', requireRole('master', 'ceo', 'admin'), async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/users/:id/reject - 가입 거절 (admin+)
-users.post('/:id/reject', requireRole('master', 'ceo', 'admin'), async (c) => {
+// POST /api/users/:id/reject - 가입 거절 (admin+ 및 총무)
+users.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'accountant'), async (c) => {
   const id = c.req.param('id');
   const db = c.env.DB;
 

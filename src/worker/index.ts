@@ -25,6 +25,9 @@ import adminNotesRoute from './routes/admin-notes';
 import cooperationRoute from './routes/cooperation';
 import roomsRoute from './routes/rooms';
 import driveRoute, { OAUTH_STATE_SECRET } from './routes/drive';
+import linksRoute from './routes/links';
+import approvalAlertsRoute from './routes/approval-alerts';
+import journalAlertsRoute from './routes/journal-alerts';
 import { jwtVerify } from 'jose';
 import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
@@ -72,6 +75,9 @@ app.route('/api/admin-notes', adminNotesRoute);
 app.route('/api/cooperation', cooperationRoute);
 app.route('/api/rooms', roomsRoute);
 app.route('/api/drive', driveRoute);
+app.route('/api/links', linksRoute);
+app.route('/api/approval-alerts', approvalAlertsRoute);
+app.route('/api/journal-alerts', journalAlertsRoute);
 
 // OAuth 콜백 — Google이 /oauth/drive/callback 으로 redirect (최상위 경로)
 app.get('/oauth/drive/callback', async (c) => {
@@ -239,6 +245,25 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
       (r) => console.log('[cron drive] done', r),
       (err) => console.error('[cron drive] error', err),
     ));
+    // 승인 대기 알림톡 순차 발송
+    // 1) reconcile: submitted 문서 중 alert 행이 없는 것을 찾아 보강 (즉시 INSERT 실패한 케이스 자동복구)
+    // 2) dispatch: notification_sent=0 인 alert를 NCP로 발송
+    ctx.waitUntil((async () => {
+      try {
+        const { reconcileSubmittedDocs } = await import('./lib/approval-alerts-reconciler');
+        const rec = await reconcileSubmittedDocs(env);
+        if (rec.scanned > 0) console.log('[cron alert-reconcile] done', rec);
+      } catch (err) {
+        console.error('[cron alert-reconcile] error', err);
+      }
+      try {
+        const { dispatchApprovalAlerts } = await import('./lib/approval-alerts-dispatcher');
+        const r = await dispatchApprovalAlerts(env);
+        console.log('[cron approval-alerts] done', r);
+      } catch (err) {
+        console.error('[cron approval-alerts] error', err);
+      }
+    })());
   } else if (cron === '0 15 * * *') {
     ctx.waitUntil(import('./analytics-cron').then(({ runDailyAggregation }) =>
       runDailyAggregation(env).then(

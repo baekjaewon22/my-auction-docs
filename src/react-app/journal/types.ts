@@ -106,6 +106,7 @@ const HOLIDAYS_2026 = [
   '2026-01-01', // 신정
   '2026-01-28', '2026-01-29', '2026-01-30', // 설날 연휴
   '2026-03-01', // 삼일절
+  '2026-05-01', // 근로자의 날
   '2026-05-05', // 어린이날
   '2026-05-24', // 부처님오신날
   '2026-06-06', // 현충일
@@ -168,6 +169,12 @@ export function getTomorrow(): string {
 export function getKSTHour(): number {
   const now = new Date();
   return (now.getUTCHours() + 9) % 24;
+}
+
+/** KST 기준 현재 월(YYYY-MM) — UTC 자정~오전 9시 사이 전월로 잡히는 문제 해결 */
+export function getKSTMonth(): string {
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().slice(0, 7);
 }
 
 /**

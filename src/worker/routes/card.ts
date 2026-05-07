@@ -94,10 +94,19 @@ card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
     // 미매칭은 '기타'로 분류
     const category = branch || '기타';
 
-    // 중복 체크 (카드번호+날짜+금액+가맹점)
+    // 중복 체크 (카드번호+날짜+금액+가맹점+비고) — 부호 보존: 사용(+) / 취소(-) 자연 구분
+    // description까지 포함하여 동일 가맹점 동일 금액 동시 거래도 정확히 식별
     const dup = await db.prepare(
-      'SELECT id FROM card_transactions WHERE card_number = ? AND transaction_date = ? AND amount = ? AND merchant_name = ? LIMIT 1'
-    ).bind(row.card_number || rawCard, row.transaction_date || '', Math.abs(row.amount || 0), row.merchant_name || '').first();
+      `SELECT id FROM card_transactions
+       WHERE card_number = ? AND transaction_date = ? AND amount = ?
+         AND merchant_name = ? AND IFNULL(description,'') = ? LIMIT 1`
+    ).bind(
+      row.card_number || rawCard,
+      row.transaction_date || '',
+      row.amount || 0,
+      row.merchant_name || '',
+      row.description || ''
+    ).first();
     if (dup) continue;
 
     const id = crypto.randomUUID();
@@ -113,6 +122,19 @@ card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
   }
 
   return c.json({ success: true, inserted, batch_id: batchId });
+});
+
+// GET /api/card/last-upload — 가장 최근 업로드 정보 (날짜 + 건수)
+card.get('/last-upload', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const db = c.env.DB;
+  const latest = await db.prepare(
+    "SELECT created_at, upload_batch FROM card_transactions WHERE upload_batch IS NOT NULL AND upload_batch != '' ORDER BY created_at DESC LIMIT 1"
+  ).first<{ created_at: string; upload_batch: string }>();
+  if (!latest) return c.json({ last_upload: null, count: 0, batch_id: null });
+  const cnt = await db.prepare(
+    'SELECT COUNT(*) as c FROM card_transactions WHERE upload_batch = ?'
+  ).bind(latest.upload_batch).first<{ c: number }>();
+  return c.json({ last_upload: latest.created_at, count: cnt?.c || 0, batch_id: latest.upload_batch });
 });
 
 // GET /api/card/transactions — 카드사용내역 조회

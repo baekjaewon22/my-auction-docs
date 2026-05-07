@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { recheckAlertsForJournalEntry, recheckAlertsAfterEntryDelete } from '../lib/journal-alerts';
 
 // KST (한국 시간) 기준 날짜 — 연도별 공휴일
 const HOLIDAYS: Record<string, string[]> = {
@@ -160,6 +161,9 @@ journal.post('/', async (c) => {
     'INSERT INTO journal_entries (id, user_id, target_date, activity_type, activity_subtype, data, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
   ).bind(id, user.sub, body.target_date, body.activity_type, body.activity_subtype || '', JSON.stringify(body.data), user.branch, user.department).run();
 
+  // 영속 알림 재계산 (개인/입찰/출장/일정공백)
+  await recheckAlertsForJournalEntry(db, id).catch((err) => console.error('[recheckAlerts on insert]', err));
+
   return c.json({ entry: { id, target_date: body.target_date, activity_type: body.activity_type } }, 201);
 });
 
@@ -210,6 +214,9 @@ journal.put('/:id', async (c) => {
     "UPDATE journal_entries SET activity_subtype = ?, data = ?, completed = ?, fail_reason = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(body.activity_subtype ?? entry.activity_subtype, body.data ? JSON.stringify(body.data) : entry.data, body.completed ?? entry.completed, body.fail_reason ?? entry.fail_reason, id).run();
 
+  // 영속 알림 재계산
+  await recheckAlertsForJournalEntry(db, id).catch((err) => console.error('[recheckAlerts on update]', err));
+
   return c.json({ success: true });
 });
 
@@ -227,6 +234,11 @@ journal.delete('/:id', async (c) => {
   if (entry.target_date < today && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '지난 일정은 삭제할 수 없습니다.' }, 400);
 
   await db.prepare('DELETE FROM journal_entries WHERE id = ?').bind(id).run();
+
+  // FK CASCADE로 entry-level alert 자동 삭제됨. day-level 알림(일정공백)은 재계산 필요.
+  await recheckAlertsAfterEntryDelete(db, entry.user_id, entry.target_date)
+    .catch((err) => console.error('[recheckAlerts on delete]', err));
+
   return c.json({ success: true });
 });
 

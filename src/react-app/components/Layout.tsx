@@ -6,8 +6,16 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, Handshake, DoorOpen, FileSignature, Briefcase
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, Handshake, DoorOpen, FileSignature, Briefcase,
+  Scale, ExternalLink,
 } from 'lucide-react';
+
+// 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
+const DIAGNOSIS_BOX_PATHS = ['/journal', '/sales', '/leave', '/rooms', '/contract-tracker'];
+function shouldShowDiagnosisBox(pathname: string): boolean {
+  if (pathname === '/' || pathname === '/dashboard' || pathname.startsWith('/dashboard/')) return true;
+  return DIAGNOSIS_BOX_PATHS.some(base => pathname === base || pathname.startsWith(base + '/'));
+}
 
 // 컨설턴트 계약관리: 대표/마스터/총무급 + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -18,6 +26,15 @@ export default function Layout() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  // 명승 진단 박스 펼침 상태 — 기본값 접힘, 사용자 선택은 localStorage 유지
+  const [diagnosisOpen, setDiagnosisOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try { return localStorage.getItem('diagnosisOpen') === '1'; } catch { return false; }
+  });
+  const toggleDiagnosis = (next: boolean) => {
+    setDiagnosisOpen(next);
+    try { localStorage.setItem('diagnosisOpen', next ? '1' : '0'); } catch { /* */ }
+  };
 
   const handleLogout = () => { logout(); navigate('/login'); };
   const isActive = (path: string) => location.pathname.startsWith(path);
@@ -71,6 +88,9 @@ export default function Layout() {
 
         {!isFreelancer && <div className="nav-divider" />}
         {!isFreelancer && !collapsed && <span className="nav-label">마이페이지</span>}
+        <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="사내 커뮤니티" onClick={() => setMobileOpen(false)}>
+          <StickyNote size={18} /> {!collapsed && '사내 커뮤니티'}
+        </Link>
         {!isAccountingOnly && !isFreelancer && !isDirector && !isSupport && (
           <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
             <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
@@ -160,14 +180,17 @@ export default function Layout() {
             <BookOpen size={18} /> {!collapsed && '회의록'}
           </Link>
         )}
+
+        {['master', 'accountant', 'admin'].includes(role) && (
+          <Link to="/link-review" className={`nav-item ${isActive('/link-review') ? 'active' : ''}`} title="외근 link 검수" onClick={() => setMobileOpen(false)}>
+            <Briefcase size={18} /> {!collapsed && '외근 link 검수'}
+          </Link>
+        )}
         {['master', 'ceo', 'cc_ref', 'admin'].includes(role) && (
           <Link to="/alimtalk-logs" className={`nav-item ${isActive('/alimtalk-logs') ? 'active' : ''}`} title="카카오 발송내역" onClick={() => setMobileOpen(false)}>
             <MessageSquare size={18} /> {!collapsed && '카카오 발송내역'}
           </Link>
         )}
-        <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="관리자 노트" onClick={() => setMobileOpen(false)}>
-          <StickyNote size={18} /> {!collapsed && '관리자 노트'}
-        </Link>
         {!isFreelancer && !isSupport && (
           <Link to="/cooperation" className={`nav-item ${isActive('/cooperation') ? 'active' : ''}`} title="업무협조요청" onClick={() => setMobileOpen(false)}>
             <Handshake size={18} /> {!collapsed && '업무협조요청'}
@@ -250,6 +273,46 @@ export default function Layout() {
       <main className="main-content">
         <Outlet />
       </main>
+
+      {/* 명승 진단 바로가기 — 대시보드 + 마이페이지 하위 전부 (접기/펼치기) */}
+      {shouldShowDiagnosisBox(location.pathname) && (
+        diagnosisOpen ? (
+          <aside className="diagnosis-floating-box" aria-label="명승 진단 바로가기">
+            <button
+              type="button"
+              className="diagnosis-collapse-btn"
+              onClick={() => toggleDiagnosis(false)}
+              aria-label="접기"
+              title="접기"
+            >
+              <X size={12} />
+            </button>
+            <div className="diagnosis-floating-title">
+              <ExternalLink size={11} />
+              <span>명승</span>
+            </div>
+            <a
+              href="https://www.lawitgo.com/diagnosis/?funnel=moffice"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="diagnosis-floating-link"
+            >
+              <Scale size={14} />
+              <span>명도비/정액제</span>
+            </a>
+          </aside>
+        ) : (
+          <button
+            type="button"
+            className="diagnosis-floating-toggle"
+            onClick={() => toggleDiagnosis(true)}
+            aria-label="명승 진단 바로가기 펼치기"
+            title="명승 진단"
+          >
+            <Scale size={18} />
+          </button>
+        )
+      )}
     </div>
   );
 }

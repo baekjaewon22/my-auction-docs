@@ -40,6 +40,24 @@ export default function DocumentEdit() {
   const [approving, setApproving] = useState(false);
   const approvingRef = useRef(false);
 
+  // 외근보고서 link 관리
+  type OutdoorEntry = {
+    id: string; target_date: string; activity_type: string; activity_subtype: string;
+    time_from: string; time_to: string; place: string; case_no: string; client: string; court: string;
+    linked_to_other_doc: string | null; linked_to_current_doc: boolean;
+  };
+  const [outdoorEntries, setOutdoorEntries] = useState<OutdoorEntry[]>([]);
+  const [linkedEntryIds, setLinkedEntryIds] = useState<Set<string>>(new Set());
+  const [linkLoading, setLinkLoading] = useState(false);
+  const isOutdoorReport = doc?.template_id === 'tpl-work-007';
+
+  // 일지를 작성하지 않는 직책 — 외근보고서 작성 시 일지 entry 연결 면제 (수동 작성)
+  // Layout.tsx의 일지 메뉴 비노출 조건과 동일 정책
+  const NON_JOURNAL_ROLES = ['accountant', 'accountant_asst', 'director', 'support'];
+  const isJournalUser = !NON_JOURNAL_ROLES.includes(user?.role || '')
+                     && (user as any)?.login_type !== 'freelancer';
+  const requiresJournalLink = isOutdoorReport && isJournalUser;
+
   const STAMP_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
   const canUseStamp = STAMP_ROLES.includes(user?.role || '');
 
@@ -161,6 +179,89 @@ export default function DocumentEdit() {
     }).catch((err) => { console.error('문서 로딩 실패:', err); navigate('/documents'); });
   }, [id, editor]);
 
+  // 외근보고서일 때 일지 entry 목록 + 현재 link 조회 (일지 비작성 직책은 스킵)
+  const loadLinkData = useCallback(async () => {
+    if (!id || !isOutdoorReport || !isJournalUser) return;
+    setLinkLoading(true);
+    try {
+      const [entriesRes, linksRes] = await Promise.all([
+        api.links.myOutdoorEntries(id),
+        api.links.byDocument(id),
+      ]);
+      setOutdoorEntries(entriesRes.entries);
+      setLinkedEntryIds(new Set(linksRes.links.map((l) => l.journal_entry_id)));
+    } catch (err) {
+      console.error('일지 link 로딩 실패:', err);
+    }
+    setLinkLoading(false);
+  }, [id, isOutdoorReport, isJournalUser]);
+
+  useEffect(() => { loadLinkData(); }, [loadLinkData]);
+
+  // 일지 entry 체크박스 토글
+  const toggleEntryLink = async (entryId: string, linked: boolean) => {
+    if (!id) return;
+    try {
+      if (linked) {
+        // 추가
+        await api.links.create({ document_id: id, journal_entry_ids: [entryId], link_type: 'outdoor' });
+        setLinkedEntryIds((prev) => { const n = new Set(prev); n.add(entryId); return n; });
+      } else {
+        // 삭제
+        const linksRes = await api.links.byDocument(id);
+        const target = linksRes.links.find((l) => l.journal_entry_id === entryId);
+        if (target) {
+          await api.links.delete(target.link_id);
+          setLinkedEntryIds((prev) => { const n = new Set(prev); n.delete(entryId); return n; });
+        }
+      }
+    } catch (err: any) {
+      alert('처리 실패: ' + (err.message || ''));
+    }
+  };
+
+  // 본문에 외근 내역 자동 채워넣기
+  const autoFillBody = () => {
+    if (!editor) return;
+    const linkedEntries = outdoorEntries.filter((e) => linkedEntryIds.has(e.id));
+    if (linkedEntries.length === 0) {
+      alert('연결된 일지 entry가 없습니다.');
+      return;
+    }
+    // 외근일자 기준 오름차순
+    linkedEntries.sort((a, b) => a.target_date.localeCompare(b.target_date));
+    const lines = linkedEntries.map((e) => {
+      const [y, m, d] = e.target_date.split('-');
+      const yy = y.slice(2);
+      const checkBid = e.activity_type === '입찰' ? '☑' : '☐';
+      const checkInsp = e.activity_type === '임장' ? '☑' : '☐';
+      const checkMeet = e.activity_type === '미팅' ? '☑' : '☐';
+      const place = e.place || (e.case_no ? `${e.case_no}${e.client ? ' ' + e.client : ''}` : '');
+      const time = e.time_from && e.time_to ? `${e.time_from} ~ ${e.time_to}` : (e.time_from || '');
+      return `<p>외근 일자&nbsp;: &nbsp;${yy} 년 &nbsp;${parseInt(m, 10)} 월 &nbsp;${parseInt(d, 10)} 일</p>` +
+        `<p>외근 시간&nbsp;: &nbsp;${time}</p>` +
+        `<p>외근 목적 : ${checkBid} 입찰 ${checkInsp} 임장 ${checkMeet} 미팅</p>` +
+        `<p>외근 장소 : ${place}</p>` +
+        `<p><br></p>`;
+    }).join('');
+
+    // 본문에서 외근 내역 섹션 위치 찾아 교체 (재실행 안전)
+    const html = editor.getHTML();
+    const placeholderRegex = /<p[^>]*class="outdoor-placeholder"[^>]*>[\s\S]*?<\/p>/;
+    const sectionRegex = /(<h2[^>]*>\s*외근\s*내역\s*<\/h2>)([\s\S]*?)(?=<h2|<p[^>]*>\s*위와 같이)/;
+
+    if (placeholderRegex.test(html)) {
+      // 1) placeholder 안내 문구가 있으면 그것만 교체 (첫 자동 채우기)
+      editor.commands.setContent(html.replace(placeholderRegex, lines));
+    } else if (sectionRegex.test(html)) {
+      // 2) 이미 한 번 채워진 상태 → 외근 내역 섹션 전체 교체 (link 변경 후 재실행)
+      editor.commands.setContent(html.replace(sectionRegex, `$1${lines}`));
+    } else {
+      // 3) fallback: 외근 내역 헤더가 없으면 cursor 위치에 헤더 + 내용 추가
+      editor.chain().focus().insertContent(`<h2>외근 내역</h2>${lines}`).run();
+    }
+  };
+
   const handleTitleBlur = () => {
     if (!id || !isEditable) return;
     api.documents.update(id, { title });
@@ -169,6 +270,11 @@ export default function DocumentEdit() {
 
   const handleSubmit = async () => {
     if (!id) return;
+    // 외근보고서: 일지 entry 1개 이상 link 필수 (단, 일지 비작성 직책은 면제 — 수동 작성)
+    if (requiresJournalLink && linkedEntryIds.size === 0) {
+      alert('외근보고서는 1개 이상의 외근 일지 entry를 연결해야 제출할 수 있습니다.\n상단 "외근 일지 선택" 패널에서 entry를 선택해주세요.');
+      return;
+    }
     if (!mySigned) {
       alert('제출 전 작성자 서명이 필요합니다.\n결재란에서 서명을 완료해주세요.');
       return;
@@ -559,6 +665,99 @@ export default function DocumentEdit() {
           authorName={doc.author_name}
           onSign={handleApprovalSign}
         />
+
+        {/* 외근보고서 — 일지 비작성 직책: 수동 작성 안내 박스 */}
+        {isOutdoorReport && isEditable && !isJournalUser && (
+          <div style={{
+            border: '2px solid #fbbc04', borderRadius: 8, padding: 14, margin: '12px 0',
+            background: '#fffbe6'
+          }}>
+            <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#b06000' }}>
+              일지 비대상 직책 — 수동 작성 모드
+            </div>
+            <div style={{ fontSize: '0.78rem', color: '#5f6368', marginTop: 6, lineHeight: 1.5 }}>
+              총무 / 보조총무 / 총괄이사 / 지원팀은 외근 일지를 작성하지 않으므로 일지 연결이 면제됩니다.<br />
+              본문에 외근 일자·장소·내용을 직접 기재한 후 제출해주세요.
+            </div>
+          </div>
+        )}
+
+        {/* 외근보고서 — 일지 entry 선택 패널 (일지 작성 대상자만) */}
+        {isOutdoorReport && isEditable && isJournalUser && (
+          <div style={{
+            border: '2px solid #1a73e8', borderRadius: 8, padding: 14, margin: '12px 0',
+            background: '#f8fbff'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#1a73e8' }}>
+                  외근 일지 선택 <span style={{ color: '#d93025' }}>*</span>
+                </div>
+                <div style={{ fontSize: '0.72rem', color: '#5f6368', marginTop: 2 }}>
+                  본인 외근 일지 중 1개 이상 선택해야 제출할 수 있습니다 (최근 60일).
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: '0.78rem', color: linkedEntryIds.size > 0 ? '#188038' : '#d93025', fontWeight: 600 }}>
+                  연결 {linkedEntryIds.size}건
+                </span>
+                <button className="btn btn-sm" onClick={autoFillBody} disabled={linkedEntryIds.size === 0}
+                  title="선택한 일지 정보를 본문에 자동 삽입">본문 자동 채우기</button>
+              </div>
+            </div>
+            {(() => {
+              // 다른 보고서에 이미 link된 entry는 숨김 (현재 문서와 무관 → 패널에 표시 X)
+              const visibleEntries = outdoorEntries.filter((e) => !e.linked_to_other_doc || linkedEntryIds.has(e.id));
+              const hiddenCount = outdoorEntries.length - visibleEntries.length;
+              if (linkLoading) {
+                return <div style={{ fontSize: '0.78rem', color: '#9aa0a6' }}>로딩 중...</div>;
+              }
+              if (visibleEntries.length === 0) {
+                return (
+                  <div style={{ fontSize: '0.78rem', color: '#9aa0a6', padding: 8 }}>
+                    {outdoorEntries.length === 0
+                      ? '최근 60일 외근 일지가 없습니다. 일지를 먼저 작성해주세요.'
+                      : `최근 60일 외근 일지 ${outdoorEntries.length}건은 모두 다른 보고서에 연결되어 있습니다.`}
+                  </div>
+                );
+              }
+              return (
+                <>
+                  <div style={{ maxHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {visibleEntries.map((e) => {
+                      const isLinked = linkedEntryIds.has(e.id);
+                      const purposeColor = e.activity_type === '입찰' ? '#d93025' : e.activity_type === '임장' ? '#188038' : '#1a73e8';
+                      return (
+                        <label key={e.id} style={{
+                          display: 'flex', alignItems: 'center', gap: 8,
+                          padding: '6px 8px', borderRadius: 4,
+                          background: isLinked ? '#e8f0fe' : '#fff',
+                          border: isLinked ? '1px solid #1a73e8' : '1px solid #e8eaed',
+                          cursor: 'pointer',
+                          fontSize: '0.78rem'
+                        }}>
+                          <input type="checkbox" checked={isLinked}
+                            onChange={(ev) => toggleEntryLink(e.id, ev.target.checked)} />
+                          <span style={{ minWidth: 90, color: '#3c4043', fontWeight: 600 }}>{e.target_date}</span>
+                          <span style={{ minWidth: 40, color: purposeColor, fontWeight: 600 }}>{e.activity_type}</span>
+                          <span style={{ minWidth: 90, color: '#5f6368' }}>{e.time_from}{e.time_to ? `~${e.time_to}` : ''}</span>
+                          <span style={{ flex: 1, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {e.case_no || ''} {e.place || e.client || ''}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {hiddenCount > 0 && (
+                    <div style={{ fontSize: '0.68rem', color: '#9aa0a6', marginTop: 4 }}>
+                      ※ 다른 보고서에 이미 연결된 {hiddenCount}건은 숨김 처리되었습니다.
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        )}
 
         {/* TipTap Toolbar */}
         {isEditable && editor && (

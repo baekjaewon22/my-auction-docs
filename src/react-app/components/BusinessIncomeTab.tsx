@@ -112,6 +112,68 @@ export default function BusinessIncomeTab({ month }: { month: string }) {
     );
   }, [entries]);
 
+  const entryStatusLabel = (entry: Entry): string => {
+    if (entry.is_ad_hoc) return '임시';
+    if (entry.is_overridden) return '수정';
+    return '자동';
+  };
+
+  const exportExcel = async () => {
+    if (entries.length === 0) { alert('다운로드할 데이터가 없습니다.'); return; }
+
+    const XLSX = await import('xlsx');
+    const yy = month.split('-')[0];
+    const mm = Number(month.split('-')[1]);
+    const rows = entries.map((e, i) => [
+      i + 1,
+      e.name,
+      e.branch,
+      e.department,
+      e.ssn,
+      e.address,
+      e.amount || 0,
+      e.tax || 0,
+      e.net_amount || 0,
+      entryStatusLabel(e),
+      e.note || '',
+    ]);
+
+    const sheetData = [
+      ['사업소득 지급명세서'],
+      [`기준월: ${yy}년 ${mm}월`, `작성일: ${new Date().toISOString().slice(0, 10)}`, `인원: ${entries.length}명`],
+      [],
+      ['No', '이름', '지점', '부서', '주민등록번호', '주소', '지급액', '원천징수세액(3.3%)', '실지급액', '상태', '비고'],
+      ...rows,
+      [],
+      ['합계', '', '', '', '', '', totals.amount, totals.tax, totals.net, '', ''],
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+    ws['!cols'] = [
+      { wch: 6 }, { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 18 },
+      { wch: 42 }, { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 10 }, { wch: 24 },
+    ];
+
+    const moneyFormat = '#,##0';
+    const firstDataRow = 5;
+    const lastDataRow = firstDataRow + rows.length - 1;
+    for (let r = firstDataRow; r <= lastDataRow; r += 1) {
+      ['G', 'H', 'I'].forEach((col) => {
+        const cell = ws[`${col}${r}`];
+        if (cell) cell.z = moneyFormat;
+      });
+    }
+    const totalRow = firstDataRow + rows.length + 1;
+    ['G', 'H', 'I'].forEach((col) => {
+      const cell = ws[`${col}${totalRow}`];
+      if (cell) cell.z = moneyFormat;
+    });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '사업소득신고');
+    XLSX.writeFile(wb, `사업소득신고_${month}.xlsx`);
+  };
+
   // PDF 저장 — 깔끔한 인쇄용 레이아웃으로 생성
   const exportPdf = async () => {
     if (entries.length === 0) { alert('출력할 데이터가 없습니다.'); return; }
@@ -205,6 +267,9 @@ export default function BusinessIncomeTab({ month }: { month: string }) {
           </button>
           <button className="btn btn-sm" onClick={exportPdf} disabled={loading || entries.length === 0} title="세무사 제출용 PDF 다운로드">
             <Download size={13} /> PDF 저장
+          </button>
+          <button className="btn btn-sm" onClick={exportExcel} disabled={loading || entries.length === 0} title="월별 사업소득신고 엑셀 다운로드">
+            <Download size={13} /> 엑셀 저장
           </button>
           <div className="bi-addmenu-wrap">
             <button className="btn btn-sm" onClick={() => setPoolMenuOpen(v => !v)}>

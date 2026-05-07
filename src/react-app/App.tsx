@@ -30,6 +30,7 @@ import AdminNotes from './pages/AdminNotes';
 import Cooperation from './pages/Cooperation';
 import RoomReservation from './pages/RoomReservation';
 import ContractTracker from './pages/ContractTracker';
+import LinkReview from './pages/LinkReview';
 import Print from './pages/Print';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
@@ -269,6 +270,14 @@ export default function App() {
               <ContractTrackerRoute>
                 <ContractTracker />
               </ContractTrackerRoute>
+            }
+          />
+          <Route
+            path="link-review"
+            element={
+              <PrivateRoute>
+                <LinkReview />
+              </PrivateRoute>
             }
           />
         </Route>

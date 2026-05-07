@@ -40,13 +40,10 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
       if (isCeoStep) {
         stepSig = signatures.find(s => s.signature_data === '/LNCstemp.png' && !usedSigIds.has((s as any).id || ''));
       }
-      // 일반: 해당 step의 approver 본인 서명
+      // 일반: 해당 step의 approver 본인 서명만 매칭 (다른 사람 서명을 끌어다 쓰지 않음)
+      // 본인 서명이 없으면 ✓ + 이름만 표시 (render에서 처리)
       if (!stepSig) {
         stepSig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1 && !usedSigIds.has((s as any).id || ''));
-      }
-      // 그래도 없으면 남은 서명 순서대로
-      if (!stepSig && step.status === 'approved') {
-        stepSig = signatures.find(s => signatures.indexOf(s) >= 1 && !usedSigIds.has((s as any).id || ''));
       }
       if (stepSig) usedSigIds.add((stepSig as any).id || '');
 

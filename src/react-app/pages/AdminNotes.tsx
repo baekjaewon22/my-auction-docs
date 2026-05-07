@@ -163,7 +163,7 @@ export default function AdminNotes() {
   };
 
   const handleDelete = async (id: string, title: string) => {
-    if (!confirm(`"${title}" 노트를 삭제하시겠습니까?`)) return;
+    if (!confirm(`"${title}" 게시글을 삭제하시겠습니까?`)) return;
     try {
       await api.adminNotes.delete(id);
       if (detail?.id === id) setDetail(null);
@@ -286,23 +286,23 @@ export default function AdminNotes() {
   return (
     <div className="page">
       <div className="page-header">
-        <h2><StickyNote size={20} style={{ marginRight: 6, verticalAlign: 'middle' }} />관리자 노트</h2>
+        <h2><StickyNote size={20} style={{ marginRight: 6, verticalAlign: 'middle' }} />사내 커뮤니티</h2>
         <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); if (showForm) resetForm(); }}>
-          {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> 새 노트</>}
+          {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> 새 게시글</>}
         </button>
       </div>
 
       {showForm && (
         <div className="card" style={{ marginBottom: 20, padding: 20 }}>
-          <h3 style={{ margin: '0 0 12px', fontSize: '0.95rem' }}>{editingId ? '노트 수정' : '새 노트 작성'}</h3>
+          <h3 style={{ margin: '0 0 12px', fontSize: '0.95rem' }}>{editingId ? '게시글 수정' : '새 게시글 작성'}</h3>
           <div className="form-group" style={{ marginBottom: 12 }}>
             <label>제목 *</label>
-            <input className="form-input" value={formTitle} onChange={(e) => setFormTitle(e.target.value)} placeholder="노트 제목" style={{ width: '100%' }} />
+            <input className="form-input" value={formTitle} onChange={(e) => setFormTitle(e.target.value)} placeholder="게시글 제목" style={{ width: '100%' }} />
           </div>
           <div className="form-group" style={{ marginBottom: 12 }}>
             <label>내용 *</label>
             <textarea className="form-input" value={formContent} onChange={(e) => setFormContent(e.target.value)}
-              placeholder="노트 내용을 입력하세요..." rows={6} style={{ width: '100%', resize: 'vertical' }} />
+              placeholder="게시글 내용을 입력하세요..." rows={6} style={{ width: '100%', resize: 'vertical' }} />
           </div>
           {!editingId && (
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
@@ -346,7 +346,7 @@ export default function AdminNotes() {
 
       {filtered.length === 0 ? (
         <div className="empty-state" style={{ padding: 40 }}>
-          {notes.length === 0 ? '등록된 노트가 없습니다.' : '검색 결과가 없습니다.'}
+          {notes.length === 0 ? '등록된 게시글이 없습니다.' : '검색 결과가 없습니다.'}
         </div>
       ) : (
         <div className="admin-notes-list">

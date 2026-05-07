@@ -84,7 +84,8 @@ export default function Journal() {
   const activeDate = tab === 'today' ? today : tab === 'tomorrow' ? tomorrow : tab === 'calendar' ? selectedDateStr : '';
   const isCalendarTodayOrTomorrow = tab === 'calendar' && (selectedDateStr === today || selectedDateStr === tomorrow);
   const isCalendarFuture = tab === 'calendar' && selectedDateStr > tomorrow;
-  const canAddSchedule = tab === 'today' || tab === 'tomorrow' || isCalendarTodayOrTomorrow || isCalendarFuture;
+  // 마스터/대표/총대표는 과거 일정에서도 추가 가능 (백엔드도 동일 권한 허용)
+  const canAddSchedule = tab === 'today' || tab === 'tomorrow' || isCalendarTodayOrTomorrow || isCalendarFuture || (tab === 'calendar' && isCeoPlus);
 
   const load = () => {
     setLoading(true);

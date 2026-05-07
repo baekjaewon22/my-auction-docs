@@ -8,6 +8,82 @@ leave.use('*', authMiddleware);
 
 // ───── 헬퍼 ─────
 
+/**
+ * leave_requests 이력 기반으로 사용량 합계 산출 (사용자 타입 인자 받음)
+ */
+async function sumApprovedLeave(db: D1Database, userId: string, userType: 'monthly' | 'annual'): Promise<{ used_days: number; monthly_used: number }> {
+  const result = await db.prepare(`
+    SELECT leave_type, COALESCE(SUM(days), 0) as total
+    FROM leave_requests
+    WHERE user_id = ? AND status = 'approved' AND leave_type != '특별휴가'
+    GROUP BY leave_type
+  `).bind(userId).all<{ leave_type: string; total: number }>();
+
+  let usedDays = 0;
+  let monthlyUsed = 0;
+  for (const row of (result.results || [])) {
+    if (userType === 'monthly' || row.leave_type === '월차') {
+      monthlyUsed += Number(row.total) || 0;
+    } else {
+      usedDays += Number(row.total) || 0;
+    }
+  }
+  return { used_days: usedDays, monthly_used: monthlyUsed };
+}
+
+/**
+ * leave_requests 이력 기반으로 annual_leave.used_days / monthly_used 재계산 (entitlement는 그대로)
+ */
+async function recalcUserLeave(db: D1Database, userId: string): Promise<{ used_days: number; monthly_used: number } | null> {
+  const al = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(userId).first<{ leave_type: string }>();
+  if (!al) return null;
+  const userType = (al.leave_type as 'monthly' | 'annual') || 'annual';
+
+  const sum = await sumApprovedLeave(db, userId, userType);
+  await db.prepare("UPDATE annual_leave SET used_days = ?, monthly_used = ?, updated_at = datetime('now') WHERE user_id = ?")
+    .bind(sum.used_days, sum.monthly_used, userId).run();
+
+  return sum;
+}
+
+/**
+ * 입사일 기반 entitlement 재초기화 + leave_requests 이력 기반 사용량 재계산
+ * - 입사일이 변경됐거나 leave_type이 잘못 잡혔을 때 한 번에 정정
+ * - calculateLeaveEntitlement 결과 + sumApprovedLeave 합쳐서 전체 SET
+ */
+async function reinitUserLeave(db: D1Database, userId: string): Promise<{ before: any; after: any } | null> {
+  const userInfo = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(userId).first<{ hire_date: string; created_at: string }>();
+  if (!userInfo) return null;
+  const hireDate = userInfo.hire_date || (userInfo.created_at || '').slice(0, 10);
+  const ent = calculateLeaveEntitlement(hireDate);
+
+  const before = await db.prepare('SELECT total_days, used_days, monthly_days, monthly_used, leave_type FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
+  const sum = await sumApprovedLeave(db, userId, ent.type);
+
+  if (before) {
+    await db.prepare(`UPDATE annual_leave SET
+      total_days = ?, used_days = ?, monthly_days = ?, monthly_used = ?, leave_type = ?,
+      updated_at = datetime('now')
+      WHERE user_id = ?`)
+      .bind(ent.totalAnnual, sum.used_days, ent.totalMonthly, sum.monthly_used, ent.type, userId).run();
+  } else {
+    await db.prepare(`INSERT INTO annual_leave
+      (id, user_id, total_days, used_days, monthly_days, monthly_used, leave_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(crypto.randomUUID(), userId, ent.totalAnnual, sum.used_days, ent.totalMonthly, sum.monthly_used, ent.type).run();
+  }
+
+  const after = {
+    total_days: ent.totalAnnual,
+    used_days: sum.used_days,
+    monthly_days: ent.totalMonthly,
+    monthly_used: sum.monthly_used,
+    leave_type: ent.type,
+    hire_date: hireDate,
+  };
+  return { before, after };
+}
+
 // 월차 기산일: 입사일이 이 날짜 이전이면 이 날짜 기준으로 월차 계산
 const MONTHLY_BASE_DATE = '2026-03-01';
 
@@ -240,6 +316,73 @@ leave.post('/deduct', requireRole('master', 'ceo', 'admin', 'manager'), async (c
       .bind(newUsed, user_id).run();
     return c.json({ success: true, used_days: newUsed, remaining: existing.total_days - newUsed });
   }
+});
+
+// ───── 연차 사용량 재계산 (단일 사용자) ─────
+// leave_requests 이력 기반으로 used_days/monthly_used 자동 정합성 맞춤
+// 관리자가 데이터 어긋난 사용자 발견 시 한 번 호출하면 즉시 정정
+leave.post('/recalculate/:userId', requireRole('master', 'ceo', 'admin', 'accountant'), async (c) => {
+  const userId = c.req.param('userId');
+  const db = c.env.DB;
+  const before = await db.prepare('SELECT used_days, monthly_used FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
+  if (!before) return c.json({ error: '연차 정보가 없습니다.' }, 404);
+  const after = await recalcUserLeave(db, userId);
+  return c.json({ success: true, before, after });
+});
+
+// ───── 연차 사용량 재계산 (전체) — 마스터 전용 ─────
+// 모든 사용자에 대해 leave_requests 기반 재계산. 변동 있는 사용자만 결과 반환.
+leave.post('/recalculate-all', requireRole('master'), async (c) => {
+  const db = c.env.DB;
+  const usersResult = await db.prepare('SELECT al.user_id, u.name, al.used_days, al.monthly_used FROM annual_leave al JOIN users u ON u.id = al.user_id').all<any>();
+  const changes: any[] = [];
+  for (const u of (usersResult.results || [])) {
+    const after = await recalcUserLeave(db, u.user_id);
+    if (!after) continue;
+    if (Math.abs((u.used_days || 0) - after.used_days) > 0.0001 || Math.abs((u.monthly_used || 0) - after.monthly_used) > 0.0001) {
+      changes.push({
+        user_id: u.user_id,
+        name: u.name,
+        before: { used_days: u.used_days, monthly_used: u.monthly_used },
+        after,
+      });
+    }
+  }
+  return c.json({ success: true, total: usersResult.results?.length || 0, updated: changes.length, changes });
+});
+
+// ───── 입사일 기반 재초기화 (단일 사용자) ─────
+// entitlement(부여일/타입) + 사용량까지 모두 재계산
+// leave_type 잘못 잡혔거나 부여일이 입사일과 안 맞을 때 사용
+leave.post('/reinit/:userId', requireRole('master', 'ceo', 'admin', 'accountant'), async (c) => {
+  const userId = c.req.param('userId');
+  const db = c.env.DB;
+  const result = await reinitUserLeave(db, userId);
+  if (!result) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
+  return c.json({ success: true, ...result });
+});
+
+// ───── 입사일 기반 재초기화 (전체) — 마스터 전용 ─────
+leave.post('/reinit-all', requireRole('master'), async (c) => {
+  const db = c.env.DB;
+  // annual_leave가 없는 사용자도 신규 생성하므로 users 전체 조회 (승인된 직원만)
+  const usersResult = await db.prepare("SELECT id, name FROM users WHERE approved = 1 AND role != 'resigned'").all<{ id: string; name: string }>();
+  const changes: any[] = [];
+  for (const u of (usersResult.results || [])) {
+    const r = await reinitUserLeave(db, u.id);
+    if (!r) continue;
+    const b = r.before, a = r.after;
+    const changed = !b
+      || (b.leave_type || '') !== a.leave_type
+      || Math.abs((b.total_days || 0) - a.total_days) > 0.0001
+      || Math.abs((b.monthly_days || 0) - a.monthly_days) > 0.0001
+      || Math.abs((b.used_days || 0) - a.used_days) > 0.0001
+      || Math.abs((b.monthly_used || 0) - a.monthly_used) > 0.0001;
+    if (changed) {
+      changes.push({ user_id: u.id, name: u.name, before: b, after: a });
+    }
+  }
+  return c.json({ success: true, total: usersResult.results?.length || 0, updated: changes.length, changes });
 });
 
 // ───── 휴가 신청 ─────
@@ -477,9 +620,12 @@ leave.post('/requests/:id/cancel', async (c) => {
       // 관리자: 즉시 취소 + 연차 복원
       await db.prepare("UPDATE leave_requests SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
         .bind(requestId).run();
-      // 차감된 연차 복원 (특별휴가 제외)
+      // 차감된 연차 복원 (특별휴가 제외) — 차감 시점과 동일 기준으로 복원
+      // (사용자가 월차 타입이면 모든 휴가가 monthly_used에서 차감되므로, 복원도 동일 컬럼에서)
       if (req.leave_type !== '특별휴가') {
-        if (req.leave_type === '월차') {
+        const al = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(req.user_id).first<{ leave_type: string }>();
+        const userType = al?.leave_type || 'annual';
+        if (userType === 'monthly' || req.leave_type === '월차') {
           await db.prepare("UPDATE annual_leave SET monthly_used = MAX(0, monthly_used - ?), updated_at = datetime('now') WHERE user_id = ?")
             .bind(req.days, req.user_id).run();
         } else {
