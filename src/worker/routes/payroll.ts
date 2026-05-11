@@ -9,23 +9,50 @@ import { calculateMyungdoBonus } from './cases';
 // 매출포상(일반 성과금) 산정에는 합산 X — 별도 항목으로만 표시
 const CONTRACT_AWARD_TIERS = [300_000, 200_000, 100_000];
 const CONTRACT_AWARD_MIN_COUNT = 10;
+function contractCustomerKey(r: any): string {
+  const phone = String(r.client_phone || '').replace(/\D/g, '');
+  const name = String(r.client_name || '').trim().toLowerCase();
+  if (!phone || !name) return `row:${r.id || `${name}:${r.amount}:${r.contract_date}`}`;
+  return `${name}|${phone}`;
+}
+
+function calculateContractCountFromRows(rows: any[]): number {
+  const grouped = new Map<string, number>();
+  rows
+    .filter((r: any) => r.type === '계약' && r.status === 'confirmed' && !r.exclude_from_count)
+    .forEach((r: any) => {
+      const key = contractCustomerKey(r);
+      grouped.set(key, (grouped.get(key) || 0) + (Number(r.amount) || 0));
+    });
+  return [...grouped.values()].reduce((sum, amount) => sum + (amount >= 2_200_000 ? 2 : 1), 0);
+}
+
 async function calcContractAwardForUser(
   db: D1Database, userId: string, periodStart: string, periodEnd: string,
 ): Promise<{ rank: number | null; count: number; award: number; total_amount: number }> {
   const result = await db.prepare(`
-    SELECT u.id as user_id, u.name as user_name,
-      SUM(CASE WHEN sr.amount >= 2200000 THEN 2 ELSE 1 END) as cnt,
-      SUM(sr.amount) as total_amount
-    FROM sales_records sr
-    JOIN users u ON u.id = sr.user_id
-    WHERE sr.type = '계약' AND sr.status = 'confirmed'
-      AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
-      AND (
-        (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
-        OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
-        OR ((sr.payment_type = '' OR sr.payment_type IS NULL) AND sr.contract_date >= ? AND sr.contract_date <= ?)
-      )
-    GROUP BY u.id
+    SELECT user_id, user_name,
+      SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as cnt,
+      SUM(customer_amount) as total_amount
+    FROM (
+      SELECT u.id as user_id, u.name as user_name,
+        CASE
+          WHEN COALESCE(sr.client_name, '') = '' OR COALESCE(sr.client_phone, '') = '' THEN sr.id
+          ELSE LOWER(TRIM(sr.client_name)) || '|' || REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(sr.client_phone, ''), '-', ''), ' ', ''), '(', ''), ')', '')
+        END as customer_key,
+        SUM(sr.amount) as customer_amount
+      FROM sales_records sr
+      JOIN users u ON u.id = sr.user_id
+      WHERE sr.type = '계약' AND sr.status = 'confirmed'
+        AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
+        AND (
+          (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
+          OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
+          OR ((sr.payment_type = '' OR sr.payment_type IS NULL) AND sr.contract_date >= ? AND sr.contract_date <= ?)
+        )
+      GROUP BY u.id, customer_key
+    )
+    GROUP BY user_id, user_name
     HAVING cnt >= ?
     ORDER BY cnt DESC, total_amount DESC
     LIMIT 3
@@ -109,8 +136,8 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
 
   // 매출 조회: 1개월 기준 (카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date)
   const salesQuery = `
-    SELECT id, type, type_detail, client_name, depositor_name, depositor_different,
-      amount, contract_date, deposit_date, status, confirmed_at, memo,
+    SELECT id, type, type_detail, client_name, client_phone, depositor_name, depositor_different,
+      amount, contract_date, deposit_date, status, confirmed_at, memo, exclude_from_count,
       payment_type, card_deposit_date, proxy_cost
     FROM sales_records
     WHERE user_id = ? AND status IN ('confirmed', 'refunded')
@@ -130,20 +157,28 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   if (!isCommission) {
     // 2개월 기준 계약건수 별도 조회 (220만원 이상은 2건, exclude_from_count=1 제외)
     const ccResult = await db.prepare(`
-      SELECT SUM(CASE WHEN amount >= 2200000 THEN 2 ELSE 1 END) as cnt FROM sales_records
-      WHERE user_id = ? AND type = '계약' AND status = 'confirmed'
-        AND (exclude_from_count IS NULL OR exclude_from_count = 0)
-        AND (
-          (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
-          OR (payment_type != '카드' AND payment_type != '' AND deposit_date >= ? AND deposit_date <= ?)
-          OR ((payment_type = '' OR payment_type IS NULL) AND contract_date >= ? AND contract_date <= ?)
-        )
+      SELECT SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as cnt
+      FROM (
+        SELECT
+          CASE
+            WHEN COALESCE(client_name, '') = '' OR COALESCE(client_phone, '') = '' THEN id
+            ELSE LOWER(TRIM(client_name)) || '|' || REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(client_phone, ''), '-', ''), ' ', ''), '(', ''), ')', '')
+          END as customer_key,
+          SUM(amount) as customer_amount
+        FROM sales_records
+        WHERE user_id = ? AND type = '계약' AND status = 'confirmed'
+          AND (exclude_from_count IS NULL OR exclude_from_count = 0)
+          AND (
+            (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
+            OR (payment_type != '카드' AND payment_type != '' AND deposit_date >= ? AND deposit_date <= ?)
+            OR ((payment_type = '' OR payment_type IS NULL) AND contract_date >= ? AND contract_date <= ?)
+          )
+        GROUP BY customer_key
+      )
     `).bind(userId, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd).first<any>();
     contractCount = ccResult?.cnt || 0;
   } else {
-    contractCount = records
-      .filter((r: any) => r.type === '계약' && r.status === 'confirmed' && !r.exclude_from_count)
-      .reduce((sum: number, r: any) => sum + (r.amount >= 2200000 ? 2 : 1), 0);
+    contractCount = calculateContractCountFromRows(records);
   }
   const confirmedRecords = records.filter((r: any) => r.status === 'confirmed');
   const totalSales = confirmedRecords.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
@@ -313,16 +348,41 @@ payroll.get('/branch/summary', requireRole(...ACCOUNTING_ROLES), async (c) => {
 
   // 매출 합산
   const salesResult = await db.prepare(`
-    SELECT sr.branch,
-      COUNT(*) as total_count,
-      SUM(CASE WHEN sr.status = 'confirmed' THEN sr.amount ELSE 0 END) as confirmed_total,
-      SUM(CASE WHEN sr.status = 'refunded' THEN sr.amount ELSE 0 END) as refunded_total,
-      SUM(CASE WHEN sr.status = 'pending' THEN sr.amount ELSE 0 END) as pending_total,
-      SUM(CASE WHEN sr.type = '계약' AND sr.status = 'confirmed' AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0) THEN (CASE WHEN sr.amount >= 2200000 THEN 2 ELSE 1 END) ELSE 0 END) as contract_count
-    FROM sales_records sr
-    WHERE sr.contract_date LIKE ?${branchWhere}
-    GROUP BY sr.branch
-  `).bind(...params).all();
+    SELECT base.branch,
+      base.total_count,
+      base.confirmed_total,
+      base.refunded_total,
+      base.pending_total,
+      COALESCE(cnt.contract_count, 0) as contract_count
+    FROM (
+      SELECT sr.branch,
+        COUNT(*) as total_count,
+        SUM(CASE WHEN sr.status = 'confirmed' THEN sr.amount ELSE 0 END) as confirmed_total,
+        SUM(CASE WHEN sr.status = 'refunded' THEN sr.amount ELSE 0 END) as refunded_total,
+        SUM(CASE WHEN sr.status = 'pending' THEN sr.amount ELSE 0 END) as pending_total
+      FROM sales_records sr
+      WHERE sr.contract_date LIKE ?${branchWhere}
+      GROUP BY sr.branch
+    ) base
+    LEFT JOIN (
+      SELECT branch,
+        SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as contract_count
+      FROM (
+        SELECT sr.branch,
+          CASE
+            WHEN COALESCE(sr.client_name, '') = '' OR COALESCE(sr.client_phone, '') = '' THEN sr.id
+            ELSE LOWER(TRIM(sr.client_name)) || '|' || REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(sr.client_phone, ''), '-', ''), ' ', ''), '(', ''), ')', '')
+          END as customer_key,
+          SUM(sr.amount) as customer_amount
+        FROM sales_records sr
+        WHERE sr.contract_date LIKE ?${branchWhere}
+          AND sr.type = '계약' AND sr.status = 'confirmed'
+          AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
+        GROUP BY sr.branch, customer_key
+      )
+      GROUP BY branch
+    ) cnt ON cnt.branch = base.branch
+  `).bind(...params, ...params).all();
 
   // 인건비 합산 (급여 + 직급수당)
   const laborResult = await db.prepare(`

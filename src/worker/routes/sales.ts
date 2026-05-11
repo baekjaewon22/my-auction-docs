@@ -265,15 +265,25 @@ sales.get('/contract-tracker', async (c) => {
   // 기간 내 계약 집계 — 결제일(deposit_date) 단일 기준
   const salesResult = await db.prepare(`
     SELECT user_id,
-      SUM(CASE WHEN amount >= 2200000 THEN 2 ELSE 1 END) as contract_count,
-      SUM(amount) as total_amount,
-      COUNT(*) as raw_count
-    FROM sales_records
-    WHERE type = '계약'
-      AND status != 'refunded'
-      AND (exclude_from_count IS NULL OR exclude_from_count = 0)
-      AND deposit_date IS NOT NULL AND deposit_date != ''
-      AND deposit_date >= ? AND deposit_date <= ?
+      SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as contract_count,
+      SUM(customer_amount) as total_amount,
+      SUM(raw_count) as raw_count
+    FROM (
+      SELECT user_id,
+        CASE
+          WHEN COALESCE(client_name, '') = '' OR COALESCE(client_phone, '') = '' THEN id
+          ELSE LOWER(TRIM(client_name)) || '|' || REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(client_phone, ''), '-', ''), ' ', ''), '(', ''), ')', '')
+        END as customer_key,
+        SUM(amount) as customer_amount,
+        COUNT(*) as raw_count
+      FROM sales_records
+      WHERE type = '계약'
+        AND status != 'refunded'
+        AND (exclude_from_count IS NULL OR exclude_from_count = 0)
+        AND deposit_date IS NOT NULL AND deposit_date != ''
+        AND deposit_date >= ? AND deposit_date <= ?
+      GROUP BY user_id, customer_key
+    )
     GROUP BY user_id
   `).bind(fromDate, toDate).all<any>();
 
@@ -321,21 +331,30 @@ sales.get('/ranking', async (c) => {
   void sy; void sm;
 
   const result = await db.prepare(`
-    SELECT u.name as user_name,
-      COALESCE(NULLIF(sr.attribution_branch, ''), sr.branch) as eff_branch,
-      u.position_title as position,
-      SUM(CASE WHEN sr.amount >= 2200000 THEN 2 ELSE 1 END) as count,
-      SUM(sr.amount) as total_amount
-    FROM sales_records sr
-    JOIN users u ON u.id = sr.user_id
-    WHERE sr.type = '계약' AND sr.status = 'confirmed'
-      AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
-      AND (
-        (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
-        OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
-        OR ((sr.payment_type = '' OR sr.payment_type IS NULL) AND sr.contract_date >= ? AND sr.contract_date <= ?)
-      )
-    GROUP BY u.name, eff_branch
+    SELECT user_name, eff_branch, position,
+      SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as count,
+      SUM(customer_amount) as total_amount
+    FROM (
+      SELECT u.name as user_name,
+        COALESCE(NULLIF(sr.attribution_branch, ''), sr.branch) as eff_branch,
+        u.position_title as position,
+        CASE
+          WHEN COALESCE(sr.client_name, '') = '' OR COALESCE(sr.client_phone, '') = '' THEN sr.id
+          ELSE LOWER(TRIM(sr.client_name)) || '|' || REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(sr.client_phone, ''), '-', ''), ' ', ''), '(', ''), ')', '')
+        END as customer_key,
+        SUM(sr.amount) as customer_amount
+      FROM sales_records sr
+      JOIN users u ON u.id = sr.user_id
+      WHERE sr.type = '계약' AND sr.status = 'confirmed'
+        AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
+        AND (
+          (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
+          OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
+          OR ((sr.payment_type = '' OR sr.payment_type IS NULL) AND sr.contract_date >= ? AND sr.contract_date <= ?)
+        )
+      GROUP BY sr.user_id, eff_branch, customer_key
+    )
+    GROUP BY user_name, eff_branch, position
     ORDER BY count DESC, total_amount DESC
   `).bind(mStart, mEnd, mStart, mEnd, mStart, mEnd).all<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>();
 

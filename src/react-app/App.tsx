@@ -227,9 +227,9 @@ export default function App() {
           <Route
             path="minutes"
             element={
-              <AdminRoute>
+              <PrivateRoute>
                 <MeetingMinutes />
-              </AdminRoute>
+              </PrivateRoute>
             }
           />
           <Route

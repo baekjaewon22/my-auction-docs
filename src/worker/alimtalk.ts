@@ -257,6 +257,86 @@ export const ALIMTALK_TEMPLATES = {
 ▶ 바로가기
 #{link}`,
   },
+
+  // 사내 커뮤니티: 명도 견적 의뢰 → 명도팀
+  COMMUNITY_EVICTION_QUOTE: {
+    code: 'commquote',
+    variables: ['author_name', 'court', 'case_number', 'title', 'link'],
+    content: `[마이옥션 오피스]
+
+명도팀 담당자님
+
+명도 견적 의뢰가 등록되었습니다.
+
+■ 요청자: #{author_name}
+■ 법원: #{court}
+■ 사건번호: #{case_number}
+■ 제목: #{title}
+
+내용 확인 후 정액제 금액을 답변해주세요.
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 사내 커뮤니티: 법률지원 질문 → 법률지원팀
+  COMMUNITY_LEGAL_SUPPORT: {
+    code: 'commlegal',
+    variables: ['author_name', 'title', 'date', 'link'],
+    content: `[마이옥션 오피스]
+
+법률지원팀 담당자님
+
+법률지원 질문이 등록되었습니다.
+
+■ 질문자: #{author_name}
+■ 제목: #{title}
+■ 등록일: #{date}
+
+내용 검토 후 답변을 작성해주세요.
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 사내 커뮤니티: 명도 견적 답변 완료 → 요청자
+  COMMUNITY_EVICTION_QUOTE_ANSWERED: {
+    code: 'commquoteok',
+    variables: ['receiver_name', 'court', 'case_number', 'responder_name', 'link'],
+    content: `[마이옥션 오피스]
+
+#{receiver_name}님
+
+요청하신 명도 견적 의뢰에 답변이 등록되었습니다.
+
+■ 법원: #{court}
+■ 사건번호: #{case_number}
+■ 답변자: #{responder_name}
+
+정액제 금액 제안 내용을 확인해주세요.
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 사내 커뮤니티: 법률지원 답변 완료 → 질문자
+  COMMUNITY_LEGAL_SUPPORT_ANSWERED: {
+    code: 'commlegalok',
+    variables: ['receiver_name', 'title', 'responder_name', 'link'],
+    content: `[마이옥션 오피스]
+
+#{receiver_name}님
+
+등록하신 법률지원 질문에 답변이 작성되었습니다.
+
+■ 제목: #{title}
+■ 답변자: #{responder_name}
+
+답변 내용을 확인해주세요.
+
+▶ 바로가기
+#{link}`,
+  },
 } as const;
 
 // 앱 도메인 (바로가기 링크용)

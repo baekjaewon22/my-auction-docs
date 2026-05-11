@@ -10,6 +10,19 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 
 const cases = new Hono<AuthEnv>();
 
+async function ensureCaseHiddenTable(db: D1Database): Promise<void> {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS case_hidden (
+      external_id TEXT PRIMARY KEY,
+      case_id TEXT,
+      hidden_by TEXT NOT NULL,
+      hidden_reason TEXT DEFAULT '',
+      hidden_at TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_case_hidden_case_id ON case_hidden(case_id)').run();
+}
+
 // ───── 성과금 등급 (총 조정금액 기준 단계 산정, 구간별 X) ─────
 //   ≤ 200만 → 10만
 //   200만 ~ 500만 → 20만
@@ -45,6 +58,51 @@ function getBimonthlyPeriod(isoDate: string): string {
   // 홀수 월이면 (m, m+1), 짝수 월이면 (m-1, m)
   const groupStart = m % 2 === 1 ? m : m - 1;
   return `${y}-${String(groupStart).padStart(2, '0')}_${String(groupStart + 1).padStart(2, '0')}`;
+}
+
+async function resolveCaseUser(
+  db: D1Database,
+  identity: { username?: string | null; name?: string | null; position?: string | null },
+): Promise<{ user_id: string | null; branch: string | null; department: string | null }> {
+  const username = identity.username?.trim();
+  const name = identity.name?.trim();
+  const position = identity.position?.trim();
+
+  const orderClause = `
+    ORDER BY
+      CASE WHEN id NOT LIKE 'unreg-%' THEN 0 ELSE 1 END,
+      CASE WHEN role != 'resigned' THEN 0 ELSE 1 END,
+      created_at DESC
+  `;
+
+  if (username) {
+    const matched = await db.prepare(`
+      SELECT id, branch, department FROM users WHERE (email = ? OR id = ?) ${orderClause} LIMIT 1
+    `).bind(username, username).first<any>();
+    if (matched) {
+      return { user_id: matched.id, branch: matched.branch || null, department: matched.department || null };
+    }
+  }
+
+  if (name && position) {
+    const byNamePos = await db.prepare(`
+      SELECT id, branch, department FROM users WHERE name = ? AND position_title = ? ${orderClause} LIMIT 1
+    `).bind(name, position).first<any>();
+    if (byNamePos) {
+      return { user_id: byNamePos.id, branch: byNamePos.branch || null, department: byNamePos.department || null };
+    }
+  }
+
+  if (name) {
+    const byName = await db.prepare(`
+      SELECT id, branch, department FROM users WHERE name = ? ${orderClause} LIMIT 1
+    `).bind(name).first<any>();
+    if (byName) {
+      return { user_id: byName.id, branch: byName.branch || null, department: byName.department || null };
+    }
+  }
+
+  return { user_id: null, branch: null, department: null };
 }
 
 // 라벨용: '2026-03_04' → '2026년 3~4월'
@@ -141,6 +199,7 @@ cases.get('/consultants', async (c) => {
 // ───── 외부 ingest: POST /api/cases ─────
 cases.post('/', async (c) => {
   const db = c.env.DB;
+  await ensureCaseHiddenTable(db);
   let body: any;
   try {
     body = await c.req.json();
@@ -296,12 +355,15 @@ const CASES_VIEW_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'acc
 cases.get('/', requireRole(...CASES_VIEW_ROLES), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureCaseHiddenTable(db);
   const search = c.req.query('search') || '';
   const period = c.req.query('period') || '';
   const consultantId = c.req.query('consultant_id') || c.req.query('manager_id') || '';
   const limit = Math.min(500, parseInt(c.req.query('limit') || '200', 10));
 
-  let query = `SELECT * FROM cases WHERE 1=1`;
+  let query = `SELECT * FROM cases WHERE NOT EXISTS (
+    SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id
+  )`;
   const params: any[] = [];
 
   // 권한별 범위 제한 — 컨설턴트(consultant) 기준 (성과금 귀속자)
@@ -346,8 +408,13 @@ cases.get('/', requireRole(...CASES_VIEW_ROLES), async (c) => {
 cases.get('/:id', requireRole(...CASES_VIEW_ROLES), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureCaseHiddenTable(db);
   const id = c.req.param('id');
-  const r = await db.prepare(`SELECT * FROM cases WHERE id = ?`).bind(id).first<any>();
+  const r = await db.prepare(`
+    SELECT * FROM cases
+    WHERE id = ?
+      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
+  `).bind(id).first<any>();
   if (!r) return c.json({ error: '사건을 찾을 수 없습니다.' }, 404);
 
   // 권한 체크 — 컨설턴트 기준
@@ -370,10 +437,120 @@ cases.get('/:id', requireRole(...CASES_VIEW_ROLES), async (c) => {
   return c.json({ case: r });
 });
 
+const CASES_EDIT_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+
+cases.put('/:id', requireRole(...CASES_EDIT_ROLES), async (c) => {
+  const db = c.env.DB;
+  await ensureCaseHiddenTable(db);
+  const id = c.req.param('id');
+
+  const existing = await db.prepare(`
+    SELECT * FROM cases
+    WHERE id = ?
+      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
+  `).bind(id).first<any>();
+  if (!existing) return c.json({ error: '사건을 찾을 수 없습니다.' }, 404);
+
+  let body: {
+    registered_at?: string;
+    consultant_name?: string | null;
+    consultant_position?: string | null;
+    manager_username?: string;
+    manager_name?: string;
+    client_name?: string;
+    fee_type?: 'fixed' | 'actual';
+    fee_amount?: number;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const registeredAt = (body.registered_at ?? existing.registered_at)?.trim();
+  const consultantName = body.consultant_name !== undefined ? (body.consultant_name || '').trim() || null : existing.consultant_name;
+  const consultantPosition = body.consultant_position !== undefined ? (body.consultant_position || '').trim() || null : existing.consultant_position;
+  const managerUsername = (body.manager_username ?? existing.manager_username)?.trim();
+  const managerName = (body.manager_name ?? existing.manager_name)?.trim();
+  const clientName = (body.client_name ?? existing.client_name)?.trim();
+  const feeType = body.fee_type ?? existing.fee_type;
+  const feeAmount = body.fee_amount ?? existing.fee_amount;
+
+  if (!registeredAt || Number.isNaN(new Date(registeredAt).getTime())) {
+    return c.json({ error: 'registered_at must be a valid date string' }, 400);
+  }
+  if (!managerUsername || !managerName) {
+    return c.json({ error: 'manager_username and manager_name are required' }, 400);
+  }
+  if (!clientName) return c.json({ error: 'client_name is required' }, 400);
+  if (!['fixed', 'actual'].includes(feeType)) {
+    return c.json({ error: 'fee_type must be fixed or actual' }, 400);
+  }
+  if (!Number.isInteger(feeAmount) || feeAmount < 0) {
+    return c.json({ error: 'fee_amount must be a non-negative integer' }, 400);
+  }
+
+  const manager = await resolveCaseUser(db, { username: managerUsername, name: managerName });
+  const consultant = await resolveCaseUser(db, { name: consultantName, position: consultantPosition });
+  const bimonthlyPeriod = getBimonthlyPeriod(registeredAt);
+
+  await db.prepare(`
+    UPDATE cases SET
+      registered_at = ?, consultant_name = ?, consultant_position = ?,
+      consultant_user_id = ?, consultant_branch = ?, consultant_department = ?,
+      manager_username = ?, manager_name = ?, manager_user_id = ?,
+      manager_branch = ?, manager_department = ?,
+      client_name = ?, fee_type = ?, fee_amount = ?,
+      bimonthly_period = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(
+    registeredAt, consultantName, consultantPosition,
+    consultant.user_id, consultant.branch, consultant.department,
+    managerUsername, managerName, manager.user_id,
+    manager.branch, manager.department,
+    clientName, feeType, feeAmount,
+    bimonthlyPeriod, id,
+  ).run();
+
+  const updated = await db.prepare('SELECT * FROM cases WHERE id = ?').bind(id).first<any>();
+  return c.json({ success: true, case: updated });
+});
+
+const CASES_DELETE_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+
+// 내부 삭제 처리: 외부 원본은 건드리지 않고 my-docs 목록/성과금에서 제외
+cases.delete('/:id', requireRole(...CASES_DELETE_ROLES), async (c) => {
+  const db = c.env.DB;
+  await ensureCaseHiddenTable(db);
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const reason = c.req.query('reason') || '';
+
+  if (user.role === 'admin' && user.branch !== '의정부') {
+    return c.json({ error: '삭제 권한이 없습니다.' }, 403);
+  }
+
+  const row = await db.prepare('SELECT id, external_id FROM cases WHERE id = ?').bind(id).first<{ id: string; external_id: string }>();
+  if (!row) return c.json({ error: '사건을 찾을 수 없습니다.' }, 404);
+
+  await db.prepare(`
+    INSERT INTO case_hidden (external_id, case_id, hidden_by, hidden_reason, hidden_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(external_id) DO UPDATE SET
+      case_id = excluded.case_id,
+      hidden_by = excluded.hidden_by,
+      hidden_reason = excluded.hidden_reason,
+      hidden_at = datetime('now')
+  `).bind(row.external_id, row.id, user.sub, reason).run();
+
+  return c.json({ success: true });
+});
+
 // ───── 명도성과금 요약: GET /api/cases/bonus/summary?period=2026-03_04 ─────
 // 2개월 구간 + 사용자별 합계 + 등급 계산 (급여정산 통합용)
 cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
+  await ensureCaseHiddenTable(db);
   const period = c.req.query('period') || '';
   if (!period) return c.json({ error: 'period is required (e.g. 2026-03_04)' }, 400);
 
@@ -392,6 +569,7 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
       ), 0) as total_fee_adjusted
     FROM cases
     WHERE bimonthly_period = ? AND consultant_name IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
     GROUP BY consultant_user_id, consultant_name
     ORDER BY total_fee_adjusted DESC
   `).bind(period).all<any>();
@@ -413,6 +591,7 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
 cases.get('/bonus/me', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureCaseHiddenTable(db);
   const period = c.req.query('period') || '';
   if (!period) return c.json({ error: 'period is required' }, 400);
 
@@ -428,6 +607,7 @@ cases.get('/bonus/me', async (c) => {
       COUNT(*) as cnt
     FROM cases
     WHERE bimonthly_period = ? AND consultant_user_id = ?
+      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
   `).bind(period, user.sub).first<any>();
 
   const adjusted = result?.total_fee_adjusted || 0;
@@ -460,6 +640,7 @@ export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
   details: Array<{ user_id: string; user_name: string; bonus: number; status: 'inserted' | 'skipped' | 'ineligible'; reason?: string }>;
 }> {
   const db = env.DB as D1Database;
+  await ensureCaseHiddenTable(db);
 
   // period 파싱: '2026-03_04' → year=2026, m1=3, m2=4
   const m = period.match(/^(\d{4})-(\d{2})_(\d{2})$/);
@@ -488,6 +669,7 @@ export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
     FROM cases
     WHERE bimonthly_period = ?
       AND consultant_user_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
     GROUP BY consultant_user_id
   `).bind(period).all<any>();
 

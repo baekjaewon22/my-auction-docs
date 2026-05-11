@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
-import { Briefcase, Search, X, Calendar, User, Building2, Coins, Award, FileText, Hash } from 'lucide-react';
+import { Briefcase, Search, X, Calendar, User, Building2, Coins, Award, FileText, Hash, Trash2, Pencil, Save } from 'lucide-react';
 
 interface CaseRow {
   id: string;
@@ -95,12 +95,16 @@ export default function Cases() {
 
   const isAdminPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || user?.role === 'accountant_asst' || (user?.role === 'admin' && user?.branch === '의정부');
 
-  const load = () => {
+  const load = async () => {
     setLoading(true);
-    api.cases.list({ search, period: tab === 'list' ? '' : period, limit: 500 })
-      .then((r) => setRows(r.cases || []))
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
+    try {
+      const r = await api.cases.list({ search, period: tab === 'list' ? '' : period, limit: 500 });
+      setRows(r.cases || []);
+    } catch {
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const loadBonus = () => {
@@ -109,6 +113,29 @@ export default function Cases() {
       .then((r) => setBonus(r.summary || []))
       .catch(() => setBonus([]))
       .finally(() => setBonusLoading(false));
+  };
+
+  const handleDeleteCase = async (row: CaseRow) => {
+    const reason = prompt(
+      `"${row.client_name}" 사건을 my-docs 목록에서 삭제 처리합니다.\n\n외부 원본(lawitgo)은 삭제하지 않고, my-docs 목록과 명도성과금 산정에서 제외됩니다.\n\n삭제 사유를 입력하세요.`,
+      ''
+    );
+    if (reason === null) return;
+    if (!confirm('정말 삭제 처리하시겠습니까?')) return;
+    try {
+      await api.cases.delete(row.id, reason.trim());
+      if (openCase?.id === row.id) setOpenCase(null);
+      await load();
+      if (tab === 'bonus') await loadBonus();
+    } catch (err: any) {
+      alert(err.message || '삭제 처리 실패');
+    }
+  };
+
+  const handleSaveCase = async (updated: CaseRow) => {
+    setOpenCase(updated);
+    setRows((prev) => prev.map((r) => r.id === updated.id ? updated : r));
+    if (tab === 'bonus') await loadBonus();
   };
 
   useEffect(() => { load(); }, [search, period]);
@@ -196,6 +223,7 @@ export default function Cases() {
                     <th>유형</th>
                     <th style={{ textAlign: 'right' }}>수임료</th>
                     <th>외부 ID</th>
+                    {isAdminPlus && <th style={{ width: 54, textAlign: 'center' }}>삭제</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -221,6 +249,18 @@ export default function Cases() {
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtKRW(r.fee_amount)}</td>
                       <td style={{ fontSize: 11, color: '#9aa0a6' }}>{r.external_id}</td>
+                      {isAdminPlus && (
+                        <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                          <button
+                            className="btn btn-sm btn-danger"
+                            onClick={() => handleDeleteCase(r)}
+                            title="my-docs에서 삭제 처리"
+                            style={{ padding: '4px 7px' }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -335,7 +375,7 @@ export default function Cases() {
       )}
 
       {/* 상세 모달 */}
-      {openCase && <CaseDetailModal c={openCase} onClose={() => setOpenCase(null)} />}
+      {openCase && <CaseDetailModal c={openCase} canEdit={isAdminPlus} onClose={() => setOpenCase(null)} onSave={handleSaveCase} />}
     </div>
   );
 }
@@ -354,17 +394,107 @@ function SummaryCard({ label, value, color }: { label: string; value: string; co
   );
 }
 
-function CaseDetailModal({ c, onClose }: { c: CaseRow; onClose: () => void }) {
+function CaseDetailModal({ c, canEdit, onClose, onSave }: { c: CaseRow; canEdit: boolean; onClose: () => void; onSave: (updated: CaseRow) => void | Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    registered_at: c.registered_at || '',
+    consultant_name: c.consultant_name || '',
+    consultant_position: c.consultant_position || '',
+    manager_username: c.manager_username || '',
+    manager_name: c.manager_name || '',
+    client_name: c.client_name || '',
+    fee_type: c.fee_type || 'fixed',
+    fee_amount: String(c.fee_amount || 0),
+  });
+
+  useEffect(() => {
+    setForm({
+      registered_at: c.registered_at || '',
+      consultant_name: c.consultant_name || '',
+      consultant_position: c.consultant_position || '',
+      manager_username: c.manager_username || '',
+      manager_name: c.manager_name || '',
+      client_name: c.client_name || '',
+      fee_type: c.fee_type || 'fixed',
+      fee_amount: String(c.fee_amount || 0),
+    });
+  }, [c]);
+
+  const setField = (key: keyof typeof form, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
+
+  const handleSave = async () => {
+    const feeAmount = Number(String(form.fee_amount).replace(/,/g, ''));
+    if (!form.registered_at.trim()) { alert('등록일을 입력해주세요.'); return; }
+    if (!form.manager_username.trim() || !form.manager_name.trim()) { alert('담당자 정보를 입력해주세요.'); return; }
+    if (!form.client_name.trim()) { alert('위임인을 입력해주세요.'); return; }
+    if (!Number.isInteger(feeAmount) || feeAmount < 0) { alert('수임료는 0 이상의 정수로 입력해주세요.'); return; }
+
+    setSaving(true);
+    try {
+      const res = await api.cases.update(c.id, {
+        registered_at: form.registered_at.trim(),
+        consultant_name: form.consultant_name.trim() || null,
+        consultant_position: form.consultant_position.trim() || null,
+        manager_username: form.manager_username.trim(),
+        manager_name: form.manager_name.trim(),
+        client_name: form.client_name.trim(),
+        fee_type: form.fee_type as 'fixed' | 'actual',
+        fee_amount: feeAmount,
+      });
+      await onSave(res.case);
+      setEditing(false);
+    } catch (err: any) {
+      alert(err.message || '수정 저장에 실패했습니다.');
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 12, padding: 0, maxWidth: 600, width: '92%', maxHeight: '90vh', overflow: 'auto', position: 'relative' }}>
         <div style={{ position: 'sticky', top: 0, background: '#fff', borderBottom: '1px solid #e0e0e0', padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ margin: 0, fontSize: 16 }}><Briefcase size={18} style={{ verticalAlign: 'middle', marginRight: 6 }} />사건 상세</h3>
-          <button onClick={onClose} style={{ border: 'none', background: '#f1f3f4', borderRadius: 20, width: 32, height: 32, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <X size={16} />
-          </button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {canEdit && (
+              editing ? (
+                <button onClick={handleSave} disabled={saving} style={{ border: 'none', background: '#1a73e8', color: '#fff', borderRadius: 20, height: 32, padding: '0 12px', cursor: saving ? 'default' : 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700 }}>
+                  <Save size={14} /> {saving ? '저장중' : '저장'}
+                </button>
+              ) : (
+                <button onClick={() => setEditing(true)} style={{ border: 'none', background: '#e8f0fe', color: '#1a73e8', borderRadius: 20, height: 32, padding: '0 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700 }}>
+                  <Pencil size={14} /> 수정
+                </button>
+              )
+            )}
+            <button onClick={onClose} style={{ border: 'none', background: '#f1f3f4', borderRadius: 20, width: 32, height: 32, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <X size={16} />
+            </button>
+          </div>
         </div>
         <div style={{ padding: 20, fontSize: 13 }}>
+          {editing ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <EditRow label="외부 ID"><input value={c.external_id} disabled style={editInputStyle} /></EditRow>
+              <EditRow label="등록일"><input value={form.registered_at} onChange={(e) => setField('registered_at', e.target.value)} style={editInputStyle} /></EditRow>
+              <EditRow label="담당자 ID"><input value={form.manager_username} onChange={(e) => setField('manager_username', e.target.value)} style={editInputStyle} /></EditRow>
+              <EditRow label="담당자명"><input value={form.manager_name} onChange={(e) => setField('manager_name', e.target.value)} style={editInputStyle} /></EditRow>
+              <EditRow label="컨설턴트"><input value={form.consultant_name} onChange={(e) => setField('consultant_name', e.target.value)} style={editInputStyle} /></EditRow>
+              <EditRow label="직급"><input value={form.consultant_position} onChange={(e) => setField('consultant_position', e.target.value)} style={editInputStyle} /></EditRow>
+              <EditRow label="위임인"><input value={form.client_name} onChange={(e) => setField('client_name', e.target.value)} style={editInputStyle} /></EditRow>
+              <EditRow label="수수료 유형">
+                <select value={form.fee_type} onChange={(e) => setField('fee_type', e.target.value)} style={editInputStyle}>
+                  <option value="fixed">정액제</option>
+                  <option value="actual">실비제</option>
+                </select>
+              </EditRow>
+              <EditRow label="수임료"><input value={form.fee_amount} onChange={(e) => setField('fee_amount', e.target.value)} inputMode="numeric" style={editInputStyle} /></EditRow>
+              <div style={{ marginTop: 4, padding: 10, background: '#fff8e1', borderRadius: 6, fontSize: 11, color: '#5f6368' }}>
+                저장하면 담당자/컨설턴트 매칭, 지사/부서, 2개월 성과금 구간이 다시 계산됩니다. 외부 원본에서 같은 ID로 재전송되면 다시 덮어써질 수 있습니다.
+              </div>
+            </div>
+          ) : (
+            <>
           <DetailRow icon={<Hash size={14} />} label="외부 ID" value={c.external_id} mono />
           <DetailRow icon={<FileText size={14} />} label="자체 ID" value={c.id} mono />
           <DetailRow icon={<Calendar size={14} />} label="등록일" value={c.registered_at} />
@@ -376,6 +506,8 @@ function CaseDetailModal({ c, onClose }: { c: CaseRow; onClose: () => void }) {
           <DetailRow icon={<Coins size={14} />} label="수임료" value={`${fmtKRW(c.fee_amount)} (${c.fee_type === 'fixed' ? '정액' : '실비'})`} highlight />
           <DetailRow icon={<Calendar size={14} />} label="등록 시각" value={c.created_at} />
           <DetailRow icon={<Calendar size={14} />} label="최종 수정" value={c.updated_at} />
+            </>
+          )}
           {c.raw_payload && (
             <details style={{ marginTop: 12 }}>
               <summary style={{ cursor: 'pointer', fontSize: 12, color: '#5f6368' }}>원본 페이로드 (감사용)</summary>
@@ -385,6 +517,24 @@ function CaseDetailModal({ c, onClose }: { c: CaseRow; onClose: () => void }) {
         </div>
       </div>
     </div>
+  );
+}
+
+const editInputStyle: React.CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: '7px 9px',
+  border: '1px solid #dadce0',
+  borderRadius: 6,
+  fontSize: 13,
+};
+
+function EditRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label style={{ display: 'grid', gridTemplateColumns: '110px 1fr', alignItems: 'center', gap: 8, fontSize: 12, color: '#5f6368' }}>
+      <span>{label}</span>
+      <span>{children}</span>
+    </label>
   );
 }
 

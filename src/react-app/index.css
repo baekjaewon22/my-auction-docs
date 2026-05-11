@@ -4845,6 +4845,21 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   white-space: pre-wrap;
   word-break: break-word;
 }
+.admin-note-editor-label {
+  margin-top: 14px;
+  margin-bottom: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #3c4043;
+}
+.legal-question-editor {
+  min-height: 220px;
+  padding: 16px;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  background: #fbfcfe;
+  font-size: 0.92rem;
+}
 
 /* 댓글 */
 .admin-note-comments {
@@ -4881,12 +4896,70 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   line-height: 1.6;
   white-space: pre-wrap;
 }
+.legal-answer-section {
+  margin-top: 18px;
+}
+.legal-answer-card {
+  margin-bottom: 14px;
+  padding: 16px;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  background: #fff;
+}
+.legal-answer-body {
+  min-height: 120px;
+  font-size: 0.9rem;
+  line-height: 1.8;
+}
 .admin-note-comment-form {
   display: flex;
   gap: 8px;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid #f1f3f4;
+}
+.admin-note-comment-form.community-comment-form,
+.admin-note-comment-form.eviction-quote-comment-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+.admin-note-comment-form.community-comment-form label,
+.admin-note-comment-form.eviction-quote-comment-form label {
+  grid-column: 1 / -1;
+}
+.admin-note-comment-form.community-comment-form textarea,
+.admin-note-comment-form.eviction-quote-comment-form textarea {
+  grid-column: 1 / -1;
+  width: 100%;
+  line-height: 1.6;
+}
+.admin-note-comment-form.community-comment-form .btn,
+.admin-note-comment-form.eviction-quote-comment-form .btn {
+  width: fit-content;
+  justify-self: end;
+}
+.admin-note-comment-form.eviction-quote-comment-form textarea {
+  min-height: 150px;
+}
+.admin-note-comment-form.community-comment-form textarea {
+  min-height: 112px;
+}
+.legal-answer-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: start;
+  gap: 10px;
+}
+.legal-answer-form textarea {
+  width: 100%;
+  font-size: 0.92rem;
+  line-height: 1.7;
+}
+.legal-answer-form .btn {
+  width: fit-content;
+  justify-self: end;
 }
 .admin-note-comment-form input {
   flex: 1;

@@ -12,10 +12,14 @@ interface MinuteItem {
   file_name: string;
   file_size: number;
   created_at: string;
+  uploaded_by: string;
   uploader_name: string;
   source_type?: string;
   converted_content?: string;
 }
+
+type MemberOption = { id: string; name: string; role: string; branch: string; department: string };
+type ShareInfo = { shared_with: string; user_name: string; read_at: string | null };
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return bytes + ' B';
@@ -48,9 +52,9 @@ export default function MeetingMinutes() {
   // 공유
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [shareTargets, setShareTargets] = useState<string[]>([]);
-  const [members, setMembers] = useState<{ id: string; name: string; role: string; department: string }[]>([]);
+  const [members, setMembers] = useState<MemberOption[]>([]);
   // 공유자 정보
-  const [sharesMap, setSharesMap] = useState<Record<string, { user_name: string; read_at: string | null }[]>>({});
+  const [sharesMap, setSharesMap] = useState<Record<string, ShareInfo[]>>({});
   // 상세 보기 (변환된 회의록)
   const [detailContent, setDetailContent] = useState<string | null>(null);
   const [detailTitle, setDetailTitle] = useState('');
@@ -77,7 +81,7 @@ export default function MeetingMinutes() {
     setLoading(false);
   };
 
-  useEffect(() => { load(); api.journal.members().then(r => setMembers(r.members)).catch(() => {}); }, []);
+  useEffect(() => { load(); api.minutes.shareTargets().then(r => setMembers(r.members)).catch(() => {}); }, []);
 
   // blob URL 해제
   useEffect(() => {
@@ -129,8 +133,7 @@ export default function MeetingMinutes() {
 
   // 공유
   const handleShare = async (minutesId: string) => {
-    if (shareTargets.length === 0) { alert('공유 대상을 선택하세요.'); return; }
-    try { await api.minutes.share(minutesId, shareTargets); setSharingId(null); setShareTargets([]); alert('공유되었습니다.'); load(); }
+    try { await api.minutes.share(minutesId, shareTargets); setSharingId(null); setShareTargets([]); alert('공유 설정이 저장되었습니다.'); load(); }
     catch (err: any) { alert(err.message); }
   };
 
@@ -230,6 +233,48 @@ export default function MeetingMinutes() {
   const filtered = items.filter(i =>
     i.title.includes(search) || i.file_name.includes(search) || (i.uploader_name || '').includes(search)
   );
+  const canManageMinute = (item: MinuteItem) => user?.role === 'master' || item.uploaded_by === user?.id;
+  const activeSharingMinute = sharingId ? items.find(item => item.id === sharingId) : null;
+  const shareableMembers = members.filter(m => m.id !== user?.id && m.id !== activeSharingMinute?.uploaded_by);
+  const shareOptions = shareableMembers.map(m => ({ value: m.id, label: `${m.name} (${m.branch || '-'} · ${m.department || '-'})` }));
+  const selectedShareOptions = shareableMembers
+    .filter(m => shareTargets.includes(m.id))
+    .map(m => ({ value: m.id, label: `${m.name} (${m.branch || '-'} · ${m.department || '-'})` }));
+  const branchGroups = [...new Set(shareableMembers.map(m => m.branch).filter(Boolean))];
+  const departmentGroups = [...new Set(shareableMembers.map(m => `${m.branch || '-'}|||${m.department || '-'}`))];
+  const addShareTargets = (ids: string[]) => setShareTargets(prev => [...new Set([...prev, ...ids])]);
+  const openShareModal = (item: MinuteItem) => {
+    setSharingId(item.id);
+    setShareTargets((sharesMap[item.id] || []).map(s => s.shared_with));
+  };
+  const shareQuickTools = (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+      <button type="button" className="btn btn-sm" onClick={() => setShareTargets(shareableMembers.map(m => m.id))}>전체 선택</button>
+      <button type="button" className="btn btn-sm" onClick={() => setShareTargets([])}>선택 해제</button>
+      <select className="form-input" defaultValue="" onChange={(e) => {
+        const branch = e.target.value;
+        if (branch) addShareTargets(shareableMembers.filter(m => m.branch === branch).map(m => m.id));
+        e.target.value = '';
+      }} style={{ width: 150, height: 32, padding: '4px 8px', fontSize: '0.78rem' }}>
+        <option value="">지사별 추가</option>
+        {branchGroups.map(branch => <option key={branch} value={branch}>{branch}</option>)}
+      </select>
+      <select className="form-input" defaultValue="" onChange={(e) => {
+        const value = e.target.value;
+        if (value) {
+          const [branch, department] = value.split('|||');
+          addShareTargets(shareableMembers.filter(m => (m.branch || '-') === branch && (m.department || '-') === department).map(m => m.id));
+        }
+        e.target.value = '';
+      }} style={{ width: 190, height: 32, padding: '4px 8px', fontSize: '0.78rem' }}>
+        <option value="">팀별 추가</option>
+        {departmentGroups.map(group => {
+          const [branch, department] = group.split('|||');
+          return <option key={group} value={group}>{branch} · {department}</option>;
+        })}
+      </select>
+    </div>
+  );
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -327,10 +372,11 @@ export default function MeetingMinutes() {
           </div>
           <div className="form-group" style={{ marginBottom: 12 }}>
             <label>공유 대상 <span style={{ fontSize: '0.72rem', color: '#9aa0a6' }}>선택사항</span></label>
-            <Select isMulti options={members.map(m => ({ value: m.id, label: `${m.name} (${m.department || ''})` }))}
-              value={members.filter(m => shareTargets.includes(m.id)).map(m => ({ value: m.id, label: `${m.name} (${m.department || ''})` }))}
+            <Select isMulti options={shareOptions}
+              value={selectedShareOptions}
               onChange={(opts: any) => setShareTargets((opts || []).map((o: any) => o.value))}
               placeholder="공유할 인원 선택..." />
+            {shareQuickTools}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-primary" onClick={handleTxtConvert} disabled={txtConverting}>
@@ -412,13 +458,17 @@ export default function MeetingMinutes() {
                     <Download size={14} />
                   </button>
                 )}
-                <button className="btn btn-sm" onClick={() => { setSharingId(item.id); setShareTargets([]); }} title="공유">
-                  <Share2 size={14} />
-                </button>
-                <button className="btn btn-sm" onClick={() => handleMoveToNote(item)} title="사내 커뮤니티로 이동" style={{ color: '#f9a825' }}>
-                  <StickyNote size={14} />
-                </button>
-                {user && ['master', 'ceo', 'cc_ref'].includes(user.role) && (
+                {canManageMinute(item) && (
+                  <button className="btn btn-sm" onClick={() => openShareModal(item)} title="공유">
+                    <Share2 size={14} />
+                  </button>
+                )}
+                {canManageMinute(item) && (
+                  <button className="btn btn-sm" onClick={() => handleMoveToNote(item)} title="사내 커뮤니티로 이동" style={{ color: '#f9a825' }}>
+                    <StickyNote size={14} />
+                  </button>
+                )}
+                {canManageMinute(item) && (
                   <button className="btn btn-sm btn-danger" onClick={() => handleDelete(item.id, item.title)} title="삭제">
                     <Trash2 size={14} />
                   </button>
@@ -440,14 +490,18 @@ export default function MeetingMinutes() {
               <div className="form-group" style={{ marginBottom: 16 }}>
                 <label className="form-label">공유 대상 선택</label>
                 <Select isMulti
-                  options={members.map(m => ({ value: m.id, label: `${m.name} (${m.department || ''})` }))}
-                  value={members.filter(m => shareTargets.includes(m.id)).map(m => ({ value: m.id, label: `${m.name} (${m.department || ''})` }))}
+                  options={shareOptions}
+                  value={selectedShareOptions}
                   onChange={(opts: any) => setShareTargets((opts || []).map((o: any) => o.value))}
                   placeholder="인원 검색..." isSearchable />
+                {shareQuickTools}
+                <div style={{ marginTop: 8, fontSize: '0.72rem', color: '#d93025', lineHeight: 1.5 }}>
+                  선택 해제 후 저장하면 해당 인원의 열람 권한이 즉시 회수됩니다.
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => handleShare(sharingId)}>
-                  <Share2 size={14} /> 공유하기 ({shareTargets.length}명)
+                  <Share2 size={14} /> 공유 저장 ({shareTargets.length}명)
                 </button>
                 <button className="btn" onClick={() => setSharingId(null)}>취소</button>
               </div>

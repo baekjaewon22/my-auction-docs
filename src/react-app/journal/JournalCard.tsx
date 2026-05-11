@@ -42,6 +42,17 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     try { return JSON.parse(data); } catch { return {}; }
   };
 
+  const parseMoney = (value: string | number | null | undefined) => {
+    return Number(String(value || '').replace(/[^0-9]/g, '')) || 0;
+  };
+
+  const formatMoney = (amount: number) => amount.toLocaleString('ko-KR');
+
+  const calculateWinningFee = (winningPrice: number) => {
+    if (winningPrice <= 0) return 0;
+    return Math.max(Math.round(winningPrice * 0.01), 2_200_000);
+  };
+
   const hasFieldCheck = entries.some((e) => {
     const d = parseData(e.data);
     return d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit;
@@ -85,27 +96,31 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     const d = parseData(entry.data);
     const newWon = !d.bidWon;
     const updated = { ...d, bidWon: newWon };
-    // 낙찰 시 실제입찰가를 낙찰가로 자동 적용
-    if (newWon) updated.winPrice = d.bidPrice || '';
+    // 낙찰 시 낙찰가 미입력 상태라면 실제입찰가를 기본 낙찰가로 자동 적용
+    if (newWon && !updated.winPrice) updated.winPrice = d.bidPrice || '';
     try {
       await api.journal.update(entry.id, { data: updated });
       // 수수료 자동 생성/삭제
       if (newWon) {
+        const winningPrice = parseMoney(updated.winPrice);
+        const winningFee = calculateWinningFee(winningPrice);
         await api.commissions.create({
           journal_entry_id: entry.id,
           user_id: entry.user_id,
           user_name: userName,
           client_name: d.bidder || d.client || '',
           case_no: d.caseNo || '',
-          win_price: updated.winPrice || '',
+          win_price: winningFee ? formatMoney(winningFee) : '',
         });
         // 매출확인 리스트에도 자동 추가
         try {
-          const winAmount = Number((updated.winPrice || '').replace(/[^0-9]/g, '')) || 0;
           await api.sales.create({
             type: '낙찰',
+            type_detail: winningPrice
+              ? `낙찰수수료 (낙찰가 ${formatMoney(winningPrice)}원 기준 1%, 최저 220만원)`
+              : '낙찰수수료',
             client_name: d.bidder || d.client || '',
-            amount: winAmount,
+            amount: winningFee,
             contract_date: entry.target_date,
             journal_entry_id: entry.id,
           });

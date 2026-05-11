@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { AuthEnv, Role } from '../types';
-import { authMiddleware, requireRole, verifyToken } from '../middleware/auth';
+import { authMiddleware, verifyToken } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 
 // txt → 회의록 기본 포맷팅 (API 키 없을 때)
@@ -77,10 +77,10 @@ minutes.use('*', async (c, next) => {
 
     try {
       const payload = await verifyToken(token);
-      // DB에서 최신 역할 확인
+      // DB에서 최신 역할 확인. 열람 권한은 각 회의록 조회 단계에서 다시 검사한다.
       const db = c.env.DB;
       const user = await db.prepare('SELECT role FROM users WHERE id = ?').bind(payload.sub).first<{ role: Role }>();
-      if (!user || !['master', 'ceo', 'cc_ref', 'admin', 'director'].includes(user.role)) {
+      if (!user) {
         return c.json({ error: '권한이 없습니다.' }, 403);
       }
       payload.role = user.role;
@@ -95,22 +95,15 @@ minutes.use('*', async (c, next) => {
   return authMiddleware(c, next);
 });
 
-// 다운로드/공유 외 엔드포인트에 역할 제한
-minutes.use('*', async (c, next) => {
-  if (c.req.path.endsWith('/download')) return next();
-  if (c.req.path.includes('/shared')) return next(); // 공유 회의록은 모든 인증 사용자 접근
-  return requireRole('master', 'ceo', 'cc_ref', 'admin')(c, next);
-});
-
 // GET /api/minutes - 목록 조회
-// master는 전체, 그 외(ceo/cc_ref/admin)는 업로더 본인 또는 공유받은 회의록만
+// master는 전체, 그 외는 업로더 본인 또는 공유받은 회의록만
 minutes.get('/', async (c) => {
   const db = c.env.DB;
   const user = c.get('user');
 
   if (user.role === 'master') {
     const rows = await db.prepare(
-      `SELECT m.id, m.title, m.description, m.file_name, m.file_size, m.created_at, u.name as uploader_name
+      `SELECT m.id, m.title, m.description, m.file_name, m.file_size, m.created_at, m.uploaded_by, u.name as uploader_name
        FROM meeting_minutes m
        LEFT JOIN users u ON m.uploaded_by = u.id
        ORDER BY m.created_at DESC`
@@ -120,7 +113,7 @@ minutes.get('/', async (c) => {
 
   // 업로더 본인 또는 공유받은 건만
   const rows = await db.prepare(
-    `SELECT DISTINCT m.id, m.title, m.description, m.file_name, m.file_size, m.created_at, u.name as uploader_name
+    `SELECT DISTINCT m.id, m.title, m.description, m.file_name, m.file_size, m.created_at, m.uploaded_by, u.name as uploader_name
      FROM meeting_minutes m
      LEFT JOIN users u ON m.uploaded_by = u.id
      WHERE m.uploaded_by = ?
@@ -201,7 +194,15 @@ minutes.post('/', async (c) => {
 // DELETE /api/minutes/:id
 minutes.delete('/:id', async (c) => {
   const db = c.env.DB;
+  const user = c.get('user');
   const id = c.req.param('id');
+
+  const minute = await db.prepare('SELECT uploaded_by FROM meeting_minutes WHERE id = ?').bind(id).first<{ uploaded_by: string }>();
+  if (!minute) return c.json({ error: '회의록을 찾을 수 없습니다.' }, 404);
+  if (user.role !== 'master' && minute.uploaded_by !== user.sub) {
+    return c.json({ error: '삭제 권한이 없습니다.' }, 403);
+  }
+
   await db.prepare('DELETE FROM minutes_shares WHERE minutes_id = ?').bind(id).run();
   await db.prepare('DELETE FROM meeting_minutes WHERE id = ?').bind(id).run();
   return c.json({ success: true });
@@ -309,6 +310,20 @@ ${raw_text}
   return c.json({ success: true, id, converted });
 });
 
+// GET /api/minutes/share-targets — 회의록 공유 대상 전체 목록
+minutes.get('/share-targets', async (c) => {
+  const rows = await c.env.DB.prepare(`
+    SELECT id, name, role, branch, department
+    FROM users
+    WHERE approved = 1 AND role != 'master'
+    ORDER BY branch, department,
+      CASE role WHEN 'ceo' THEN 1 WHEN 'cc_ref' THEN 2 WHEN 'admin' THEN 3
+                WHEN 'director' THEN 4 WHEN 'manager' THEN 5 WHEN 'member' THEN 6 ELSE 7 END,
+      name
+  `).all();
+  return c.json({ members: rows.results || [] });
+});
+
 // [7-2] GET /api/minutes/:id — 상세 조회 (변환된 내용 포함)
 minutes.get('/:id', async (c) => {
   const db = c.env.DB;
@@ -327,26 +342,43 @@ minutes.get('/:id', async (c) => {
     if (!share) return c.json({ error: '열람 권한이 없습니다.' }, 403);
   }
 
-  const shares = await db.prepare(
-    'SELECT ms.*, u.name as user_name FROM minutes_shares ms LEFT JOIN users u ON ms.shared_with = u.id WHERE ms.minutes_id = ?'
-  ).bind(id).all();
+  const shares = (user.role === 'master' || row.uploaded_by === user.sub)
+    ? await db.prepare(
+      'SELECT ms.*, u.name as user_name FROM minutes_shares ms LEFT JOIN users u ON ms.shared_with = u.id WHERE ms.minutes_id = ?'
+    ).bind(id).all()
+    : { results: [] };
 
   return c.json({ minute: row, shares: shares.results });
 });
 
-// [7-3] POST /api/minutes/:id/share — 공유 대상 추가
-minutes.post('/:id/share', async (c) => {
+// [7-3] PUT /api/minutes/:id/share — 공유 대상 교체 저장
+minutes.put('/:id/share', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const id = c.req.param('id');
   const { user_ids } = await c.req.json<{ user_ids: string[] }>();
 
-  const minute = await db.prepare('SELECT title, created_at FROM meeting_minutes WHERE id = ?').bind(id).first<{ title: string; created_at: string }>();
-  const newSharedPhones: string[] = [];
+  const minute = await db.prepare('SELECT title, created_at, uploaded_by FROM meeting_minutes WHERE id = ?').bind(id).first<{ title: string; created_at: string; uploaded_by: string }>();
+  if (!minute) return c.json({ error: '회의록을 찾을 수 없습니다.' }, 404);
+  if (user.role !== 'master' && minute.uploaded_by !== user.sub) {
+    return c.json({ error: '공유 권한이 없습니다.' }, 403);
+  }
 
-  for (const uid of user_ids) {
-    const existing = await db.prepare('SELECT id FROM minutes_shares WHERE minutes_id = ? AND shared_with = ?').bind(id, uid).first();
-    if (existing) continue;
+  const nextUserIds = [...new Set((user_ids || []).filter(uid => uid && uid !== minute.uploaded_by))];
+  const existingRows = await db.prepare(
+    'SELECT shared_with FROM minutes_shares WHERE minutes_id = ?'
+  ).bind(id).all<{ shared_with: string }>();
+  const existingUserIds = (existingRows.results || []).map(r => r.shared_with);
+  const toRemove = existingUserIds.filter(uid => !nextUserIds.includes(uid));
+  const toAdd = nextUserIds.filter(uid => !existingUserIds.includes(uid));
+
+  for (const uid of toRemove) {
+    await db.prepare('DELETE FROM minutes_shares WHERE minutes_id = ? AND shared_with = ?')
+      .bind(id, uid).run();
+  }
+
+  const newSharedPhones: string[] = [];
+  for (const uid of toAdd) {
     const shareId = crypto.randomUUID();
     await db.prepare('INSERT INTO minutes_shares (id, minutes_id, shared_with, shared_by) VALUES (?, ?, ?, ?)')
       .bind(shareId, id, uid, user.sub).run();
@@ -356,6 +388,53 @@ minutes.post('/:id/share', async (c) => {
 
   // 알림톡: 회의록 공유 → 공유 대상에게 MINUTES_SHARED
   if (newSharedPhones.length > 0 && minute) {
+    const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+      c.env as unknown as Record<string, unknown>, 'MINUTES_SHARED',
+      { author_name: user.name, title: minute.title, date: today, link: `${APP_URL}/minutes` },
+      newSharedPhones,
+    ).catch(() => {}));
+  }
+
+  return c.json({ success: true });
+});
+
+// 하위 호환: 기존 POST 호출도 교체 저장으로 처리
+minutes.post('/:id/share', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const id = c.req.param('id');
+  const { user_ids } = await c.req.json<{ user_ids: string[] }>();
+
+  const minute = await db.prepare('SELECT title, created_at, uploaded_by FROM meeting_minutes WHERE id = ?').bind(id).first<{ title: string; created_at: string; uploaded_by: string }>();
+  if (!minute) return c.json({ error: '회의록을 찾을 수 없습니다.' }, 404);
+  if (user.role !== 'master' && minute.uploaded_by !== user.sub) {
+    return c.json({ error: '공유 권한이 없습니다.' }, 403);
+  }
+
+  const nextUserIds = [...new Set((user_ids || []).filter(uid => uid && uid !== minute.uploaded_by))];
+  const existingRows = await db.prepare(
+    'SELECT shared_with FROM minutes_shares WHERE minutes_id = ?'
+  ).bind(id).all<{ shared_with: string }>();
+  const existingUserIds = (existingRows.results || []).map(r => r.shared_with);
+  const toRemove = existingUserIds.filter(uid => !nextUserIds.includes(uid));
+  const toAdd = nextUserIds.filter(uid => !existingUserIds.includes(uid));
+
+  for (const uid of toRemove) {
+    await db.prepare('DELETE FROM minutes_shares WHERE minutes_id = ? AND shared_with = ?')
+      .bind(id, uid).run();
+  }
+
+  const newSharedPhones: string[] = [];
+  for (const uid of toAdd) {
+    const shareId = crypto.randomUUID();
+    await db.prepare('INSERT INTO minutes_shares (id, minutes_id, shared_with, shared_by) VALUES (?, ?, ?, ?)')
+      .bind(shareId, id, uid, user.sub).run();
+    const sharedUser = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(uid).first<{ phone: string }>();
+    if (sharedUser?.phone) newSharedPhones.push(sharedUser.phone);
+  }
+
+  if (newSharedPhones.length > 0) {
     const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'MINUTES_SHARED',

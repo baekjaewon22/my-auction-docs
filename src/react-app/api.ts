@@ -266,7 +266,7 @@ export const api = {
   },
 
   minutes: {
-    list: () => request<{ minutes: { id: string; title: string; description: string; file_name: string; file_size: number; created_at: string; uploader_name: string }[] }>('/minutes'),
+    list: () => request<{ minutes: { id: string; title: string; description: string; file_name: string; file_size: number; created_at: string; uploaded_by: string; uploader_name: string }[] }>('/minutes'),
     upload: async (title: string, description: string, file: File) => {
       const token = getToken();
       const fd = new FormData();
@@ -288,15 +288,21 @@ export const api = {
     convertTxt: (data: { title: string; raw_text: string; share_with?: string[] }) =>
       request<{ success: boolean; id: string; converted: string }>('/minutes/convert-txt', { method: 'POST', body: JSON.stringify(data) }),
     share: (id: string, user_ids: string[]) =>
-      request('/minutes/' + id + '/share', { method: 'POST', body: JSON.stringify({ user_ids }) }),
+      request('/minutes/' + id + '/share', { method: 'PUT', body: JSON.stringify({ user_ids }) }),
+    shareTargets: () =>
+      request<{ members: { id: string; name: string; role: string; branch: string; department: string }[] }>('/minutes/share-targets'),
     sharedWithMe: () => request<{ minutes: any[] }>('/minutes/shared/me'),
     markRead: (id: string) => request('/minutes/shared/' + id + '/read', { method: 'PUT' }),
   },
 
   adminNotes: {
-    list: () => request<{ notes: any[] }>('/admin-notes'),
-    get: (id: string) => request<{ note: any; comments: any[] }>('/admin-notes/' + id),
-    create: (data: { title: string; content: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string }) =>
+    list: (params: { category?: string; search?: string } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
+      return request<{ notes: any[] }>('/admin-notes' + (q.toString() ? '?' + q.toString() : ''));
+    },
+    get: (id: string) => request<{ note: any; comments: any[]; attachments: any[] }>('/admin-notes/' + id),
+    create: (data: { title: string; content: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; attachments?: any[] }) =>
       request<{ success: boolean; id: string }>('/admin-notes', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { title?: string; content?: string; pinned?: boolean }) =>
       request('/admin-notes/' + id, { method: 'PUT', body: JSON.stringify(data) }),
@@ -653,8 +659,12 @@ export const api = {
       return request<{ cases: any[] }>(`/cases${q.toString() ? '?' + q.toString() : ''}`);
     },
     detail: (id: string) => request<{ case: any }>(`/cases/${id}`),
+    update: (id: string, data: { registered_at?: string; consultant_name?: string | null; consultant_position?: string | null; manager_username?: string; manager_name?: string; client_name?: string; fee_type?: 'fixed' | 'actual'; fee_amount?: number }) =>
+      request<{ success: boolean; case: any }>(`/cases/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     bonusSummary: (period: string) => request<{ period: string; period_label: string; summary: Array<{ consultant_user_id: string | null; consultant_name: string; consultant_position: string | null; consultant_branch: string | null; consultant_department: string | null; cnt: number; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; bonus: number }> }>(`/cases/bonus/summary?period=${period}`),
     bonusMe: (period: string) => request<{ period: string; period_label: string; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number }>(`/cases/bonus/me?period=${period}`),
+    delete: (id: string, reason?: string) =>
+      request<{ success: boolean }>(`/cases/${id}${reason ? '?reason=' + encodeURIComponent(reason) : ''}`, { method: 'DELETE' }),
     finalizeBonus: (period: string) =>
       request<{ success: boolean; period: string; period_label: string; inserted: number; skipped: number; ineligible: number; details: Array<{ user_id: string; user_name: string; bonus: number; status: string; reason?: string }> }>(`/cases/finalize-bonus`, { method: 'POST', body: JSON.stringify({ period }) }),
   },

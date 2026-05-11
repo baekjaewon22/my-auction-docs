@@ -56,6 +56,23 @@ function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
 }
 
+function contractCustomerKey(r: SalesRecord): string {
+  const phone = (r.client_phone || '').replace(/\D/g, '');
+  if (!phone || !r.client_name) return `row:${r.id}`;
+  return `${r.client_name.trim().toLowerCase()}|${phone}`;
+}
+
+function calculateContractCount(rows: SalesRecord[]): number {
+  const grouped = new Map<string, number>();
+  rows
+    .filter(r => r.type === '계약' && r.status === 'confirmed' && !r.exclude_from_count)
+    .forEach(r => {
+      const key = contractCustomerKey(r);
+      grouped.set(key, (grouped.get(key) || 0) + (r.amount || 0));
+    });
+  return [...grouped.values()].reduce((sum, amount) => sum + (amount >= 2200000 ? 2 : 1), 0);
+}
+
 export default function Sales() {
   const { user: currentUser } = useAuthStore();
   const { branches: BRANCHES } = useBranches();
@@ -473,9 +490,7 @@ export default function Sales() {
     ? contractCountSource.filter(r => r.branch === filterBranch)
     : contractCountSource;
   if (filterUser) contractCountFiltered = contractCountFiltered.filter(r => r.user_id === filterUser);
-  const contractCount = contractCountFiltered
-    .filter(r => r.type === '계약' && r.status === 'confirmed' && !r.exclude_from_count)
-    .reduce((sum, r) => sum + (r.amount >= 2200000 ? 2 : 1), 0);
+  const contractCount = calculateContractCount(contractCountFiltered);
   // 확정매출/카드대기/입금신청: 공급가액 기준 (÷1.1)
   const toSupply = (amount: number) => Math.round(amount / 1.1);
   const confirmedTotal = branchRecords.filter(r => r.status === 'confirmed').reduce((sum, r) => sum + toSupply(r.amount), 0);

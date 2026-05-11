@@ -175,11 +175,9 @@ export default function Layout() {
           </Link>
         )}
 
-        {['master', 'ceo', 'cc_ref', 'admin', 'director', 'support'].includes(role) && (
-          <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
-            <BookOpen size={18} /> {!collapsed && '회의록'}
-          </Link>
-        )}
+        <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
+          <BookOpen size={18} /> {!collapsed && '회의록'}
+        </Link>
 
         {['master', 'accountant', 'admin'].includes(role) && (
           <Link to="/link-review" className={`nav-item ${isActive('/link-review') ? 'active' : ''}`} title="외근 link 검수" onClick={() => setMobileOpen(false)}>
