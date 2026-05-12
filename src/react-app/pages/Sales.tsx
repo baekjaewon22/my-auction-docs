@@ -73,6 +73,13 @@ function calculateContractCount(rows: SalesRecord[]): number {
   return [...grouped.values()].reduce((sum, amount) => sum + (amount >= 2200000 ? 2 : 1), 0);
 }
 
+function isMissingAction(r: SalesRecord): boolean {
+  if (r.status === 'refunded') return false;
+  if (r.payment_type === '카드') return !r.card_deposit_date;
+  if (r.payment_type === '이체' || r.payment_type === '현금') return !r.tax_invoice_date;
+  return false;
+}
+
 export default function Sales() {
   const { user: currentUser } = useAuthStore();
   const { branches: BRANCHES } = useBranches();
@@ -471,7 +478,8 @@ export default function Sales() {
   let branchRecords = filterBranch ? records.filter(r => effectiveBranch(r) === filterBranch) : records;
   if (filterUser) branchRecords = branchRecords.filter(r => r.user_id === filterUser);
   if (filterType) branchRecords = branchRecords.filter(r => r.type === filterType);
-  if (filterStatus) branchRecords = branchRecords.filter(r => r.status === filterStatus);
+  if (filterStatus === 'missing_action') branchRecords = branchRecords.filter(isMissingAction);
+  else if (filterStatus) branchRecords = branchRecords.filter(r => r.status === filterStatus);
 
   // 동명이인 중복 감지: (이름 + 전화번호)가 allRecords에서 2건+인 경우
   const duplicateKeys = new Set<string>();
@@ -712,6 +720,7 @@ export default function Sales() {
             { value: 'pending', label: '입금신청' },
             { value: 'refund_requested', label: '환불신청' },
             { value: 'refunded', label: '환불완료' },
+            { value: 'missing_action', label: '미작성 액션' },
           ]}
             value={[
               { value: 'confirmed', label: '확정매출' },
@@ -719,6 +728,7 @@ export default function Sales() {
               { value: 'pending', label: '입금신청' },
               { value: 'refund_requested', label: '환불신청' },
               { value: 'refunded', label: '환불완료' },
+              { value: 'missing_action', label: '미작성 액션' },
             ].find(o => o.value === filterStatus) || { value: '', label: '전체 상태' }}
             onChange={(o: any) => setFilterStatus(o?.value || '')} placeholder="상태" isClearable />
         </div>
@@ -2162,7 +2172,7 @@ export default function Sales() {
                 })()}
               </div>
               {/* 전화번호 수정 (본인/마스터/총무담당/총무보조 — 확정 매출도 가능) */}
-              {(detailRecord.type === '계약' || detailRecord.type === '낙찰') && (detailRecord.user_id === currentUser?.id || ['master', 'accountant', 'accountant_asst'].includes(role)) && (
+              {(['계약', '낙찰', '권리분석보증서'].includes(detailRecord.type as string)) && (detailRecord.user_id === currentUser?.id || ['master', 'accountant', 'accountant_asst'].includes(role)) && (
                 <div style={{ borderTop: '1px solid #e8eaed', paddingTop: 12, marginBottom: 12 }}>
                   <div style={{ fontSize: '0.78rem', color: '#3c4043', fontWeight: 600, marginBottom: 8 }}>
                     전화번호 <span style={{ fontSize: '0.7rem', color: '#9aa0a6', fontWeight: 400 }}>(언제든 수정 가능)</span>

@@ -34,8 +34,8 @@ async function logActivity(db: D1Database, user: LogUser, input: LogInput, sourc
   try {
     await db.prepare(`
       INSERT INTO accounting_activity_logs
-        (id, actor_id, actor_name, actor_role, action, target_type, target_id, target_label, diff_summary, before_snapshot, after_snapshot, source_page)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, actor_id, actor_name, actor_role, action, target_type, target_id, target_label, diff_summary, before_snapshot, after_snapshot, source_page, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+9 hours'))
     `).bind(
       crypto.randomUUID(), user.sub, user.name || '', user.role,
       input.action, input.target_type || 'sales_record', input.target_id,
@@ -477,7 +477,7 @@ sales.put('/:id', async (c) => {
       payment_type = ?, receipt_type = ?, receipt_phone = ?, card_deposit_date = ?,
       tax_invoice_date = ?, tax_invoice_type = ?,
       appraisal_rate = ?, winning_rate = ?, client_phone = ?, proxy_cost = ?,
-      status = ?, updated_at = datetime('now')
+      status = ?, updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(
     body.type || record.type, body.type_detail ?? record.type_detail,
@@ -537,7 +537,7 @@ sales.post('/:id/confirm', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   // 카드 결제 → card_pending (카드 정산일 입력 전까지 대기)
   const newStatus = record.payment_type === '카드' ? 'card_pending' : 'confirmed';
   await db.prepare(`
-    UPDATE sales_records SET status = ?, confirmed_at = datetime('now'), confirmed_by = ?, deposit_date = ?, updated_at = datetime('now')
+    UPDATE sales_records SET status = ?, confirmed_at = datetime('now', '+9 hours'), confirmed_by = ?, deposit_date = ?, updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(newStatus, user.sub, depDate, id).run();
 
@@ -574,7 +574,7 @@ sales.post('/:id/unconfirm', requireRole('master', 'accountant', 'accountant_ass
   if (record.status !== 'confirmed' && record.status !== 'card_pending') return c.json({ error: '확정된 매출만 취소할 수 있습니다.' }, 400);
 
   await db.prepare(`
-    UPDATE sales_records SET status = 'pending', confirmed_at = NULL, confirmed_by = NULL, deposit_date = '', card_deposit_date = '', updated_at = datetime('now')
+    UPDATE sales_records SET status = 'pending', confirmed_at = NULL, confirmed_by = NULL, deposit_date = '', card_deposit_date = '', updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(id).run();
 
@@ -604,7 +604,7 @@ sales.post('/:id/refund-request', async (c) => {
   if (record.status !== 'confirmed' && record.status !== 'card_pending') return c.json({ error: '확정된 매출만 환불 신청할 수 있습니다.' }, 400);
 
   await db.prepare(`
-    UPDATE sales_records SET status = 'refund_requested', refund_requested_at = datetime('now'), updated_at = datetime('now')
+    UPDATE sales_records SET status = 'refund_requested', refund_requested_at = datetime('now', '+9 hours'), updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(id).run();
 
@@ -622,7 +622,7 @@ sales.post('/:id/refund-approve', requireRole(...EDIT_ACCOUNTING_ROLES), async (
   if (record.status !== 'refund_requested') return c.json({ error: '환불 신청된 건만 승인할 수 있습니다.' }, 400);
 
   await db.prepare(`
-    UPDATE sales_records SET status = 'refunded', refund_approved_at = datetime('now'), refund_approved_by = ?, updated_at = datetime('now')
+    UPDATE sales_records SET status = 'refunded', refund_approved_at = datetime('now', '+9 hours'), refund_approved_by = ?, updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(user.sub, id).run();
 
@@ -669,7 +669,7 @@ sales.put('/:id/contract-check', async (c) => {
     contract_not_approved?: number;
   }>();
 
-  const sets: string[] = ["updated_at = datetime('now')"];
+  const sets: string[] = ["updated_at = datetime('now', '+9 hours')"];
   const params: any[] = [];
   if (body.contract_submitted !== undefined) { sets.push('contract_submitted = ?'); params.push(body.contract_submitted); }
   if (body.contract_not_submitted !== undefined) { sets.push('contract_not_submitted = ?'); params.push(body.contract_not_submitted); }
@@ -686,7 +686,7 @@ sales.put('/:id/contract-not-approve', requireRole(...EDIT_ACCOUNTING_ROLES), as
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
-  await db.prepare("UPDATE sales_records SET contract_not_approved = 1, contract_not_approved_by = ?, updated_at = datetime('now') WHERE id = ?")
+  await db.prepare("UPDATE sales_records SET contract_not_approved = 1, contract_not_approved_by = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?")
     .bind(user.sub, id).run();
   return c.json({ success: true });
 });
@@ -699,7 +699,7 @@ sales.put('/:id/memo', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   const { memo } = await c.req.json<{ memo: string }>();
   const db = c.env.DB;
 
-  await db.prepare("UPDATE sales_records SET memo = ?, updated_at = datetime('now') WHERE id = ?")
+  await db.prepare("UPDATE sales_records SET memo = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?")
     .bind(memo || '', id).run();
 
   return c.json({ success: true });
@@ -960,7 +960,7 @@ sales.post('/deposits/:id/claim', async (c) => {
 
   // 입금 등록 업데이트
   await db.prepare(`
-    UPDATE deposit_notices SET claimed_by = ?, claimed_at = datetime('now'), sales_record_id = ?, status = 'claimed', updated_at = datetime('now')
+    UPDATE deposit_notices SET claimed_by = ?, claimed_at = datetime('now', '+9 hours'), sales_record_id = ?, status = 'claimed', updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(user.sub, salesId, id).run();
 
@@ -995,14 +995,14 @@ sales.post('/deposits/:id/approve', requireRole(...EDIT_ACCOUNTING_ROLES), async
   if (notice.status !== 'claimed') return c.json({ error: '담당자가 클레임한 건만 승인할 수 있습니다.' }, 400);
 
   await db.prepare(`
-    UPDATE deposit_notices SET status = 'approved', approved_by = ?, approved_at = datetime('now'), updated_at = datetime('now')
+    UPDATE deposit_notices SET status = 'approved', approved_by = ?, approved_at = datetime('now', '+9 hours'), updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(user.sub, id).run();
 
   // 연결된 매출도 확정
   if (notice.sales_record_id) {
     await db.prepare(`
-      UPDATE sales_records SET status = 'confirmed', confirmed_at = datetime('now'), confirmed_by = ?, updated_at = datetime('now')
+      UPDATE sales_records SET status = 'confirmed', confirmed_at = datetime('now', '+9 hours'), confirmed_by = ?, updated_at = datetime('now', '+9 hours')
       WHERE id = ?
     `).bind(user.sub, notice.sales_record_id).run();
   }
@@ -1057,7 +1057,7 @@ sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
   const id = crypto.randomUUID();
   await db.prepare(`
     INSERT INTO sales_records (id, user_id, type, type_detail, client_name, amount, contract_date, status, confirmed_at, confirmed_by, direction, branch, department, payment_type)
-    VALUES (?, ?, '기타', ?, ?, ?, ?, 'confirmed', datetime('now'), ?, ?, ?, ?, '이체')
+    VALUES (?, ?, '기타', ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, '이체')
   `).bind(id, actualAssignee, content, content, amount, date, user.sub, dir, assignee.branch || '', assignee.department || '').run();
 
   return c.json({ success: true, id });
@@ -1108,7 +1108,7 @@ sales.put('/:id/phone', async (c) => {
   if (!allowed) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const newPhone = (client_phone || '').trim();
-  await db.prepare("UPDATE sales_records SET client_phone = ?, updated_at = datetime('now') WHERE id = ?")
+  await db.prepare("UPDATE sales_records SET client_phone = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?")
     .bind(newPhone, id).run();
 
   if ((record.client_phone || '') !== newPhone) {
@@ -1131,7 +1131,7 @@ sales.put('/:id/exclude-count', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
   const newVal = exclude ? 1 : 0;
-  await db.prepare("UPDATE sales_records SET exclude_from_count = ?, updated_at = datetime('now') WHERE id = ?")
+  await db.prepare("UPDATE sales_records SET exclude_from_count = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?")
     .bind(newVal, id).run();
   if ((record.exclude_from_count || 0) !== newVal) {
     await logActivity(db, user as LogUser, {
@@ -1152,7 +1152,7 @@ sales.put('/:id/payment-method', requireRole(...EDIT_ACCOUNTING_ROLES), async (c
   const db = c.env.DB;
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
-  await db.prepare("UPDATE sales_records SET payment_method = ?, updated_at = datetime('now') WHERE id = ?")
+  await db.prepare("UPDATE sales_records SET payment_method = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?")
     .bind(payment_method || '', id).run();
 
   if ((record.payment_method || '') !== (payment_method || '')) {
@@ -1328,7 +1328,7 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
           UPDATE sales_records
           SET status = 'refunded', refund_approved_at = ?, refund_approved_by = ?,
               memo = CASE WHEN memo = '' OR memo IS NULL THEN ? ELSE memo || CHAR(10) || ? END,
-              updated_at = datetime('now')
+              updated_at = datetime('now', '+9 hours')
           WHERE id = ?
         `).bind(
           refundDate + 'T00:00:00', user.sub,
@@ -1385,7 +1385,7 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
            amount, contract_date, deposit_date, card_deposit_date, status,
            confirmed_at, confirmed_by, branch, department, memo,
            payment_type, receipt_type, receipt_phone)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now'), ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         id, userId, type, finalTypeDetail, clientName, clientName, r.client_phone || '',
         amount, contractDate, depositDate, cardDepDate, user.sub,
@@ -1480,7 +1480,7 @@ sales.post('/memos', requireRole('master', 'accountant', 'accountant_asst'), asy
   const id = crypto.randomUUID();
   const trimmed = content.trim();
   await db.prepare(
-    'INSERT INTO admin_memos (id, related_type, related_id, content, created_by) VALUES (?, ?, ?, ?, ?)'
+    "INSERT INTO admin_memos (id, related_type, related_id, content, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now', '+9 hours'), datetime('now', '+9 hours'))"
   ).bind(id, related_type, related_id, trimmed, user.sub).run();
 
   // 활동 로깅: 메모 추가
@@ -1502,7 +1502,7 @@ sales.put('/memos/:id', requireRole('master', 'accountant', 'accountant_asst'), 
   const { content } = await c.req.json<{ content: string }>();
   const before = await db.prepare('SELECT * FROM admin_memos WHERE id = ?').bind(id).first<any>();
   const trimmed = (content || '').trim();
-  await db.prepare("UPDATE admin_memos SET content = ?, updated_at = datetime('now') WHERE id = ?").bind(trimmed, id).run();
+  await db.prepare("UPDATE admin_memos SET content = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?").bind(trimmed, id).run();
   if (before) {
     await logActivity(db, user as LogUser, {
       action: 'memo_update', target_type: 'memo', target_id: id,

@@ -2,7 +2,7 @@ import { useEffect, useState, type ClipboardEvent } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import { useDepartments } from '../hooks/useDepartments';
-import { StickyNote, Plus, X, Trash2, ArrowLeft, Pin, MessageSquare, Send, Edit3, BookOpen, EyeOff, Search, Gavel, Scale, Paperclip, Download } from 'lucide-react';
+import { StickyNote, Plus, X, Trash2, ArrowLeft, Pin, MessageSquare, Send, Edit3, BookOpen, EyeOff, Search, Gavel, Scale, Paperclip, Download, Printer } from 'lucide-react';
 
 type NoteCategory = 'community' | 'eviction_quote' | 'legal_support';
 
@@ -84,6 +84,15 @@ function getVisibilityLabel(v: string): string {
   if (v === 'department') return '팀';
   if (v.startsWith('team:')) return v.replace('team:', '');
   return '전체';
+}
+
+function escapeHtml(value: string) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export default function AdminNotes() {
@@ -265,6 +274,61 @@ export default function AdminNotes() {
     } catch (err: any) { alert(err.message); }
   };
 
+  const handlePrintDetail = () => {
+    if (!detail) return;
+    const popup = window.open('', '_blank', 'width=900,height=700');
+    if (!popup) {
+      window.print();
+      return;
+    }
+    const commentHtml = comments.length
+      ? comments.map(c => `
+        <div class="comment">
+          <div class="comment-meta">${escapeHtml(authorLabel(c))} · ${escapeHtml(formatDate(c.created_at))}</div>
+          <div class="comment-body">${escapeHtml(c.content)}</div>
+        </div>
+      `).join('')
+      : '<div class="empty">댓글 없음</div>';
+    const attachmentHtml = attachments.length
+      ? attachments.map(file => `<div class="attachment">${escapeHtml(file.file_name)}</div>`).join('')
+      : '';
+    popup.document.write(`<!doctype html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(detail.title)}</title>
+        <style>
+          body { font-family: Arial, "Malgun Gothic", sans-serif; color: #202124; padding: 28px; line-height: 1.65; }
+          h1 { font-size: 22px; margin: 0 0 12px; }
+          .meta { display: flex; flex-wrap: wrap; gap: 8px 14px; color: #5f6368; font-size: 12px; border-bottom: 1px solid #dadce0; padding-bottom: 14px; margin-bottom: 18px; }
+          .badge { padding: 2px 8px; border: 1px solid #dadce0; border-radius: 999px; }
+          .content { white-space: pre-wrap; word-break: break-word; font-size: 14px; margin-bottom: 24px; }
+          h2 { font-size: 15px; margin: 24px 0 10px; border-top: 1px solid #e8eaed; padding-top: 14px; }
+          .comment { padding: 10px 0; border-bottom: 1px solid #f1f3f4; }
+          .comment-meta { color: #5f6368; font-size: 12px; margin-bottom: 4px; }
+          .comment-body { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+          .attachment, .empty { color: #5f6368; font-size: 12px; }
+          @page { margin: 16mm; }
+        </style>
+      </head>
+      <body>
+        <h1>${escapeHtml(detail.title)}</h1>
+        <div class="meta">
+          <span>${escapeHtml(authorLabel(detail))}</span>
+          <span>${escapeHtml(formatDate(detail.created_at))}</span>
+          <span class="badge">${escapeHtml(getVisibilityLabel(detail.visibility))}</span>
+          ${detail.category === 'eviction_quote' ? `<span class="badge">법원: ${escapeHtml(detail.court || '-')}</span><span class="badge">사건번호: ${escapeHtml(detail.case_number || '-')}</span>` : ''}
+        </div>
+        <div class="content">${escapeHtml(detail.content)}</div>
+        ${attachmentHtml ? `<h2>첨부</h2>${attachmentHtml}` : ''}
+        <h2>${detail.category === 'legal_support' ? '답변' : '댓글'} ${comments.length ? `(${comments.length})` : ''}</h2>
+        ${commentHtml}
+        <script>window.onload = () => { window.print(); window.close(); };</script>
+      </body>
+      </html>`);
+    popup.document.close();
+  };
+
   const filtered = notes.filter(n =>
     n.title.includes(search) || n.content.includes(search) || (n.author_name || '').includes(search) || (n.court || '').includes(search) || (n.case_number || '').includes(search)
   );
@@ -285,6 +349,7 @@ export default function AdminNotes() {
             </h2>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn btn-sm" onClick={handlePrintDetail}><Printer size={13} /> 프린트</button>
             {canEdit && (
               <>
                 <button className="btn btn-sm" onClick={() => startEdit(detail)}><Edit3 size={13} /> 수정</button>

@@ -51,7 +51,7 @@ async function recalcUserLeave(db: D1Database, userId: string): Promise<{ used_d
  * - 입사일이 변경됐거나 leave_type이 잘못 잡혔을 때 한 번에 정정
  * - calculateLeaveEntitlement 결과 + sumApprovedLeave 합쳐서 전체 SET
  */
-async function reinitUserLeave(db: D1Database, userId: string): Promise<{ before: any; after: any } | null> {
+export async function reinitUserLeave(db: D1Database, userId: string): Promise<{ before: any; after: any } | null> {
   const userInfo = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(userId).first<{ hire_date: string; created_at: string }>();
   if (!userInfo) return null;
   const hireDate = userInfo.hire_date || (userInfo.created_at || '').slice(0, 10);
@@ -153,6 +153,7 @@ leave.get('/me', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
+  await reinitUserLeave(db, user.sub);
   const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(user.sub).first<any>();
   const userInfo = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(user.sub).first<any>();
   const accounting = await db.prepare('SELECT salary FROM user_accounting WHERE user_id = ?').bind(user.sub).first<any>();
@@ -298,6 +299,7 @@ leave.post('/deduct', requireRole('master', 'ceo', 'admin', 'manager'), async (c
   const hireDate = reqUser?.hire_date || reqUser?.created_at || '';
   const entitlement = calculateLeaveEntitlement(hireDate);
 
+  await reinitUserLeave(db, user_id);
   let existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(user_id).first<any>();
   if (!existing) {
     await db.prepare(`INSERT INTO annual_leave (id, user_id, total_days, used_days, leave_type, monthly_days, monthly_used) VALUES (?, ?, ?, 0, ?, ?, 0)`)
@@ -436,6 +438,7 @@ leave.post('/request', async (c) => {
   }
 
   // 잔여 연차 확인: 월차는 음수 허용 (차월 월차 누적 시 자동 상쇄), 연차는 부족 시 차단
+  await reinitUserLeave(db, user.sub);
   const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(user.sub).first<any>();
   if (leaveInfo) {
     const isMonthly = body.leave_type === '월차';
@@ -522,6 +525,8 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'pending') return c.json({ error: '이미 처리된 신청입니다.' }, 400);
+
+  await reinitUserLeave(db, req.user_id);
 
   // 승인 처리
   await db.prepare(`UPDATE leave_requests SET status = 'approved', approved_by = ?,
@@ -620,19 +625,7 @@ leave.post('/requests/:id/cancel', async (c) => {
       // 관리자: 즉시 취소 + 연차 복원
       await db.prepare("UPDATE leave_requests SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
         .bind(requestId).run();
-      // 차감된 연차 복원 (특별휴가 제외) — 차감 시점과 동일 기준으로 복원
-      // (사용자가 월차 타입이면 모든 휴가가 monthly_used에서 차감되므로, 복원도 동일 컬럼에서)
-      if (req.leave_type !== '특별휴가') {
-        const al = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(req.user_id).first<{ leave_type: string }>();
-        const userType = al?.leave_type || 'annual';
-        if (userType === 'monthly' || req.leave_type === '월차') {
-          await db.prepare("UPDATE annual_leave SET monthly_used = MAX(0, monthly_used - ?), updated_at = datetime('now') WHERE user_id = ?")
-            .bind(req.days, req.user_id).run();
-        } else {
-          await db.prepare("UPDATE annual_leave SET used_days = MAX(0, used_days - ?), updated_at = datetime('now') WHERE user_id = ?")
-            .bind(req.days, req.user_id).run();
-        }
-      }
+      await reinitUserLeave(db, req.user_id);
     } else {
       // 일반 유저: 취소요청 상태로 변경 (관리자 확인 필요)
       await db.prepare("UPDATE leave_requests SET status = 'cancel_requested', updated_at = datetime('now') WHERE id = ?")
@@ -659,18 +652,7 @@ leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'admin',
   await db.prepare("UPDATE leave_requests SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
     .bind(requestId).run();
 
-  // 차감된 휴가 복원 — 차감과 동일 기준으로 복원 (monthly 유형 사용자는 monthly_used에서)
-  if (req.leave_type !== '특별휴가') {
-    const al = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(req.user_id).first<{ leave_type: string }>();
-    const userType = al?.leave_type || 'annual';
-    if (userType === 'monthly' || req.leave_type === '월차') {
-      await db.prepare("UPDATE annual_leave SET monthly_used = MAX(0, monthly_used - ?), updated_at = datetime('now') WHERE user_id = ?")
-        .bind(req.days, req.user_id).run();
-    } else {
-      await db.prepare("UPDATE annual_leave SET used_days = MAX(0, used_days - ?), updated_at = datetime('now') WHERE user_id = ?")
-        .bind(req.days, req.user_id).run();
-    }
-  }
+  await reinitUserLeave(db, req.user_id);
 
   return c.json({ success: true });
 });
@@ -778,21 +760,8 @@ leave.delete('/requests/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'a
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(id).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
 
-  // 승인된 건이면 차감된 휴가 복원 — 차감 당시와 동일한 기준(사용자의 annual_leave.leave_type)으로 복원
-  if (req.status === 'approved' && req.leave_type !== '특별휴가') {
-    const al = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(req.user_id).first<{ leave_type: string }>();
-    const userType = al?.leave_type || 'annual';
-    if (userType === 'monthly' || req.leave_type === '월차') {
-      // 월차형 사용자는 모든 반차/연차/시간차를 monthly_used로 차감했으므로 동일하게 복원
-      await db.prepare("UPDATE annual_leave SET monthly_used = MAX(0, monthly_used - ?), updated_at = datetime('now') WHERE user_id = ?")
-        .bind(req.days, req.user_id).run();
-    } else {
-      await db.prepare("UPDATE annual_leave SET used_days = MAX(0, used_days - ?), updated_at = datetime('now') WHERE user_id = ?")
-        .bind(req.days, req.user_id).run();
-    }
-  }
-
   await db.prepare('DELETE FROM leave_requests WHERE id = ?').bind(id).run();
+  await reinitUserLeave(db, req.user_id);
   return c.json({ success: true });
 });
 

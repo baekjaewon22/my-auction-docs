@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv, Document, OrgNode } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
-import { calculateLeaveEntitlement } from './leave';
+import { calculateLeaveEntitlement, reinitUserLeave } from './leave';
 import {
   recreateAlertsForDoc,
   markAlertActedApproved,
@@ -565,6 +565,8 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
       ).bind(doc.author_id, leaveType, startDate, endDate).first();
 
       if (!dup) {
+        await reinitUserLeave(db, doc.author_id);
+
         // annual_leave 레코드 보장 — 입사일 기반 entitlement 사용 (15일 하드코딩 X)
         const existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
         if (!existing) {
@@ -805,18 +807,10 @@ documents.post('/:id/cancel-approve', requireRole('master', 'ceo', 'cc_ref', 'ad
 
   // 연차/월차/반차 문서였고 승인 완료 상태였으면 휴가 복원
   if (doc.status === 'approved' && (doc.title.includes('연차') || doc.title.includes('월차') || doc.title.includes('반차'))) {
-    const days = doc.title.includes('반차') ? 0.5 : 1;
-    const leaveData = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
-    if (leaveData?.leave_type === 'monthly') {
-      await db.prepare("UPDATE annual_leave SET monthly_used = MAX(0, monthly_used - ?), updated_at = datetime('now') WHERE user_id = ?")
-        .bind(days, doc.author_id).run();
-    } else {
-      await db.prepare("UPDATE annual_leave SET used_days = MAX(0, used_days - ?), updated_at = datetime('now') WHERE user_id = ?")
-        .bind(days, doc.author_id).run();
-    }
     // leave_requests에서 문서결재 자동등록 건 삭제
     await db.prepare("DELETE FROM leave_requests WHERE user_id = ? AND reason LIKE ? AND status = 'approved'")
       .bind(doc.author_id, `%${doc.title}%`).run();
+    await reinitUserLeave(db, doc.author_id);
   }
 
   await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
