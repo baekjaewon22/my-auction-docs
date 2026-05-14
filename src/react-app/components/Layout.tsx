@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, Handshake, DoorOpen, FileSignature, Briefcase,
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase,
   Scale, ExternalLink,
 } from 'lucide-react';
 
@@ -19,6 +19,7 @@ function shouldShowDiagnosisBox(pathname: string): boolean {
 
 // 컨설턴트 계약관리: 대표/마스터/총무급 + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 
 export default function Layout() {
   const { user, logout } = useAuthStore();
@@ -46,10 +47,8 @@ export default function Layout() {
   const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'support'].includes(role);
   const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-  const canAccounting = !isFreelancer && !isSupport && (
-    ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role) ||
-    (role === 'admin' && user?.branch === '의정부')
-  );
+  const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
+  const canPayroll = canAccounting || PAYROLL_EXTRA_IDS.includes(user?.id || '');
   // 회계분석은 총무보조 제외 (cc_ref도 제외)
   const canFinanceAnalytics = !isFreelancer && !isSupport && (
     ['master', 'ceo', 'accountant'].includes(role) ||
@@ -189,19 +188,15 @@ export default function Layout() {
             <MessageSquare size={18} /> {!collapsed && '카카오 발송내역'}
           </Link>
         )}
-        {!isFreelancer && !isSupport && (
-          <Link to="/cooperation" className={`nav-item ${isActive('/cooperation') ? 'active' : ''}`} title="업무협조요청" onClick={() => setMobileOpen(false)}>
-            <Handshake size={18} /> {!collapsed && '업무협조요청'}
-          </Link>
-        )}
-
-        {canAccounting && (
+        {(canAccounting || canPayroll) && (
           <>
             <div className="nav-divider" />
             {!collapsed && <span className="nav-label">회계</span>}
-            <Link to="/accounting" className={`nav-item ${isActive('/accounting') ? 'active' : ''}`} title="회계장부" onClick={() => setMobileOpen(false)}>
-              <BookOpenCheck size={18} /> {!collapsed && '회계장부'}
-            </Link>
+            {canAccounting && (
+              <Link to="/accounting" className={`nav-item ${isActive('/accounting') ? 'active' : ''}`} title="회계장부" onClick={() => setMobileOpen(false)}>
+                <BookOpenCheck size={18} /> {!collapsed && '회계장부'}
+              </Link>
+            )}
             <Link to="/payroll" className={`nav-item ${isActive('/payroll') ? 'active' : ''}`} title="급여정산" onClick={() => setMobileOpen(false)}>
               <Receipt size={18} /> {!collapsed && '급여정산'}
             </Link>

@@ -33,6 +33,37 @@ function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
 }
 
+const BANK_CATEGORY_LABELS: Record<string, string> = {
+  sales_match: '업무성과 매칭',
+  card_settlement: '카드정산 후보',
+  other_income: '기타수입 후보',
+  expense: '지출 후보',
+  unknown: '확인필요',
+};
+
+function parseBankAmount(value: unknown): number {
+  return Math.abs(Number(String(value ?? '').replace(/[^0-9.-]/g, '')) || 0);
+}
+
+function normalizeBankDate(value: unknown): string {
+  if (typeof value === 'number') {
+    const d = new Date((value - 25569) * 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+  const raw = String(value || '').trim();
+  const match = raw.match(/(\d{4})[.\-/년\s]*(\d{1,2})[.\-/월\s]*(\d{1,2})/);
+  if (match) return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+  return raw.slice(0, 10);
+}
+
+function classifyBankUploadRow(direction: 'income' | 'expense', counterparty: string, description: string): string {
+  if (direction === 'expense') return 'expense';
+  const text = `${counterparty} ${description}`.toLowerCase();
+  const pgKeywords = ['카드', '헥토', '파이낸셜', '나이스', 'nice', '토스', 'toss', '이니시스', 'kg', 'kcp', '페이', 'pay', '스마트로', 'ksnet', '다날', '페이먼츠', 'pg'];
+  if (pgKeywords.some(k => text.includes(k.toLowerCase()))) return 'card_settlement';
+  return 'sales_match';
+}
+
 function getEvaluationPeriods(count: number = 3) {
   const periods: { start: string; end: string; label: string }[] = [];
   const now = new Date();
@@ -58,7 +89,7 @@ function getEvaluationPeriods(count: number = 3) {
 export default function Accounting() {
   const { user: currentUser } = useAuthStore();
   const { branches: BRANCHES } = useBranches();
-  const [mainTab, setMainTab] = useState<'sales' | 'staff' | 'card' | 'bank' | 'auditlog'>('sales');
+  const [mainTab, setMainTab] = useState<'sales' | 'staff' | 'cardSettlement' | 'card' | 'bank' | 'auditlog'>('sales');
 
   // ━━ 공통 ━━
   const [users, setUsers] = useState<User[]>([]);
@@ -126,14 +157,30 @@ export default function Accounting() {
   const [bankMonth, setBankMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [bankUploading, setBankUploading] = useState(false);
   const [bankMovingId, setBankMovingId] = useState<string | null>(null);
-  const [bankMoveType, setBankMoveType] = useState('기타');
+  const [bankMoveType, setBankMoveType] = useState('기타수입');
   const [bankMoveUser, setBankMoveUser] = useState('');
+  const [bankSearch, setBankSearch] = useState('');
+  const [cardSettlementSales, setCardSettlementSales] = useState<SalesRecord[]>([]);
+  const [cardSettlementDeposits, setCardSettlementDeposits] = useState<any[]>([]);
+  const [cardSettlementMonth, setCardSettlementMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [cardSettlementInputs, setCardSettlementInputs] = useState<Record<string, { staging_id: string; settlement_date: string; settlement_amount: string; note: string }>>({});
 
   const loadBank = async () => {
     try {
       const res = await api.accounting.staging(bankMonth);
       setBankItems(res.items || []);
     } catch { setBankItems([]); }
+  };
+
+  const loadCardSettlements = async () => {
+    try {
+      const res = await api.accounting.cardSettlements(cardSettlementMonth);
+      setCardSettlementSales(res.pending_sales || []);
+      setCardSettlementDeposits(res.settlement_deposits || []);
+    } catch {
+      setCardSettlementSales([]);
+      setCardSettlementDeposits([]);
+    }
   };
 
   // ━━ 직원 관리 탭 ━━
@@ -299,6 +346,7 @@ export default function Accounting() {
   useEffect(() => { if (mainTab === 'sales') loadSales(); }, [mainTab, filterMonth, filterMonthEnd, filterUser]);
   useEffect(() => { if (mainTab === 'card') loadCard(); }, [mainTab, cardMonth, cardFilterBranch, cardFilterUser]);
   useEffect(() => { if (mainTab === 'bank') loadBank(); }, [mainTab, bankMonth]);
+  useEffect(() => { if (mainTab === 'cardSettlement') loadCardSettlements(); }, [mainTab, cardSettlementMonth]);
   // 페이지 진입 시 sourcePage='accounting' (모든 API 요청 헤더에 X-Source-Page 자동 첨부)
   useEffect(() => { setSourcePage('accounting'); }, []);
 
@@ -350,6 +398,32 @@ export default function Accounting() {
       setShowEntryForm(false); setEntryAmount(''); setEntryContent(''); setEntryAssignee(''); setEntryDirection('income');
       loadSales();
     } catch (err: any) { alert(err.message); }
+  };
+
+  const handleConfirmCardSettlement = async (record: SalesRecord) => {
+    const input = cardSettlementInputs[record.id] || { staging_id: '', settlement_date: '', settlement_amount: '', note: '' };
+    if (!input.settlement_date && !input.staging_id) {
+      alert('정산일 또는 카드사 입금건을 선택하세요.');
+      return;
+    }
+    if (!confirm(`${record.client_name || record.depositor_name} 카드 매출을 정산 확정하시겠습니까?`)) return;
+    try {
+      await api.accounting.confirmCardSettlement(record.id, {
+        staging_id: input.staging_id || undefined,
+        settlement_date: input.settlement_date || undefined,
+        settlement_amount: input.settlement_amount ? Number(input.settlement_amount) : undefined,
+        note: input.note || undefined,
+      });
+      setCardSettlementInputs(prev => {
+        const next = { ...prev };
+        delete next[record.id];
+        return next;
+      });
+      loadCardSettlements();
+      loadSales();
+    } catch (err: any) {
+      alert(err.message);
+    }
   };
 
   // ━━ 직원 관리 탭 핸들러 ━━
@@ -435,12 +509,23 @@ export default function Accounting() {
   const displaySales = (filterDirection ? allSales.filter(r => r.direction === filterDirection) : allSales).filter(r => {
     if (!salesSearchTerm) return true;
     const q = salesSearchTerm.toLowerCase();
-    return (r.client_name || '').toLowerCase().includes(q) || (r.user_name || '').toLowerCase().includes(q) || (r.type_detail || '').toLowerCase().includes(q) || (r.memo || '').toLowerCase().includes(q);
+    return (r.depositor_name || '').toLowerCase().includes(q) || (r.client_name || '').toLowerCase().includes(q) || (r.user_name || '').toLowerCase().includes(q) || (r.type_detail || '').toLowerCase().includes(q) || (r.memo || '').toLowerCase().includes(q);
   });
   const contractCount = displaySales.filter(r => r.type === '계약' && r.status !== 'refunded').length;
   const pendingTotal = displaySales.filter(r => r.status === 'pending').reduce((s, r) => s + r.amount, 0);
   const incomeTotal = allSales.filter(r => r.direction !== 'expense' && r.status === 'confirmed').reduce((s, r) => s + r.amount, 0);
   const expenseTotal = allSales.filter(r => r.direction === 'expense' && r.status === 'confirmed').reduce((s, r) => s + r.amount, 0);
+  const displayBankItems = bankItems.filter((item: any) => {
+    if (!bankSearch.trim()) return true;
+    const q = bankSearch.trim().toLowerCase();
+    return [item.depositor, item.counterparty, item.description, item.category, item.transaction_date]
+      .some(v => String(v || '').toLowerCase().includes(q));
+  });
+  const bankSummary = bankItems.reduce((acc: Record<string, number>, item: any) => {
+    const key = item.category || (item.direction === 'expense' ? 'expense' : 'unknown');
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -561,12 +646,12 @@ export default function Accounting() {
         {userSalesRecords.length > 0 && (
           <div className="card" style={{ padding: 20 }}>
             <h3 style={{ margin: '0 0 16px', fontSize: '1rem' }}>매출 내역</h3>
-            <div className="table-wrapper"><table className="data-table"><thead><tr><th>일자</th><th>유형</th><th>회원명</th><th>금액</th><th>입금일</th><th>상태</th><th>메모</th></tr></thead><tbody>
+            <div className="table-wrapper"><table className="data-table"><thead><tr><th>일자</th><th>유형</th><th>입금자명</th><th>금액</th><th>입금일</th><th>상태</th><th>메모</th></tr></thead><tbody>
               {userSalesRecords.map(r => {
                 const isRefunded = r.status === 'refunded';
                 const st = STATUS_LABELS[r.status];
                 return (<tr key={r.id} style={isRefunded ? { opacity: 0.5, textDecoration: 'line-through' } : undefined}>
-                  <td style={{ fontSize: '0.8rem' }}>{r.contract_date}</td><td>{r.type}</td><td>{r.client_name}</td>
+                  <td style={{ fontSize: '0.8rem' }}>{r.contract_date}</td><td>{r.type}</td><td>{r.depositor_name || r.client_name}</td>
                   <td style={{ fontWeight: 600 }}>{formatCurrency(r.amount)}</td>
                   <td style={{ fontSize: '0.78rem', color: r.deposit_date ? '#188038' : '#9aa0a6' }}>{r.deposit_date || '-'}</td>
                   <td><span style={{ padding: '2px 8px', borderRadius: 10, fontSize: '0.72rem', fontWeight: 600, background: st.bg, color: st.color }}>{st.label}</span></td>
@@ -598,6 +683,9 @@ export default function Accounting() {
       <div className="premium-filter-bar" style={{ marginBottom: 20 }}>
         <button className={`premium-filter-btn ${mainTab === 'sales' ? 'active' : ''}`} onClick={() => setMainTab('sales')}>
           매출 전체
+        </button>
+        <button className={`premium-filter-btn ${mainTab === 'cardSettlement' ? 'active' : ''}`} onClick={() => setMainTab('cardSettlement')}>
+          카드정산 대기 {cardSettlementSales.length > 0 && <span style={{ background: '#7b1fa2', color: '#fff', padding: '1px 6px', borderRadius: 8, fontSize: '0.65rem', marginLeft: 4 }}>{cardSettlementSales.length}</span>}
         </button>
         <button className={`premium-filter-btn ${mainTab === 'staff' ? 'active' : ''}`} onClick={() => setMainTab('staff')}>
           <UsersIcon size={14} style={{ marginRight: 4 }} /> 직원 관리
@@ -673,7 +761,7 @@ export default function Accounting() {
               <button className={`filter-btn ${filterDirection === 'income' ? 'active' : ''}`} onClick={() => setFilterDirection('income')} style={{ padding: '3px 10px', fontSize: '0.75rem', color: filterDirection === 'income' ? '#fff' : '#188038' }}>+수입</button>
               <button className={`filter-btn ${filterDirection === 'expense' ? 'active' : ''}`} onClick={() => setFilterDirection('expense')} style={{ padding: '3px 10px', fontSize: '0.75rem', color: filterDirection === 'expense' ? '#fff' : '#d93025' }}>-지출</button>
             </div>
-            <input className="form-input" placeholder="계약자명, 담당자 검색" value={salesSearchTerm} onChange={(e) => setSalesSearchTerm(e.target.value)}
+            <input className="form-input" placeholder="입금자명, 계약자명, 담당자 검색" value={salesSearchTerm} onChange={(e) => setSalesSearchTerm(e.target.value)}
               style={{ width: 180, fontSize: '0.82rem', padding: '5px 10px' }} />
             <div style={{ display: 'flex', gap: 14, marginLeft: 'auto', fontSize: '0.82rem', flexWrap: 'wrap' }}>
               <span>+수입 <strong style={{ color: '#188038' }}>{formatCurrency(incomeTotal)}</strong></span>
@@ -687,7 +775,7 @@ export default function Accounting() {
           {/* 매출 목록 */}
           <div className="table-wrapper">
             <table className="premium-table">
-              <thead><tr><th></th><th>일자</th><th style={{ whiteSpace: 'nowrap' }}>담당자</th><th>유형</th><th>회원명</th><th>금액</th><th>입금일</th><th style={{ whiteSpace: 'nowrap' }}>증빙</th><th>상태</th><th>액션</th></tr></thead>
+              <thead><tr><th></th><th>일자</th><th style={{ whiteSpace: 'nowrap' }}>담당자</th><th>유형</th><th>입금자명</th><th>금액</th><th>입금일</th><th style={{ whiteSpace: 'nowrap' }}>증빙</th><th>상태</th><th>액션</th></tr></thead>
               <tbody>
                 {displaySales.map(r => {
                   const st = STATUS_LABELS[r.status];
@@ -702,8 +790,10 @@ export default function Accounting() {
                       <td style={{ whiteSpace: 'nowrap' }}>{r.user_name}</td>
                       <td><span style={{ fontSize: '0.8rem' }}>{r.type}</span>{r.type === '기타' && r.type_detail && <span style={{ color: '#9aa0a6', fontSize: '0.72rem' }}> ({r.type_detail})</span>}</td>
                       <td>
-                        {r.client_name}
-                        {r.depositor_different === 1 && r.depositor_name && <div style={{ fontSize: '0.7rem', color: '#e65100' }}>입금자: {r.depositor_name}</div>}
+                        {r.depositor_name || r.client_name}
+                        {r.client_name && r.depositor_name && r.client_name !== r.depositor_name && (
+                          <div style={{ fontSize: '0.7rem', color: '#5f6368' }}>계약자: {r.client_name}</div>
+                        )}
                       </td>
                       <td style={{ fontWeight: 600, color: r.direction === 'expense' ? '#d93025' : '#188038' }}>
                         {r.direction === 'expense' ? '-' : '+'}{formatCurrency(r.amount)}
@@ -823,12 +913,111 @@ export default function Accounting() {
       )}
 
       {/* ━━ 거래내역 첨부 탭 ━━ */}
+      {mainTab === 'cardSettlement' && (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input type="month" className="form-input" value={cardSettlementMonth} onChange={(e) => setCardSettlementMonth(e.target.value)} style={{ width: 150 }} />
+              <button className="btn btn-sm" onClick={() => setCardSettlementMonth('')}>전체</button>
+              <span style={{ fontSize: '0.82rem', color: '#5f6368' }}>
+                카드대기 <strong>{cardSettlementSales.length}</strong>건 / 카드사 입금대기 <strong>{cardSettlementDeposits.length}</strong>건
+              </span>
+            </div>
+            <button className="btn btn-sm" onClick={loadCardSettlements}>새로고침</button>
+          </div>
+
+          <div style={{ fontSize: '0.78rem', color: '#5f6368', marginBottom: 12, padding: '10px 12px', background: '#f8f9fa', borderRadius: 6, lineHeight: 1.55 }}>
+            카드대기 매출은 <strong>매출 원금</strong>으로 보관하고, 카드사 실제 입금액은 <strong>정산 입금액</strong>으로 별도 기록합니다.
+            확정 시 차액은 카드수수료로 계산되어 매출 원금과 실입금액이 섞이지 않게 됩니다.
+          </div>
+
+          {cardSettlementDeposits.length > 0 && (
+            <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+              <h4 style={{ margin: '0 0 10px', fontSize: '0.9rem' }}>카드사 입금 대기</h4>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {cardSettlementDeposits.map((d: any) => (
+                  <span key={d.id} style={{ padding: '6px 10px', borderRadius: 6, background: '#f3e5f5', color: '#6a1b9a', fontSize: '0.78rem', fontWeight: 700 }}>
+                    {d.transaction_date} {d.counterparty || d.depositor} {Number(d.amount || 0).toLocaleString()}원
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {cardSettlementSales.length === 0 ? (
+            <div className="empty-state" style={{ padding: 40 }}>카드정산 대기 매출이 없습니다.</div>
+          ) : (
+            <div className="table-wrapper">
+              <table className="data-table" style={{ fontSize: '0.82rem' }}>
+                <thead>
+                  <tr>
+                    <th style={{ width: '9%' }}>입금확인일</th>
+                    <th style={{ width: '10%' }}>담당자</th>
+                    <th>고객/입금자</th>
+                    <th style={{ width: '12%', textAlign: 'right' }}>매출 원금</th>
+                    <th style={{ width: '18%' }}>카드사 입금건</th>
+                    <th style={{ width: '10%' }}>정산일</th>
+                    <th style={{ width: '12%' }}>실입금액</th>
+                    <th style={{ width: '12%' }}>수수료</th>
+                    <th style={{ width: '8%' }}>처리</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cardSettlementSales.map((r) => {
+                    const input = cardSettlementInputs[r.id] || { staging_id: '', settlement_date: '', settlement_amount: '', note: '' };
+                    const selectedDeposit = cardSettlementDeposits.find((d: any) => d.id === input.staging_id);
+                    const net = Number(input.settlement_amount || selectedDeposit?.amount || 0);
+                    const fee = net > 0 ? Math.max(Number(r.amount || 0) - net, 0) : 0;
+                    return (
+                      <tr key={r.id}>
+                        <td>{r.deposit_date || '-'}</td>
+                        <td>{r.user_name || '-'}</td>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{r.client_name || '-'}</div>
+                          <div style={{ fontSize: '0.72rem', color: '#9aa0a6' }}>{r.depositor_name || '-'}</div>
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.amount || 0).toLocaleString()}원</td>
+                        <td>
+                          <select className="form-input" value={input.staging_id} onChange={(e) => {
+                            const d = cardSettlementDeposits.find((x: any) => x.id === e.target.value);
+                            setCardSettlementInputs(prev => ({
+                              ...prev,
+                              [r.id]: {
+                                ...input,
+                                staging_id: e.target.value,
+                                settlement_date: d?.transaction_date || input.settlement_date,
+                                settlement_amount: d?.amount ? String(d.amount) : input.settlement_amount,
+                              },
+                            }));
+                          }} style={{ width: '100%', fontSize: '0.75rem', padding: '4px 6px' }}>
+                            <option value="">직접 입력</option>
+                            {cardSettlementDeposits.map((d: any) => (
+                              <option key={d.id} value={d.id}>{d.transaction_date} {Number(d.amount || 0).toLocaleString()}원</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td><input type="date" className="form-input" value={input.settlement_date} onChange={(e) => setCardSettlementInputs(prev => ({ ...prev, [r.id]: { ...input, settlement_date: e.target.value } }))} style={{ width: '100%', fontSize: '0.75rem', padding: '4px 6px' }} /></td>
+                        <td><input className="form-input" value={toMoneyDisplay(input.settlement_amount)} onChange={(e) => setCardSettlementInputs(prev => ({ ...prev, [r.id]: { ...input, settlement_amount: fromMoneyDisplay(e.target.value) } }))} style={{ width: '100%', fontSize: '0.75rem', padding: '4px 6px', textAlign: 'right' }} /></td>
+                        <td style={{ textAlign: 'right', color: fee > 0 ? '#d93025' : '#9aa0a6', fontWeight: 700 }}>{fee > 0 ? fee.toLocaleString() + '원' : '-'}</td>
+                        <td><button className="btn btn-sm btn-primary" onClick={() => handleConfirmCardSettlement(r)}>확정</button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
       {mainTab === 'bank' && (
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <input type="month" className="form-input" value={bankMonth} onChange={(e) => setBankMonth(e.target.value)} style={{ width: 150 }} />
-              <span style={{ fontSize: '0.82rem', color: '#5f6368' }}>대기 <strong>{bankItems.length}</strong>건</span>
+              <button className="btn btn-sm" onClick={() => setBankMonth('')}>전체</button>
+              <input className="form-input" placeholder="입금자/내용/분류 검색" value={bankSearch} onChange={(e) => setBankSearch(e.target.value)} style={{ width: 220 }} />
+              <span style={{ fontSize: '0.82rem', color: '#5f6368' }}>대기 <strong>{displayBankItems.length}</strong>건 / 전체 {bankItems.length}건</span>
             </div>
             <label className="btn btn-sm btn-primary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <Plus size={13} /> {bankUploading ? '업로드 중...' : '은행 엑셀 업로드'}
@@ -843,26 +1032,61 @@ export default function Accounting() {
                   const ws = wb.Sheets[wb.SheetNames[0]];
                   const rawRows = XLSX.utils.sheet_to_json<any>(ws);
                   const rows = rawRows.map((r: any) => {
-                    let txDate = r['거래일'] || r['거래일자'] || r['날짜'] || r['입금일'] || '';
-                    if (typeof txDate === 'number') {
-                      const d = new Date((txDate - 25569) * 86400000);
-                      txDate = d.toISOString().slice(0, 10);
-                    }
+                    const txDate = normalizeBankDate(r['거래일시'] || r['거래일'] || r['거래일자'] || r['날짜'] || r['입금일'] || '');
+                    const incomeAmount = parseBankAmount(r['입금액'] || r['입금']);
+                    const expenseAmount = parseBankAmount(r['출금액'] || r['출금']);
+                    const direction = expenseAmount > 0 && incomeAmount <= 0 ? 'expense' : 'income';
+                    const amount = direction === 'expense' ? expenseAmount : incomeAmount;
+                    const counterparty = String(r['내용'] || r['적요'] || r['거래점명'] || r['거래점'] || '').trim();
+                    const purpose = String(r['설명'] || r['비고'] || r['분류'] || '').trim();
+                    const descriptionParts = [r['적요'], r['분류'], r['설명'], r['비고'], r['비고2'], r['거래점명'], r['거래점'], r['카드번호']]
+                      .map(v => String(v || '').trim())
+                      .filter(Boolean);
+                    const description = Array.from(new Set(descriptionParts)).join(' / ');
+                    const category = classifyBankUploadRow(direction as 'income' | 'expense', counterparty, description);
                     return {
-                      depositor: r['입금자'] || r['입금자명'] || r['보내는분'] || r['적요'] || '',
-                      amount: Number(String(r['입금액'] || r['금액'] || r['입금'] || '0').replace(/[^0-9]/g, '')) || 0,
-                      transaction_date: String(txDate).trim(),
-                      description: r['적요'] || r['비고'] || r['메모'] || '',
+                      depositor: counterparty,
+                      counterparty,
+                      amount,
+                      transaction_date: txDate,
+                      description,
+                      direction,
+                      category,
+                      purpose,
+                      raw_json: JSON.stringify({
+                        거래일시: r['거래일시'],
+                        적요: r['적요'],
+                        입금액: r['입금액'],
+                        출금액: r['출금액'],
+                        내용: r['내용'],
+                        잔액: r[' 잔액 '] || r['잔액'],
+                        거래점명: r['거래점명'] || r['거래점'],
+                        카드번호: r['카드번호'],
+                        분류: r['분류'],
+                        설명: r['설명'],
+                        비고: r['비고'],
+                        비고2: r['비고2'],
+                      }),
                     };
-                  }).filter((r: any) => r.depositor && r.amount > 0);
+                  }).filter((r: any) => r.depositor && r.amount > 0 && r.transaction_date);
 
                   if (rows.length === 0) { alert('유효한 데이터가 없습니다.'); setBankUploading(false); e.target.value = ''; return; }
                   if (!confirm(`${rows.length}건 업로드하시겠습니까?\n(업무성과 중복 건은 자동 제외)`)) { setBankUploading(false); e.target.value = ''; return; }
 
-                  const res = await api.accounting.uploadBank(rows);
-                  let msg = `처리 완료:\n- 등록: ${res.inserted}건\n- 업무성과 중복: ${res.dupSales}건 (제외)\n- 기존 중복: ${res.dupStaging}건 (제외)`;
-                  if (res.skipped?.length > 0) msg += `\n- 누락: ${res.skipped.length}건`;
+                  const chunkSize = 10;
+                  const summary = { inserted: 0, autoExpenses: 0, dupSales: 0, dupStaging: 0, skipped: [] as string[] };
+                  for (let i = 0; i < rows.length; i += chunkSize) {
+                    const res = await api.accounting.uploadBank(rows.slice(i, i + chunkSize));
+                    summary.inserted += res.inserted || 0;
+                    summary.autoExpenses += res.autoExpenses || 0;
+                    summary.dupSales += res.dupSales || 0;
+                    summary.dupStaging += res.dupStaging || 0;
+                    if (res.skipped?.length) summary.skipped.push(...res.skipped);
+                  }
+                  let msg = `처리 완료:\n- 대기 등록: ${summary.inserted}건\n- 지출 자동등록: ${summary.autoExpenses}건\n- 업무성과 중복: ${summary.dupSales}건 (제외)\n- 기존 중복: ${summary.dupStaging}건 (제외)`;
+                  if (summary.skipped.length > 0) msg += `\n- 누락: ${summary.skipped.length}건`;
                   alert(msg);
+                  setBankMonth('');
                   loadBank();
                 } catch (err: any) { alert('업로드 실패: ' + err.message); }
                 finally { setBankUploading(false); e.target.value = ''; }
@@ -871,40 +1095,59 @@ export default function Accounting() {
           </div>
 
           <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginBottom: 12, padding: '8px 12px', background: '#f8f9fa', borderRadius: 6 }}>
-            엑셀 양식: 입금자(입금자명) / 입금액(금액) / 거래일(날짜) / 적요(비고)<br />
-            업무성과에 이미 등록된 건(입금자+금액+입금일 일치)은 자동 제외됩니다.
+            엑셀 양식: 거래일시 / 적요 / 입금액 / 출금액 / 내용 / 잔액 / 거래점 / 카드번호 / 분류 / 설명 / 비고<br />
+            입금은 업무성과 매칭·카드정산·기타수입 후보로 분류되고, 출금은 설명/비고 목적값으로 회계장부에 자동 등록됩니다. 카드/PG 정산은 신규 수입으로 추가하지 않습니다.
           </div>
 
-          {bankItems.length === 0 ? (
+          {bankItems.length > 0 && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+              {Object.entries(BANK_CATEGORY_LABELS).map(([key, label]) => (
+                <span key={key} style={{ padding: '5px 9px', borderRadius: 999, background: '#f1f3f4', color: '#3c4043', fontSize: '0.75rem', fontWeight: 600 }}>
+                  {label} {bankSummary[key] || 0}건
+                </span>
+              ))}
+            </div>
+          )}
+
+          {displayBankItems.length === 0 ? (
             <div className="empty-state" style={{ padding: 40 }}>대기 중인 거래내역이 없습니다.</div>
           ) : (
             <div className="table-wrapper">
               <table className="data-table" style={{ fontSize: '0.82rem' }}>
                 <thead>
                   <tr>
-                    <th style={{ width: '12%' }}>거래일</th>
-                    <th style={{ width: '18%' }}>입금자</th>
+                    <th style={{ width: '10%' }}>거래일</th>
+                    <th style={{ width: '7%' }}>구분</th>
+                    <th style={{ width: '16%' }}>거래처</th>
                     <th style={{ width: '14%', textAlign: 'right' }}>금액</th>
-                    <th>적요</th>
+                    <th style={{ width: '13%' }}>자동분류</th>
+                    <th>내용</th>
                     <th style={{ width: '22%' }}>처리</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {bankItems.map((item: any, i: number) => (
+                  {displayBankItems.map((item: any, i: number) => (
                     <tr key={item.id} style={{ background: i % 2 === 1 ? '#fafbfc' : undefined }}>
                       <td>{item.transaction_date}</td>
-                      <td style={{ fontWeight: 600 }}>{item.depositor}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600, color: '#188038' }}>{Number(item.amount).toLocaleString()}원</td>
+                      <td style={{ fontWeight: 700, color: item.direction === 'expense' ? '#d93025' : '#188038' }}>{item.direction === 'expense' ? '지출' : '수입'}</td>
+                      <td style={{ fontWeight: 600 }}>{item.counterparty || item.depositor}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600, color: item.direction === 'expense' ? '#d93025' : '#188038' }}>{item.direction === 'expense' ? '-' : '+'}{Number(item.amount).toLocaleString()}원</td>
+                      <td><span style={{ fontSize: '0.72rem', padding: '3px 7px', borderRadius: 999, background: item.category === 'card_settlement' ? '#f3e5f5' : item.category === 'expense' ? '#fce8e6' : '#e8f0fe', color: item.category === 'expense' ? '#d93025' : '#1a73e8', fontWeight: 700 }}>{BANK_CATEGORY_LABELS[item.category] || '확인필요'}</span></td>
                       <td style={{ fontSize: '0.75rem', color: '#9aa0a6' }}>{item.description || '-'}</td>
                       <td>
                         {bankMovingId === item.id ? (
                           <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
                             <select className="form-input" value={bankMoveType} onChange={(e) => setBankMoveType(e.target.value)}
-                              style={{ fontSize: '0.72rem', padding: '2px 4px', width: 70 }}>
-                              <option value="계약">계약</option>
-                              <option value="낙찰">낙찰</option>
-                              <option value="중개">중개</option>
-                              <option value="기타">기타</option>
+                              style={{ fontSize: '0.72rem', padding: '2px 4px', width: 110 }}>
+                              {item.direction === 'expense' ? (
+                                <option value="지출">지출</option>
+                              ) : (
+                                <>
+                                  <option value="기타수입">기타수입</option>
+                                  <option value="업무성과매출">업무성과매출</option>
+                                  <option value="카드정산">카드정산</option>
+                                </>
+                              )}
                             </select>
                             <select className="form-input" value={bankMoveUser} onChange={(e) => setBankMoveUser(e.target.value)}
                               style={{ fontSize: '0.72rem', padding: '2px 4px', width: 80 }}>
@@ -914,7 +1157,7 @@ export default function Accounting() {
                             <button className="btn btn-sm btn-primary" style={{ fontSize: '0.68rem', padding: '2px 6px' }}
                               onClick={async () => {
                                 try {
-                                  await api.accounting.stagingToSales(item.id, { type: bankMoveType, user_id: bankMoveUser || undefined });
+                                  await api.accounting.stagingToSales(item.id, { type: bankMoveType, user_id: bankMoveUser || undefined, direction: item.direction === 'expense' ? 'expense' : 'income' });
                                   setBankMovingId(null); loadBank();
                                 } catch (err: any) { alert(err.message); }
                               }}>이동</button>
@@ -923,10 +1166,21 @@ export default function Accounting() {
                           </div>
                         ) : (
                           <div style={{ display: 'flex', gap: 4 }}>
-                            <button className="btn btn-sm btn-primary" style={{ fontSize: '0.7rem', padding: '3px 8px' }}
-                              onClick={() => { setBankMovingId(item.id); setBankMoveType('기타'); setBankMoveUser(''); }}>
-                              매출 이동
-                            </button>
+                            {item.category === 'card_settlement' ? (
+                              <button className="btn btn-sm btn-primary" style={{ fontSize: '0.7rem', padding: '3px 8px' }}
+                                onClick={async () => {
+                                  if (!confirm('카드/PG 정산 입금으로 확인 처리합니다.\n신규 수입은 추가되지 않습니다.')) return;
+                                  try { await api.accounting.stagingDelete(item.id); loadBank(); }
+                                  catch (err: any) { alert(err.message); }
+                                }}>
+                                정산 확인
+                              </button>
+                            ) : (
+                              <button className="btn btn-sm btn-primary" style={{ fontSize: '0.7rem', padding: '3px 8px' }}
+                                onClick={() => { setBankMovingId(item.id); setBankMoveType(item.direction === 'expense' ? '지출' : '기타수입'); setBankMoveUser(''); }}>
+                                {item.direction === 'expense' ? '지출 등록' : '기타수입 등록'}
+                              </button>
+                            )}
                             <button className="btn btn-sm" style={{ fontSize: '0.7rem', padding: '3px 6px', color: '#9aa0a6' }}
                               onClick={async () => {
                                 if (!confirm(`"${item.depositor} ${Number(item.amount).toLocaleString()}원" 을 무시하시겠습니까?`)) return;

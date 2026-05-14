@@ -26,6 +26,15 @@ function parseCurrency(val: string): number {
   return Number((val || '').replace(/[^0-9]/g, '')) || 0;
 }
 
+function isCompanionEntry(entry: JournalEntry): boolean {
+  try {
+    const d = typeof entry.data === 'string' ? JSON.parse(entry.data) : entry.data;
+    return !!d.companion;
+  } catch {
+    return false;
+  }
+}
+
 const COLORS = ['#1a73e8', '#e65100', '#188038', '#7b1fa2', '#f9ab00', '#d93025', '#00897b', '#5c6bc0'];
 
 export default function Statistics() {
@@ -87,6 +96,7 @@ export default function Statistics() {
     (!filterUser || m.id === filterUser)
   );
   const filteredEntries = entries.filter((e) => {
+    if (isCompanionEntry(e)) return false;
     if (filterMonth) {
       const m = e.target_date.slice(0, 7);
       const end = filterMonthEnd || filterMonth;
@@ -200,9 +210,9 @@ export default function Statistics() {
       </div>
 
       <div className="stats-content">
-        {tabs[tab] === '입찰 분석' && <BidAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
+        {tabs[tab] === '입찰 분석' && <BidAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch) && !isCompanionEntry(e))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
         {tabs[tab] === '브리핑 분석' && <BriefingAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
-        {tabs[tab] === '근태 분석' && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
+        {tabs[tab] === '근태 분석' && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch) && !isCompanionEntry(e))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
         {tabs[tab] === '이상 감지' && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m) && m.role !== 'freelancer' && (m as any).login_type !== 'freelancer')} />}
         {tabs[tab] === '매출/환불' && <SalesAnalysis records={isDirector ? salesRecords.filter(r => { const eb = r.attribution_branch || r.branch; return eb === '대전' || eb === '부산' || r.user_id === user?.id; }) : salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
         {tabs[tab] === '종합분석' && <ComprehensiveAnalysis filterBranch={filterBranch} filterDept={filterDept} filterUser={filterUser} filterMonth={filterMonth} filterMonthEnd={filterMonthEnd} />}

@@ -32,11 +32,24 @@ interface Props {
   targetDate: string;
   onCreated: () => void;
   onClose: () => void;
+  assignableMembers?: { id: string; name: string; role: string; branch: string; department: string; position_title?: string }[];
+  defaultAssigneeId?: string;
+  canChooseAssignee?: boolean;
 }
 
-export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
+export default function JournalForm({ targetDate, onCreated, onClose, assignableMembers = [], defaultAssigneeId, canChooseAssignee = false }: Props) {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [assigneeId, setAssigneeId] = useState(defaultAssigneeId || assignableMembers[0]?.id || '');
+
+  useEffect(() => {
+    setAssigneeId(defaultAssigneeId || assignableMembers[0]?.id || '');
+  }, [defaultAssigneeId, assignableMembers]);
+
+  const assigneeOptions = assignableMembers.map((m) => ({
+    value: m.id,
+    label: `${m.name}${m.position_title ? ` · ${m.position_title}` : ''}${m.department ? ` · ${m.department}` : ''}`,
+  }));
 
   // 공통
   const [activityType, setActivityType] = useState<ActivityType>('입찰');
@@ -44,6 +57,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const [fieldCheckOut, setFieldCheckOut] = useState(false);
   const [timeFrom, setTimeFrom] = useState('');
   const [timeTo, setTimeTo] = useState('');
+  const [companion, setCompanion] = useState(false);
 
   // 브리핑자료 (별도 섹션)
   const [, setBriefingSubmit] = useState(false);
@@ -116,8 +130,23 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     if (bidProxy && activityType === '입찰') {
       setFieldCheckIn(false);
       setFieldCheckOut(false);
+      setTimeFrom('');
+      setTimeTo('');
     }
   }, [bidProxy]);
+
+  // 동행은 담당자 보조 기록이므로 외근/통계 대상에서 제외한다.
+  useEffect(() => {
+    if (activityType !== '임장' && activityType !== '미팅') {
+      setCompanion(false);
+      return;
+    }
+    if (companion) {
+      setFieldCheckIn(false);
+      setFieldCheckOut(false);
+      if (activityType === '임장') setInspClientType('고객명');
+    }
+  }, [activityType, companion]);
 
   // 임장
   const [inspYear, setInspYear] = useState('2026');
@@ -131,9 +160,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   // 임장 중복 경고
   const [inspDupWarning, setInspDupWarning] = useState<{ user_name: string; target_date: string }[] | null>(null);
 
-  // 임장 사건번호+법원 중복 체크 (debounce)
+  // 임장 사건번호+법원 중복 체크 (debounce). 동행은 담당자 보조 기록이라 중복 사건으로 보지 않는다.
   useEffect(() => {
-    if (activityType !== '임장' || !inspCaseNo.trim() || inspCaseNo.length < 3 || !inspCourt) {
+    if (activityType !== '임장' || companion || !inspCaseNo.trim() || inspCaseNo.length < 3 || !inspCourt) {
       setInspDupWarning(null);
       return;
     }
@@ -146,7 +175,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
         .catch(() => setInspDupWarning(null));
     }, 500);
     return () => clearTimeout(timer);
-  }, [inspYear, inspCaseNo, inspCourt, activityType]);
+  }, [inspYear, inspCaseNo, inspCourt, activityType, companion]);
 
   // 브리핑 고객명
   const [briefingClient, setBriefingClient] = useState('');
@@ -180,9 +209,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     if (activityType === '입찰' && !bidBidder.trim()) { alert('계약자명을 입력해주세요.'); return null; }
     if (activityType === '임장' && !inspCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '임장' && !inspCourt) { alert('법원을 선택해주세요.'); return null; }
-    if (activityType === '임장' && inspClientType === '고객명' && !inspClient.trim()) { alert('계약자명을 입력해주세요.'); return null; }
+    if (activityType === '임장' && inspClientType === '고객명' && !inspClient.trim()) { alert(`${companion ? '담당자' : '계약자명'}을 입력해주세요.`); return null; }
     if (activityType === '임장' && inspClientType === '기타' && !inspEtcReason.trim()) { alert('사유를 입력해주세요.'); return null; }
-    if (activityType === '미팅' && !meetingClient.trim()) { alert('계약자명을 입력해주세요.'); return null; }
+    if (activityType === '미팅' && !meetingClient.trim()) { alert(`${companion ? '담당자' : '계약자명'}을 입력해주세요.`); return null; }
     if (activityType === '미팅' && !meetingInternal && !meetingPlace.trim()) { alert('장소를 입력해주세요.'); return null; }
     if (activityType === '미팅' && meetingType === '브리핑' && !meetingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '브리핑자료제출' && !briefingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
@@ -193,7 +222,12 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
       return null;
     }
 
-    let data: Record<string, unknown> = { timeFrom, timeTo, fieldCheckIn, fieldCheckOut };
+    let data: Record<string, unknown> = {
+      timeFrom: activityType === '입찰' && bidProxy ? '' : timeFrom,
+      timeTo: activityType === '입찰' && bidProxy ? '' : timeTo,
+      fieldCheckIn,
+      fieldCheckOut,
+    };
     let subtype = '';
     let label = '';
 
@@ -209,16 +243,18 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
       }
       case '임장':
         data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, itemNo: inspItemNo, court: inspCourt, place: inspPlace,
-          client: inspClientType === '고객명' ? inspClient : '', inspClientType, inspEtcReason: inspClientType === '기타' ? inspEtcReason : '' };
+          client: inspClientType === '고객명' ? inspClient : '', companion, companionPerson: companion ? inspClient : '',
+          inspClientType, inspEtcReason: inspClientType === '기타' ? inspEtcReason : '' };
         subtype = `${inspYear}타경${inspCaseNo}`;
-        label = `임장 — ${subtype}${inspItemNo ? ` | ${inspItemNo}` : ''} | ${inspClientType === '고객명' ? inspClient : inspEtcReason}`;
+        label = `임장${companion ? ' [동행]' : ''} — ${subtype}${inspItemNo ? ` | ${inspItemNo}` : ''} | ${inspClientType === '고객명' ? inspClient : inspEtcReason}`;
         break;
       case '미팅':
         data = { ...data, meetingType, etcReason: meetingEtc, place: meetingPlace, client: meetingClient,
+          companion, companionPerson: companion ? meetingClient : '',
           internalMeeting: meetingInternal, // 회사 미팅 플래그 — 외근 X, 외근보고서 매칭 제외
           ...(meetingType === '브리핑' ? { caseNo: `${meetingCaseYear}타경${meetingCaseNo}`, itemNo: meetingItemNo } : {}) };
         subtype = meetingType === '기타' ? meetingEtc : meetingType;
-        label = `미팅(${subtype})${meetingInternal ? ' [회사]' : ''} — ${meetingClient}${meetingType === '브리핑' ? ` | ${meetingCaseYear}타경${meetingCaseNo}${meetingItemNo ? ` | ${meetingItemNo}` : ''}` : ''}`;
+        label = `미팅(${subtype})${meetingInternal ? ' [회사]' : ''}${companion ? ' [동행]' : ''} — ${meetingClient}${meetingType === '브리핑' ? ` | ${meetingCaseYear}타경${meetingCaseNo}${meetingItemNo ? ` | ${meetingItemNo}` : ''}` : ''}`;
         break;
       case '사무':
         data = { ...data, officeType, etcReason: officeEtc };
@@ -260,6 +296,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
     setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidCancelled(false); setBidDeviationReason('');
     setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient('');
     setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo(''); setMeetingItemNo(''); setMeetingInternal(false);
+    setCompanion(false);
     setOfficeEtc('');
     setPersonalReason('');
     setBriefingSubmit(false); setBriefingCaseNo(''); setBriefingItemNo(''); setBriefingCourt(''); setBriefingClient('');
@@ -268,6 +305,9 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
   const removeTask = (idx: number) => {
     setTasks(tasks.filter((_, i) => i !== idx));
   };
+
+  const isProxyBid = activityType === '입찰' && bidProxy;
+  const supportsCompanion = activityType === '임장' || activityType === '미팅';
 
   // 전체 등록
   const handleSubmitAll = async () => {
@@ -281,12 +321,17 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
 
     setSaving(true);
     try {
+      if (canChooseAssignee && !assigneeId) {
+        alert('담당자를 선택해주세요.');
+        return;
+      }
       for (const task of finalTasks) {
         await api.journal.create({
           target_date: targetDate,
           activity_type: task.activityType,
           activity_subtype: task.subtype,
           data: task.data,
+          ...(canChooseAssignee && assigneeId ? { user_id: assigneeId } : {}),
         });
       }
       onCreated();
@@ -321,6 +366,19 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
         )}
 
         <form onSubmit={(e) => { e.preventDefault(); handleSubmitAll(); }} className="journal-form-body">
+          {canChooseAssignee && (
+            <div className="form-group">
+              <label>담당자</label>
+              <Select
+                options={assigneeOptions}
+                value={assigneeOptions.find((o) => o.value === assigneeId) || null}
+                onChange={(o: any) => setAssigneeId(o?.value || '')}
+                placeholder="담당자 선택"
+                isSearchable
+              />
+            </div>
+          )}
+
           {/* 업무 유형 */}
           <div className="form-group">
             <label>업무 유형</label>
@@ -331,8 +389,21 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
             </div>
           </div>
 
+          {supportsCompanion && (
+            <div className="form-group">
+              <button
+                type="button"
+                className={`field-check-label ${companion ? 'checked' : ''}`}
+                style={{ width: '100%', cursor: 'pointer', padding: '7px 10px', borderRadius: 6, border: '1px solid #dadce0', background: companion ? '#e8f0fe' : '#fff', color: companion ? '#1a73e8' : '#3c4043', fontWeight: companion ? 700 : 400 }}
+                onClick={() => setCompanion((v) => !v)}
+              >
+                {companion ? '✓ 동행 (통계/중복 제외)' : '동행'}
+              </button>
+            </div>
+          )}
+
           {/* 현장출근/퇴근 */}
-          {activityType !== '개인' && activityType !== '브리핑자료제출' && (
+          {activityType !== '개인' && activityType !== '브리핑자료제출' && !isProxyBid && !companion && (
             <div className="form-group">
               <div className="field-check-group">
                 <label className={`field-check-label ${fieldCheckIn ? 'checked' : ''}`}>
@@ -346,7 +417,7 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
           )}
 
           {/* 시간 (브리핑/개인은 불필요) */}
-          {activityType !== '개인' && activityType !== '브리핑자료제출' && (
+          {activityType !== '개인' && activityType !== '브리핑자료제출' && !isProxyBid && (
             <div className="form-group">
               <label>시간</label>
               <div className="inline-row">
@@ -461,14 +532,14 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
               <div className="form-row form-row-inline">
                 <div className="form-group" style={{ flex: 'none', minWidth: 70 }}>
                   <label>구분</label>
-                  <select value={inspClientType} onChange={(e) => setInspClientType(e.target.value as any)} style={{ padding: '5px 6px', borderRadius: 6, border: '1px solid #dadce0', fontSize: '0.78rem' }}>
+                  <select value={inspClientType} onChange={(e) => setInspClientType(e.target.value as any)} disabled={companion} style={{ padding: '5px 6px', borderRadius: 6, border: '1px solid #dadce0', fontSize: '0.78rem' }}>
                     <option value="고객명">계약자명</option>
                     <option value="기타">기타</option>
                   </select>
                 </div>
                 <div className="form-group" style={{ flex: 1 }}>
                   {inspClientType === '고객명' ? (
-                    <><label>계약자명 *</label><input type="text" value={inspClient} onChange={(e) => setInspClient(e.target.value)} placeholder="계약자명" /></>
+                    <><label>{companion ? '담당자 *' : '계약자명 *'}</label><input type="text" value={inspClient} onChange={(e) => setInspClient(e.target.value)} placeholder={companion ? '도와주는 담당자명' : '계약자명'} /></>
                   ) : (
                     <><label>사유 *</label><input type="text" value={inspEtcReason} onChange={(e) => setInspEtcReason(e.target.value)} placeholder="ex) 사전답사" /></>
                   )}
@@ -511,10 +582,10 @@ export default function JournalForm({ targetDate, onCreated, onClose }: Props) {
                     <input type="text" value={meetingItemNo} onChange={(e) => setMeetingItemNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="" className="case-no-input" maxLength={3} style={{ width: 52, textAlign: 'center' }} />
                   </div>
                 </div>
-                <div className="form-group"><label>계약자명 *</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="계약자명" required /></div>
+                <div className="form-group"><label>{companion ? '담당자 *' : '계약자명 *'}</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder={companion ? '도와주는 담당자명' : '계약자명'} required /></div>
                 </>
               ) : (
-                <div className="form-group"><label>계약자명 *</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder="계약자명" required /></div>
+                <div className="form-group"><label>{companion ? '담당자 *' : '계약자명 *'}</label><input type="text" value={meetingClient} onChange={(e) => setMeetingClient(e.target.value)} placeholder={companion ? '도와주는 담당자명' : '계약자명'} required /></div>
               )}
               <div className="form-row form-row-inline">
                 <div className="form-group" style={{ flex: 1 }}>

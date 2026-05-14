@@ -17,9 +17,11 @@ interface Props {
   onDelete?: (id: string) => void;
   onToggleComplete?: (id: string, completed: boolean, failReason?: string) => void;
   onUpdate?: () => void;
+  assignableMembers?: { id: string; name: string; role: string; branch: string; department: string; position_title?: string }[];
+  canReassign?: boolean;
 }
 
-export default function JournalCard({ entries, userName, userRole, positionTitle, date, readonly, currentUserRole, onDelete, onToggleComplete, onUpdate }: Props) {
+export default function JournalCard({ entries, userName, userRole, positionTitle, date, readonly, currentUserRole, onDelete, onToggleComplete, onUpdate, assignableMembers = [], canReassign = false }: Props) {
   // 시간순 정렬
   const sortedEntries = [...entries].sort((a, b) => {
     try {
@@ -55,7 +57,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
 
   const hasFieldCheck = entries.some((e) => {
     const d = parseData(e.data);
-    return d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit;
+    return d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit || d.companion;
   });
 
   const handleFail = (id: string) => {
@@ -67,7 +69,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
 
   const startEdit = (entry: JournalEntry) => {
     setEditingId(entry.id);
-    setEditData({ ...parseData(entry.data) });
+    setEditData({ ...parseData(entry.data), __assigneeId: entry.user_id });
   };
 
   const cancelEdit = () => { setEditingId(null); setEditData({}); };
@@ -75,7 +77,11 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
   const saveEdit = async (entry: JournalEntry) => {
     try {
       // 사건번호 변경 시 activity_subtype도 갱신
-      const updatePayload: { data: Record<string, any>; activity_subtype?: string; bid_field_only?: boolean } = { data: editData };
+      const { __assigneeId, ...rawDataToSave } = editData;
+      const dataToSave = rawDataToSave.companion
+        ? { ...rawDataToSave, companionPerson: rawDataToSave.client || rawDataToSave.companionPerson || '', fieldCheckIn: false, fieldCheckOut: false }
+        : rawDataToSave;
+      const updatePayload: { data: Record<string, any>; activity_subtype?: string; bid_field_only?: boolean; user_id?: string } = { data: dataToSave };
       if (editData.caseNo && (entry.activity_type === '입찰' || entry.activity_type === '임장')) {
         updatePayload.activity_subtype = editData.caseNo;
       }
@@ -85,6 +91,9 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
       // 읽기전용(과거일정)에서 입찰 수정 시 bid_field_only 플래그 전달
       if (readonly && entry.activity_type === '입찰') {
         updatePayload.bid_field_only = true;
+      }
+      if (canReassign && __assigneeId && __assigneeId !== entry.user_id) {
+        updatePayload.user_id = __assigneeId;
       }
       await api.journal.update(entry.id, updatePayload);
       setEditingId(null);
@@ -169,6 +178,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
             {entries.some((e) => parseData(e.data).fieldCheckIn) && <span className="journal-field-badge"><MapPin size={10} /> 현장출근</span>}
             {entries.some((e) => parseData(e.data).fieldCheckOut) && <span className="journal-field-badge"><MapPin size={10} /> 현장퇴근</span>}
             {entries.some((e) => parseData(e.data).briefingSubmit) && <span className="journal-field-badge briefing-badge">브리핑</span>}
+            {entries.some((e) => parseData(e.data).companion) && <span className="journal-field-badge" style={{ color: '#1a73e8' }}>동행</span>}
           </div>
         )}
         <div className="journal-card-date">{formatShortDate(date)}</div>
@@ -222,11 +232,12 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                     <div className="journal-entry-header">
                       <span className="journal-type-tag" style={{ backgroundColor: ACTIVITY_COLORS[entry.activity_type as ActivityType] + '18', color: ACTIVITY_COLORS[entry.activity_type as ActivityType], borderColor: ACTIVITY_COLORS[entry.activity_type as ActivityType] + '40' }}>{entry.activity_type}</span>
                       {!isEditing && entry.activity_subtype && <span className="journal-entry-sub">{entry.activity_subtype}</span>}
-                      {(d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit) && !isEditing && (
+                      {(d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit || d.companion) && !isEditing && (
                         <div className="journal-field-badges-inline">
                           {d.fieldCheckIn && <span className="journal-field-badge"><MapPin size={10} /> 현장출근</span>}
                           {d.fieldCheckOut && <span className="journal-field-badge"><MapPin size={10} /> 현장퇴근</span>}
                           {d.briefingSubmit && <span className="journal-field-badge briefing-badge">브리핑</span>}
+                          {d.companion && <span className="journal-field-badge" style={{ color: '#1a73e8' }}>동행</span>}
                         </div>
                       )}
                       {(!readonly || isMaster || isEditing) && (
@@ -250,6 +261,19 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                         <input type="text" value={failReason} onChange={(e) => setFailReason(e.target.value)} placeholder="미완료 사유" />
                         <button className="btn btn-sm btn-danger" onClick={() => handleFail(entry.id)}>확인</button>
                         <button className="btn btn-sm" onClick={() => setFailId(null)}>취소</button>
+                      </div>
+                    )}
+
+                    {isEditing && canReassign && assignableMembers.length > 0 && (
+                      <div className="journal-edit-row">
+                        <label>담당자</label>
+                        <select value={ed('__assigneeId')} onChange={(e) => setEd('__assigneeId', e.target.value)}>
+                          {assignableMembers.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name}{m.position_title ? ` · ${m.position_title}` : ''}{m.department ? ` · ${m.department}` : ''}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     )}
 
@@ -320,17 +344,19 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       {entry.activity_type === '임장' && (
                         isEditing ? (
                           <div className="journal-edit-form">
+                            <CompanionEdit ed={ed} setEditData={setEditData} editData={editData} />
                             <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>{ed('companion') ? '담당자' : '고객명'}</label><input value={ed('client')} onChange={(e) => setEd('client', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>장소</label><input value={ed('place')} onChange={(e) => setEd('place', e.target.value)} /></div>
-                            <FieldCheckEdit ed={ed} setEd={setEd} />
+                            {!ed('companion') && <FieldCheckEdit ed={ed} setEd={setEd} />}
                           </div>
                         ) : (
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
-                            {d.client && <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.client)}</div>}
+                            {d.client && <div className="journal-detail-row"><span className="journal-detail-label">{d.companion ? '담당자' : '고객명'}</span>{showVal(d.client)}</div>}
                             {d.court && <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>
                             {entry.completed === 1 && <div className="journal-detail-row"><span className="journal-detail-label">상태</span><span style={{ color: '#188038' }}>완료</span></div>}
@@ -343,8 +369,10 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       {entry.activity_type === '미팅' && (
                         isEditing ? (
                           <div className="journal-edit-form">
+                            <CompanionEdit ed={ed} setEditData={setEditData} editData={editData} />
                             <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>유형</label><input value={ed('meetingType')} onChange={(e) => setEd('meetingType', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>{ed('companion') ? '담당자' : '고객명'}</label><input value={ed('client')} onChange={(e) => setEd('client', e.target.value)} /></div>
                             <div className="journal-edit-row" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                               <label>장소</label>
                               <input style={{ flex: 1 }}
@@ -368,14 +396,14 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                                 {ed('internalMeeting') ? '✓ 회사 미팅 (외근 X)' : '회사 미팅'}
                               </button>
                             </div>
-                            <FieldCheckEdit ed={ed} setEd={setEd} />
+                            {!ed('companion') && <FieldCheckEdit ed={ed} setEd={setEd} />}
                           </div>
                         ) : (
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
-                            <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.meetingType}{d.etcReason ? ` - ${d.etcReason}` : ''}{d.internalMeeting && <span style={{ marginLeft: 6, padding: '1px 6px', background: '#e8f5e9', color: '#188038', borderRadius: 8, fontSize: '0.7rem', fontWeight: 600 }}>회사 미팅</span>}</span></div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">유형</span><span>{d.meetingType}{d.etcReason ? ` - ${d.etcReason}` : ''}{d.internalMeeting && <span style={{ marginLeft: 6, padding: '1px 6px', background: '#e8f5e9', color: '#188038', borderRadius: 8, fontSize: '0.7rem', fontWeight: 600 }}>회사 미팅</span>}{d.companion && <span style={{ marginLeft: 6, padding: '1px 6px', background: '#e8f0fe', color: '#1a73e8', borderRadius: 8, fontSize: '0.7rem', fontWeight: 600 }}>동행</span>}</span></div>
                             {d.caseNo && <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>}
-                            {d.client && <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.client)}</div>}
+                            {d.client && <div className="journal-detail-row"><span className="journal-detail-label">{d.companion ? '담당자' : '고객명'}</span>{showVal(d.client)}</div>}
                             {d.place && <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>}
                           </>
                         )
@@ -448,6 +476,40 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
 }
 
 // 현장출근/퇴근 체크박스 (수정 폼 공용)
+function CompanionEdit({ ed, editData, setEditData }: { ed: (k: string) => any; editData: Record<string, any>; setEditData: (data: Record<string, any>) => void }) {
+  const isOn = !!ed('companion');
+  return (
+    <div className="journal-edit-row">
+      <label>동행</label>
+      <button
+        type="button"
+        className={`field-check-label ${isOn ? 'checked' : ''}`}
+        style={{
+          cursor: 'pointer',
+          padding: '5px 10px',
+          borderRadius: 6,
+          border: '1px solid #dadce0',
+          background: isOn ? '#e8f0fe' : '#fff',
+          color: isOn ? '#1a73e8' : '#3c4043',
+          fontWeight: isOn ? 700 : 400,
+        }}
+        onClick={() => {
+          const next = !isOn;
+          setEditData({
+            ...editData,
+            companion: next,
+            companionPerson: next ? (editData.client || '') : '',
+            fieldCheckIn: next ? false : editData.fieldCheckIn,
+            fieldCheckOut: next ? false : editData.fieldCheckOut,
+          });
+        }}
+      >
+        {isOn ? '✓ 동행 (통계/중복 제외)' : '동행'}
+      </button>
+    </div>
+  );
+}
+
 function FieldCheckEdit({ ed, setEd }: { ed: (k: string) => any; setEd: (k: string, v: any) => void }) {
   return (
     <div className="journal-edit-row">

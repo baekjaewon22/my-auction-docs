@@ -243,6 +243,7 @@ comprehensive.get('/', async (c) => {
     SELECT user_id, activity_type, COUNT(*) as cnt
     FROM journal_entries
     WHERE target_date BETWEEN ? AND ?
+      AND COALESCE(json_extract(data, '$.companion'), 0) != 1
     GROUP BY user_id, activity_type
   `).bind(periodStart, periodEnd).all<any>();
   const activityMap: Record<string, Record<string, number>> = {};

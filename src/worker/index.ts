@@ -193,6 +193,17 @@ app.get('/api/print/data/:docId', async (c) => {
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
+// Slack 총무 체크리스트 테스트 발송. SLACK_ACCOUNTING_TEST_TOKEN secret과 query token이 일치해야 실행된다.
+app.post('/api/_test-slack-accounting-checklist', async (c) => {
+  const token = c.req.query('token') || '';
+  const expected = String((c.env as any).SLACK_ACCOUNTING_TEST_TOKEN || '').trim();
+  if (!expected || token !== expected) return c.json({ error: '권한 없음' }, 403);
+
+  const { sendAccountingSlackChecklist } = await import('./lib/accounting-slack-checklist');
+  const result = await sendAccountingSlackChecklist(c.env as any, '수동 테스트');
+  return c.json({ success: true, ...result });
+});
+
 // 임시: 모든 알림톡 템플릿 테스트 발송 (인증 없이, 토큰 보호)
 app.post('/api/_test-alimtalk-all', async (c) => {
   const token = c.req.query('token');
@@ -238,6 +249,7 @@ app.post('/api/_test-alimtalk-all', async (c) => {
 //   */30 * * * *  → Drive 백업 (5건씩, browser 재사용)
 //   0 15 * * *    → 매일 자정 KST: 종합분석 통계 일일 갱신
 //   30 15 1 * *   → 매월 1일 00:30 KST: 종합분석 통계 월간 확정 + sales_evaluations 자동 생성
+// Slack checklist cron uses UTC: 00:00/06:00 = 09:00/15:00 KST.
 async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext) {
   const cron = event.cron;
   if (cron === '*/30 * * * *') {
@@ -264,6 +276,14 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
         console.error('[cron approval-alerts] error', err);
       }
     })());
+  } else if (cron === '0 0,6 * * 1-5') {
+    const runLabel = new Date().getUTCHours() === 0 ? '오전 9시' : '오후 3시';
+    ctx.waitUntil(import('./lib/accounting-slack-checklist').then(({ sendAccountingSlackChecklist }) =>
+      sendAccountingSlackChecklist(env, runLabel).then(
+        (r) => console.log('[cron slack-accounting-checklist] done', r),
+        (err) => console.error('[cron slack-accounting-checklist] error', err),
+      ),
+    ));
   } else if (cron === '0 15 * * *') {
     ctx.waitUntil(import('./analytics-cron').then(({ runDailyAggregation }) =>
       runDailyAggregation(env).then(

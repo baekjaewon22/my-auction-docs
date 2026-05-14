@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from './store';
 import Layout from './components/Layout';
 import Login from './pages/Login';
@@ -27,7 +27,6 @@ import PropertyReport from './pages/PropertyReport';
 import FinanceAnalytics from './pages/FinanceAnalytics';
 import AlimtalkLogs from './pages/AlimtalkLogs';
 import AdminNotes from './pages/AdminNotes';
-import Cooperation from './pages/Cooperation';
 import RoomReservation from './pages/RoomReservation';
 import ContractTracker from './pages/ContractTracker';
 import LinkReview from './pages/LinkReview';
@@ -35,6 +34,7 @@ import Print from './pages/Print';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 function ContractTrackerRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
@@ -102,9 +102,25 @@ function NonAccountingRoute({ children }: { children: React.ReactNode }) {
 
 function AccountingRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  const allowed = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'];
+  const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
+}
+
+function PayrollRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
+  if (!user || (!allowed.includes(user.role) && !PAYROLL_EXTRA_IDS.includes(user.id))) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
+function CooperationRedirect() {
+  const location = useLocation();
+  const query = new URLSearchParams(location.search);
+  query.set('tab', 'cooperation');
+  return <Navigate to={`/admin-notes?${query.toString()}`} replace />;
 }
 
 function FinanceAnalyticsRoute({ children }: { children: React.ReactNode }) {
@@ -203,9 +219,9 @@ export default function App() {
           <Route
             path="payroll"
             element={
-              <AccountingRoute>
+              <PayrollRoute>
                 <Payroll />
-              </AccountingRoute>
+              </PayrollRoute>
             }
           />
           <Route
@@ -252,7 +268,7 @@ export default function App() {
             path="cooperation"
             element={
               <PrivateRoute>
-                <Cooperation />
+                <CooperationRedirect />
               </PrivateRoute>
             }
           />

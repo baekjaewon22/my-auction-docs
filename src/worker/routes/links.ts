@@ -13,6 +13,7 @@ const REVIEW_ROLES = ['master', 'accountant', 'admin'] as const;
 function isOutdoorEntry(activityType: string, dataJson: string): boolean {
   try {
     const d = JSON.parse(dataJson);
+    if (d.companion) return false;
     if (activityType === '임장') return true;
     if (activityType === '미팅') return !d.internalMeeting;
     if (activityType === '입찰' && (d.fieldCheckIn || d.fieldCheckOut) && !d.bidProxy) return true;

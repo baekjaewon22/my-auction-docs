@@ -2455,7 +2455,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   font-weight: 600;
 }
 
-.journal-edit-row input {
+.journal-edit-row input,
+.journal-edit-row select {
   flex: 1;
   padding: 6px 10px;
   border: 1.5px solid var(--gray-200);

@@ -76,6 +76,7 @@ export async function aggregateMonth(env: any, ym: string): Promise<{ users: num
     SELECT user_id, activity_type, COUNT(*) as cnt
     FROM journal_entries
     WHERE target_date BETWEEN ? AND ?
+      AND COALESCE(json_extract(data, '$.companion'), 0) != 1
     GROUP BY user_id, activity_type
   `).bind(start, end).all<any>();
   const actMap: Record<string, Record<string, number>> = {};
@@ -111,6 +112,7 @@ export async function aggregateMonth(env: any, ym: string): Promise<{ users: num
     SELECT user_id, COUNT(DISTINCT target_date) as cnt
     FROM journal_entries
     WHERE target_date BETWEEN ? AND ?
+      AND COALESCE(json_extract(data, '$.companion'), 0) != 1
     GROUP BY user_id
   `).bind(start, end).all<any>();
   const jdMap: Record<string, number> = {};
@@ -155,7 +157,7 @@ export async function aggregateOrgSnapshot(env: any, ym: string): Promise<void> 
   const orgActRes = await db.prepare(`
     SELECT AVG(cnt) as avg_cnt FROM (
       SELECT u.id, COALESCE(SUM(
-        CASE WHEN je.target_date BETWEEN ? AND ? THEN 1 ELSE 0 END
+        CASE WHEN je.target_date BETWEEN ? AND ? AND COALESCE(json_extract(je.data, '$.companion'), 0) != 1 THEN 1 ELSE 0 END
       ), 0) as cnt
       FROM users u
       LEFT JOIN journal_entries je ON je.user_id = u.id

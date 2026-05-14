@@ -75,8 +75,16 @@ async function calcContractAwardForUser(
 const payroll = new Hono<AuthEnv>();
 payroll.use('*', authMiddleware);
 
-// cc_ref 제외 (회계 열람 제한)
-const ACCOUNTING_ROLES = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'] as const;
+// 회계/급여 열람 제한: 관리자(admin)는 제외
+const ACCOUNTING_ROLES = ['master', 'ceo', 'accountant', 'accountant_asst'] as const;
+const PAYROLL_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+const requirePayrollAccess = async (c: any, next: any) => {
+  const user = c.get('user');
+  if (ACCOUNTING_ROLES.includes(user?.role) || PAYROLL_EXTRA_USER_IDS.includes(user?.sub)) {
+    return next();
+  }
+  return c.json({ error: '권한이 없습니다.' }, 403);
+};
 
 // 총무보조(accountant_asst) 열람 제한 — 팀장·관리자급·이사·대표자 정산은 총무담당만 접근 가능
 const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
@@ -91,7 +99,7 @@ async function canAccessUserPayroll(db: D1Database, viewer: any, targetUserId: s
 // 급여제: 1개월 정산 + 성과금은 2개월 기준
 // 비율제: 1개월 정산
 // 매출 기준: 카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date
-payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
+payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const userId = c.req.param('userId');
   const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
   const db = c.env.DB;
@@ -336,7 +344,7 @@ payroll.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
 });
 
 // GET /api/payroll/branch-summary?month=YYYY-MM&branch=xxx — 지사별 합산
-payroll.get('/branch/summary', requireRole(...ACCOUNTING_ROLES), async (c) => {
+payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
   const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
   const filterBranch = c.req.query('branch') || '';
   const db = c.env.DB;
@@ -423,7 +431,7 @@ payroll.get('/branch/summary', requireRole(...ACCOUNTING_ROLES), async (c) => {
 // ━━━ 급여정산 저장/조회 ━━━
 
 // GET /api/payroll/save/:userId?period=xxx
-payroll.get('/save/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
+payroll.get('/save/:userId', requirePayrollAccess, async (c) => {
   const userId = c.req.param('userId');
   const period = c.req.query('period') || '';
   const db = c.env.DB;
@@ -484,7 +492,7 @@ payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // GET /api/payroll/reports/business-income?month=YYYY-MM
-payroll.get('/reports/business-income', requireRole(...ACCOUNTING_ROLES), async (c) => {
+payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   const db = c.env.DB;
   const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
   const [y, m] = month.split('-').map(Number);
@@ -685,7 +693,7 @@ payroll.delete('/reports/business-income/:id', requireRole(...ACCOUNTING_ROLES),
 });
 
 // ━━ 사업소득신고 추가리스트 (풀) CRUD ━━
-payroll.get('/reports/business-income-pool', requireRole(...ACCOUNTING_ROLES), async (c) => {
+payroll.get('/reports/business-income-pool', requirePayrollAccess, async (c) => {
   const result = await c.env.DB.prepare('SELECT * FROM business_income_pool ORDER BY name').all();
   return c.json({ pool: result.results || [] });
 });

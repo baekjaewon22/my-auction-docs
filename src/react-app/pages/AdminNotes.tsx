@@ -1,10 +1,12 @@
 import { useEffect, useState, type ClipboardEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import { useDepartments } from '../hooks/useDepartments';
-import { StickyNote, Plus, X, Trash2, ArrowLeft, Pin, MessageSquare, Send, Edit3, BookOpen, EyeOff, Search, Gavel, Scale, Paperclip, Download, Printer } from 'lucide-react';
+import { StickyNote, Plus, X, Trash2, ArrowLeft, Pin, MessageSquare, Send, Edit3, BookOpen, EyeOff, Search, Gavel, Scale, Paperclip, Download, Printer, Handshake } from 'lucide-react';
+import Cooperation from './Cooperation';
 
-type NoteCategory = 'community' | 'eviction_quote' | 'legal_support';
+type NoteCategory = 'community' | 'eviction_quote' | 'legal_support' | 'cooperation';
 
 interface Note {
   id: string;
@@ -51,6 +53,7 @@ const CATEGORIES: Array<{ key: NoteCategory; label: string; icon: typeof StickyN
   { key: 'community', label: '커뮤니티', icon: StickyNote },
   { key: 'eviction_quote', label: '명도견적의뢰', icon: Gavel },
   { key: 'legal_support', label: '법률지원', icon: Scale },
+  { key: 'cooperation', label: '업무협조요청', icon: Handshake },
 ];
 
 const COURTS = ['서울중앙지방법원', '서울동부지방법원', '서울서부지방법원', '서울남부지방법원', '서울북부지방법원', '의정부지방법원', '인천지방법원', '수원지방법원', '대전지방법원', '대구지방법원', '부산지방법원', '광주지방법원', '울산지방법원', '창원지방법원', '청주지방법원', '춘천지방법원', '전주지방법원', '제주지방법원'];
@@ -98,10 +101,14 @@ function escapeHtml(value: string) {
 export default function AdminNotes() {
   const { user } = useAuthStore();
   const { departments } = useDepartments();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [activeCategory, setActiveCategory] = useState<NoteCategory>('community');
+  const [activeCategory, setActiveCategory] = useState<NoteCategory>(() => {
+    const tab = searchParams.get('tab');
+    return tab === 'eviction_quote' || tab === 'legal_support' || tab === 'cooperation' ? tab : 'community';
+  });
 
   // 작성 폼
   const [showForm, setShowForm] = useState(false);
@@ -146,6 +153,11 @@ export default function AdminNotes() {
       ];
 
   const load = async () => {
+    if (activeCategory === 'cooperation') {
+      setNotes([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const res = await api.adminNotes.list({ category: activeCategory, search });
@@ -153,6 +165,16 @@ export default function AdminNotes() {
     } catch { /* */ }
     setLoading(false);
   };
+
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    const next = tab === 'eviction_quote' || tab === 'legal_support' || tab === 'cooperation' ? tab : 'community';
+    if (next !== activeCategory) {
+      setActiveCategory(next);
+      setDetail(null);
+      resetForm();
+    }
+  }, [searchParams]);
 
   useEffect(() => { load(); }, [activeCategory]);
 
@@ -448,9 +470,11 @@ export default function AdminNotes() {
     <div className="page">
       <div className="page-header">
         <h2><StickyNote size={20} style={{ marginRight: 6, verticalAlign: 'middle' }} />사내 커뮤니티</h2>
-        <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); if (showForm) resetForm(); }}>
-          {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> 새 게시글</>}
-        </button>
+        {activeCategory !== 'cooperation' && (
+          <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); if (showForm) resetForm(); }}>
+            {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> 새 게시글</>}
+          </button>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -462,6 +486,7 @@ export default function AdminNotes() {
               setActiveCategory(key);
               setDetail(null);
               resetForm();
+              setSearchParams(key === 'community' ? {} : { tab: key });
             }}
           >
             <Icon size={14} /> {label}
@@ -469,6 +494,9 @@ export default function AdminNotes() {
         ))}
       </div>
 
+      {activeCategory === 'cooperation' && <Cooperation embedded />}
+
+      {activeCategory !== 'cooperation' && <>
       {activeCategory === 'legal_support' && (
         <div style={{ display: 'flex', justifyContent: 'center', margin: '18px 0 22px' }}>
           <div style={{ display: 'flex', alignItems: 'center', width: 'min(520px, 100%)', border: '3px solid var(--primary)', borderRadius: 999, overflow: 'hidden', background: '#fff' }}>
@@ -628,6 +656,7 @@ export default function AdminNotes() {
           ))}
         </div>
       )}
+      </>}
     </div>
   );
 }

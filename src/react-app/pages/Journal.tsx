@@ -79,13 +79,14 @@ export default function Journal() {
   const today = getToday();
   const tomorrow = getTomorrow();
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref';
+  const canDelegateJournal = isCeoPlus || user?.role === 'admin';
 
   // 현재 탭에서 보여줄 날짜
   const activeDate = tab === 'today' ? today : tab === 'tomorrow' ? tomorrow : tab === 'calendar' ? selectedDateStr : '';
   const isCalendarTodayOrTomorrow = tab === 'calendar' && (selectedDateStr === today || selectedDateStr === tomorrow);
   const isCalendarFuture = tab === 'calendar' && selectedDateStr > tomorrow;
   // 마스터/대표/총대표는 과거 일정에서도 추가 가능 (백엔드도 동일 권한 허용)
-  const canAddSchedule = tab === 'today' || tab === 'tomorrow' || isCalendarTodayOrTomorrow || isCalendarFuture || (tab === 'calendar' && isCeoPlus);
+  const canAddSchedule = tab === 'today' || tab === 'tomorrow' || isCalendarTodayOrTomorrow || isCalendarFuture || (tab === 'calendar' && canDelegateJournal);
 
   const load = () => {
     setLoading(true);
@@ -121,6 +122,13 @@ export default function Journal() {
   if (branches.length === 0 && members.length > 0) branches.push('');
 
   const currentBranch = isCeoPlus ? branches[activeBranch] : (user?.branch || '');
+  const HIDDEN_DEPTS = ['명도팀', '지원팀'];
+  const getAssignableMembers = (branch: string) => members.filter((m) =>
+    (m.branch === branch || (!branch && !m.branch))
+    && m.login_type !== 'freelancer'
+    && m.role !== 'resigned'
+    && !HIDDEN_DEPTS.includes(m.department)
+  );
 
   const renderBranchView = (branch: string) => {
     const HIDDEN_DEPTS = ['명도팀', '지원팀'];
@@ -184,6 +192,8 @@ export default function Journal() {
           onDelete={handleDelete}
           onToggleComplete={handleToggleComplete}
           onUpdate={load}
+          assignableMembers={getAssignableMembers(member.branch)}
+          canReassign={canDelegateJournal}
         />
       );
     }
@@ -476,6 +486,9 @@ export default function Journal() {
           targetDate={formDate}
           onCreated={() => { setShowForm(false); load(); }}
           onClose={() => setShowForm(false)}
+          assignableMembers={getAssignableMembers(currentBranch)}
+          defaultAssigneeId={getAssignableMembers(currentBranch).find((m) => m.id === user?.id)?.id || getAssignableMembers(currentBranch)[0]?.id}
+          canChooseAssignee={canDelegateJournal}
         />
       )}
 

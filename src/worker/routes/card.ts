@@ -6,9 +6,17 @@ const card = new Hono<AuthEnv>();
 card.use('*', authMiddleware);
 
 // cc_ref 제외 (회계장부 카드내역 열람 제한)
-const ACCOUNTING_ROLES = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'] as const;
-const EDIT_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
-const DELETE_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'] as const; // 삭제는 보조 제외
+const ACCOUNTING_ROLES = ['master', 'ceo', 'accountant', 'accountant_asst'] as const;
+const EDIT_ROLES = ['master', 'ceo', 'accountant', 'accountant_asst'] as const;
+const DELETE_ROLES = ['master', 'ceo', 'accountant'] as const; // 삭제는 보조 제외
+const PAYROLL_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+const requirePayrollCardTotalAccess = async (c: any, next: any) => {
+  const user = c.get('user');
+  if (ACCOUNTING_ROLES.includes(user?.role) || PAYROLL_EXTRA_USER_IDS.includes(user?.sub)) {
+    return next();
+  }
+  return c.json({ error: '권한이 없습니다.' }, 403);
+};
 
 // PUT /api/card/user/:userId — 법인카드 번호 등록/수정
 card.put('/user/:userId', requireRole(...EDIT_ROLES), async (c) => {
@@ -230,7 +238,7 @@ card.get('/summary', requireRole(...ACCOUNTING_ROLES), async (c) => {
 });
 
 // GET /api/card/user-total — 특정 사용자의 월별 카드사용 합계 (정산용)
-card.get('/user-total/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
+card.get('/user-total/:userId', requirePayrollCardTotalAccess, async (c) => {
   const userId = c.req.param('userId');
   const month = c.req.query('month') || '';
   const db = c.env.DB;

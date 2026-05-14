@@ -514,7 +514,7 @@ export default function Dashboard() {
               const caseNo = a.case_number ? `${a.case_year}${a.case_type}${a.case_number}` : '';
               return (
                 <div key={a.id} style={{ position: 'relative' }}>
-                  <Link to="/cooperation" className="doc-item" style={{ borderLeft: '3px solid #7b1fa2' }}>
+                  <Link to="/admin-notes?tab=cooperation" className="doc-item" style={{ borderLeft: '3px solid #7b1fa2' }}>
                     <div className="doc-info">
                       <div>
                         <div className="doc-title">{a.sender_name} {a.sender_position} ({a.sender_branch}) → 업무협조요청</div>
@@ -765,7 +765,7 @@ export default function Dashboard() {
                     </div>
                     <div className="missing-alert-detail" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span>임장일: {dup.first_date === dup.last_date ? dup.first_date : `${dup.first_date} ~ ${dup.last_date}`}</span>
-                      <Link to={`/cooperation?court=${encodeURIComponent(dup.court || '')}&case_no=${encodeURIComponent(dup.case_no || '')}`}
+                      <Link to={`/admin-notes?tab=cooperation&court=${encodeURIComponent(dup.court || '')}&case_no=${encodeURIComponent(dup.case_no || '')}`}
                         style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 6, background: '#7b1fa2', color: '#fff', textDecoration: 'none', whiteSpace: 'nowrap' }}>
                         업무협조요청
                       </Link>
@@ -1122,6 +1122,7 @@ export default function Dashboard() {
 function isOutdoorEntry(entry: JournalEntry): boolean {
   try {
     const d = JSON.parse(entry.data);
+    if (d.companion) return false;
     // 임장: 항상 외근
     if (entry.activity_type === '임장') return true;
     // 미팅: 회사 미팅(internalMeeting)은 제외, 그 외는 외근

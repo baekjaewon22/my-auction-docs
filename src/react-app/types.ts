@@ -198,6 +198,10 @@ export interface SalesRecord {
   receipt_type: string;
   receipt_phone: string;
   card_deposit_date: string;
+  card_settlement_amount?: number;
+  card_fee_amount?: number;
+  card_settlement_staging_id?: string;
+  card_settlement_note?: string;
   client_phone: string;
   // 세금계산서/현금영수증 발행 기록 (총무 메모용)
   tax_invoice_date?: string;

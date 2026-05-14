@@ -53,8 +53,32 @@ interface JournalEntry {
   updated_at: string;
 }
 
+interface JournalAssignee {
+  id: string;
+  role: string;
+  branch: string;
+  department: string;
+  approved: number;
+}
+
 const journal = new Hono<AuthEnv>();
 journal.use('*', authMiddleware);
+
+const canManageJournalAssignees = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+
+async function getJournalAssignee(db: D1Database, userId: string) {
+  return db.prepare('SELECT id, role, branch, department, approved FROM users WHERE id = ?')
+    .bind(userId)
+    .first<JournalAssignee>();
+}
+
+function canUseAssignee(currentUser: { role: string; branch: string; sub: string }, assignee: JournalAssignee) {
+  if (assignee.approved !== 1 || assignee.role === 'master') return false;
+  if (assignee.id === currentUser.sub) return true;
+  if (!canManageJournalAssignees(currentUser.role)) return false;
+  if (currentUser.role === 'admin') return assignee.branch === currentUser.branch;
+  return true;
+}
 
 // GET /api/journal?date=2026-03-30&range=all
 journal.get('/', async (c) => {
@@ -135,6 +159,7 @@ journal.post('/', async (c) => {
     activity_type: string;
     activity_subtype?: string;
     data: Record<string, unknown>;
+    user_id?: string;
   }>();
 
   if (!body.target_date || !body.activity_type) {
@@ -143,11 +168,11 @@ journal.post('/', async (c) => {
 
   const today = getKSTToday();
   // 과거 날짜 등록 불가 (master/ceo/cc_ref 제외)
-  if (body.target_date < today && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
+  if (body.target_date < today && !canManageJournalAssignees(user.role)) {
     return c.json({ error: '과거 날짜에는 일정을 등록할 수 없습니다.' }, 400);
   }
   // 오늘 일정은 18시 이후 등록 불가 (ceo/cc_ref/master 제외)
-  if (body.target_date === today && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
+  if (body.target_date === today && !canManageJournalAssignees(user.role)) {
     const hour = new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCHours();
     if (hour >= 18) {
       return c.json({ error: '오늘 일정은 18시 이후 등록할 수 없습니다.' }, 400);
@@ -156,10 +181,18 @@ journal.post('/', async (c) => {
 
   const db = c.env.DB;
   const id = crypto.randomUUID();
+  const assigneeId = body.user_id || user.sub;
+  const assignee = assigneeId === user.sub
+    ? { id: user.sub, role: user.role, branch: user.branch, department: user.department, approved: 1 }
+    : await getJournalAssignee(db, assigneeId);
+
+  if (!assignee || !canUseAssignee(user, assignee)) {
+    return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
+  }
 
   await db.prepare(
     'INSERT INTO journal_entries (id, user_id, target_date, activity_type, activity_subtype, data, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, user.sub, body.target_date, body.activity_type, body.activity_subtype || '', JSON.stringify(body.data), user.branch, user.department).run();
+  ).bind(id, assignee.id, body.target_date, body.activity_type, body.activity_subtype || '', JSON.stringify(body.data), assignee.branch, assignee.department).run();
 
   // 영속 알림 재계산 (개인/입찰/출장/일정공백)
   await recheckAlertsForJournalEntry(db, id).catch((err) => console.error('[recheckAlerts on insert]', err));
@@ -175,7 +208,8 @@ journal.put('/:id', async (c) => {
 
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(id).first<JournalEntry>();
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
-  if (entry.user_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
+  const canEditAssignedEntry = canManageJournalAssignees(user.role) && (user.role !== 'admin' || entry.branch === user.branch);
+  if (entry.user_id !== user.sub && !canEditAssignedEntry) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const today = getKSTToday();
   const isTopRole = ['master', 'ceo', 'cc_ref'].includes(user.role);
@@ -185,6 +219,7 @@ journal.put('/:id', async (c) => {
   const body = await c.req.json<{
     activity_subtype?: string; data?: Record<string, unknown>; completed?: number; fail_reason?: string;
     bid_field_only?: boolean; // 낙찰가/입찰가만 수정하는 경우
+    user_id?: string;
   }>();
 
   // 시간 제한 체크 (admin 이상은 모든 날짜 수정 가능)
@@ -210,9 +245,26 @@ journal.put('/:id', async (c) => {
     // 내일 일지: 언제든 수정 가능 (제한 없음)
   }
 
+  let assignee: JournalAssignee | null = null;
+  if (body.user_id && body.user_id !== entry.user_id) {
+    assignee = await getJournalAssignee(db, body.user_id);
+    if (!assignee || !canUseAssignee(user, assignee)) {
+      return c.json({ error: '담당자를 변경할 권한이 없습니다.' }, 403);
+    }
+  }
+
   await db.prepare(
-    "UPDATE journal_entries SET activity_subtype = ?, data = ?, completed = ?, fail_reason = ?, updated_at = datetime('now') WHERE id = ?"
-  ).bind(body.activity_subtype ?? entry.activity_subtype, body.data ? JSON.stringify(body.data) : entry.data, body.completed ?? entry.completed, body.fail_reason ?? entry.fail_reason, id).run();
+    "UPDATE journal_entries SET user_id = ?, activity_subtype = ?, data = ?, completed = ?, fail_reason = ?, branch = ?, department = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(
+    assignee?.id || entry.user_id,
+    body.activity_subtype ?? entry.activity_subtype,
+    body.data ? JSON.stringify(body.data) : entry.data,
+    body.completed ?? entry.completed,
+    body.fail_reason ?? entry.fail_reason,
+    assignee?.branch || entry.branch,
+    assignee?.department || entry.department,
+    id
+  ).run();
 
   // 영속 알림 재계산
   await recheckAlertsForJournalEntry(db, id).catch((err) => console.error('[recheckAlerts on update]', err));
@@ -309,6 +361,7 @@ journal.get('/duplicate-inspections', async (c) => {
     LEFT JOIN users u ON j.user_id = u.id
     WHERE j.activity_type = '임장'
       AND j.activity_subtype != ''
+      AND COALESCE(json_extract(j.data, '$.companion'), 0) != 1
       AND NOT EXISTS (
         SELECT 1 FROM journal_entries jb
         WHERE jb.activity_type = '입찰'
@@ -382,6 +435,7 @@ journal.get('/check-case-no', async (c) => {
       AND j.activity_subtype = ?
       AND j.user_id != ?
       AND j.branch = ?
+      AND COALESCE(json_extract(j.data, '$.companion'), 0) != 1
   `;
   const params: string[] = [caseNo, user.sub, user.branch];
 

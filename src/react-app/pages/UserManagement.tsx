@@ -60,13 +60,13 @@ export default function UserManagement() {
   const myLevel = hierarchy[currentUser?.role || ''] || 99;
   const canManagePending = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
   // 회계 정보 편집 가능한 역할
-  const canEditAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
+  const canEditAccounting = ['master', 'ceo', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   // 총무보조 정산 열람/수정 제한 — 팀장·관리자급·이사·대표자
   const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
   const isRestrictedForViewer = (targetUser: User | null) =>
     currentUser?.role === 'accountant_asst' && !!targetUser && RESTRICTED_ROLES_FOR_ASST.includes(targetUser.role as string);
   // 회계 정보 열람 가능한 역할
-  const canViewAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
+  const canViewAccounting = ['master', 'ceo', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   // 입사기준일 편집 가능한 역할
   const canSetHireDate = ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
 

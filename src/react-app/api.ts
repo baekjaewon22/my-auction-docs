@@ -587,11 +587,15 @@ export const api = {
       request<{ success: boolean; results: any[] }>('/accounting/evaluate', { method: 'POST', body: JSON.stringify({ period_start: periodStart, period_end: periodEnd }) }),
     alerts: () =>
       request<{ alerts: import('./types').SalesEvaluation[]; demotion_candidates: import('./types').SalesEvaluation[]; current_period_alerts: import('./types').SalesEvaluation[]; current_period: { start: string; end: string } }>('/accounting/alerts/dashboard'),
+    cardSettlements: (month?: string) =>
+      request<{ pending_sales: import('./types').SalesRecord[]; settlement_deposits: any[] }>('/accounting/card-settlements/list' + (month ? '?month=' + month : '')),
+    confirmCardSettlement: (id: string, data: { settlement_date?: string; settlement_amount?: number; staging_id?: string; note?: string }) =>
+      request<{ success: boolean; sales_id: string; settlement_amount: number; fee_amount: number; settlement_date: string }>('/accounting/card-settlements/' + id + '/confirm', { method: 'POST', body: JSON.stringify(data) }),
     uploadBank: (rows: any[]) =>
-      request<{ success: boolean; total: number; inserted: number; dupSales: number; dupStaging: number; skipped: string[] }>('/accounting/upload-bank', { method: 'POST', body: JSON.stringify({ rows }) }),
+      request<{ success: boolean; total: number; inserted: number; autoExpenses: number; dupSales: number; dupStaging: number; skipped: string[] }>('/accounting/upload-bank', { method: 'POST', body: JSON.stringify({ rows }) }),
     staging: (month?: string) =>
       request<{ items: any[] }>('/accounting/staging' + (month ? '?month=' + month : '')),
-    stagingToSales: (id: string, data: { type: string; user_id?: string; type_detail?: string }) =>
+    stagingToSales: (id: string, data: { type: string; user_id?: string; type_detail?: string; direction?: string }) =>
       request<{ success: boolean; sales_id: string }>('/accounting/staging/' + id + '/to-sales', { method: 'POST', body: JSON.stringify(data) }),
     stagingDelete: (id: string) =>
       request('/accounting/staging/' + id, { method: 'DELETE' }),
@@ -690,7 +694,7 @@ export const api = {
 
   journal: {
     members: () =>
-      request<{ members: { id: string; name: string; role: string; branch: string; department: string }[] }>('/journal/members'),
+      request<{ members: { id: string; name: string; role: string; branch: string; department: string; position_title?: string; login_type?: string }[] }>('/journal/members'),
     list: (params?: { date?: string; range?: string }) => {
       const q = new URLSearchParams();
       if (params?.date) q.set('date', params.date);
@@ -698,9 +702,9 @@ export const api = {
       const qs = q.toString();
       return request<{ entries: import('./journal/types').JournalEntry[] }>('/journal' + (qs ? '?' + qs : ''));
     },
-    create: (data: { target_date: string; activity_type: string; activity_subtype?: string; data: Record<string, unknown> }) =>
+    create: (data: { target_date: string; activity_type: string; activity_subtype?: string; data: Record<string, unknown>; user_id?: string }) =>
       request<{ entry: { id: string } }>('/journal', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { activity_subtype?: string; data?: Record<string, unknown>; completed?: number; fail_reason?: string; bid_field_only?: boolean }) =>
+    update: (id: string, data: { activity_subtype?: string; data?: Record<string, unknown>; completed?: number; fail_reason?: string; bid_field_only?: boolean; user_id?: string }) =>
       request('/journal/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       request('/journal/' + id, { method: 'DELETE' }),
