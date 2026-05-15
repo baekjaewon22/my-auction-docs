@@ -260,6 +260,7 @@ comprehensive.get('/', async (c) => {
     FROM sales_records
     WHERE contract_date BETWEEN ? AND ?
       AND direction != 'expense'
+      AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY user_id, status
   `).bind(periodStart, periodEnd).all<any>();
   const salesMap: Record<string, { confirmed: number; pending: number; refunded: number; confirmed_count: number; refunded_count: number; sales_count: number }> = {};
@@ -302,6 +303,7 @@ comprehensive.get('/', async (c) => {
       WHERE contract_date >= ?
         AND status IN ('confirmed', 'card_pending')
         AND direction != 'expense'
+        AND COALESCE(exclude_from_count, 0) = 0
       GROUP BY user_id, ym
     `).bind(`${trendStartYM}-01`).all<any>();
     (fallback.results || []).forEach((r: any) => {
@@ -317,6 +319,7 @@ comprehensive.get('/', async (c) => {
       WHERE contract_date = ?
         AND status IN ('confirmed', 'card_pending')
         AND direction != 'expense'
+        AND COALESCE(exclude_from_count, 0) = 0
       GROUP BY user_id
     `).bind(todayKST).all<any>();
     (todayDelta.results || []).forEach((r: any) => {
@@ -377,6 +380,7 @@ comprehensive.get('/', async (c) => {
         WHERE sr.contract_date BETWEEN ? AND ?
           AND sr.status IN ('confirmed', 'card_pending')
           AND sr.direction != 'expense'
+          AND COALESCE(sr.exclude_from_count, 0) = 0
           AND ua.pay_type = 'commission'
         GROUP BY sr.user_id
       )

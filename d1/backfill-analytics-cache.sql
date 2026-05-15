@@ -17,7 +17,7 @@ WITH consultants AS (
 months AS (
   SELECT DISTINCT user_id, substr(contract_date,1,7) as ym
   FROM sales_records
-  WHERE direction != 'expense' AND user_id IN (SELECT id FROM consultants)
+  WHERE direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0 AND user_id IN (SELECT id FROM consultants)
   UNION
   SELECT DISTINCT user_id, substr(target_date,1,7)
   FROM journal_entries
@@ -25,11 +25,11 @@ months AS (
 )
 SELECT
   m.user_id, m.ym,
-  COALESCE((SELECT SUM(amount) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status IN ('confirmed','card_pending') AND direction != 'expense'), 0),
-  COALESCE((SELECT SUM(amount) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status = 'pending' AND direction != 'expense'), 0),
-  COALESCE((SELECT SUM(amount) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status = 'refunded' AND direction != 'expense'), 0),
-  COALESCE((SELECT COUNT(*) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND direction != 'expense'), 0),
-  COALESCE((SELECT COUNT(*) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status = 'refunded' AND direction != 'expense'), 0),
+  COALESCE((SELECT SUM(amount) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status IN ('confirmed','card_pending') AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),
+  COALESCE((SELECT SUM(amount) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status = 'pending' AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),
+  COALESCE((SELECT SUM(amount) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status = 'refunded' AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),
+  COALESCE((SELECT COUNT(*) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),
+  COALESCE((SELECT COUNT(*) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status = 'refunded' AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),
   COALESCE((SELECT COUNT(*) FROM journal_entries WHERE user_id = m.user_id AND substr(target_date,1,7) = m.ym AND activity_type = '임장'), 0),
   COALESCE((SELECT COUNT(*) FROM journal_entries WHERE user_id = m.user_id AND substr(target_date,1,7) = m.ym AND activity_type = '브리핑'), 0),
   COALESCE((SELECT COUNT(*) FROM journal_entries WHERE user_id = m.user_id AND substr(target_date,1,7) = m.ym AND activity_type = '입찰'), 0),

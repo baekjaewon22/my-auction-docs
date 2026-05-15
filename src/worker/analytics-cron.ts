@@ -56,6 +56,7 @@ export async function aggregateMonth(env: any, ym: string): Promise<{ users: num
     FROM sales_records
     WHERE contract_date BETWEEN ? AND ?
       AND direction != 'expense'
+      AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY user_id, status
   `).bind(start, end).all<any>();
   const salesMap: Record<string, { confirmed: number; pending: number; refunded: number; sales_count: number; refund_count: number }> = {};
@@ -176,6 +177,7 @@ export async function aggregateOrgSnapshot(env: any, ym: string): Promise<void> 
       WHERE sr.contract_date BETWEEN ? AND ?
         AND sr.status IN ('confirmed', 'card_pending')
         AND sr.direction != 'expense'
+        AND COALESCE(sr.exclude_from_count, 0) = 0
         AND ua.pay_type = 'commission'
       GROUP BY sr.user_id
     )
@@ -261,6 +263,7 @@ export async function runMonthlyAggregation(env: any): Promise<{ prevMonth: stri
       WHERE user_id = ? AND contract_date BETWEEN ? AND ?
         AND status IN ('confirmed', 'card_pending')
         AND direction != 'expense'
+        AND COALESCE(exclude_from_count, 0) = 0
     `).bind(u.id, period_start, period_end).first<{ total: number }>();
     const totalSales = totRes?.total || 0;
 

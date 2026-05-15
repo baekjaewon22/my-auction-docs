@@ -80,6 +80,8 @@ function isMissingAction(r: SalesRecord): boolean {
   return false;
 }
 
+const CONFIRM_WAITING_STATUSES = ['pending', 'card_pending', 'refund_requested'];
+
 export default function Sales() {
   const { user: currentUser } = useAuthStore();
   const { branches: BRANCHES } = useBranches();
@@ -478,7 +480,8 @@ export default function Sales() {
   let branchRecords = filterBranch ? records.filter(r => effectiveBranch(r) === filterBranch) : records;
   if (filterUser) branchRecords = branchRecords.filter(r => r.user_id === filterUser);
   if (filterType) branchRecords = branchRecords.filter(r => r.type === filterType);
-  if (filterStatus === 'missing_action') branchRecords = branchRecords.filter(isMissingAction);
+  if (filterStatus === 'confirm_waiting') branchRecords = branchRecords.filter(r => CONFIRM_WAITING_STATUSES.includes(r.status));
+  else if (filterStatus === 'missing_action') branchRecords = branchRecords.filter(isMissingAction);
   else if (filterStatus) branchRecords = branchRecords.filter(r => r.status === filterStatus);
 
   // 동명이인 중복 감지: (이름 + 전화번호)가 allRecords에서 2건+인 경우
@@ -715,6 +718,7 @@ export default function Sales() {
         <div style={{ minWidth: 110 }}>
           <Select size="sm" options={[
             { value: '', label: '전체 상태' },
+            { value: 'confirm_waiting', label: '확인대기' },
             { value: 'confirmed', label: '확정매출' },
             { value: 'card_pending', label: '카드대기' },
             { value: 'pending', label: '입금신청' },
@@ -723,6 +727,7 @@ export default function Sales() {
             { value: 'missing_action', label: '미작성 액션' },
           ]}
             value={[
+              { value: 'confirm_waiting', label: '확인대기' },
               { value: 'confirmed', label: '확정매출' },
               { value: 'card_pending', label: '카드대기' },
               { value: 'pending', label: '입금신청' },

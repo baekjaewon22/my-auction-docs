@@ -30,6 +30,8 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
       COUNT(CASE WHEN status = 'confirmed' THEN 1 END) as confirmed_count
     FROM sales_records
     WHERE contract_date >= ?
+      AND direction != 'expense'
+      AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY month ORDER BY month
   `).bind(monthList[0] + '-01').all();
 
@@ -57,6 +59,8 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
     SELECT type, SUM(ROUND(amount / 1.1)) as total, COUNT(*) as count
     FROM sales_records
     WHERE status = 'confirmed' AND contract_date >= ?
+      AND direction != 'expense'
+      AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY type ORDER BY total DESC
   `).bind(monthList[0] + '-01').all();
 
@@ -67,6 +71,8 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
     FROM sales_records sr
     JOIN users u ON sr.user_id = u.id
     WHERE sr.status = 'confirmed' AND sr.contract_date >= ?
+      AND sr.direction != 'expense'
+      AND COALESCE(sr.exclude_from_count, 0) = 0
     GROUP BY sr.user_id ORDER BY total DESC LIMIT 15
   `).bind(monthList[0] + '-01').all();
 
@@ -75,6 +81,8 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
     SELECT branch, SUM(ROUND(amount / 1.1)) as total, COUNT(*) as count
     FROM sales_records
     WHERE status = 'confirmed' AND contract_date >= ?
+      AND direction != 'expense'
+      AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY branch ORDER BY total DESC
   `).bind(monthList[0] + '-01').all();
 
@@ -82,14 +90,20 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
   const receivables = await db.prepare(`
     SELECT COUNT(*) as count, SUM(amount) as total,
       MIN(contract_date) as oldest_date
-    FROM sales_records WHERE status = 'pending'
+    FROM sales_records
+    WHERE status = 'pending'
+      AND direction != 'expense'
+      AND COALESCE(exclude_from_count, 0) = 0
   `).first<{ count: number; total: number; oldest_date: string }>();
 
   // 30일 이상 미수금
   const thirtyDaysAgo = new Date(Date.now() + 9 * 60 * 60 * 1000 - 30 * 86400000).toISOString().slice(0, 10);
   const oldReceivables = await db.prepare(`
     SELECT COUNT(*) as count, SUM(amount) as total
-    FROM sales_records WHERE status = 'pending' AND contract_date < ?
+    FROM sales_records
+    WHERE status = 'pending' AND contract_date < ?
+      AND direction != 'expense'
+      AND COALESCE(exclude_from_count, 0) = 0
   `).bind(thirtyDaysAgo).first<{ count: number; total: number }>();
 
   // 8. 카드 카테고리별 총액 (파이차트용)
