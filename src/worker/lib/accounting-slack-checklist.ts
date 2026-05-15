@@ -18,6 +18,59 @@ type ChecklistItem = {
 
 const MAX_SAMPLES = 5;
 
+async function ensureSlackAccountingLogTable(db: D1Database): Promise<void> {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS slack_accounting_logs (
+      id TEXT PRIMARY KEY,
+      run_key TEXT NOT NULL,
+      run_label TEXT NOT NULL DEFAULT '',
+      group_label TEXT NOT NULL DEFAULT '',
+      branches_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL,
+      total_count INTEGER NOT NULL DEFAULT 0,
+      message_index INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT NOT NULL DEFAULT '',
+      sent_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))
+    )
+  `).run();
+  await db.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_slack_accounting_logs_run
+    ON slack_accounting_logs(run_key, status)
+  `).run();
+}
+
+async function insertSlackAccountingLog(
+  db: D1Database,
+  input: {
+    runKey: string;
+    runLabel: string;
+    groupLabel: string;
+    branches: string[];
+    status: 'success' | 'failed' | 'skipped';
+    totalCount?: number;
+    messageIndex?: number;
+    errorMessage?: string;
+  },
+): Promise<void> {
+  await db.prepare(`
+    INSERT INTO slack_accounting_logs
+      (id, run_key, run_label, group_label, branches_json, status, total_count, message_index, error_message, sent_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'success' THEN datetime('now', '+9 hours') ELSE NULL END)
+  `).bind(
+    crypto.randomUUID(),
+    input.runKey,
+    input.runLabel,
+    input.groupLabel,
+    JSON.stringify(input.branches),
+    input.status,
+    input.totalCount || 0,
+    input.messageIndex || 0,
+    (input.errorMessage || '').slice(0, 500),
+    input.status,
+  ).run();
+}
+
 const BRANCH_GROUPS: BranchGroup[] = [
   { label: '의정부지사/대전지사', branches: ['의정부', '의정부지사', '대전', '대전지사'] },
   { label: '서초지사', branches: ['서초', '서초지사'] },
@@ -240,21 +293,54 @@ async function buildGroupMessage(db: D1Database, group: BranchGroup, runLabel: s
   };
 }
 
-export async function sendAccountingSlackChecklist(env: SlackEnv, runLabel: string): Promise<{ sent: boolean; totalCount: number; messages: number }> {
+export async function sendAccountingSlackChecklist(env: SlackEnv, runLabel: string): Promise<{ sent: boolean; totalCount: number; messages: number; failed: number }> {
+  await ensureSlackAccountingLogTable(env.DB);
+  const runKey = `${new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 16)}-${runLabel}`;
   const webhookUrl = String(env.SLACK_ACCOUNTING_WEBHOOK_URL || env.SLACK_WEBHOOK_URL || '').trim();
   if (!webhookUrl) {
     console.warn('[slack accounting checklist] skipped: missing SLACK_ACCOUNTING_WEBHOOK_URL');
-    return { sent: false, totalCount: 0, messages: 0 };
+    await insertSlackAccountingLog(env.DB, {
+      runKey,
+      runLabel,
+      groupLabel: 'all',
+      branches: [],
+      status: 'skipped',
+      errorMessage: 'missing SLACK_ACCOUNTING_WEBHOOK_URL',
+    });
+    return { sent: false, totalCount: 0, messages: 0, failed: 0 };
   }
 
   let totalCount = 0;
   let messages = 0;
-  for (const group of BRANCH_GROUPS) {
-    const result = await buildGroupMessage(env.DB, group, runLabel);
-    totalCount += result.totalCount;
-    messages += 1;
-    await postToSlack(webhookUrl, result.text);
+  let failed = 0;
+  for (const [index, group] of BRANCH_GROUPS.entries()) {
+    try {
+      const result = await buildGroupMessage(env.DB, group, runLabel);
+      totalCount += result.totalCount;
+      await postToSlack(webhookUrl, result.text);
+      messages += 1;
+      await insertSlackAccountingLog(env.DB, {
+        runKey,
+        runLabel,
+        groupLabel: group.label,
+        branches: group.branches,
+        status: 'success',
+        totalCount: result.totalCount,
+        messageIndex: index + 1,
+      });
+    } catch (err: any) {
+      failed += 1;
+      await insertSlackAccountingLog(env.DB, {
+        runKey,
+        runLabel,
+        groupLabel: group.label,
+        branches: group.branches,
+        status: 'failed',
+        messageIndex: index + 1,
+        errorMessage: err?.message || String(err),
+      });
+    }
   }
 
-  return { sent: true, totalCount, messages };
+  return { sent: failed === 0 && messages > 0, totalCount, messages, failed };
 }
