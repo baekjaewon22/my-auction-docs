@@ -7,6 +7,7 @@ import { StickyNote, Plus, X, Trash2, ArrowLeft, Pin, MessageSquare, Send, Edit3
 import Cooperation from './Cooperation';
 
 type NoteCategory = 'community' | 'eviction_quote' | 'legal_support' | 'cooperation';
+type LegalSubcategory = 'consultation' | 'law_reference';
 
 interface Note {
   id: string;
@@ -25,6 +26,7 @@ interface Note {
   comment_count: number;
   attachment_count?: number;
   category?: NoteCategory;
+  legal_subcategory?: LegalSubcategory;
   court?: string;
   case_number?: string;
 }
@@ -54,6 +56,11 @@ const CATEGORIES: Array<{ key: NoteCategory; label: string; icon: typeof StickyN
   { key: 'eviction_quote', label: '명도견적의뢰', icon: Gavel },
   { key: 'legal_support', label: '법률지원', icon: Scale },
   { key: 'cooperation', label: '업무협조요청', icon: Handshake },
+];
+
+const LEGAL_SUBCATEGORIES: Array<{ key: LegalSubcategory; label: string }> = [
+  { key: 'consultation', label: '문의 상담' },
+  { key: 'law_reference', label: '관련법령' },
 ];
 
 const COURTS = ['서울중앙지방법원', '서울동부지방법원', '서울서부지방법원', '서울남부지방법원', '서울북부지방법원', '의정부지방법원', '인천지방법원', '수원지방법원', '대전지방법원', '대구지방법원', '부산지방법원', '광주지방법원', '울산지방법원', '창원지방법원', '청주지방법원', '춘천지방법원', '전주지방법원', '제주지방법원'];
@@ -89,6 +96,14 @@ function getVisibilityLabel(v: string): string {
   return '전체';
 }
 
+function getLegalSubcategoryLabel(value?: string): string {
+  return LEGAL_SUBCATEGORIES.find(item => item.key === value)?.label || '문의 상담';
+}
+
+function isLegalConsultation(note: { category?: NoteCategory; legal_subcategory?: string }) {
+  return note.category === 'legal_support' && (note.legal_subcategory || 'consultation') === 'consultation';
+}
+
 function escapeHtml(value: string) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -105,6 +120,9 @@ export default function AdminNotes() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [activeLegalSubcategory, setActiveLegalSubcategory] = useState<LegalSubcategory>(() =>
+    searchParams.get('section') === 'law_reference' ? 'law_reference' : 'consultation'
+  );
   const [activeCategory, setActiveCategory] = useState<NoteCategory>(() => {
     const tab = searchParams.get('tab');
     return tab === 'eviction_quote' || tab === 'legal_support' || tab === 'cooperation' ? tab : 'community';
@@ -119,6 +137,7 @@ export default function AdminNotes() {
   const [formVisibility, setFormVisibility] = useState('all');
   const [formCourt, setFormCourt] = useState(COURTS[0]);
   const [formCaseNumber, setFormCaseNumber] = useState('');
+  const [formLegalSubcategory, setFormLegalSubcategory] = useState<LegalSubcategory>('consultation');
   const [formAttachments, setFormAttachments] = useState<NoteAttachment[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
@@ -160,7 +179,11 @@ export default function AdminNotes() {
     }
     setLoading(true);
     try {
-      const res = await api.adminNotes.list({ category: activeCategory, search });
+      const res = await api.adminNotes.list({
+        category: activeCategory,
+        search,
+        legal_subcategory: activeCategory === 'legal_support' ? activeLegalSubcategory : undefined,
+      });
       setNotes(res.notes);
     } catch { /* */ }
     setLoading(false);
@@ -169,14 +192,20 @@ export default function AdminNotes() {
   useEffect(() => {
     const tab = searchParams.get('tab');
     const next = tab === 'eviction_quote' || tab === 'legal_support' || tab === 'cooperation' ? tab : 'community';
+    const nextLegalSubcategory = searchParams.get('section') === 'law_reference' ? 'law_reference' : 'consultation';
+    if (next === 'legal_support' && nextLegalSubcategory !== activeLegalSubcategory) {
+      setActiveLegalSubcategory(nextLegalSubcategory);
+      setFormLegalSubcategory(nextLegalSubcategory);
+    }
     if (next !== activeCategory) {
       setActiveCategory(next);
+      setActiveLegalSubcategory(nextLegalSubcategory);
       setDetail(null);
       resetForm();
     }
   }, [searchParams]);
 
-  useEffect(() => { load(); }, [activeCategory]);
+  useEffect(() => { load(); }, [activeCategory, activeLegalSubcategory]);
 
   const openDetail = async (note: Note) => {
     setDetail(note);
@@ -236,6 +265,7 @@ export default function AdminNotes() {
           category: activeCategory,
           court: activeCategory === 'eviction_quote' ? formCourt : undefined,
           case_number: activeCategory === 'eviction_quote' ? formCaseNumber.trim() : undefined,
+          legal_subcategory: activeCategory === 'legal_support' ? formLegalSubcategory : undefined,
           attachments: activeCategory === 'legal_support' ? formAttachments : [],
         });
       }
@@ -248,7 +278,7 @@ export default function AdminNotes() {
   const resetForm = () => {
     setFormTitle(''); setFormContent(''); setFormPinned(false);
     setFormAnonymous(false); setFormVisibility(isManager ? 'all' : 'branch');
-    setFormCourt(COURTS[0]); setFormCaseNumber(''); setFormAttachments([]);
+    setFormCourt(COURTS[0]); setFormCaseNumber(''); setFormLegalSubcategory(activeLegalSubcategory); setFormAttachments([]);
     setShowForm(false); setEditingId(null);
   };
 
@@ -258,6 +288,7 @@ export default function AdminNotes() {
     setFormPinned(!!note.pinned);
     setFormCourt(note.court || COURTS[0]);
     setFormCaseNumber(note.case_number || '');
+    setFormLegalSubcategory((note.legal_subcategory || 'consultation') as LegalSubcategory);
     setEditingId(note.id);
     setShowForm(true);
     setDetail(null);
@@ -340,10 +371,11 @@ export default function AdminNotes() {
           <span>${escapeHtml(formatDate(detail.created_at))}</span>
           <span class="badge">${escapeHtml(getVisibilityLabel(detail.visibility))}</span>
           ${detail.category === 'eviction_quote' ? `<span class="badge">법원: ${escapeHtml(detail.court || '-')}</span><span class="badge">사건번호: ${escapeHtml(detail.case_number || '-')}</span>` : ''}
+          ${detail.category === 'legal_support' ? `<span class="badge">${escapeHtml(getLegalSubcategoryLabel(detail.legal_subcategory))}</span>` : ''}
         </div>
         <div class="content">${escapeHtml(detail.content)}</div>
         ${attachmentHtml ? `<h2>첨부</h2>${attachmentHtml}` : ''}
-        <h2>${detail.category === 'legal_support' ? '답변' : '댓글'} ${comments.length ? `(${comments.length})` : ''}</h2>
+        <h2>${isLegalConsultation(detail) ? '답변' : '댓글'} ${comments.length ? `(${comments.length})` : ''}</h2>
         ${commentHtml}
         <script>window.onload = () => { window.print(); window.close(); };</script>
       </body>
@@ -401,6 +433,11 @@ export default function AdminNotes() {
             </div>
           )}
           {detail.category === 'legal_support' && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 0' }}>
+              <span className="admin-note-visibility-badge">{getLegalSubcategoryLabel(detail.legal_subcategory)}</span>
+            </div>
+          )}
+          {isLegalConsultation(detail) && (
             <div className="admin-note-editor-label">질문 내용</div>
           )}
           <div className={`admin-note-detail-content ${detail.category === 'legal_support' ? 'legal-question-editor' : ''}`}>{detail.content}</div>
@@ -423,7 +460,7 @@ export default function AdminNotes() {
         {/* 댓글/답변 */}
         <div className={`admin-note-comments ${detail.category === 'legal_support' ? 'legal-answer-section' : ''}`}>
           <h3 style={{ fontSize: '0.88rem', margin: '0 0 12px', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <MessageSquare size={15} /> {detail.category === 'legal_support' ? '답변' : '댓글'} {comments.length > 0 && `(${comments.length})`}
+            <MessageSquare size={15} /> {isLegalConsultation(detail) ? '답변' : '댓글'} {comments.length > 0 && `(${comments.length})`}
           </h3>
           {comments.map(c => (
             <div key={c.id} className={`admin-note-comment ${detail.category === 'legal_support' ? 'legal-answer-card' : ''}`}>
@@ -451,13 +488,13 @@ export default function AdminNotes() {
               className="form-input"
               value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
-              placeholder={detail.category === 'legal_support' ? '답변을 작성하세요...' : detail.category === 'eviction_quote' ? '정액제 금액 제안 또는 댓글을 입력하세요...' : '댓글을 입력하세요...'}
-              onKeyDown={(e) => { if (detail.category !== 'legal_support' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddComment(); } }}
-              rows={detail.category === 'legal_support' ? 12 : detail.category === 'eviction_quote' ? 6 : 4}
-              style={{ minHeight: detail.category === 'legal_support' ? 260 : detail.category === 'eviction_quote' ? 150 : 112, resize: 'vertical' }}
+              placeholder={isLegalConsultation(detail) ? '답변을 작성하세요...' : detail.category === 'eviction_quote' ? '정액제 금액 제안 또는 댓글을 입력하세요...' : '댓글을 입력하세요...'}
+              onKeyDown={(e) => { if (!isLegalConsultation(detail) && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddComment(); } }}
+              rows={isLegalConsultation(detail) ? 12 : detail.category === 'eviction_quote' ? 6 : 4}
+              style={{ minHeight: isLegalConsultation(detail) ? 260 : detail.category === 'eviction_quote' ? 150 : 112, resize: 'vertical' }}
             />
             <button className="btn btn-primary btn-sm" onClick={handleAddComment} disabled={commentLoading || !commentText.trim()}>
-              <Send size={13} /> {detail.category === 'legal_support' ? '답변 등록' : ''}
+              <Send size={13} /> {isLegalConsultation(detail) ? '답변 등록' : ''}
             </button>
           </div>
         </div>
@@ -486,7 +523,7 @@ export default function AdminNotes() {
               setActiveCategory(key);
               setDetail(null);
               resetForm();
-              setSearchParams(key === 'community' ? {} : { tab: key });
+              setSearchParams(key === 'community' ? {} : key === 'legal_support' ? { tab: key, section: activeLegalSubcategory } : { tab: key });
             }}
           >
             <Icon size={14} /> {label}
@@ -498,26 +535,45 @@ export default function AdminNotes() {
 
       {activeCategory !== 'cooperation' && <>
       {activeCategory === 'legal_support' && (
-        <div style={{ display: 'flex', justifyContent: 'center', margin: '18px 0 22px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', width: 'min(520px, 100%)', border: '3px solid var(--primary)', borderRadius: 999, overflow: 'hidden', background: '#fff' }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          {LEGAL_SUBCATEGORIES.map(item => (
+            <button
+              key={item.key}
+              className={`btn btn-sm ${activeLegalSubcategory === item.key ? 'btn-primary' : ''}`}
+              onClick={() => {
+                setActiveLegalSubcategory(item.key);
+                setFormLegalSubcategory(item.key);
+                setDetail(null);
+                setSearchParams({ tab: 'legal_support', section: item.key });
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: activeCategory === 'legal_support' ? 'center' : 'flex-start', margin: activeCategory === 'legal_support' ? '18px 0 22px' : '0 0 12px' }}>
+          <div style={activeCategory === 'legal_support'
+            ? { display: 'flex', alignItems: 'center', width: 'min(520px, 100%)', border: '3px solid var(--primary)', borderRadius: 999, overflow: 'hidden', background: '#fff' }
+            : { display: 'flex', alignItems: 'center', width: 'min(360px, 100%)', border: '1px solid #dadce0', borderRadius: 6, overflow: 'hidden', background: '#fff' }}>
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
-              placeholder="궁금한 법률 내용을 검색하세요"
-              style={{ flex: 1, border: 'none', outline: 'none', padding: '12px 18px', fontSize: 15 }}
+              placeholder={activeCategory === 'eviction_quote' ? '법원, 사건번호, 내용 검색...' : activeCategory === 'legal_support' ? '궁금한 법률 내용을 검색하세요' : '제목, 내용, 작성자 검색...'}
+              style={{ flex: 1, border: 'none', outline: 'none', padding: activeCategory === 'legal_support' ? '12px 18px' : '8px 12px', fontSize: activeCategory === 'legal_support' ? 15 : 13 }}
             />
-            <button onClick={load} aria-label="검색" style={{ width: 66, alignSelf: 'stretch', border: 'none', background: 'var(--primary)', color: '#fff', display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
-              <Search size={28} strokeWidth={3} />
+            <button onClick={load} aria-label="검색" style={{ width: activeCategory === 'legal_support' ? 66 : 44, alignSelf: 'stretch', border: 'none', background: activeCategory === 'legal_support' ? 'var(--primary)' : '#f8f9fa', color: activeCategory === 'legal_support' ? '#fff' : '#5f6368', display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
+              <Search size={activeCategory === 'legal_support' ? 28 : 18} strokeWidth={activeCategory === 'legal_support' ? 3 : 2} />
             </button>
           </div>
-        </div>
-      )}
+      </div>
 
       {showForm && (
         <div className="card" style={{ marginBottom: 20, padding: 20 }}>
           <h3 style={{ margin: '0 0 12px', fontSize: '0.95rem' }}>
-            {editingId ? '게시글 수정' : activeCategory === 'eviction_quote' ? '명도 견적 의뢰' : activeCategory === 'legal_support' ? '법률지원 질문 작성' : '새 게시글 작성'}
+            {editingId ? '게시글 수정' : activeCategory === 'eviction_quote' ? '명도 견적 의뢰' : activeCategory === 'legal_support' ? `${getLegalSubcategoryLabel(formLegalSubcategory)} 작성` : '새 게시글 작성'}
           </h3>
           {activeCategory === 'eviction_quote' ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 12 }}>
@@ -533,16 +589,26 @@ export default function AdminNotes() {
               </div>
             </div>
           ) : (
-            <div className="form-group" style={{ marginBottom: 12 }}>
-              <label>{activeCategory === 'legal_support' ? '질문 제목 *' : '제목 *'}</label>
-              <input className="form-input" value={formTitle} onChange={(e) => setFormTitle(e.target.value)} placeholder={activeCategory === 'legal_support' ? '질문 제목' : '게시글 제목'} style={{ width: '100%' }} />
-            </div>
+            <>
+              {activeCategory === 'legal_support' && !editingId && (
+                <div className="form-group" style={{ marginBottom: 12 }}>
+                  <label>분류</label>
+                  <select className="form-input" value={formLegalSubcategory} onChange={(e) => setFormLegalSubcategory(e.target.value as LegalSubcategory)} style={{ width: 180 }}>
+                    {LEGAL_SUBCATEGORIES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
+                  </select>
+                </div>
+              )}
+              <div className="form-group" style={{ marginBottom: 12 }}>
+                <label>{activeCategory === 'legal_support' && formLegalSubcategory === 'consultation' ? '질문 제목 *' : '제목 *'}</label>
+                <input className="form-input" value={formTitle} onChange={(e) => setFormTitle(e.target.value)} placeholder={activeCategory === 'legal_support' && formLegalSubcategory === 'consultation' ? '질문 제목' : '게시글 제목'} style={{ width: '100%' }} />
+              </div>
+            </>
           )}
           <div className="form-group" style={{ marginBottom: 12 }}>
-            <label>{activeCategory === 'legal_support' ? '질문 내용 *' : '내용 *'}</label>
+            <label>{activeCategory === 'legal_support' && formLegalSubcategory === 'consultation' ? '질문 내용 *' : '내용 *'}</label>
             <textarea className="form-input" value={formContent} onChange={(e) => setFormContent(e.target.value)}
               onPaste={activeCategory === 'legal_support' ? handlePaste : undefined}
-              placeholder={activeCategory === 'eviction_quote' ? '현장 상황, 점유자 정보, 특이사항 등을 입력하세요.' : activeCategory === 'legal_support' ? '질문 내용을 입력하세요. 이미지는 붙여넣기로 추가할 수 있습니다.' : '게시글 내용을 입력하세요...'}
+              placeholder={activeCategory === 'eviction_quote' ? '현장 상황, 점유자 정보, 특이사항 등을 입력하세요.' : activeCategory === 'legal_support' && formLegalSubcategory === 'consultation' ? '질문 내용을 입력하세요. 이미지는 붙여넣기로 추가할 수 있습니다.' : activeCategory === 'legal_support' ? '법령명, 조문, 실무 메모를 입력하세요.' : '게시글 내용을 입력하세요...'}
               rows={6} style={{ width: '100%', resize: 'vertical' }} />
           </div>
           {activeCategory === 'legal_support' && (
@@ -597,16 +663,6 @@ export default function AdminNotes() {
         </div>
       )}
 
-      {activeCategory !== 'legal_support' && <div style={{ marginBottom: 12 }}>
-        <input
-          className="search-input"
-          placeholder={activeCategory === 'eviction_quote' ? '법원, 사건번호, 내용 검색...' : '제목, 내용, 작성자 검색...'}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ maxWidth: 300, padding: '6px 12px', border: '1px solid #dadce0', borderRadius: 6, fontSize: '0.8rem' }}
-        />
-      </div>}
-
       {filtered.length === 0 ? (
         <div className="empty-state" style={{ padding: 40 }}>
           {notes.length === 0 ? '등록된 게시글이 없습니다.' : '검색 결과가 없습니다.'}
@@ -628,6 +684,11 @@ export default function AdminNotes() {
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '4px 0 6px' }}>
                     <span className="admin-note-visibility-badge">{note.court || '-'}</span>
                     <span className="admin-note-visibility-badge">{note.case_number || '-'}</span>
+                  </div>
+                )}
+                {note.category === 'legal_support' && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '4px 0 6px' }}>
+                    <span className="admin-note-visibility-badge">{getLegalSubcategoryLabel(note.legal_subcategory)}</span>
                   </div>
                 )}
                 <div className="admin-notes-card-preview">

@@ -6,6 +6,8 @@ import { APP_URL, sendAlimtalkByTemplate } from '../alimtalk';
 const ADMIN_ROLES: Role[] = ['master', 'ceo', 'cc_ref', 'admin'];
 const NOTE_CATEGORIES = ['community', 'eviction_quote', 'legal_support'] as const;
 type NoteCategory = typeof NOTE_CATEGORIES[number];
+const LEGAL_SUBCATEGORIES = ['consultation', 'law_reference'] as const;
+type LegalSubcategory = typeof LEGAL_SUBCATEGORIES[number];
 const KST_NOW_SQL = "datetime('now', '+9 hours')";
 
 const adminNotes = new Hono<AuthEnv>();
@@ -17,6 +19,7 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
     'ALTER TABLE admin_notes ADD COLUMN category TEXT DEFAULT "community"',
     'ALTER TABLE admin_notes ADD COLUMN court TEXT',
     'ALTER TABLE admin_notes ADD COLUMN case_number TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN legal_subcategory TEXT DEFAULT "consultation"',
   ];
   for (const sql of columns) {
     try { await db.prepare(sql).run(); } catch { /* already exists */ }
@@ -34,11 +37,16 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
     )
   `).run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_category ON admin_notes(category)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_legal_subcategory ON admin_notes(legal_subcategory)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_attachments_note ON admin_note_attachments(note_id)').run();
 }
 
 function normalizeCategory(category: unknown): NoteCategory {
   return NOTE_CATEGORIES.includes(category as NoteCategory) ? category as NoteCategory : 'community';
+}
+
+function normalizeLegalSubcategory(value: unknown): LegalSubcategory {
+  return LEGAL_SUBCATEGORIES.includes(value as LegalSubcategory) ? value as LegalSubcategory : 'consultation';
 }
 
 async function teamPhones(db: D1Database, teamName: string): Promise<string[]> {
@@ -50,6 +58,23 @@ async function teamPhones(db: D1Database, teamName: string): Promise<string[]> {
       AND u.phone IS NOT NULL AND u.phone != ''
       AND (u.department = ? OR t.name = ?)
   `).bind(teamName, teamName).all<{ phone: string }>();
+  return (rows.results || []).map(r => r.phone).filter(Boolean);
+}
+
+// 명도견적의뢰 수신대상: 명도팀 + 의정부지사장
+async function evictionQuoteRecipients(db: D1Database): Promise<string[]> {
+  const rows = await db.prepare(`
+    SELECT DISTINCT u.phone
+    FROM users u
+    LEFT JOIN teams t ON t.id = u.team_id
+    WHERE u.approved = 1
+      AND u.phone IS NOT NULL AND u.phone != ''
+      AND (
+        u.department = '명도팀'
+        OR t.name = '명도팀'
+        OR (u.branch = '의정부' AND u.position_title = '지사장')
+      )
+  `).all<{ phone: string }>();
   return (rows.results || []).map(r => r.phone).filter(Boolean);
 }
 
@@ -89,6 +114,7 @@ adminNotes.get('/', async (c) => {
   const viewer = c.get('user');
   const category = normalizeCategory(c.req.query('category') || 'community');
   const search = (c.req.query('search') || '').trim();
+  const legalSubcategory = normalizeLegalSubcategory(c.req.query('legal_subcategory') || 'consultation');
 
   // 사용자 정보 조회 (branch, department)
   const viewerInfo = await db.prepare(
@@ -109,9 +135,10 @@ adminNotes.get('/', async (c) => {
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
        WHERE COALESCE(n.category, 'community') = ?
+         AND (? != 'legal_support' OR COALESCE(n.legal_subcategory, 'consultation') = ?)
          AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ?)
        ORDER BY n.pinned DESC, n.created_at DESC`
-    ).bind(category, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`).all();
+    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`).all();
   } else {
     // 관리자급 포함 전체: visibility 조건 적용
     notes = await db.prepare(
@@ -121,6 +148,7 @@ adminNotes.get('/', async (c) => {
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
        WHERE COALESCE(n.category, 'community') = ?
+         AND (? != 'legal_support' OR COALESCE(n.legal_subcategory, 'consultation') = ?)
          AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ?)
          AND (
            n.visibility = 'all'
@@ -130,7 +158,7 @@ adminNotes.get('/', async (c) => {
            OR n.author_id = ?
          )
        ORDER BY n.pinned DESC, n.created_at DESC`
-    ).bind(category, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, viewer.sub).all();
+    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, viewer.sub).all();
   }
 
   const masked = (notes.results || []).map((n: any) => maskNote(n, role));
@@ -186,8 +214,9 @@ adminNotes.post('/', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);
-  const { title, content, pinned, source_type, source_id, is_anonymous, visibility, category: rawCategory, court, case_number, attachments } = await c.req.json();
+  const { title, content, pinned, source_type, source_id, is_anonymous, visibility, category: rawCategory, court, case_number, legal_subcategory, attachments } = await c.req.json();
   const category = normalizeCategory(rawCategory);
+  const legalSubcategory = category === 'legal_support' ? normalizeLegalSubcategory(legal_subcategory) : null;
   if (!title?.trim() || !content?.trim()) return c.json({ error: '제목과 내용을 입력하세요.' }, 400);
   if (category === 'eviction_quote' && (!court?.trim() || !case_number?.trim())) {
     return c.json({ error: '법원과 사건번호를 입력하세요.' }, 400);
@@ -213,8 +242,8 @@ adminNotes.post('/', async (c) => {
 
   const id = crypto.randomUUID();
   await db.prepare(
-    `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, court, case_number, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
+    `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, court, case_number, legal_subcategory, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
   ).bind(
     id, title.trim(), content.trim(), user.sub, user.name,
     canPin && pinned ? 1 : 0,
@@ -224,7 +253,8 @@ adminNotes.post('/', async (c) => {
     profile?.branch || '', profile?.department || '',
     category,
     category === 'eviction_quote' ? court.trim() : null,
-    category === 'eviction_quote' ? case_number.trim() : null
+    category === 'eviction_quote' ? case_number.trim() : null,
+    legalSubcategory
   ).run();
 
   const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5) : [];
@@ -244,7 +274,7 @@ adminNotes.post('/', async (c) => {
   }
 
   if (category === 'eviction_quote') {
-    const phones = await teamPhones(db, '명도팀');
+    const phones = await evictionQuoteRecipients(db);
     if (phones.length > 0) {
       c.executionCtx.waitUntil(sendAlimtalkByTemplate(
         c.env as unknown as Record<string, unknown>,
@@ -254,7 +284,7 @@ adminNotes.post('/', async (c) => {
         { db, relatedType: 'admin_note', relatedId: id },
       ).catch(() => {}));
     }
-  } else if (category === 'legal_support') {
+  } else if (category === 'legal_support' && legalSubcategory === 'consultation') {
     const phones = await teamPhones(db, '법률지원팀');
     if (phones.length > 0) {
       const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -325,7 +355,7 @@ adminNotes.post('/:id/comments', async (c) => {
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);
   const note = await db.prepare(`
-    SELECT n.id, n.title, n.category, n.court, n.case_number, n.author_id,
+    SELECT n.id, n.title, n.category, n.legal_subcategory, n.court, n.case_number, n.author_id,
       u.name as receiver_name, u.phone as receiver_phone
     FROM admin_notes n
     LEFT JOIN users u ON u.id = n.author_id
@@ -334,6 +364,7 @@ adminNotes.post('/:id/comments', async (c) => {
     id: string;
     title: string;
     category: string | null;
+    legal_subcategory: string | null;
     court: string | null;
     case_number: string | null;
     author_id: string;
@@ -362,7 +393,7 @@ adminNotes.post('/:id/comments', async (c) => {
       [note.receiver_phone],
       { db, relatedType: 'admin_note_comment', relatedId: id },
     ).catch(() => {}));
-  } else if (note.receiver_phone && note.author_id !== user.sub && category === 'legal_support') {
+  } else if (note.receiver_phone && note.author_id !== user.sub && category === 'legal_support' && (note.legal_subcategory || 'consultation') === 'consultation') {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>,
       'COMMUNITY_LEGAL_SUPPORT_ANSWERED',

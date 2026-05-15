@@ -296,13 +296,13 @@ export const api = {
   },
 
   adminNotes: {
-    list: (params: { category?: string; search?: string } = {}) => {
+    list: (params: { category?: string; search?: string; legal_subcategory?: string } = {}) => {
       const q = new URLSearchParams();
       Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
       return request<{ notes: any[] }>('/admin-notes' + (q.toString() ? '?' + q.toString() : ''));
     },
     get: (id: string) => request<{ note: any; comments: any[]; attachments: any[] }>('/admin-notes/' + id),
-    create: (data: { title: string; content: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; attachments?: any[] }) =>
+    create: (data: { title: string; content: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; legal_subcategory?: string; attachments?: any[] }) =>
       request<{ success: boolean; id: string }>('/admin-notes', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { title?: string; content?: string; pinned?: boolean }) =>
       request('/admin-notes/' + id, { method: 'PUT', body: JSON.stringify(data) }),
