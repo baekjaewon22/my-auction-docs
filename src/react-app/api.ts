@@ -334,6 +334,8 @@ export const api = {
       Object.entries(params).forEach(([k, v]) => { if (v) q.set(k, String(v)); });
       return request<{ match: null | { target_date: string; activity_type: string; case_number: string; item_no: string; court: string; client_name: string } }>('/admin-notes/briefing-autofill?' + q.toString());
     },
+    myAlerts: () =>
+      request<{ alerts: Array<{ type: string; priority: number; label: string; note_id?: string; title: string; message: string; comment_count?: number; link: string; created_at: string }> }>('/admin-notes/my-alerts'),
     update: (id: string, data: { title?: string; content?: string; pinned?: boolean }) =>
       request('/admin-notes/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request('/admin-notes/' + id, { method: 'DELETE' }),

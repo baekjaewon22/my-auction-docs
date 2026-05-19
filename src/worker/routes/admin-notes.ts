@@ -164,6 +164,126 @@ function maskComment(comment: any, viewerRole: string) {
 }
 
 // GET /api/admin-notes - 목록 조회
+function myAlertCategoryLabel(category: string | null, legalSubcategory?: string | null): string {
+  if (category === 'legal_support') return legalSubcategory === 'law_reference' ? '법령자료' : '법률지원';
+  if (category === 'eviction_quote') return '명도견적';
+  if (category === 'briefing_schedule') return '브리핑일정';
+  if (category === 'article_news') return '오늘의 뉴스';
+  return '커뮤니티';
+}
+
+async function loadSystemAlertSummary(db: D1Database, viewer: any) {
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  if (['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(viewer.role || '')) {
+    const pendingSales = await db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM sales_records
+      WHERE status = 'pending' AND direction != 'expense'
+    `).first<{ cnt: number }>();
+    if ((pendingSales?.cnt || 0) > 0) {
+      return { type: 'system_summary', priority: 4, label: '시스템', title: '입금 대기 매출', message: `${pendingSales!.cnt}건의 입금 대기 매출이 있습니다.`, link: '/sales', created_at: now };
+    }
+  }
+
+  const myMissingDocs = await db.prepare(`
+    SELECT COUNT(*) as cnt
+    FROM sales_records
+    WHERE user_id = ?
+      AND status != 'refunded'
+      AND type IN ('계약', '낙찰')
+      AND COALESCE(contract_submitted, 0) = 0
+      AND COALESCE(contract_not_submitted, 0) = 0
+  `).bind(viewer.sub).first<{ cnt: number }>();
+  if ((myMissingDocs?.cnt || 0) > 0) {
+    return { type: 'system_summary', priority: 4, label: '시스템', title: '계약 관련 문서 미작성', message: `${myMissingDocs!.cnt}건의 미작성 문서가 있습니다.`, link: '/sales', created_at: now };
+  }
+  return null;
+}
+
+adminNotes.get('/my-alerts', async (c) => {
+  const db = c.env.DB;
+  await ensureAdminNoteExtensions(db);
+  const viewer = c.get('user');
+  const sinceSql = "datetime('now', '+9 hours', '-7 days')";
+
+  const authored = await db.prepare(`
+    SELECT n.id as note_id, n.title, n.category, n.legal_subcategory, n.updated_at,
+      c.id as comment_id, c.author_name as comment_author_name,
+      c.content as comment_content, c.created_at as comment_created_at,
+      COUNT(*) OVER (PARTITION BY n.id) as comment_count
+    FROM admin_notes n
+    JOIN admin_note_comments c ON c.note_id = n.id
+    WHERE n.author_id = ? AND c.author_id != ? AND c.created_at >= ${sinceSql}
+    ORDER BY c.created_at DESC
+    LIMIT 20
+  `).bind(viewer.sub, viewer.sub).all<any>();
+
+  const assigned = await db.prepare(`
+    SELECT n.id as note_id, n.title, n.category, n.legal_subcategory, n.updated_at,
+      c.id as comment_id, c.author_name as comment_author_name,
+      c.content as comment_content, c.created_at as comment_created_at,
+      COUNT(*) OVER (PARTITION BY n.id) as comment_count
+    FROM admin_notes n
+    JOIN admin_note_comments c ON c.note_id = n.id
+    WHERE n.assignee_id = ? AND n.author_id != ? AND c.author_id != ? AND c.created_at >= ${sinceSql}
+    ORDER BY c.created_at DESC
+    LIMIT 20
+  `).bind(viewer.sub, viewer.sub, viewer.sub).all<any>();
+
+  const participated = await db.prepare(`
+    SELECT n.id as note_id, n.title, n.category, n.legal_subcategory, n.updated_at,
+      c.id as comment_id, c.author_name as comment_author_name,
+      c.content as comment_content, c.created_at as comment_created_at,
+      COUNT(*) OVER (PARTITION BY n.id) as comment_count
+    FROM admin_notes n
+    JOIN admin_note_comments mine ON mine.note_id = n.id AND mine.author_id = ?
+    JOIN admin_note_comments c ON c.note_id = n.id
+    WHERE n.author_id != ? AND c.author_id != ? AND c.created_at > mine.created_at AND c.created_at >= ${sinceSql}
+    GROUP BY n.id, c.id
+    ORDER BY c.created_at DESC
+    LIMIT 20
+  `).bind(viewer.sub, viewer.sub, viewer.sub).all<any>();
+
+  const seen = new Set<string>();
+  const makeLink = (category: string | null) => {
+    if (category === 'legal_support') return '/admin-notes?tab=legal_support';
+    if (category === 'eviction_quote') return '/admin-notes?tab=eviction_quote';
+    if (category === 'briefing_schedule') return '/admin-notes?section=briefing_schedule';
+    if (category === 'article_news') return '/admin-notes?section=article_news';
+    return '/admin-notes';
+  };
+  const toAlert = (row: any, type: string, priority: number, titlePrefix: string) => {
+    const key = `${type}:${row.note_id}:${row.comment_id || row.updated_at || ''}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const label = myAlertCategoryLabel(row.category, row.legal_subcategory);
+    const content = String(row.comment_content || '').replace(/\s+/g, ' ').trim();
+    return {
+      type,
+      priority,
+      label,
+      note_id: row.note_id,
+      title: `${titlePrefix}: ${row.title}`,
+      message: row.comment_author_name ? `${row.comment_author_name}님의 댓글${content ? `: ${content.slice(0, 60)}` : ''}` : `${label} 글에 새 반응이 있습니다.`,
+      comment_count: row.comment_count || 1,
+      link: makeLink(row.category),
+      created_at: row.comment_created_at || row.updated_at,
+    };
+  };
+
+  const alerts = [
+    ...(authored.results || []).map((r: any) => toAlert(r, 'authored_comment', 1, '내 글 답글')),
+    ...(assigned.results || []).map((r: any) => toAlert(r, 'assigned_comment', 2, '담당 글 반응')),
+    ...(participated.results || []).map((r: any) => toAlert(r, 'participated_comment', 3, '참여 글 새 댓글')),
+  ].filter(Boolean) as any[];
+
+  const systemAlert = await loadSystemAlertSummary(db, viewer).catch(() => null);
+  if (systemAlert) alerts.push(systemAlert);
+
+  alerts.sort((a, b) => (a.priority - b.priority) || String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  return c.json({ alerts: alerts.slice(0, 5) });
+});
+
 adminNotes.get('/', async (c) => {
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);

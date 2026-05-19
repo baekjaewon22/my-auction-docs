@@ -381,15 +381,50 @@ sales.post('/', async (c) => {
   }
 
   const direction = body.direction === 'expense' ? 'expense' : 'income';
+  let ownerId = user.sub;
+  let ownerName = user.name || '';
+  let ownerBranch = user.branch;
+  let ownerDepartment = user.department;
+
+  if (body.journal_entry_id) {
+    const linkedEntry = await db.prepare(`
+      SELECT j.user_id, j.branch, j.department, u.name as user_name
+      FROM journal_entries j
+      LEFT JOIN users u ON u.id = j.user_id
+      WHERE j.id = ?
+    `).bind(body.journal_entry_id).first<{
+      user_id: string;
+      branch: string;
+      department: string;
+      user_name: string;
+    }>();
+
+    if (!linkedEntry) {
+      return c.json({ error: '연결된 일지를 찾을 수 없습니다.' }, 404);
+    }
+
+    const canCreateForLinkedEntry = linkedEntry.user_id === user.sub
+      || ['master', 'ceo', 'cc_ref'].includes(user.role)
+      || (user.role === 'admin' && linkedEntry.branch === user.branch);
+    if (!canCreateForLinkedEntry) {
+      return c.json({ error: '연결된 일지의 매출을 등록할 권한이 없습니다.' }, 403);
+    }
+
+    ownerId = linkedEntry.user_id;
+    ownerName = linkedEntry.user_name || ownerName;
+    ownerBranch = linkedEntry.branch || ownerBranch;
+    ownerDepartment = linkedEntry.department || ownerDepartment;
+  }
+
   const id = crypto.randomUUID();
   await db.prepare(`
     INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, payment_type, receipt_type, receipt_phone, proxy_cost)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
-    id, user.sub, body.type, body.type_detail || '', body.client_name,
+    id, ownerId, body.type, body.type_detail || '', body.client_name,
     body.depositor_name || '', body.depositor_different ? 1 : 0,
     body.amount || 0, body.contract_date || new Date().toISOString().slice(0, 10),
-    body.journal_entry_id || null, direction, user.branch, user.department,
+    body.journal_entry_id || null, direction, ownerBranch, ownerDepartment,
     body.payment_type || '', body.receipt_type || '', body.receipt_phone || '',
     body.proxy_cost || 0
   ).run();
@@ -401,7 +436,7 @@ sales.post('/', async (c) => {
   }
 
   // 알림톡: 매출 등록(입금대기) → 해당 지사 알림톡 ON한 총무에게 DEPOSIT_CLAIM
-  const creatorBranch = user.branch || '';
+  const creatorBranch = ownerBranch || '';
   if (creatorBranch) {
     const accountants = await db.prepare(
       "SELECT phone, alimtalk_branches FROM users WHERE role IN ('accountant', 'accountant_asst') AND approved = 1 AND phone != ''"
@@ -413,7 +448,7 @@ sales.post('/', async (c) => {
     if (phones.length > 0) {
       c.executionCtx.waitUntil(sendAlimtalkByTemplate(
         c.env as unknown as Record<string, unknown>, 'DEPOSIT_CLAIM',
-        { claimer_name: user.name, depositor: body.depositor_name || body.client_name, amount: Number(body.amount || 0).toLocaleString('ko-KR'), deposit_date: body.contract_date || new Date().toISOString().slice(0, 10), branch: creatorBranch, link: `${APP_URL}/sales` },
+        { claimer_name: ownerName, depositor: body.depositor_name || body.client_name, amount: Number(body.amount || 0).toLocaleString('ko-KR'), deposit_date: body.contract_date || new Date().toISOString().slice(0, 10), branch: creatorBranch, link: `${APP_URL}/sales` },
         phones,
       ).catch(() => {}));
     }

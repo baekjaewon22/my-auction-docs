@@ -4,7 +4,7 @@ import { useAuthStore } from '../store';
 import { api } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 
@@ -114,6 +114,8 @@ export default function Dashboard() {
   const [pendingSalesBranch, setPendingSalesBranch] = useState('');
   const [accountantLeaves, setAccountantLeaves] = useState<any[]>([]);
   const [coopAlerts, setCoopAlerts] = useState<any[]>([]);
+  const [myAlerts, setMyAlerts] = useState<any[]>([]);
+  const [todayNews, setTodayNews] = useState<any[]>([]);
   const [driveStatus, setDriveStatus] = useState<{ last_backup_at: string | null; pending_count: number; connected: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '');
@@ -280,6 +282,8 @@ export default function Dashboard() {
           coopRes,
           dupRes,
           alimtalkRes,
+          newsRes,
+          myAlertsRes,
         ] = await Promise.all([
           needSalesList ? api.sales.list({}).catch(() => null) : Promise.resolve(null),
           submittedDocsForSteps.length > 0
@@ -300,6 +304,8 @@ export default function Dashboard() {
           (canSeeAccountingAlerts && ['accountant', 'accountant_asst'].includes(user?.role || '') && user?.id)
             ? api.users.getAlimtalkSettings(user.id).catch(() => null)
             : Promise.resolve(null),
+          api.adminNotes.list({ category: 'article_news' }).catch(() => null),
+          api.adminNotes.myAlerts().catch(() => null),
         ]);
 
         // ─── 결과 처리 ───
@@ -400,6 +406,18 @@ export default function Dashboard() {
         if (dupRes) {
           setDupInspections((dupRes.duplicates || []).filter((d: any) => !localDismissed.has(`dup_${d.case_no}_${d.court}_${d.branch || ''}`)));
         }
+
+        if (newsRes) {
+          const latestNews = (newsRes.notes || [])
+            .slice()
+            .sort((a: any, b: any) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))
+            .slice(0, 4);
+          setTodayNews(latestNews);
+        }
+
+        if (myAlertsRes) {
+          setMyAlerts(myAlertsRes.alerts || []);
+        }
       })
       .finally(() => setLoading(false));
     })();
@@ -419,6 +437,58 @@ export default function Dashboard() {
     approved: documents.filter((d) => d.status === 'approved').length,
     rejected: documents.filter((d) => d.status === 'rejected').length,
   };
+
+  const newsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const newsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
+  const TodayNewsPanel = () => (
+    <div className="dashboard-today-news-panel">
+      <div className="dashboard-today-news-header">
+        <span><Newspaper size={16} /> 오늘의 뉴스</span>
+        <Link to="/admin-notes?section=article_news" className="dashboard-today-news-more">전체보기</Link>
+      </div>
+      {todayNews.length === 0 ? (
+        <div className="dashboard-today-news-empty">업데이트된 뉴스가 없습니다.</div>
+      ) : (
+        <div className="dashboard-today-news-list">
+          {todayNews.map((note: any) => {
+            const preview = newsPreview(note.content || '');
+            return (
+              <Link key={note.id} to="/admin-notes?section=article_news" className="dashboard-today-news-item">
+                <div className="dashboard-today-news-title">{note.title}</div>
+                {preview && <div className="dashboard-today-news-preview">{preview.length > 72 ? preview.slice(0, 72) + '...' : preview}</div>}
+                <div className="dashboard-today-news-date">{newsDate(note.updated_at || note.created_at)}</div>
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+  const ownMissingAlerts = alerts.filter((a) => a.userId === user?.id);
+  const alertDate = (value: string = '') => value ? value.slice(0, 16).replace('T', ' ') : '';
+  const topMyAlert = myAlerts[0] || null;
+  const MyAlertsPanel = () => (
+    <div className="dashboard-top-alert-panel dashboard-my-alert-panel">
+      <div className="dashboard-today-news-header">
+        <span><Bell size={16} /> 내 알림</span>
+        <Link to="/admin-notes" className="dashboard-today-news-more">커뮤니티</Link>
+      </div>
+      {!topMyAlert ? (
+        <div className="dashboard-today-news-empty">확인할 새 알림이 없습니다.</div>
+      ) : (
+        <Link to={topMyAlert.link || '/admin-notes'} className={`dashboard-my-alert-item priority-${topMyAlert.priority || 4}`}>
+          <div className="dashboard-my-alert-row">
+            <span className="dashboard-my-alert-badge">{topMyAlert.label || '알림'}</span>
+            {topMyAlert.comment_count > 1 && <span className="dashboard-my-alert-count">{topMyAlert.comment_count}</span>}
+            {myAlerts.length > 1 && <span className="dashboard-my-alert-more-badge">+{myAlerts.length - 1}</span>}
+          </div>
+          <div className="dashboard-my-alert-title">{topMyAlert.title}</div>
+          <div className="dashboard-my-alert-message">{topMyAlert.message}</div>
+          <div className="dashboard-today-news-date">{alertDate(topMyAlert.created_at)}</div>
+        </Link>
+      )}
+    </div>
+  );
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -460,6 +530,11 @@ export default function Dashboard() {
           </Link>
         );
       })()}
+
+      <section className="section dashboard-news-row">
+        <MyAlertsPanel />
+        <TodayNewsPanel />
+      </section>
 
       {/* 총무 휴가 알림 (전체 직원에게 노출) */}
       {accountantLeaves.length > 0 && (
@@ -536,7 +611,7 @@ export default function Dashboard() {
 
       {/* [5-2] 내 미제출 보고서 D-Day (담당자 본인용 — 항상 노출) */}
       {(() => {
-        const myAlerts = alerts.filter((a) => a.userId === user?.id);
+        const myAlerts = ownMissingAlerts;
         if (myAlerts.length === 0) return null;
         return (
           <section className="section">
