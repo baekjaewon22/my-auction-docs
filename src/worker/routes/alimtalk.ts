@@ -5,8 +5,7 @@ import {
   sendAlimtalkByTemplate,
   isAlimtalkConfigured,
   ALIMTALK_TEMPLATES,
-  normalizePhone,
-  replaceTemplateVariables,
+  refreshRecentAlimtalkDeliveryStatuses,
 } from '../alimtalk';
 
 const alimtalk = new Hono<AuthEnv>();
@@ -127,8 +126,21 @@ alimtalk.get('/status', requireRole('master', 'ceo', 'admin'), async (c) => {
       { code: 'doc_rejected', label: '문서 반려 알림' },
       { code: 'minutes_shared', label: '회의록 공유 알림' },
       { code: 'deposit_claim', label: '입금 매칭 알림' },
+      { code: 'community_legal_support', label: '법률지원 질문 알림' },
+      { code: 'community_eviction_quote', label: '명도견적 의뢰 알림' },
     ],
   });
+});
+
+// POST /api/alimtalk/refresh-status — 최근 알림톡 최종 전달 상태 조회
+alimtalk.post('/refresh-status', requireRole('master', 'ceo', 'admin'), async (c) => {
+  const limit = Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 200);
+  const result = await refreshRecentAlimtalkDeliveryStatuses(
+    c.env as unknown as Record<string, unknown>,
+    c.env.DB,
+    limit,
+  );
+  return c.json({ success: true, ...result });
 });
 
 // ── 테스트 발송 (관리자) ──
@@ -150,21 +162,8 @@ alimtalk.post('/test', requireRole('master', 'ceo'), async (c) => {
       template_key as keyof typeof ALIMTALK_TEMPLATES,
       variables,
       [phone],
+      { db: c.env.DB, relatedType: 'test', relatedId: crypto.randomUUID(), force: true },
     );
-
-    // 로그 저장
-    const db = c.env.DB;
-    await db.prepare(
-      'INSERT INTO alimtalk_logs (id, template_code, recipient_phone, content, request_id, status, related_type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(
-      crypto.randomUUID(),
-      template.code,
-      normalizePhone(phone),
-      replaceTemplateVariables(template.content, variables),
-      result?.requestId || '',
-      result ? 'sent' : 'skipped',
-      'test',
-    ).run();
 
     return c.json({ success: true, result, configured: !!result });
   } catch (err: any) {

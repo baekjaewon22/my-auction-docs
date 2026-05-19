@@ -17,3 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_slack_accounting_logs_run
 
 CREATE INDEX IF NOT EXISTS idx_slack_accounting_logs_created
   ON slack_accounting_logs(created_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_slack_accounting_logs_success_once
+  ON slack_accounting_logs(run_key, group_label)
+  WHERE status = 'success';

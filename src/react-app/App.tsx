@@ -59,7 +59,7 @@ function TopRoute({ children }: { children: React.ReactNode }) {
 
 function ApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager'];
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }

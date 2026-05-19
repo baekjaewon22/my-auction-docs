@@ -52,6 +52,7 @@ export default function UserManagement() {
   const [addressInput, setAddressInput] = useState('');
   const [evaluations, setEvaluations] = useState<SalesEvaluation[]>([]);
   const [saving, setSaving] = useState(false);
+  const [converting, setConverting] = useState(false);
   // 알림톡 수신 설정
   const [alimBranches, setAlimBranches] = useState<Set<string>>(new Set());
   const ALIM_BRANCHES = ['의정부', '서초', '대전', '부산'];
@@ -69,6 +70,7 @@ export default function UserManagement() {
   const canViewAccounting = ['master', 'ceo', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   // 입사기준일 편집 가능한 역할
   const canSetHireDate = ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
+  const canConvertFreelancer = ['master', 'ceo', 'accountant'].includes(currentUser?.role || '');
 
   const load = () => {
     setLoading(true);
@@ -199,6 +201,54 @@ export default function UserManagement() {
       alert('저장되었습니다.');
     } catch (err: any) { alert(err.message); }
     finally { setSaving(false); }
+  };
+
+  const handleConvertToEmployee = async () => {
+    if (!selectedUser || !canConvertFreelancer) return;
+    if (selectedUser.login_type !== 'freelancer') {
+      alert('이미 일반 계정입니다.');
+      return;
+    }
+    if (payType !== 'salary') {
+      alert('급여제로 전환한 뒤 급여 정보를 입력해주세요.');
+      return;
+    }
+    const salary = Number(salaryInput) || 0;
+    const positionAllowance = Number(posAllowanceInput) || 0;
+    if (salary <= 0) {
+      alert('정규직 전환에는 0보다 큰 급여가 필요합니다.');
+      return;
+    }
+    if (positionAllowance < 0) {
+      alert('직책수당은 0 이상으로 입력해주세요.');
+      return;
+    }
+    if (gradeInput && !GRADE_OPTIONS.includes(gradeInput as any)) {
+      alert('직급 값이 올바르지 않습니다.');
+      return;
+    }
+    if (!confirm(`${selectedUser.name}님을 정규직 계정으로 전환하시겠습니까?\n전환 후 일반 로그인 계정으로 변경되고 급여제로 정산됩니다.`)) return;
+
+    setConverting(true);
+    try {
+      const res = await api.users.convertToEmployee(selectedUser.id, {
+        salary,
+        grade: gradeInput,
+        position_allowance: positionAllowance,
+      });
+      const nextUser = { ...selectedUser, ...res.user, login_type: 'employee' as const };
+      setSelectedUser(nextUser);
+      setUsers(prev => prev.map(u => u.id === selectedUser.id ? nextUser : u));
+      setSalaryInput(String(res.account.salary || salary));
+      setGradeInput(res.account.grade || gradeInput);
+      setPosAllowanceInput(String(res.account.position_allowance || positionAllowance || 0));
+      setPayType('salary');
+      setCommissionRate('0');
+      setSsnInput('');
+      setAddressInput('');
+      alert('정규직 전환이 완료되었습니다.');
+    } catch (err: any) { alert(err.message); }
+    finally { setConverting(false); }
   };
 
   const handleGradeDemotion = async (userId: string, newGrade: string) => {
@@ -337,6 +387,24 @@ export default function UserManagement() {
               )}
             </div>
 
+            {selectedUser.login_type === 'freelancer' && (
+              <div style={{ marginBottom: 16, padding: 14, border: '1px solid #e8eaed', borderRadius: 8, background: '#f8fbff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#1a1a2e' }}>프리랜서 계정</div>
+                    <div style={{ fontSize: '0.78rem', color: '#5f6368', marginTop: 4 }}>
+                      급여제 정보 확인 후 정규직 전환을 실행하면 일반 로그인 계정으로 변경됩니다.
+                    </div>
+                  </div>
+                  {canConvertFreelancer && payType !== 'salary' && (
+                    <button type="button" className="btn btn-sm" onClick={() => setPayType('salary')}>
+                      급여제 입력
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {payType === 'salary' ? (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 20 }}>
                 {/* 급여 */}
@@ -457,10 +525,15 @@ export default function UserManagement() {
             )}
 
             {canEditAccounting && (
-              <div style={{ marginTop: 16 }}>
+              <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn btn-primary" onClick={handleSaveAccounting} disabled={saving}>
                   {saving ? '저장중...' : '저장'}
                 </button>
+                {selectedUser.login_type === 'freelancer' && canConvertFreelancer && (
+                  <button className="btn btn-success" onClick={handleConvertToEmployee} disabled={converting || saving || payType !== 'salary'}>
+                    {converting ? '전환중...' : '정규직 전환 저장'}
+                  </button>
+                )}
               </div>
             )}
           </div>

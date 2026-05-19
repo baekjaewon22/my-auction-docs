@@ -85,6 +85,11 @@ export const api = {
       request('/users/' + id, { method: 'DELETE' }),
     update: (id: string, data: { name?: string; password?: string; phone?: string; branch?: string; department?: string; position_title?: string }) =>
       request('/users/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    convertToEmployee: (id: string, data: { salary: number; grade?: string; position_allowance?: number }) =>
+      request<{ success: boolean; user: import('./types').User; account: import('./types').UserAccounting }>(
+        '/users/' + id + '/convert-to-employee',
+        { method: 'PUT', body: JSON.stringify(data) },
+      ),
     saveSignature: (id: string, signature_data: string) =>
       request('/users/' + id + '/signature', { method: 'PUT', body: JSON.stringify({ signature_data }) }),
     deleteSignature: (id: string) =>
@@ -302,8 +307,33 @@ export const api = {
       return request<{ notes: any[] }>('/admin-notes' + (q.toString() ? '?' + q.toString() : ''));
     },
     get: (id: string) => request<{ note: any; comments: any[]; attachments: any[] }>('/admin-notes/' + id),
-    create: (data: { title: string; content: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; legal_subcategory?: string; attachments?: any[] }) =>
+    downloadAttachment: async (url: string) => {
+      const token = getToken();
+      const res = await fetch(url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.status === 401) {
+        localStorage.removeItem('token');
+        window.location.href = '/login';
+        throw new Error('Unauthorized');
+      }
+      if (!res.ok) {
+        let message = '파일을 열 수 없습니다.';
+        try {
+          const data = await res.json() as any;
+          message = data?.error || message;
+        } catch { /* response is not json */ }
+        throw new Error(message);
+      }
+      return res.blob();
+    },
+    create: (data: { title?: string; content?: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; legal_subcategory?: string; attachments?: any[]; assignee_id?: string; target_date?: string; item_no?: string; client_name?: string }) =>
       request<{ success: boolean; id: string }>('/admin-notes', { method: 'POST', body: JSON.stringify(data) }),
+    briefingAutofill: (params: { assignee_id: string; client_name?: string; case_number?: string }) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v) q.set(k, String(v)); });
+      return request<{ match: null | { target_date: string; activity_type: string; case_number: string; item_no: string; court: string; client_name: string } }>('/admin-notes/briefing-autofill?' + q.toString());
+    },
     update: (id: string, data: { title?: string; content?: string; pinned?: boolean }) =>
       request('/admin-notes/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request('/admin-notes/' + id, { method: 'DELETE' }),
@@ -452,7 +482,7 @@ export const api = {
   card: {
     updateUserCard: (userId: string, card_number: string) =>
       request('/card/user/' + userId, { method: 'PUT', body: JSON.stringify({ card_number }) }),
-    upload: (rows: { card_number: string; transaction_date: string; merchant_name: string; amount: number; description: string }[]) =>
+    upload: (rows: { card_number: string; transaction_date: string; merchant_name: string; amount: number; description: string; is_cancellation?: boolean; raw_text?: string }[]) =>
       request<{ success: boolean; inserted: number; batch_id: string }>('/card/upload', { method: 'POST', body: JSON.stringify({ rows }) }),
     transactions: (params?: { month?: string; branch?: string; user_id?: string }) => {
       const q = new URLSearchParams();
@@ -480,6 +510,15 @@ export const api = {
       request<{ success: boolean; total: number; updated: number }>('/card/rematch', { method: 'POST' }),
     lastUpload: () =>
       request<{ last_upload: string | null; count: number; batch_id: string | null }>('/card/last-upload'),
+  },
+
+  serviceTokens: {
+    list: () =>
+      request<{ service_tokens: any[] }>('/service-tokens'),
+    create: (data: { name: string; scope: 'read' | 'write' | 'admin'; expires_at?: string; notes?: string }) =>
+      request<{ service_token: any; token: string; token_notice: string }>('/service-tokens', { method: 'POST', body: JSON.stringify(data) }),
+    revoke: (id: string) =>
+      request<{ success: boolean; already_revoked?: boolean }>('/service-tokens/' + id + '/revoke', { method: 'POST' }),
   },
 
   links: {

@@ -9,9 +9,14 @@ interface LogEntry {
   recipient_name?: string;
   content: string;
   request_id: string;
+  message_id?: string;
   status: string;
   error_message?: string;
   related_type?: string;
+  request_status_name?: string;
+  message_status_name?: string;
+  message_status_desc?: string;
+  delivery_checked_at?: string;
   created_at: string;
 }
 
@@ -24,12 +29,22 @@ const TEMPLATE_LABELS: Record<string, string> = {
   docre: '문서 반려',
   shared: '회의록 공유',
   chong: '입금 매칭',
+  lawqq: '법률지원 질문',
+  lawq: '명도견적 의뢰',
+  lawaa: '법률지원 답변',
+  lawa: '명도견적 답변',
+  commlegal: '법률지원 질문(구코드)',
+  commquote: '명도견적 의뢰(구코드)',
+  commlegalok: '법률지원 답변(구코드)',
+  commquoteok: '명도견적 답변(구코드)',
 };
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: typeof CheckCircle }> = {
-  sent: { label: '발송완료', color: '#188038', bg: '#e8f5e9', icon: CheckCircle },
+  sent: { label: '접수완료', color: '#188038', bg: '#e8f5e9', icon: CheckCircle },
+  delivered: { label: '도착완료', color: '#188038', bg: '#e8f5e9', icon: CheckCircle },
   pending: { label: '대기중', color: '#e65100', bg: '#fff3e0', icon: Clock },
   failed: { label: '실패', color: '#d93025', bg: '#fce4ec', icon: XCircle },
+  delivery_failed: { label: '도착실패', color: '#d93025', bg: '#fce4ec', icon: XCircle },
   skipped: { label: '스킵', color: '#9aa0a6', bg: '#f5f5f5', icon: XCircle },
 };
 
@@ -109,10 +124,11 @@ export default function AlimtalkLogs() {
           {logs.map(log => {
             const cfg = STATUS_CONFIG[log.status] || STATUS_CONFIG.pending;
             const Icon = cfg.icon;
+            const statusTitle = log.message_status_desc || log.error_message || log.request_status_name || log.status;
             return (
               <div key={log.id} className="alimtalk-log-row">
                 <span>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: cfg.bg, color: cfg.color }}>
+                  <span title={statusTitle} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: cfg.bg, color: cfg.color }}>
                     <Icon size={11} /> {cfg.label}
                   </span>
                 </span>

@@ -59,13 +59,6 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   const [timeTo, setTimeTo] = useState('');
   const [companion, setCompanion] = useState(false);
 
-  // 브리핑자료 (별도 섹션)
-  const [, setBriefingSubmit] = useState(false);
-  const [briefingYear, setBriefingYear] = useState('2026');
-  const [briefingCaseNo, setBriefingCaseNo] = useState('');
-  const [briefingItemNo, setBriefingItemNo] = useState('');
-  const [briefingCourt, setBriefingCourt] = useState('');
-
   // 입찰
   const [bidYear, setBidYear] = useState('2026');
   const [bidCaseNo, setBidCaseNo] = useState('');
@@ -105,9 +98,9 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     }
   }, [timeFrom, activityType, bidProxy]);
 
-  // 업무 유형 변경 시: 사무/개인/브리핑은 현장출퇴근 불필요 → 해제
+  // 업무 유형 변경 시: 사무/개인은 현장출퇴근 불필요 → 해제
   useEffect(() => {
-    if (['사무', '개인', '브리핑자료제출'].includes(activityType)) {
+    if (['사무', '개인'].includes(activityType)) {
       setFieldCheckIn(false);
       setFieldCheckOut(false);
     }
@@ -177,9 +170,6 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     return () => clearTimeout(timer);
   }, [inspYear, inspCaseNo, inspCourt, activityType, companion]);
 
-  // 브리핑 고객명
-  const [briefingClient, setBriefingClient] = useState('');
-
   // 미팅
   const [meetingType, setMeetingType] = useState('브리핑');
   const [meetingEtc, setMeetingEtc] = useState('');
@@ -214,9 +204,6 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     if (activityType === '미팅' && !meetingClient.trim()) { alert(`${companion ? '담당자' : '계약자명'}을 입력해주세요.`); return null; }
     if (activityType === '미팅' && !meetingInternal && !meetingPlace.trim()) { alert('장소를 입력해주세요.'); return null; }
     if (activityType === '미팅' && meetingType === '브리핑' && !meetingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
-    if (activityType === '브리핑자료제출' && !briefingCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
-    if (activityType === '브리핑자료제출' && !briefingCourt) { alert('법원을 선택해주세요.'); return null; }
-    if (activityType === '브리핑자료제출' && !briefingClient.trim()) { alert('계약자명을 입력해주세요.'); return null; }
     if (activityType === '입찰' && !bidCancelled && showDeviationWarning && !bidDeviationReason.trim()) {
       alert('제시입찰가 대비 실제입찰가가 5% 이상 낮습니다. 사유를 입력해주세요.');
       return null;
@@ -261,13 +248,6 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
         subtype = officeType === '기타' ? officeEtc : officeType;
         label = `사무 — ${subtype}`;
         break;
-      case '브리핑자료제출': {
-        const caseNo = `${briefingYear}타경${briefingCaseNo}`;
-        data = { briefingSubmit: true, briefingCaseNo: caseNo, itemNo: briefingItemNo, briefingCourt, client: briefingClient };
-        subtype = '브리핑자료 제출';
-        label = `브리핑 — ${caseNo}${briefingItemNo ? ` | ${briefingItemNo}` : ''} | ${briefingClient}`;
-        break;
-      }
       case '개인':
         data = { ...data, reason: personalReason };
         subtype = personalReason;
@@ -299,7 +279,6 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     setCompanion(false);
     setOfficeEtc('');
     setPersonalReason('');
-    setBriefingSubmit(false); setBriefingCaseNo(''); setBriefingItemNo(''); setBriefingCourt(''); setBriefingClient('');
   };
 
   const removeTask = (idx: number) => {
@@ -403,7 +382,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
           )}
 
           {/* 현장출근/퇴근 */}
-          {activityType !== '개인' && activityType !== '브리핑자료제출' && !isProxyBid && !companion && (
+          {activityType !== '개인' && !isProxyBid && !companion && (
             <div className="form-group">
               <div className="field-check-group">
                 <label className={`field-check-label ${fieldCheckIn ? 'checked' : ''}`}>
@@ -416,8 +395,8 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
             </div>
           )}
 
-          {/* 시간 (브리핑/개인은 불필요) */}
-          {activityType !== '개인' && activityType !== '브리핑자료제출' && !isProxyBid && (
+          {/* 시간 (개인은 불필요) */}
+          {activityType !== '개인' && !isProxyBid && (
             <div className="form-group">
               <label>시간</label>
               <div className="inline-row">
@@ -628,34 +607,6 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
               {officeType === '기타' && (
                 <div className="form-group"><label>내용</label><input type="text" value={officeEtc} onChange={(e) => setOfficeEtc(e.target.value)} required /></div>
               )}
-            </>
-          )}
-
-          {/* === 브리핑 (독립 탭) === */}
-          {activityType === '브리핑자료제출' && (
-            <>
-              <div className="form-row form-row-inline">
-                <div className="form-group" style={{ flex: 'none' }}>
-                  <label>사건번호</label>
-                  <div className="case-no-inline">
-                    <Select size="sm" options={YEAR_OPTS} value={YEAR_OPTS.find((o) => o.value === briefingYear)} onChange={(o: any) => setBriefingYear(o.value)} />
-                    <span className="case-no-fixed">타경</span>
-                    <input type="text" value={briefingCaseNo} onChange={(e) => setBriefingCaseNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="1234" className="case-no-input" maxLength={6} />
-                  </div>
-                </div>
-                <div className="form-group" style={{ flex: 'none', width: 72 }}>
-                  <label>물건번호</label>
-                  <input type="text" value={briefingItemNo} onChange={(e) => setBriefingItemNo(e.target.value.replace(/[^0-9]/g, ''))} placeholder="" className="case-no-input" maxLength={3} style={{ width: 52, textAlign: 'center' }} />
-                </div>
-              </div>
-              <div className="form-group">
-                <label>계약자명</label>
-                <input type="text" value={briefingClient} onChange={(e) => setBriefingClient(e.target.value)} placeholder="계약자명" />
-              </div>
-              <div className="form-group">
-                <label>법원</label>
-                <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === briefingCourt) || null} onChange={(o: any) => setBriefingCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
-              </div>
             </>
           )}
 

@@ -135,7 +135,7 @@ export default function DocumentEdit() {
     : false;
   const canApprove = doc && doc.status === 'submitted' && (
     (myPendingStep && prevAllApproved) ||
-    ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '')
+    ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '')
   );
 
   const mySigned = signatures.some((s) => s.user_id === user?.id);

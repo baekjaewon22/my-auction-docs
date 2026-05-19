@@ -7,8 +7,12 @@ declare namespace Cloudflare {
 	interface Env {
 		/** D1 데이터베이스 바인딩 */
 		DB: D1Database;
+		/** R2 bucket for externally uploaded article PDFs */
+		ARTICLE_BUCKET: R2Bucket;
 		/** 현재 배포 환경 (dev/staging/production에서 자동 주입) */
 		ENVIRONMENT: "development" | "staging" | "production";
+		/** Space-separated origins allowed to embed admin pages, e.g. https://all-for-one.example.com */
+		ALL_FOR_ONE_FRAME_ANCESTORS?: string;
 		/** NCP SENS 알림톡 (시크릿으로 등록) */
 		NCP_ACCESS_KEY: string;
 		NCP_SECRET_KEY: string;

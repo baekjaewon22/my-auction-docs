@@ -1,14 +1,17 @@
 import { Hono } from 'hono';
 import type { AuthEnv, Role } from '../types';
 import { authMiddleware } from '../middleware/auth';
-import { APP_URL, sendAlimtalkByTemplate } from '../alimtalk';
+import { sendCommunityCommentAlimtalk, sendCommunityNoteCreatedAlimtalk } from '../lib/community-alimtalk';
+import { recheckAlertsAfterEntryDelete, recheckAlertsForJournalEntry } from '../lib/journal-alerts';
+import { articleObjectKey, ensureArticlePdfTable, safePdfFileName, sha256Hex } from '../lib/article-pdfs';
 
 const ADMIN_ROLES: Role[] = ['master', 'ceo', 'cc_ref', 'admin'];
-const NOTE_CATEGORIES = ['community', 'eviction_quote', 'legal_support'] as const;
+const NOTE_CATEGORIES = ['community', 'article_news', 'briefing_schedule', 'eviction_quote', 'legal_support'] as const;
 type NoteCategory = typeof NOTE_CATEGORIES[number];
 const LEGAL_SUBCATEGORIES = ['consultation', 'law_reference'] as const;
 type LegalSubcategory = typeof LEGAL_SUBCATEGORIES[number];
 const KST_NOW_SQL = "datetime('now', '+9 hours')";
+const MAX_ARTICLE_PDF_BYTES = 20 * 1024 * 1024;
 
 const adminNotes = new Hono<AuthEnv>();
 
@@ -20,6 +23,11 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
     'ALTER TABLE admin_notes ADD COLUMN court TEXT',
     'ALTER TABLE admin_notes ADD COLUMN case_number TEXT',
     'ALTER TABLE admin_notes ADD COLUMN legal_subcategory TEXT DEFAULT "consultation"',
+    'ALTER TABLE admin_notes ADD COLUMN assignee_id TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN target_date TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN item_no TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN client_name TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN journal_entry_id TEXT',
   ];
   for (const sql of columns) {
     try { await db.prepare(sql).run(); } catch { /* already exists */ }
@@ -38,7 +46,9 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
   `).run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_category ON admin_notes(category)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_legal_subcategory ON admin_notes(legal_subcategory)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_journal_entry ON admin_notes(journal_entry_id)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_attachments_note ON admin_note_attachments(note_id)').run();
+  await ensureArticlePdfTable(db);
 }
 
 function normalizeCategory(category: unknown): NoteCategory {
@@ -49,33 +59,79 @@ function normalizeLegalSubcategory(value: unknown): LegalSubcategory {
   return LEGAL_SUBCATEGORIES.includes(value as LegalSubcategory) ? value as LegalSubcategory : 'consultation';
 }
 
-async function teamPhones(db: D1Database, teamName: string): Promise<string[]> {
-  const rows = await db.prepare(`
-    SELECT DISTINCT u.phone
-    FROM users u
-    LEFT JOIN teams t ON t.id = u.team_id
-    WHERE u.approved = 1
-      AND u.phone IS NOT NULL AND u.phone != ''
-      AND (u.department = ? OR t.name = ?)
-  `).bind(teamName, teamName).all<{ phone: string }>();
-  return (rows.results || []).map(r => r.phone).filter(Boolean);
+function canCreateBriefingSchedule(role: string) {
+  return ADMIN_ROLES.includes(role as Role);
 }
 
-// 명도견적의뢰 수신대상: 명도팀 + 의정부지사장
-async function evictionQuoteRecipients(db: D1Database): Promise<string[]> {
-  const rows = await db.prepare(`
-    SELECT DISTINCT u.phone
-    FROM users u
-    LEFT JOIN teams t ON t.id = u.team_id
-    WHERE u.approved = 1
-      AND u.phone IS NOT NULL AND u.phone != ''
-      AND (
-        u.department = '명도팀'
-        OR t.name = '명도팀'
-        OR (u.branch = '의정부' AND u.position_title = '지사장')
-      )
-  `).all<{ phone: string }>();
-  return (rows.results || []).map(r => r.phone).filter(Boolean);
+function canReadNote(note: any, viewer: any, viewerInfo: { branch?: string | null; department?: string | null } | null, role: string): boolean {
+  if (role === 'master' || note.author_id === viewer.sub) return true;
+  const v = note.visibility || 'all';
+  return v === 'all' ||
+    (v === 'branch' && note.author_branch === viewerInfo?.branch) ||
+    (v === 'department' && note.author_branch === viewerInfo?.branch && note.author_department === viewerInfo?.department) ||
+    (v.startsWith('team:') && v === 'team:' + viewerInfo?.department) ||
+    (v.startsWith('user:') && v === 'user:' + viewer.sub);
+}
+
+function kstDateString(): string {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function addDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function normalizeArticleDate(raw: unknown): string | null {
+  const value = String(raw || '').trim() || kstDateString();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? null : value;
+}
+
+function pdfContentDisposition(fileName: string): string {
+  return `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
+
+async function resolveArticleApiAuthor(db: D1Database, user: any) {
+  if (user.auth_type !== 'service_token') {
+    const profile = await db.prepare(
+      'SELECT branch, department, position_title, role FROM users WHERE id = ?'
+    ).bind(user.sub).first<{ branch: string; department: string; position_title: string; role: string }>();
+    return {
+      id: user.sub,
+      name: user.name,
+      branch: profile?.branch || '',
+      department: profile?.department || '',
+      role: profile?.role || user.role,
+    };
+  }
+
+  const fallback = await db.prepare(`
+    SELECT id, branch, department, role
+    FROM users
+    WHERE approved = 1 AND role IN ('master', 'ceo', 'admin')
+    ORDER BY CASE role WHEN 'master' THEN 1 WHEN 'ceo' THEN 2 ELSE 3 END, created_at ASC
+    LIMIT 1
+  `).first<{ id: string; branch: string; department: string; role: string }>();
+  return {
+    id: fallback?.id || user.sub,
+    name: '외부 기사 API',
+    branch: fallback?.branch || '',
+    department: fallback?.department || '',
+    role: fallback?.role || user.role,
+  };
+}
+
+function makeBriefingContent(payload: { targetDate: string; assigneeName: string; court: string; caseNumber: string; itemNo?: string; clientName: string }) {
+  return [
+    `담당자: ${payload.assigneeName}`,
+    `일정일: ${payload.targetDate}`,
+    `법원: ${payload.court}`,
+    `사건번호: ${payload.caseNumber}${payload.itemNo ? ` / 물건번호: ${payload.itemNo}` : ''}`,
+    `계약자명: ${payload.clientName}`,
+  ].join('\n');
 }
 
 // 익명 처리: 대표/관리자에겐 "익명 (이름 / 직책)", 일반에겐 "익명"
@@ -123,6 +179,9 @@ adminNotes.get('/', async (c) => {
   if (!viewerInfo) return c.json({ error: '사용자 정보 오류' }, 400);
 
   const role = viewerInfo.role;
+  if (category === 'briefing_schedule' && !canCreateBriefingSchedule(role)) {
+    return c.json({ error: '브리핑자료 제출 카테고리 열람 권한이 없습니다.' }, 403);
+  }
 
   // visibility 필터링 — master만 전체 열람, 그 외는 전부 visibility 조건 적용
   let notes;
@@ -131,41 +190,264 @@ adminNotes.get('/', async (c) => {
     notes = await db.prepare(
       `SELECT n.*, u.position_title as author_position,
          (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = n.id) as comment_count,
-         (SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) as attachment_count
+         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL)) as attachment_count
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
        WHERE COALESCE(n.category, 'community') = ?
          AND (? != 'legal_support' OR COALESCE(n.legal_subcategory, 'consultation') = ?)
-         AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ?)
+         AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ? OR COALESCE(n.client_name, '') LIKE ? OR COALESCE(n.target_date, '') LIKE ?)
        ORDER BY n.pinned DESC, n.created_at DESC`
-    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`).all();
+    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`).all();
   } else {
     // 관리자급 포함 전체: visibility 조건 적용
     notes = await db.prepare(
       `SELECT n.*, u.position_title as author_position,
          (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = n.id) as comment_count,
-         (SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) as attachment_count
+         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL)) as attachment_count
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
        WHERE COALESCE(n.category, 'community') = ?
          AND (? != 'legal_support' OR COALESCE(n.legal_subcategory, 'consultation') = ?)
-         AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ?)
+         AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ? OR COALESCE(n.client_name, '') LIKE ? OR COALESCE(n.target_date, '') LIKE ?)
          AND (
            n.visibility = 'all'
            OR (n.visibility = 'branch' AND n.author_branch = ?)
            OR (n.visibility = 'department' AND n.author_branch = ? AND n.author_department = ?)
            OR (n.visibility LIKE 'team:%' AND n.visibility = ?)
+           OR (n.visibility LIKE 'user:%' AND n.visibility = ?)
            OR n.author_id = ?
          )
        ORDER BY n.pinned DESC, n.created_at DESC`
-    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, viewer.sub).all();
+    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, 'user:' + viewer.sub, viewer.sub).all();
   }
 
   const masked = (notes.results || []).map((n: any) => maskNote(n, role));
   return c.json({ notes: masked });
 });
 
+// GET /api/admin-notes/briefing-autofill - 브리핑자료 일정 자동채우기 후보
+adminNotes.get('/briefing-autofill', async (c) => {
+  const db = c.env.DB;
+  const viewer = c.get('user');
+  const assigneeId = (c.req.query('assignee_id') || '').trim();
+  const clientName = (c.req.query('client_name') || '').trim();
+  const caseNumber = (c.req.query('case_number') || '').trim();
+
+  const profile = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(viewer.sub).first<{ role: string; branch: string }>();
+  if (!canCreateBriefingSchedule(profile?.role || viewer.role)) return c.json({ error: '브리핑자료 일정 등록 권한이 없습니다.' }, 403);
+  if (!assigneeId) return c.json({ match: null });
+
+  const assignee = await db.prepare('SELECT id, branch FROM users WHERE id = ? AND approved = 1').bind(assigneeId).first<{ id: string; branch: string }>();
+  if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
+  if ((profile?.role || viewer.role) === 'admin' && assignee.branch !== profile?.branch) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
+
+  let row: any = null;
+  if (caseNumber) {
+    row = await db.prepare(`
+      SELECT target_date, activity_type, activity_subtype, data
+      FROM journal_entries
+      WHERE user_id = ?
+        AND activity_type IN ('임장', '미팅', '입찰')
+        AND (
+          activity_subtype = ?
+          OR json_extract(data, '$.caseNo') = ?
+          OR json_extract(data, '$.briefingCaseNo') = ?
+        )
+      ORDER BY target_date DESC, created_at DESC
+      LIMIT 1
+    `).bind(assigneeId, caseNumber, caseNumber, caseNumber).first();
+  }
+
+  if (!row && clientName) {
+    row = await db.prepare(`
+      SELECT target_date, activity_type, activity_subtype, data
+      FROM journal_entries
+      WHERE user_id = ?
+        AND activity_type IN ('임장', '미팅', '입찰')
+        AND (
+          json_extract(data, '$.client') = ?
+          OR json_extract(data, '$.bidder') = ?
+        )
+      ORDER BY target_date DESC, created_at DESC
+      LIMIT 1
+    `).bind(assigneeId, clientName, clientName).first();
+  }
+
+  if (!row) return c.json({ match: null });
+  let data: any = {};
+  try { data = JSON.parse(row.data || '{}'); } catch { data = {}; }
+  return c.json({
+    match: {
+      target_date: row.target_date,
+      activity_type: row.activity_type,
+      case_number: data.caseNo || data.briefingCaseNo || row.activity_subtype || '',
+      item_no: data.itemNo || '',
+      court: data.court || data.briefingCourt || '',
+      client_name: data.client || data.bidder || '',
+    },
+  });
+});
+
 // GET /api/admin-notes/:id - 상세 조회
+// POST /api/admin-notes/articles/upload-pdf - external daily article PDF upload
+adminNotes.post('/articles/upload-pdf', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  await ensureAdminNoteExtensions(db);
+  if (!c.env.ARTICLE_BUCKET) return c.json({ error: 'ARTICLE_BUCKET R2 바인딩이 설정되지 않았습니다.' }, 500);
+  const canUploadArticlePdf =
+    ADMIN_ROLES.includes(user.role as Role) ||
+    (user.auth_type === 'service_token' && (user.service_token_scope === 'write' || user.service_token_scope === 'admin'));
+  if (!canUploadArticlePdf) return c.json({ error: '기사 PDF 업로드 권한이 없습니다.' }, 403);
+
+  const contentLength = Number(c.req.header('content-length') || 0);
+  if (contentLength > MAX_ARTICLE_PDF_BYTES + 1024 * 1024) {
+    return c.json({ error: 'PDF 파일은 최대 20MB까지 업로드할 수 있습니다.' }, 413);
+  }
+
+  const contentType = c.req.header('content-type') || '';
+  let buffer: ArrayBuffer;
+  let fileName = 'article.pdf';
+  let title = '';
+  let content = '';
+  let sourceName = '';
+  let articleDateRaw: unknown = '';
+  let visibility = 'all';
+
+  if (contentType.includes('multipart/form-data')) {
+    const form = await c.req.formData();
+    const file = form.get('file') || form.get('pdf');
+    if (!(file instanceof File)) return c.json({ error: 'file 또는 pdf 필드에 PDF 파일을 첨부해주세요.' }, 400);
+    buffer = await file.arrayBuffer();
+    fileName = safePdfFileName(file.name || 'article.pdf');
+    title = String(form.get('title') || '').trim();
+    content = String(form.get('content') || '').trim();
+    sourceName = String(form.get('source_name') || '').trim();
+    articleDateRaw = form.get('article_date');
+    visibility = String(form.get('visibility') || 'all').trim() || 'all';
+  } else if (contentType.includes('application/pdf')) {
+    buffer = await c.req.arrayBuffer();
+    fileName = safePdfFileName(decodeURIComponent(c.req.header('x-file-name') || 'article.pdf'));
+    title = String(c.req.header('x-title') || '').trim();
+    content = String(c.req.header('x-content') || '').trim();
+    sourceName = String(c.req.header('x-source-name') || '').trim();
+    articleDateRaw = c.req.header('x-article-date');
+    visibility = String(c.req.header('x-visibility') || 'all').trim() || 'all';
+  } else {
+    return c.json({ error: 'multipart/form-data 또는 application/pdf 형식으로 업로드해주세요.' }, 415);
+  }
+
+  if (buffer.byteLength === 0) return c.json({ error: '빈 PDF 파일은 업로드할 수 없습니다.' }, 400);
+  if (buffer.byteLength > MAX_ARTICLE_PDF_BYTES) return c.json({ error: 'PDF 파일은 최대 20MB까지 업로드할 수 있습니다.' }, 413);
+
+  const magic = new TextDecoder().decode(buffer.slice(0, 5));
+  if (magic !== '%PDF-') return c.json({ error: 'PDF 파일만 업로드할 수 있습니다.' }, 400);
+
+  const articleDate = normalizeArticleDate(articleDateRaw);
+  if (!articleDate) return c.json({ error: 'article_date는 YYYY-MM-DD 형식이어야 합니다.' }, 400);
+  const expiresAt = addDays(articleDate, 31);
+
+  const author = await resolveArticleApiAuthor(db, user);
+  const articleId = crypto.randomUUID();
+  const noteId = crypto.randomUUID();
+  const sha256 = await sha256Hex(buffer);
+  const duplicate = await db.prepare(
+    'SELECT id, note_id, file_name, created_at FROM article_pdf_uploads WHERE sha256 = ? AND deleted_at IS NULL LIMIT 1'
+  ).bind(sha256).first<{ id: string; note_id: string; file_name: string; created_at: string }>();
+  if (duplicate) return c.json({ error: '이미 업로드된 PDF입니다.', duplicate }, 409);
+
+  const objectKey = articleObjectKey(articleDate, articleId, fileName);
+  const finalTitle = title || `${articleDate} 기사 PDF${sourceName ? ` - ${sourceName}` : ''}`;
+  const finalContent = content || '외부 API로 업로드된 일일 기사 PDF입니다.';
+
+  await c.env.ARTICLE_BUCKET.put(objectKey, buffer, {
+    httpMetadata: {
+      contentType: 'application/pdf',
+      contentDisposition: pdfContentDisposition(fileName),
+    },
+    customMetadata: {
+      sha256,
+      sourceName: sourceName.slice(0, 120),
+      articleDate,
+      expiresAt,
+    },
+  });
+
+  try {
+    await db.batch([
+      db.prepare(
+        `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 0, 'article_pdf', ?, 0, ?, ?, ?, 'article_news', ${KST_NOW_SQL}, ${KST_NOW_SQL})`
+      ).bind(noteId, finalTitle, finalContent, author.id, author.name, articleId, visibility, author.branch, author.department),
+      db.prepare(
+        `INSERT INTO article_pdf_uploads (id, note_id, object_key, file_name, file_size, sha256, source_name, article_date, expires_at, uploaded_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})`
+      ).bind(articleId, noteId, objectKey, fileName, buffer.byteLength, sha256, sourceName.slice(0, 120), articleDate, expiresAt, user.sub),
+    ]);
+  } catch (err) {
+    await c.env.ARTICLE_BUCKET.delete(objectKey).catch(() => undefined);
+    throw err;
+  }
+
+  c.executionCtx.waitUntil(sendCommunityNoteCreatedAlimtalk(
+    c.env as unknown as Record<string, unknown>,
+    db,
+    {
+      id: noteId,
+      title: finalTitle,
+      category: 'article_news',
+      visibility,
+      author_id: author.id,
+      author_name: author.name,
+      is_anonymous: 0,
+    },
+  ).catch((err) => console.error('[community alimtalk] article PDF notification failed', err)));
+
+  return c.json({
+    success: true,
+    id: articleId,
+    note_id: noteId,
+    file_name: fileName,
+    file_size: buffer.byteLength,
+    article_date: articleDate,
+    expires_at: expiresAt,
+  });
+});
+
+// GET /api/admin-notes/articles/:articleId/download - article PDF download
+adminNotes.get('/articles/:articleId/download', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  await ensureAdminNoteExtensions(db);
+  if (!c.env.ARTICLE_BUCKET) return c.json({ error: 'ARTICLE_BUCKET R2 바인딩이 설정되지 않았습니다.' }, 500);
+
+  const articleId = c.req.param('articleId');
+  const row = await db.prepare(`
+    SELECT ap.*, n.author_id, n.visibility, n.author_branch, n.author_department, n.category
+    FROM article_pdf_uploads ap
+    JOIN admin_notes n ON n.id = ap.note_id
+    WHERE ap.id = ?
+  `).bind(articleId).first<any>();
+  if (!row) return c.json({ error: 'PDF를 찾을 수 없습니다.' }, 404);
+  if (row.deleted_at) return c.json({ error: '보관 기간이 만료된 PDF입니다.' }, 410);
+
+  const viewerInfo = await db.prepare('SELECT role, branch, department FROM users WHERE id = ?').bind(user.sub).first<{ role: string; branch: string; department: string }>();
+  const role = viewerInfo?.role || user.role;
+  if (!canReadNote(row, user, viewerInfo, role)) return c.json({ error: '열람 권한이 없습니다.' }, 403);
+
+  const object = await c.env.ARTICLE_BUCKET.get(row.object_key);
+  if (!object) return c.json({ error: 'R2 객체를 찾을 수 없습니다.' }, 404);
+
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Length': String(object.size),
+      'Content-Disposition': pdfContentDisposition(row.file_name),
+      'Cache-Control': 'private, max-age=300',
+    },
+  });
+});
+
 adminNotes.get('/:id', async (c) => {
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);
@@ -180,16 +462,12 @@ adminNotes.get('/:id', async (c) => {
   ).bind(id).first<any>();
   if (!note) return c.json({ error: '노트를 찾을 수 없습니다.' }, 404);
 
-  // visibility 체크 (master는 예외)
-  if (role !== 'master' && note.author_id !== viewer.sub) {
-    const v = note.visibility || 'all';
-    const allowed =
-      v === 'all' ||
-      (v === 'branch' && note.author_branch === viewerInfo?.branch) ||
-      (v === 'department' && note.author_branch === viewerInfo?.branch && note.author_department === viewerInfo?.department) ||
-      (v.startsWith('team:') && v === 'team:' + viewerInfo?.department);
-    if (!allowed) return c.json({ error: '열람 권한이 없습니다.' }, 403);
+  if (note.category === 'briefing_schedule' && !canCreateBriefingSchedule(role)) {
+    return c.json({ error: '브리핑자료 제출 카테고리 열람 권한이 없습니다.' }, 403);
   }
+
+  // visibility 체크 (master는 예외)
+  if (!canReadNote(note, viewer, viewerInfo, role)) return c.json({ error: '열람 권한이 없습니다.' }, 403);
 
   const comments = await db.prepare(
     `SELECT c.*, u.position_title as author_position
@@ -202,11 +480,32 @@ adminNotes.get('/:id', async (c) => {
      FROM admin_note_attachments
      WHERE note_id = ? ORDER BY created_at ASC`
   ).bind(id).all();
+  const articleAttachments = await db.prepare(
+    `SELECT id, note_id, file_name, file_size, source_name, article_date, expires_at, created_at
+     FROM article_pdf_uploads
+     WHERE note_id = ? AND deleted_at IS NULL
+     ORDER BY created_at ASC`
+  ).bind(id).all<any>();
 
   const maskedNote = maskNote({ ...note }, role);
   const maskedComments = (comments.results || []).map((cm: any) => maskComment({ ...cm }, role));
 
-  return c.json({ note: maskedNote, comments: maskedComments, attachments: attachments.results || [] });
+  const r2Attachments = (articleAttachments.results || []).map((file: any) => ({
+    id: file.id,
+    note_id: file.note_id,
+    file_name: file.file_name,
+    file_type: 'application/pdf',
+    file_size: file.file_size,
+    file_data: '',
+    download_url: `/api/admin-notes/articles/${file.id}/download`,
+    storage: 'r2',
+    source_name: file.source_name,
+    article_date: file.article_date,
+    expires_at: file.expires_at,
+    created_at: file.created_at,
+  }));
+
+  return c.json({ note: maskedNote, comments: maskedComments, attachments: [...(attachments.results || []), ...r2Attachments] });
 });
 
 // POST /api/admin-notes - 생성
@@ -214,10 +513,14 @@ adminNotes.post('/', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);
-  const { title, content, pinned, source_type, source_id, is_anonymous, visibility, category: rawCategory, court, case_number, legal_subcategory, attachments } = await c.req.json();
+  const {
+    title, content, pinned, source_type, source_id, is_anonymous, visibility,
+    category: rawCategory, court, case_number, legal_subcategory, attachments,
+    assignee_id, target_date, item_no, client_name,
+  } = await c.req.json();
   const category = normalizeCategory(rawCategory);
   const legalSubcategory = category === 'legal_support' ? normalizeLegalSubcategory(legal_subcategory) : null;
-  if (!title?.trim() || !content?.trim()) return c.json({ error: '제목과 내용을 입력하세요.' }, 400);
+  if (category !== 'briefing_schedule' && (!title?.trim() || !content?.trim())) return c.json({ error: '제목과 내용을 입력하세요.' }, 400);
   if (category === 'eviction_quote' && (!court?.trim() || !case_number?.trim())) {
     return c.json({ error: '법원과 사건번호를 입력하세요.' }, 400);
   }
@@ -226,9 +529,38 @@ adminNotes.post('/', async (c) => {
   const profile = await db.prepare(
     'SELECT branch, department, position_title, role FROM users WHERE id = ?'
   ).bind(user.sub).first<{ branch: string; department: string; position_title: string; role: string }>();
+  const role = profile?.role || user.role;
+
+  let assignee: { id: string; name: string; branch: string; department: string; approved: number } | null = null;
+  let journalEntryId: string | null = null;
+  let finalTitle = title?.trim() || '';
+  let finalContent = content?.trim() || '';
+
+  if (category === 'briefing_schedule') {
+    if (!canCreateBriefingSchedule(role)) return c.json({ error: '브리핑자료 일정 등록 권한이 없습니다.' }, 403);
+    if (!assignee_id) return c.json({ error: '담당자를 목록에서 선택하세요.' }, 400);
+    if (!target_date) return c.json({ error: '일정일을 입력하세요.' }, 400);
+    if (!court?.trim() || !case_number?.trim() || !client_name?.trim()) return c.json({ error: '법원, 사건번호, 계약자명은 필수입니다.' }, 400);
+
+    assignee = await db.prepare(
+      'SELECT id, name, branch, department, approved FROM users WHERE id = ?'
+    ).bind(assignee_id).first<{ id: string; name: string; branch: string; department: string; approved: number }>();
+    if (!assignee || assignee.approved !== 1) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
+    if (role === 'admin' && assignee.branch !== profile?.branch) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
+
+    finalTitle = `${target_date} ${assignee.name} 브리핑자료 제출`;
+    finalContent = makeBriefingContent({
+      targetDate: target_date,
+      assigneeName: assignee.name,
+      court: court.trim(),
+      caseNumber: case_number.trim(),
+      itemNo: item_no?.trim(),
+      clientName: client_name.trim(),
+    });
+  }
 
   // 핀 고정은 master만
-  const canPin = (profile?.role || user.role) === 'master';
+  const canPin = role === 'master';
 
   if (source_type === 'minutes' && source_id) {
     const minute = await db.prepare(
@@ -241,20 +573,51 @@ adminNotes.post('/', async (c) => {
   }
 
   const id = crypto.randomUUID();
+  if (category === 'briefing_schedule' && assignee) {
+    journalEntryId = crypto.randomUUID();
+    await db.prepare(
+      'INSERT INTO journal_entries (id, user_id, target_date, activity_type, activity_subtype, data, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(
+      journalEntryId,
+      assignee.id,
+      target_date,
+      '브리핑자료제출',
+      '브리핑자료 제출',
+      JSON.stringify({
+        briefingSubmit: true,
+        briefingCaseNo: case_number.trim(),
+        itemNo: item_no?.trim() || '',
+        briefingCourt: court.trim(),
+        client: client_name.trim(),
+        sourceAdminNoteId: id,
+        createdBy: user.sub,
+        createdByName: user.name,
+      }),
+      assignee.branch,
+      assignee.department,
+    ).run();
+    await recheckAlertsForJournalEntry(db, journalEntryId).catch((err) => console.error('[recheckAlerts on briefing schedule insert]', err));
+  }
+
   await db.prepare(
-    `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, court, case_number, legal_subcategory, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
+    `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, court, case_number, legal_subcategory, assignee_id, target_date, item_no, client_name, journal_entry_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
   ).bind(
-    id, title.trim(), content.trim(), user.sub, user.name,
+    id, finalTitle, finalContent, user.sub, user.name,
     canPin && pinned ? 1 : 0,
     source_type || null, source_id || null,
     is_anonymous ? 1 : 0,
-    visibility || 'all',
+    category === 'briefing_schedule' ? 'all' : visibility || 'all',
     profile?.branch || '', profile?.department || '',
     category,
-    category === 'eviction_quote' ? court.trim() : null,
-    category === 'eviction_quote' ? case_number.trim() : null,
-    legalSubcategory
+    category === 'eviction_quote' || category === 'briefing_schedule' ? court.trim() : null,
+    category === 'eviction_quote' || category === 'briefing_schedule' ? case_number.trim() : null,
+    legalSubcategory,
+    category === 'briefing_schedule' ? assignee?.id : null,
+    category === 'briefing_schedule' ? target_date : null,
+    category === 'briefing_schedule' ? item_no?.trim() || '' : null,
+    category === 'briefing_schedule' ? client_name.trim() : null,
+    journalEntryId
   ).run();
 
   const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5) : [];
@@ -273,30 +636,22 @@ adminNotes.post('/', async (c) => {
     ).run();
   }
 
-  if (category === 'eviction_quote') {
-    const phones = await evictionQuoteRecipients(db);
-    if (phones.length > 0) {
-      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
-        c.env as unknown as Record<string, unknown>,
-        'COMMUNITY_EVICTION_QUOTE',
-        { author_name: user.name, court: court.trim(), case_number: case_number.trim(), title: title.trim(), link: `${APP_URL}/admin-notes` },
-        phones,
-        { db, relatedType: 'admin_note', relatedId: id },
-      ).catch(() => {}));
-    }
-  } else if (category === 'legal_support' && legalSubcategory === 'consultation') {
-    const phones = await teamPhones(db, '법률지원팀');
-    if (phones.length > 0) {
-      const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
-      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
-        c.env as unknown as Record<string, unknown>,
-        'COMMUNITY_LEGAL_SUPPORT',
-        { author_name: is_anonymous ? '익명' : user.name, title: title.trim(), date: today, link: `${APP_URL}/admin-notes` },
-        phones,
-        { db, relatedType: 'admin_note', relatedId: id },
-      ).catch(() => {}));
-    }
-  }
+  c.executionCtx.waitUntil(sendCommunityNoteCreatedAlimtalk(
+    c.env as unknown as Record<string, unknown>,
+    db,
+    {
+      id,
+      title: finalTitle,
+      category,
+      visibility: category === 'briefing_schedule' ? 'all' : visibility || 'all',
+      legal_subcategory: legalSubcategory,
+      court: category === 'eviction_quote' ? court.trim() : null,
+      case_number: category === 'eviction_quote' ? case_number.trim() : null,
+      author_id: user.sub,
+      author_name: user.name,
+      is_anonymous: is_anonymous ? 1 : 0,
+    },
+  ).catch((err) => console.error('[community alimtalk] create notification failed', err)));
 
   return c.json({ success: true, id });
 });
@@ -341,6 +696,16 @@ adminNotes.delete('/:id', async (c) => {
     return c.json({ error: '본인 글만 삭제할 수 있습니다.' }, 403);
   }
 
+  if (note.category === 'briefing_schedule' && note.journal_entry_id) {
+    const entry = await db.prepare('SELECT user_id, target_date FROM journal_entries WHERE id = ?')
+      .bind(note.journal_entry_id)
+      .first<{ user_id: string; target_date: string }>();
+    await db.prepare('DELETE FROM journal_entries WHERE id = ?').bind(note.journal_entry_id).run();
+    if (entry) {
+      await recheckAlertsAfterEntryDelete(db, entry.user_id, entry.target_date)
+        .catch((err) => console.error('[recheckAlerts on briefing schedule delete]', err));
+    }
+  }
   await db.prepare('DELETE FROM admin_notes WHERE id = ?').bind(id).run();
   return c.json({ success: true });
 });
@@ -355,7 +720,7 @@ adminNotes.post('/:id/comments', async (c) => {
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);
   const note = await db.prepare(`
-    SELECT n.id, n.title, n.category, n.legal_subcategory, n.court, n.case_number, n.author_id,
+    SELECT n.id, n.title, n.category, n.legal_subcategory, n.court, n.case_number, n.author_id, n.author_name,
       u.name as receiver_name, u.phone as receiver_phone
     FROM admin_notes n
     LEFT JOIN users u ON u.id = n.author_id
@@ -368,6 +733,7 @@ adminNotes.post('/:id/comments', async (c) => {
     court: string | null;
     case_number: string | null;
     author_id: string;
+    author_name: string;
     receiver_name: string | null;
     receiver_phone: string | null;
   }>();
@@ -378,35 +744,12 @@ adminNotes.post('/:id/comments', async (c) => {
     `INSERT INTO admin_note_comments (id, note_id, author_id, author_name, content, is_anonymous, created_at) VALUES (?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})`
   ).bind(id, noteId, user.sub, user.name, content.trim(), is_anonymous ? 1 : 0).run();
 
-  const category = note.category || 'community';
-  if (note.receiver_phone && note.author_id !== user.sub && category === 'eviction_quote') {
-    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
-      c.env as unknown as Record<string, unknown>,
-      'COMMUNITY_EVICTION_QUOTE_ANSWERED',
-      {
-        receiver_name: note.receiver_name || '담당자',
-        court: note.court || '-',
-        case_number: note.case_number || '-',
-        responder_name: is_anonymous ? '익명' : user.name,
-        link: `${APP_URL}/admin-notes`,
-      },
-      [note.receiver_phone],
-      { db, relatedType: 'admin_note_comment', relatedId: id },
-    ).catch(() => {}));
-  } else if (note.receiver_phone && note.author_id !== user.sub && category === 'legal_support' && (note.legal_subcategory || 'consultation') === 'consultation') {
-    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
-      c.env as unknown as Record<string, unknown>,
-      'COMMUNITY_LEGAL_SUPPORT_ANSWERED',
-      {
-        receiver_name: note.receiver_name || '담당자',
-        title: note.title,
-        responder_name: is_anonymous ? '익명' : user.name,
-        link: `${APP_URL}/admin-notes`,
-      },
-      [note.receiver_phone],
-      { db, relatedType: 'admin_note_comment', relatedId: id },
-    ).catch(() => {}));
-  }
+  c.executionCtx.waitUntil(sendCommunityCommentAlimtalk(
+    c.env as unknown as Record<string, unknown>,
+    db,
+    note,
+    { id, authorId: user.sub, authorName: user.name, isAnonymous: !!is_anonymous },
+  ).catch((err) => console.error('[community alimtalk] comment notification failed', err)));
 
   return c.json({ success: true, id });
 });

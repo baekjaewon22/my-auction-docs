@@ -3,7 +3,9 @@
 	"name": "my-auction-docs",
 	"main": "./src/worker/index.ts",
 	"compatibility_date": "2025-10-08",
-	"compatibility_flags": ["nodejs_compat"],
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
 	"observability": {
 		"enabled": true
 	},
@@ -17,7 +19,8 @@
 		]
 	},
 	"vars": {
-		"ENVIRONMENT": "production"
+		"ENVIRONMENT": "production",
+		"ALL_FOR_ONE_FRAME_ANCESTORS": "http://127.0.0.1:5173 http://127.0.0.1:5174"
 	},
 	"d1_databases": [
 		{
@@ -26,13 +29,23 @@
 			"database_id": "88c89438-7ba0-4d40-9033-8c0641428ea6"
 		}
 	],
+	"r2_buckets": [
+		{
+			"binding": "ARTICLE_BUCKET",
+			"bucket_name": "my-auction-article-pdfs"
+		},
+		{
+			"bucket_name": "my-auction-article-pdfs",
+			"binding": "my_auction_article_pdfs",
+			"remote": true
+		}
+	],
 	"browser": {
 		"binding": "BROWSER"
 	},
 	"triggers": {
 		"crons": [
 			"*/30 * * * *",
-			"0 0,6 * * 1-5",
 			"0 15 * * *",
 			"30 15 1 * *",
 			"45 15 1 * *"
@@ -42,7 +55,8 @@
 		"dev": {
 			"name": "my-auction-docs-dev",
 			"vars": {
-				"ENVIRONMENT": "development"
+				"ENVIRONMENT": "development",
+				"ALL_FOR_ONE_FRAME_ANCESTORS": "http://127.0.0.1:5173 http://127.0.0.1:5174"
 			},
 			"d1_databases": [
 				{
@@ -55,7 +69,8 @@
 		"staging": {
 			"name": "my-auction-docs-staging",
 			"vars": {
-				"ENVIRONMENT": "staging"
+				"ENVIRONMENT": "staging",
+				"ALL_FOR_ONE_FRAME_ANCESTORS": "http://127.0.0.1:5173 http://127.0.0.1:5174"
 			},
 			"d1_databases": [
 				{

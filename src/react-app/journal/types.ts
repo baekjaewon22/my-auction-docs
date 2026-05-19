@@ -17,7 +17,7 @@ export interface JournalEntry {
 
 export type ActivityType = '입찰' | '임장' | '미팅' | '사무' | '브리핑자료제출' | '개인';
 
-export const ACTIVITY_TYPES: ActivityType[] = ['입찰', '임장', '미팅', '사무', '브리핑자료제출', '개인'];
+export const ACTIVITY_TYPES: ActivityType[] = ['입찰', '임장', '미팅', '사무', '개인'];
 
 export const ACTIVITY_COLORS: Record<ActivityType, string> = {
   '입찰': '#1a73e8',

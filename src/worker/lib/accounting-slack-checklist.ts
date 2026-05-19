@@ -16,7 +16,28 @@ type ChecklistItem = {
   samples: string[];
 };
 
+type SlackAccountingSlot = 'am' | 'pm';
+
+type SlackAccountingSendOptions = {
+  runKey?: string;
+  skipSuccessfulGroups?: boolean;
+};
+
+type SlackAccountingResult = {
+  sent: boolean;
+  totalCount: number;
+  messages: number;
+  failed: number;
+  skipped: number;
+  runKey: string;
+};
+
+type SlackAccountingDueResult =
+  | ({ due: false; reason: string })
+  | ({ due: true; slot: SlackAccountingSlot; runLabel: string } & SlackAccountingResult);
+
 const MAX_SAMPLES = 5;
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
 async function ensureSlackAccountingLogTable(db: D1Database): Promise<void> {
   await db.prepare(`
@@ -38,6 +59,11 @@ async function ensureSlackAccountingLogTable(db: D1Database): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_slack_accounting_logs_run
     ON slack_accounting_logs(run_key, status)
   `).run();
+  await db.prepare(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_slack_accounting_logs_success_once
+    ON slack_accounting_logs(run_key, group_label)
+    WHERE status = 'success'
+  `).run();
 }
 
 async function insertSlackAccountingLog(
@@ -53,8 +79,9 @@ async function insertSlackAccountingLog(
     errorMessage?: string;
   },
 ): Promise<void> {
+  const insertVerb = input.status === 'success' ? 'INSERT OR IGNORE' : 'INSERT';
   await db.prepare(`
-    INSERT INTO slack_accounting_logs
+    ${insertVerb} INTO slack_accounting_logs
       (id, run_key, run_label, group_label, branches_json, status, total_count, message_index, error_message, sent_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'success' THEN datetime('now', '+9 hours') ELSE NULL END)
   `).bind(
@@ -69,6 +96,18 @@ async function insertSlackAccountingLog(
     (input.errorMessage || '').slice(0, 500),
     input.status,
   ).run();
+}
+
+async function hasSuccessfulSlackAccountingLog(db: D1Database, runKey: string, groupLabel: string): Promise<boolean> {
+  const row = await db.prepare(`
+    SELECT 1
+    FROM slack_accounting_logs
+    WHERE run_key = ?
+      AND group_label = ?
+      AND status = 'success'
+    LIMIT 1
+  `).bind(runKey, groupLabel).first();
+  return !!row;
 }
 
 const BRANCH_GROUPS: BranchGroup[] = [
@@ -106,8 +145,47 @@ function periodStart(month: number): number {
 }
 
 function currentKstPeriod(): { year: number; startMonth: number } {
-  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const now = new Date(Date.now() + KST_OFFSET_MS);
   return { year: now.getUTCFullYear(), startMonth: periodStart(now.getUTCMonth() + 1) };
+}
+
+function kstDateParts(now = new Date()): { date: string; day: number; hour: number; minute: number } {
+  const kst = new Date(now.getTime() + KST_OFFSET_MS);
+  return {
+    date: kst.toISOString().slice(0, 10),
+    day: kst.getUTCDay(),
+    hour: kst.getUTCHours(),
+    minute: kst.getUTCMinutes(),
+  };
+}
+
+export function accountingSlackRunKey(date: string, slot: SlackAccountingSlot): string {
+  return `accounting-checklist-${date}-${slot}`;
+}
+
+export function accountingSlackSlotForTime(now = new Date()): { slot: SlackAccountingSlot; runKey: string; runLabel: string } | null {
+  const parts = kstDateParts(now);
+  if (parts.day < 1 || parts.day > 5) return null;
+
+  const isCatchupMinute = parts.minute === 0 || parts.minute === 30;
+  if (!isCatchupMinute) return null;
+
+  if (parts.hour === 9) {
+    return { slot: 'am', runKey: accountingSlackRunKey(parts.date, 'am'), runLabel: '오전 9시' };
+  }
+  if (parts.hour === 15) {
+    return { slot: 'pm', runKey: accountingSlackRunKey(parts.date, 'pm'), runLabel: '오후 3시' };
+  }
+  return null;
+}
+
+export function accountingSlackSlotForManual(slot: SlackAccountingSlot, now = new Date()): { slot: SlackAccountingSlot; runKey: string; runLabel: string } {
+  const parts = kstDateParts(now);
+  return {
+    slot,
+    runKey: accountingSlackRunKey(parts.date, slot),
+    runLabel: slot === 'am' ? '오전 9시' : '오후 3시',
+  };
 }
 
 function recoveryAmount(record: any): number {
@@ -256,7 +334,7 @@ function renderItem(item: ChecklistItem): string {
 }
 
 function renderMessage(group: BranchGroup, items: ChecklistItem[], runLabel: string): string {
-  const date = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const date = new Date(Date.now() + KST_OFFSET_MS).toISOString().slice(0, 10);
   const totalCount = items.reduce((sum, item) => sum + item.count, 0);
   return [
     `총무 체크리스트 (${runLabel}) - ${group.label} - ${date}`,
@@ -293,9 +371,13 @@ async function buildGroupMessage(db: D1Database, group: BranchGroup, runLabel: s
   };
 }
 
-export async function sendAccountingSlackChecklist(env: SlackEnv, runLabel: string): Promise<{ sent: boolean; totalCount: number; messages: number; failed: number }> {
+export async function sendAccountingSlackChecklist(
+  env: SlackEnv,
+  runLabel: string,
+  options: SlackAccountingSendOptions = {},
+): Promise<SlackAccountingResult> {
   await ensureSlackAccountingLogTable(env.DB);
-  const runKey = `${new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 16)}-${runLabel}`;
+  const runKey = options.runKey || `${new Date(Date.now() + KST_OFFSET_MS).toISOString().slice(0, 16)}-${runLabel}`;
   const webhookUrl = String(env.SLACK_ACCOUNTING_WEBHOOK_URL || env.SLACK_WEBHOOK_URL || '').trim();
   if (!webhookUrl) {
     console.warn('[slack accounting checklist] skipped: missing SLACK_ACCOUNTING_WEBHOOK_URL');
@@ -307,14 +389,19 @@ export async function sendAccountingSlackChecklist(env: SlackEnv, runLabel: stri
       status: 'skipped',
       errorMessage: 'missing SLACK_ACCOUNTING_WEBHOOK_URL',
     });
-    return { sent: false, totalCount: 0, messages: 0, failed: 0 };
+    return { sent: false, totalCount: 0, messages: 0, failed: 0, skipped: 0, runKey };
   }
 
   let totalCount = 0;
   let messages = 0;
   let failed = 0;
+  let skipped = 0;
   for (const [index, group] of BRANCH_GROUPS.entries()) {
     try {
+      if (options.skipSuccessfulGroups && await hasSuccessfulSlackAccountingLog(env.DB, runKey, group.label)) {
+        skipped += 1;
+        continue;
+      }
       const result = await buildGroupMessage(env.DB, group, runLabel);
       totalCount += result.totalCount;
       await postToSlack(webhookUrl, result.text);
@@ -342,5 +429,16 @@ export async function sendAccountingSlackChecklist(env: SlackEnv, runLabel: stri
     }
   }
 
-  return { sent: failed === 0 && messages > 0, totalCount, messages, failed };
+  return { sent: failed === 0 && messages > 0, totalCount, messages, failed, skipped, runKey };
+}
+
+export async function sendDueAccountingSlackChecklist(env: SlackEnv, now = new Date()): Promise<SlackAccountingDueResult> {
+  const slot = accountingSlackSlotForTime(now);
+  if (!slot) return { due: false, reason: 'not a Slack accounting checklist window' };
+
+  const result = await sendAccountingSlackChecklist(env, slot.runLabel, {
+    runKey: slot.runKey,
+    skipSuccessfulGroups: true,
+  });
+  return { due: true, slot: slot.slot, runLabel: slot.runLabel, ...result };
 }

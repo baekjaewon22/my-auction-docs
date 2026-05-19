@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS card_transactions (
   transaction_date TEXT NOT NULL DEFAULT '',
   amount INTEGER NOT NULL DEFAULT 0,
   description TEXT NOT NULL DEFAULT '',
+  is_cancellation INTEGER NOT NULL DEFAULT 0,
+  source_text TEXT NOT NULL DEFAULT '',
   upload_batch TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL

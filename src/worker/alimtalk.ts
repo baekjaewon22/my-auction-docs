@@ -260,7 +260,7 @@ export const ALIMTALK_TEMPLATES = {
 
   // 사내 커뮤니티: 명도 견적 의뢰 → 명도팀
   COMMUNITY_EVICTION_QUOTE: {
-    code: 'commquote',
+    code: 'lawq',
     variables: ['author_name', 'court', 'case_number', 'title', 'link'],
     content: `[마이옥션 오피스]
 
@@ -281,7 +281,7 @@ export const ALIMTALK_TEMPLATES = {
 
   // 사내 커뮤니티: 법률지원 질문 → 법률지원팀
   COMMUNITY_LEGAL_SUPPORT: {
-    code: 'commlegal',
+    code: 'lawqq',
     variables: ['author_name', 'title', 'date', 'link'],
     content: `[마이옥션 오피스]
 
@@ -299,9 +299,25 @@ export const ALIMTALK_TEMPLATES = {
 #{link}`,
   },
 
+  COMMUNITY_DIRECT_SHARE: {
+    code: 'commshare',
+    variables: ['receiver_name', 'author_name', 'title', 'date', 'link'],
+    content: `[마이옥션 알림]
+
+#{receiver_name}님께 공유된 사내 커뮤니티 글이 있습니다.
+
+작성자: #{author_name}
+제목: #{title}
+등록일: #{date}
+
+내용을 확인해주세요.
+
+바로가기 #{link}`,
+  },
+
   // 사내 커뮤니티: 명도 견적 답변 완료 → 요청자
   COMMUNITY_EVICTION_QUOTE_ANSWERED: {
-    code: 'commquoteok',
+    code: 'lawa',
     variables: ['receiver_name', 'court', 'case_number', 'responder_name', 'link'],
     content: `[마이옥션 오피스]
 
@@ -321,7 +337,7 @@ export const ALIMTALK_TEMPLATES = {
 
   // 사내 커뮤니티: 법률지원 답변 완료 → 질문자
   COMMUNITY_LEGAL_SUPPORT_ANSWERED: {
-    code: 'commlegalok',
+    code: 'lawaa',
     variables: ['receiver_name', 'title', 'responder_name', 'link'],
     content: `[마이옥션 오피스]
 
@@ -365,16 +381,54 @@ export interface AlimtalkSendResponse {
   requestTime: string;
   statusCode: string;
   statusName: string;
+  statusDesc?: string;
   messages?: Array<{
     messageId: string;
     to: string;
     countryCode: string;
     content: string;
+    requestStatusCode?: string;
+    requestStatusName?: string;
+    requestStatusDesc?: string;
     messageStatusCode: string;
+    messageStatusName?: string;
     messageStatusDesc: string;
     useSmsFailover: boolean;
   }>;
 }
+
+export interface AlimtalkDeliveryResult {
+  requestId?: string;
+  messageId?: string;
+  requestTime?: string;
+  completeTime?: string;
+  templateCode?: string;
+  to?: string;
+  requestStatusCode?: string;
+  requestStatusName?: string;
+  requestStatusDesc?: string;
+  messageStatusCode?: string;
+  messageStatusName?: string;
+  messageStatusDesc?: string;
+  useSmsFailover?: boolean;
+  failover?: {
+    requestStatusName?: string;
+    requestStatusDesc?: string;
+    messageStatus?: string;
+    messageStatusCode?: string;
+    messageStatusName?: string;
+    messageStatusDesc?: string;
+  };
+}
+
+type AlimtalkLogStatus = 'pending' | 'sent' | 'delivered' | 'delivery_failed' | 'failed' | 'skipped';
+
+type AlimtalkSendOptions = {
+  db?: D1Database;
+  relatedType?: string;
+  relatedId?: string;
+  force?: boolean;
+};
 
 // ── 유틸리티 함수 ──
 
@@ -439,6 +493,100 @@ export function isAlimtalkConfigured(env: Record<string, unknown>): env is Recor
 
 // ── 핵심 발송 함수 ──
 
+async function ensureAlimtalkLogSchema(db: D1Database): Promise<void> {
+  const columns = [
+    'ALTER TABLE alimtalk_logs ADD COLUMN request_status_code TEXT',
+    'ALTER TABLE alimtalk_logs ADD COLUMN request_status_name TEXT',
+    'ALTER TABLE alimtalk_logs ADD COLUMN request_status_desc TEXT',
+    'ALTER TABLE alimtalk_logs ADD COLUMN message_status_code TEXT',
+    'ALTER TABLE alimtalk_logs ADD COLUMN message_status_name TEXT',
+    'ALTER TABLE alimtalk_logs ADD COLUMN message_status_desc TEXT',
+    'ALTER TABLE alimtalk_logs ADD COLUMN complete_time TEXT',
+    'ALTER TABLE alimtalk_logs ADD COLUMN delivery_checked_at TEXT',
+    'ALTER TABLE alimtalk_logs ADD COLUMN updated_at TEXT',
+  ];
+  for (const sql of columns) {
+    try { await db.prepare(sql).run(); } catch { /* already exists */ }
+  }
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_alimtalk_logs_message_id ON alimtalk_logs(message_id)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_alimtalk_logs_status ON alimtalk_logs(status, created_at)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_alimtalk_logs_dedupe ON alimtalk_logs(template_code, related_type, related_id, recipient_phone)').run();
+}
+
+function alimtalkStatusFromMessage(message?: Partial<AlimtalkDeliveryResult>): AlimtalkLogStatus {
+  if (!message?.messageStatusCode) return 'sent';
+  return message.messageStatusCode === '0000' ? 'delivered' : 'delivery_failed';
+}
+
+async function hasExistingAcceptedAlimtalkLog(
+  db: D1Database,
+  templateCode: string,
+  relatedType: string,
+  relatedId: string,
+  phone: string,
+): Promise<boolean> {
+  const row = await db.prepare(`
+    SELECT 1
+    FROM alimtalk_logs
+    WHERE template_code = ?
+      AND related_type = ?
+      AND related_id = ?
+      AND recipient_phone = ?
+      AND status IN ('sent', 'delivered')
+    LIMIT 1
+  `).bind(templateCode, relatedType, relatedId, phone).first();
+  return !!row;
+}
+
+async function insertAlimtalkLog(
+  db: D1Database,
+  input: {
+    templateCode: string;
+    recipientPhone: string;
+    content: string;
+    status: AlimtalkLogStatus;
+    requestId?: string;
+    messageId?: string;
+    errorMessage?: string;
+    relatedType?: string;
+    relatedId?: string;
+    requestStatusCode?: string;
+    requestStatusName?: string;
+    requestStatusDesc?: string;
+    messageStatusCode?: string;
+    messageStatusName?: string;
+    messageStatusDesc?: string;
+    completeTime?: string;
+  },
+): Promise<void> {
+  await ensureAlimtalkLogSchema(db);
+  await db.prepare(`
+    INSERT INTO alimtalk_logs (
+      id, template_code, recipient_phone, content, request_id, message_id, status, error_message,
+      related_type, related_id, request_status_code, request_status_name, request_status_desc,
+      message_status_code, message_status_name, message_status_desc, complete_time, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).bind(
+    crypto.randomUUID(),
+    input.templateCode,
+    input.recipientPhone,
+    input.content,
+    input.requestId || '',
+    input.messageId || '',
+    input.status,
+    (input.errorMessage || '').slice(0, 1000),
+    input.relatedType || '',
+    input.relatedId || '',
+    input.requestStatusCode || '',
+    input.requestStatusName || '',
+    input.requestStatusDesc || '',
+    input.messageStatusCode || '',
+    input.messageStatusName || '',
+    input.messageStatusDesc || '',
+    input.completeTime || '',
+  ).run();
+}
+
 /** 알림톡 발송 (NCP 키 미설정 시 스킵) */
 export async function sendAlimtalk(
   env: Record<string, unknown>,
@@ -475,6 +623,105 @@ export async function sendAlimtalk(
   return response.json() as Promise<AlimtalkSendResponse>;
 }
 
+export async function getAlimtalkDeliveryResult(
+  env: Record<string, unknown>,
+  messageId: string,
+): Promise<AlimtalkDeliveryResult | null> {
+  if (!messageId || !isAlimtalkConfigured(env)) return null;
+
+  const uri = `/alimtalk/v2/services/${env.NCP_SERVICE_ID}/messages/${messageId}`;
+  const headers = await createHeaders('GET', uri, env);
+  const response = await fetch(`https://sens.apigw.ntruss.com${uri}`, { method: 'GET', headers });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`알림톡 결과 조회 실패: ${response.status} ${errorText.slice(0, 300)}`);
+  }
+  return response.json() as Promise<AlimtalkDeliveryResult>;
+}
+
+export async function listAlimtalkTemplates(
+  env: Record<string, unknown>,
+  templateCode?: string,
+): Promise<unknown> {
+  if (!isAlimtalkConfigured(env)) return null;
+
+  const query = new URLSearchParams({ channelId: env.NCP_KAKAO_CHANNEL_ID });
+  if (templateCode) query.set('templateCode', templateCode);
+  const uri = `/alimtalk/v2/services/${env.NCP_SERVICE_ID}/templates?${query.toString()}`;
+  const headers = await createHeaders('GET', uri, env);
+  const response = await fetch(`https://sens.apigw.ntruss.com${uri}`, { method: 'GET', headers });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`알림톡 템플릿 조회 실패: ${response.status} ${errorText.slice(0, 300)}`);
+  }
+  return response.json();
+}
+
+export async function refreshRecentAlimtalkDeliveryStatuses(
+  env: Record<string, unknown>,
+  db: D1Database,
+  limit = 50,
+): Promise<{ checked: number; delivered: number; failed: number }> {
+  await ensureAlimtalkLogSchema(db);
+  const rows = await db.prepare(`
+    SELECT id, message_id
+    FROM alimtalk_logs
+    WHERE COALESCE(message_id, '') != ''
+      AND status IN ('sent', 'pending')
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).bind(limit).all<{ id: string; message_id: string }>();
+
+  let checked = 0;
+  let delivered = 0;
+  let failed = 0;
+  for (const row of rows.results || []) {
+    try {
+      const result = await getAlimtalkDeliveryResult(env, row.message_id);
+      if (!result) continue;
+      const status = alimtalkStatusFromMessage(result);
+      if (status === 'delivered') delivered += 1;
+      if (status === 'delivery_failed') failed += 1;
+      checked += 1;
+      await db.prepare(`
+        UPDATE alimtalk_logs
+        SET status = ?,
+            request_status_code = ?,
+            request_status_name = ?,
+            request_status_desc = ?,
+            message_status_code = ?,
+            message_status_name = ?,
+            message_status_desc = ?,
+            complete_time = ?,
+            delivery_checked_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(
+        status,
+        result.requestStatusCode || '',
+        result.requestStatusName || '',
+        result.requestStatusDesc || '',
+        result.messageStatusCode || '',
+        result.messageStatusName || '',
+        result.messageStatusDesc || '',
+        result.completeTime || '',
+        row.id,
+      ).run();
+    } catch (err: any) {
+      checked += 1;
+      await db.prepare(`
+        UPDATE alimtalk_logs
+        SET delivery_checked_at = datetime('now'),
+            updated_at = datetime('now'),
+            error_message = ?
+        WHERE id = ?
+      `).bind((err?.message || String(err)).slice(0, 1000), row.id).run();
+    }
+  }
+
+  return { checked, delivered, failed };
+}
+
 // ── 편의 함수: 템플릿 기반 발송 ──
 
 /** 템플릿 키 + 변수 + 수신번호로 간편 발송 (+ 자동 로그 저장) */
@@ -483,37 +730,74 @@ export async function sendAlimtalkByTemplate(
   templateKey: AlimtalkTemplateKey,
   variables: Record<string, string>,
   phones: string[],
-  options?: { db?: D1Database; relatedType?: string; relatedId?: string },
+  options?: AlimtalkSendOptions,
 ): Promise<AlimtalkSendResponse | null> {
   const template = ALIMTALK_TEMPLATES[templateKey];
   const content = replaceTemplateVariables(template.content, variables);
+  const db = options?.db || (env.DB as D1Database | undefined);
+  const relatedType = options?.relatedType || templateKey;
+  const relatedId = options?.relatedId || '';
 
-  const messages: AlimtalkMessage[] = phones.map((phone) => ({
-    to: normalizePhone(phone),
+  const normalizedPhones = Array.from(new Set(phones.map(normalizePhone).filter(Boolean)));
+  let targetPhones = normalizedPhones;
+  if (db && relatedId && !options?.force) {
+    await ensureAlimtalkLogSchema(db);
+    const filtered: string[] = [];
+    for (const phone of normalizedPhones) {
+      const exists = await hasExistingAcceptedAlimtalkLog(db, template.code, relatedType, relatedId, phone);
+      if (!exists) filtered.push(phone);
+    }
+    targetPhones = filtered;
+  }
+
+  if (targetPhones.length === 0) return null;
+
+  const messages: AlimtalkMessage[] = targetPhones.map((phone) => ({
+    to: phone,
     content,
     useSmsFailover: true,
   }));
 
-  const result = await sendAlimtalk(env, template.code, messages);
-
-  // 로그 저장
-  const db = options?.db || (env.DB as D1Database | undefined);
-  if (db) {
-    for (const phone of phones) {
-      try {
-        await db.prepare(
-          'INSERT INTO alimtalk_logs (id, template_code, recipient_phone, content, request_id, status, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-        ).bind(
-          crypto.randomUUID(),
-          template.code,
-          normalizePhone(phone),
+  let result: AlimtalkSendResponse | null = null;
+  try {
+    result = await sendAlimtalk(env, template.code, messages);
+  } catch (err: any) {
+    if (db) {
+      for (const phone of targetPhones) {
+        await insertAlimtalkLog(db, {
+          templateCode: template.code,
+          recipientPhone: phone,
           content,
-          result?.requestId || '',
-          result ? 'sent' : 'skipped',
-          options?.relatedType || templateKey,
-          options?.relatedId || '',
-        ).run();
-      } catch { /* 로그 실패는 발송에 영향 없음 */ }
+          status: 'failed',
+          errorMessage: err?.message || String(err),
+          relatedType,
+          relatedId,
+        }).catch(() => {});
+      }
+    }
+    throw err;
+  }
+
+  if (db) {
+    for (const phone of targetPhones) {
+      const messageResult = (result?.messages || []).find((message) => normalizePhone(message.to) === phone);
+      const logStatus = result ? alimtalkStatusFromMessage(messageResult) : 'skipped';
+      await insertAlimtalkLog(db, {
+        templateCode: template.code,
+        recipientPhone: phone,
+        content,
+        status: logStatus,
+        requestId: result?.requestId || '',
+        messageId: messageResult?.messageId || '',
+        relatedType,
+        relatedId,
+        requestStatusCode: messageResult?.requestStatusCode || result?.statusCode || '',
+        requestStatusName: messageResult?.requestStatusName || result?.statusName || '',
+        requestStatusDesc: messageResult?.requestStatusDesc || result?.statusDesc || '',
+        messageStatusCode: messageResult?.messageStatusCode || '',
+        messageStatusName: messageResult?.messageStatusName || '',
+        messageStatusDesc: messageResult?.messageStatusDesc || '',
+      }).catch(() => {});
     }
   }
 
@@ -521,5 +805,12 @@ export async function sendAlimtalkByTemplate(
 }
 
 interface D1Database {
-  prepare(query: string): { bind(...values: unknown[]): { run(): Promise<unknown>; all(): Promise<{ results: unknown[] }>; first<T>(): Promise<T | null> } };
+  prepare(query: string): {
+    bind(...values: unknown[]): {
+      run(): Promise<unknown>;
+      all<T = unknown>(): Promise<{ results: T[] }>;
+      first<T = unknown>(): Promise<T | null>;
+    };
+    run(): Promise<unknown>;
+  };
 }

@@ -44,7 +44,7 @@ export default function Layout() {
   const role = (user?.role || 'member') as Role;
   const isFreelancer = (user as any)?.login_type === 'freelancer';
   const isSupport = role === 'support';
-  const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'support'].includes(role);
+  const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'support'].includes(role);
   const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);

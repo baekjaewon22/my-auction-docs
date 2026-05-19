@@ -10,6 +10,27 @@ const ACCOUNTING_ROLES = ['master', 'ceo', 'accountant', 'accountant_asst'] as c
 const EDIT_ROLES = ['master', 'ceo', 'accountant', 'accountant_asst'] as const;
 const DELETE_ROLES = ['master', 'ceo', 'accountant'] as const; // 삭제는 보조 제외
 const PAYROLL_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+const CARD_CANCEL_PATTERN = /(취소|승인취소|매출취소|사용취소|부분취소|환불|반품)/;
+
+function normalizeCardAmount(amount: unknown, isCancellationFlag: boolean, ...texts: unknown[]): number {
+  const raw = Number(String(amount ?? '0').replace(/[^0-9.-]/g, '')) || 0;
+  if (raw === 0) return 0;
+  const isCancellation = isCancellationFlag || CARD_CANCEL_PATTERN.test(texts.map((text) => String(text || '')).join(' '));
+  return isCancellation ? -Math.abs(raw) : Math.abs(raw);
+}
+
+function normalizeCardDate(value: unknown): string {
+  if (typeof value === 'number') {
+    const d = new Date((value - 25569) * 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+  const raw = String(value || '').trim();
+  const match = raw.match(/(\d{2,4})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})/);
+  if (!match) return raw.slice(0, 10);
+  const year = match[1].length === 2 ? `20${match[1]}` : match[1];
+  return `${year}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+}
+
 const requirePayrollCardTotalAccess = async (c: any, next: any) => {
   const user = c.get('user');
   if (ACCOUNTING_ROLES.includes(user?.role) || PAYROLL_EXTRA_USER_IDS.includes(user?.sub)) {
@@ -64,7 +85,7 @@ card.put('/user/:userId', requireRole(...EDIT_ROLES), async (c) => {
 card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
   const db = c.env.DB;
   const { rows } = await c.req.json<{
-    rows: { card_number: string; transaction_date: string; merchant_name: string; amount: number; description: string }[];
+    rows: { card_number: string; transaction_date: string; merchant_name: string; amount: number; description: string; is_cancellation?: boolean; raw_text?: string }[];
   }>();
 
   if (!rows || rows.length === 0) return c.json({ error: '데이터가 없습니다.' }, 400);
@@ -102,29 +123,58 @@ card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
     // 미매칭은 '기타'로 분류
     const category = branch || '기타';
 
-    // 중복 체크 (카드번호+날짜+금액+가맹점+비고) — 부호 보존: 사용(+) / 취소(-) 자연 구분
-    // description까지 포함하여 동일 가맹점 동일 금액 동시 거래도 정확히 식별
+    const merchantName = row.merchant_name || '';
+    const description = row.description || '';
+    const transactionDate = normalizeCardDate(row.transaction_date || '');
+    const amount = normalizeCardAmount(row.amount, !!row.is_cancellation, merchantName, description, row.raw_text);
+    const isCancellation = amount < 0;
+    const sourceText = String(row.raw_text || '').slice(0, 1000);
+
+    // 중복 체크 (카드번호+날짜+금액+가맹점+비고)
+    // 일반 사용액은 부호가 뒤집힌 과거 업로드도 같은 거래로 보고 중복 차단한다.
+    // 취소/환불 행은 동일 금액의 기존 사용액과 공존해야 하므로 음수 금액 기준으로만 중복 차단한다.
+    // Some exports truncate merchant names, so prefix matches are treated as the same merchant.
+    // Use substr comparisons instead of LIKE so long or symbol-heavy merchant names cannot trip D1's pattern limit.
     const dup = await db.prepare(
       `SELECT id FROM card_transactions
-       WHERE card_number = ? AND transaction_date = ? AND amount = ?
-         AND merchant_name = ? AND IFNULL(description,'') = ? LIMIT 1`
+       WHERE card_number = ? AND transaction_date = ?
+         AND IFNULL(description,'') = ?
+         AND (
+           merchant_name = ?
+           OR ? = ''
+           OR merchant_name = ''
+           OR substr(merchant_name, 1, length(?)) = ?
+           OR substr(?, 1, length(merchant_name)) = merchant_name
+         )
+         AND (
+           (? = 1 AND amount = ?)
+           OR (? = 0 AND ABS(amount) = ?)
+         )
+       LIMIT 1`
     ).bind(
       row.card_number || rawCard,
-      row.transaction_date || '',
-      row.amount || 0,
-      row.merchant_name || '',
-      row.description || ''
+      transactionDate,
+      description,
+      merchantName,
+      merchantName,
+      merchantName,
+      merchantName,
+      merchantName,
+      isCancellation ? 1 : 0,
+      amount,
+      isCancellation ? 1 : 0,
+      Math.abs(amount),
     ).first();
     if (dup) continue;
 
     const id = crypto.randomUUID();
     await db.prepare(`
-      INSERT INTO card_transactions (id, card_number, user_id, branch, category, merchant_name, transaction_date, amount, description, upload_batch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO card_transactions (id, card_number, user_id, branch, category, merchant_name, transaction_date, amount, description, is_cancellation, source_text, upload_batch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id, row.card_number || rawCard, userId, branch, category,
-      row.merchant_name || '', row.transaction_date || '',
-      row.amount || 0, row.description || '', batchId
+      merchantName, transactionDate,
+      amount, description, isCancellation ? 1 : 0, sourceText, batchId
     ).run();
     inserted++;
   }

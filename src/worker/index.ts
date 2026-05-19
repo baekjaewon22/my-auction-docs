@@ -28,17 +28,39 @@ import driveRoute, { OAUTH_STATE_SECRET } from './routes/drive';
 import linksRoute from './routes/links';
 import approvalAlertsRoute from './routes/approval-alerts';
 import journalAlertsRoute from './routes/journal-alerts';
+import serviceTokensRoute from './routes/service-tokens';
 import { jwtVerify } from 'jose';
 import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
 import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
+import { cleanupExpiredArticlePdfs } from './lib/article-pdfs';
 
 const app = new Hono<{ Bindings: Env }>();
+const EMBED_PAGES = ['/users', '/accounting', '/payroll', '/alimtalk-logs', '/org'];
+const DEV_FRAME_ANCESTORS = ['http://127.0.0.1:5173', 'http://127.0.0.1:5174'];
+
+function uniqueValues(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function allowedFrameAncestors(env: Env): string[] {
+  const configured = String((env as any).ALL_FOR_ONE_FRAME_ANCESTORS || '')
+    .split(/\s+/)
+    .filter(Boolean);
+  const dev = env.ENVIRONMENT === 'production' ? [] : DEV_FRAME_ANCESTORS;
+  return uniqueValues(["'self'", ...dev, ...configured]);
+}
+
+function frameAncestorsCsp(env: Env): string {
+  return `frame-ancestors ${allowedFrameAncestors(env).join(' ')};`;
+}
 
 // Google Identity Services 팝업이 window.closed 등을 체크할 수 있도록 COOP 완화
 app.use('*', async (c, next) => {
   await next();
   c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  c.header('Content-Security-Policy', frameAncestorsCsp(c.env));
+  c.header('X-Embed-Allowed-Pages', EMBED_PAGES.join(','));
 });
 
 app.use('/api/*', cors());
@@ -78,6 +100,7 @@ app.route('/api/drive', driveRoute);
 app.route('/api/links', linksRoute);
 app.route('/api/approval-alerts', approvalAlertsRoute);
 app.route('/api/journal-alerts', journalAlertsRoute);
+app.route('/api/service-tokens', serviceTokensRoute);
 
 // OAuth 콜백 — Google이 /oauth/drive/callback 으로 redirect (최상위 경로)
 app.get('/oauth/drive/callback', async (c) => {
@@ -193,15 +216,98 @@ app.get('/api/print/data/:docId', async (c) => {
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
+app.get('/api/embed/config', (c) => c.json({
+  allowed: allowedFrameAncestors(c.env).length > 1,
+  frame_ancestors: allowedFrameAncestors(c.env),
+  pages: EMBED_PAGES,
+  auth: {
+    html_pages: 'user_jwt_required',
+    service_token: 'api_only',
+    cookie_required: false,
+  },
+}));
+
 // Slack 총무 체크리스트 테스트 발송. SLACK_ACCOUNTING_TEST_TOKEN secret과 query token이 일치해야 실행된다.
 app.post('/api/_test-slack-accounting-checklist', async (c) => {
   const token = c.req.query('token') || '';
-  const expected = String((c.env as any).SLACK_ACCOUNTING_TEST_TOKEN || '').trim();
+  const expectedTokens = [
+    (c.env as any).SLACK_ACCOUNTING_MANUAL_TOKEN,
+    (c.env as any).SLACK_ACCOUNTING_TEST_TOKEN,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+  if (!expectedTokens.includes(token)) return c.json({ error: '권한 없음' }, 403);
+
+  const {
+    accountingSlackSlotForManual,
+    sendAccountingSlackChecklist,
+  } = await import('./lib/accounting-slack-checklist');
+  const slot = c.req.query('slot');
+  const force = c.req.query('force') === '1';
+  const manualSlot = slot === 'am' || slot === 'pm'
+    ? accountingSlackSlotForManual(slot)
+    : null;
+  const runLabel = c.req.query('label') || manualSlot?.runLabel || '수동 발송';
+  const runKey = c.req.query('runKey') || manualSlot?.runKey;
+  const result = await sendAccountingSlackChecklist(c.env as any, runLabel, {
+    runKey,
+    skipSuccessfulGroups: !force,
+  });
+  return c.json({ success: true, ...result });
+});
+
+// 법률지원/명도견적 알림톡 수동 재발송. ALIMTALK_MANUAL_TOKEN secret과 query token이 일치해야 실행된다.
+app.post('/api/_manual-community-alimtalk-resend', async (c) => {
+  const token = c.req.query('token') || '';
+  const expected = String((c.env as any).ALIMTALK_MANUAL_TOKEN || '').trim();
   if (!expected || token !== expected) return c.json({ error: '권한 없음' }, 403);
 
-  const { sendAccountingSlackChecklist } = await import('./lib/accounting-slack-checklist');
-  const result = await sendAccountingSlackChecklist(c.env as any, '수동 테스트');
+  const db = c.env.DB;
+  const noteId = c.req.query('note_id') || '';
+  const category = c.req.query('category') || 'legal_support';
+  const force = c.req.query('force') !== '0';
+  const note = noteId
+    ? await db.prepare(`
+        SELECT n.id, n.title, n.category, n.legal_subcategory, n.court, n.case_number,
+          n.author_id, n.author_name, n.is_anonymous, n.created_at
+        FROM admin_notes n
+        WHERE n.id = ?
+      `).bind(noteId).first<any>()
+    : await db.prepare(`
+        SELECT n.id, n.title, n.category, n.legal_subcategory, n.court, n.case_number,
+          n.author_id, n.author_name, n.is_anonymous, n.created_at
+        FROM admin_notes n
+        WHERE COALESCE(n.category, 'community') = ?
+        ORDER BY n.created_at DESC
+        LIMIT 1
+      `).bind(category).first<any>();
+  if (!note) return c.json({ error: '재발송할 게시글이 없습니다.', category, note_id: noteId || null }, 404);
+
+  const { sendCommunityNoteCreatedAlimtalk } = await import('./lib/community-alimtalk');
+  const result = await sendCommunityNoteCreatedAlimtalk(c.env as any, db, note, { force });
+  return c.json({ success: true, note_id: note.id, category: note.category, ...result });
+});
+
+// 알림톡 최종 도착 상태 수동 갱신. ALIMTALK_MANUAL_TOKEN secret과 query token이 일치해야 실행된다.
+app.post('/api/_manual-alimtalk-refresh-status', async (c) => {
+  const token = c.req.query('token') || '';
+  const expected = String((c.env as any).ALIMTALK_MANUAL_TOKEN || '').trim();
+  if (!expected || token !== expected) return c.json({ error: '권한 없음' }, 403);
+
+  const limit = Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 200);
+  const { refreshRecentAlimtalkDeliveryStatuses } = await import('./alimtalk');
+  const result = await refreshRecentAlimtalkDeliveryStatuses(c.env as any, c.env.DB, limit);
   return c.json({ success: true, ...result });
+});
+
+// NCP에 실제 등록된 알림톡 템플릿 조회. 템플릿 코드 불일치 진단용.
+app.get('/api/_manual-alimtalk-templates', async (c) => {
+  const token = c.req.query('token') || '';
+  const expected = String((c.env as any).ALIMTALK_MANUAL_TOKEN || '').trim();
+  if (!expected || token !== expected) return c.json({ error: '권한 없음' }, 403);
+
+  const code = c.req.query('code') || undefined;
+  const { listAlimtalkTemplates } = await import('./alimtalk');
+  const templates = await listAlimtalkTemplates(c.env as any, code);
+  return c.json({ success: true, templates });
 });
 
 // 임시: 모든 알림톡 템플릿 테스트 발송 (인증 없이, 토큰 보호)
@@ -257,6 +363,18 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
       (r) => console.log('[cron drive] done', r),
       (err) => console.error('[cron drive] error', err),
     ));
+    ctx.waitUntil(import('./lib/accounting-slack-checklist').then(({ sendDueAccountingSlackChecklist }) =>
+      sendDueAccountingSlackChecklist(env, new Date((event as any).scheduledTime || Date.now())).then(
+        (r) => { if (r.due) console.log('[cron slack-accounting-checklist] done', r); },
+        (err) => console.error('[cron slack-accounting-checklist] error', err),
+      ),
+    ));
+    ctx.waitUntil(import('./alimtalk').then(({ refreshRecentAlimtalkDeliveryStatuses }) =>
+      refreshRecentAlimtalkDeliveryStatuses(env, env.DB, 50).then(
+        (r) => { if (r.checked > 0) console.log('[cron alimtalk-status] done', r); },
+        (err) => console.error('[cron alimtalk-status] error', err),
+      ),
+    ));
     // 승인 대기 알림톡 순차 발송
     // 1) reconcile: submitted 문서 중 alert 행이 없는 것을 찾아 보강 (즉시 INSERT 실패한 케이스 자동복구)
     // 2) dispatch: notification_sent=0 인 alert를 NCP로 발송
@@ -277,19 +395,27 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
       }
     })());
   } else if (cron === '0 0,6 * * 1-5') {
-    const runLabel = new Date().getUTCHours() === 0 ? '오전 9시' : '오후 3시';
-    ctx.waitUntil(import('./lib/accounting-slack-checklist').then(({ sendAccountingSlackChecklist }) =>
-      sendAccountingSlackChecklist(env, runLabel).then(
+    ctx.waitUntil(import('./lib/accounting-slack-checklist').then(({ accountingSlackSlotForTime, sendAccountingSlackChecklist }) => {
+      const slot = accountingSlackSlotForTime(new Date((event as any).scheduledTime || Date.now()));
+      const runLabel = slot?.runLabel || (new Date().getUTCHours() === 0 ? '오전 9시' : '오후 3시');
+      return sendAccountingSlackChecklist(env, runLabel, {
+        runKey: slot?.runKey,
+        skipSuccessfulGroups: true,
+      }).then(
         (r) => console.log('[cron slack-accounting-checklist] done', r),
         (err) => console.error('[cron slack-accounting-checklist] error', err),
-      ),
-    ));
+      );
+    }));
   } else if (cron === '0 15 * * *') {
     ctx.waitUntil(import('./analytics-cron').then(({ runDailyAggregation }) =>
       runDailyAggregation(env).then(
         (r) => console.log('[cron analytics-daily] done', r),
         (err) => console.error('[cron analytics-daily] error', err),
       ),
+    ));
+    ctx.waitUntil(cleanupExpiredArticlePdfs(env, 100).then(
+      (r) => { if (r.scanned > 0) console.log('[cron article-pdf-cleanup] done', r); },
+      (err) => console.error('[cron article-pdf-cleanup] error', err),
     ));
   } else if (cron === '30 15 1 * *') {
     ctx.waitUntil(import('./analytics-cron').then(({ runMonthlyAggregation }) =>

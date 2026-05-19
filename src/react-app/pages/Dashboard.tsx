@@ -116,7 +116,7 @@ export default function Dashboard() {
   const [coopAlerts, setCoopAlerts] = useState<any[]>([]);
   const [driveStatus, setDriveStatus] = useState<{ last_backup_at: string | null; pending_count: number; connected: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
-  const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user?.role || '');
+  const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '');
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
   const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
   const isMaster = user?.role === 'master';

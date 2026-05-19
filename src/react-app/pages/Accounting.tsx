@@ -33,6 +33,26 @@ function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
 }
 
+const CARD_CANCEL_PATTERN = /(취소|승인취소|매출취소|사용취소|부분취소|환불|반품)/;
+
+function normalizeCardUploadAmount(rawValue: unknown, rowText: string): number {
+  const raw = Number(String(rawValue ?? '0').replace(/[^0-9.-]/g, '')) || 0;
+  if (raw === 0) return 0;
+  return CARD_CANCEL_PATTERN.test(rowText) ? -Math.abs(raw) : Math.abs(raw);
+}
+
+function normalizeCardUploadDate(value: unknown): string {
+  if (typeof value === 'number') {
+    const d = new Date((value - 25569) * 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+  const raw = String(value || '').trim();
+  const match = raw.match(/(\d{2,4})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})/);
+  if (!match) return raw.slice(0, 10);
+  const year = match[1].length === 2 ? `20${match[1]}` : match[1];
+  return `${year}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+}
+
 const BANK_CATEGORY_LABELS: Record<string, string> = {
   sales_match: '업무성과 매칭',
   card_settlement: '카드정산 후보',
@@ -291,11 +311,10 @@ export default function Accounting() {
         let dateRaw = colDate ? String(row[colDate] || '') : '';
         if (!dateRaw) {
           for (const { val } of allVals) {
-            if (/20\d{2}[.\-/]\d{1,2}[.\-/]\d{1,2}/.test(val)) { dateRaw = val; break; }
+            if (/\d{2,4}[.\-/]\d{1,2}[.\-/]\d{1,2}/.test(val)) { dateRaw = val; break; }
           }
         }
-        const dm = dateRaw.match(/(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})/);
-        const normalizedDate = dm ? `${dm[1]}-${dm[2].padStart(2, '0')}-${dm[3].padStart(2, '0')}` : dateRaw.slice(0, 10);
+        const normalizedDate = normalizeCardUploadDate(dateRaw);
 
         // 가맹점
         const merchant = colMerchant ? String(row[colMerchant] || '') : '';
@@ -308,15 +327,14 @@ export default function Accounting() {
             if (Math.abs(n) >= 100 && !key.includes('번호') && !key.includes('잔액')) { amountRaw = val; break; }
           }
         }
-        // 부호 반전: 엑셀(사용=음수, 취소=양수) → 시스템(사용=양수, 취소=음수)
-        // 합산 시 취소가 자연 상쇄됨
-        const raw = Number(String(amountRaw || '0').replace(/[^0-9.-]/g, '')) || 0;
-        const amount = -raw;
+        const rowText = allVals.map(({ key, val }) => key.includes('번호') ? '' : val).join(' ');
+        const isCancellation = CARD_CANCEL_PATTERN.test(rowText);
+        const amount = normalizeCardUploadAmount(amountRaw, rowText);
 
         // 비고
         const desc = colDesc && colDesc !== colMerchant ? String(row[colDesc] || '') : '';
 
-        return { card_number: cardNum, transaction_date: normalizedDate, merchant_name: merchant, amount, description: desc };
+        return { card_number: cardNum, transaction_date: normalizedDate, merchant_name: merchant, amount, description: desc, is_cancellation: isCancellation, raw_text: rowText };
       }).filter((r: any) => r.amount !== 0);
 
       if (rows.length === 0) { alert('유효한 금액 데이터가 없습니다.\n감지된 컬럼: ' + cols.join(', ')); return; }
@@ -1321,7 +1339,9 @@ export default function Accounting() {
                         <td style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{r.card_number ? '****' + r.card_number.slice(-4) : <span style={{ color: '#d93025' }}>없음</span>}</td>
                         <td>{r.transaction_date}</td>
                         <td>{r.merchant_name || '-'}</td>
-                        <td style={{ fontWeight: 600, color: '#d93025', textAlign: 'right' }}>-{Number(r.amount).toLocaleString()}</td>
+                        <td style={{ fontWeight: 600, color: Number(r.amount) < 0 ? '#188038' : '#d93025', textAlign: 'right' }}>
+                          {Number(r.amount) < 0 ? '+' : '-'}{Math.abs(Number(r.amount)).toLocaleString()}
+                        </td>
                         <td style={{ color: '#9aa0a6' }}>{r.description || '-'}</td>
                       </tr>
                     ))}
@@ -1339,7 +1359,11 @@ export default function Accounting() {
             <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(cardSummary.by_branch.length + 1, 4)}, 1fr)`, gap: 10, marginBottom: 16 }}>
               {cardSummary.by_branch.map((b: any) => (
                 <div key={b.branch} className="card" style={{ padding: '14px 16px', textAlign: 'center', cursor: 'pointer', border: cardFilterBranch === (b.branch || '기타') ? '2px solid #d93025' : '1px solid var(--gray-200)' }}
-                  onClick={() => setCardFilterBranch(cardFilterBranch === (b.branch || '기타') ? '' : (b.branch || '기타'))}>
+                  onClick={() => {
+                    const nextBranch = cardFilterBranch === (b.branch || '기타') ? '' : (b.branch || '기타');
+                    setCardFilterBranch(nextBranch);
+                    setCardFilterUser('');
+                  }}>
                   <div style={{ fontSize: '0.72rem', color: '#9aa0a6', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{b.branch || '기타'}</div>
                   <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#d93025', margin: '4px 0' }}>{Number(b.total || 0).toLocaleString()}<span style={{ fontSize: '0.7rem', fontWeight: 400 }}>원</span></div>
                   <div style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>{b.count}건</div>
@@ -1360,7 +1384,7 @@ export default function Accounting() {
             <div className="card" style={{ marginBottom: 16, padding: '14px 16px' }}>
               <h4 style={{ margin: '0 0 10px', fontSize: '0.85rem', color: '#3c4043' }}>담당자별 사용금액</h4>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {cardSummary.by_user.map((u: any) => (
+                {cardSummary.by_user.filter((u: any) => !cardFilterBranch || (u.branch || '기타') === cardFilterBranch).map((u: any) => (
                   <div key={u.user_id} onClick={() => setCardFilterUser(cardFilterUser === u.user_id ? '' : u.user_id)}
                     style={{ padding: '5px 10px', background: cardFilterUser === u.user_id ? '#1a1a2e' : '#f8f9fa', color: cardFilterUser === u.user_id ? '#fff' : '#3c4043',
                       borderRadius: 6, fontSize: '0.78rem', cursor: 'pointer', transition: 'all 0.15s', border: '1px solid', borderColor: cardFilterUser === u.user_id ? '#1a1a2e' : '#e8eaed' }}>

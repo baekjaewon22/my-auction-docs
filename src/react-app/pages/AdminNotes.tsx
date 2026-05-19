@@ -3,11 +3,13 @@ import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import { useDepartments } from '../hooks/useDepartments';
-import { StickyNote, Plus, X, Trash2, ArrowLeft, Pin, MessageSquare, Send, Edit3, BookOpen, EyeOff, Search, Gavel, Scale, Paperclip, Download, Printer, Handshake } from 'lucide-react';
+import { StickyNote, Plus, X, Trash2, ArrowLeft, Pin, MessageSquare, Send, Edit3, BookOpen, EyeOff, Search, Gavel, Scale, Paperclip, Download, Printer, Handshake, CalendarDays, Newspaper } from 'lucide-react';
 import Cooperation from './Cooperation';
+import Select from '../components/Select';
 
-type NoteCategory = 'community' | 'eviction_quote' | 'legal_support' | 'cooperation';
+type NoteCategory = 'community' | 'article_news' | 'briefing_schedule' | 'eviction_quote' | 'legal_support' | 'cooperation';
 type LegalSubcategory = 'consultation' | 'law_reference';
+type CommunitySection = 'posts' | 'article_news' | 'briefing_schedule';
 
 interface Note {
   id: string;
@@ -29,6 +31,11 @@ interface Note {
   legal_subcategory?: LegalSubcategory;
   court?: string;
   case_number?: string;
+  assignee_id?: string;
+  target_date?: string;
+  item_no?: string;
+  client_name?: string;
+  journal_entry_id?: string;
 }
 
 interface Comment {
@@ -49,6 +56,9 @@ interface NoteAttachment {
   file_type: string;
   file_size: number;
   file_data: string;
+  download_url?: string;
+  storage?: string;
+  expires_at?: string;
 }
 
 const CATEGORIES: Array<{ key: NoteCategory; label: string; icon: typeof StickyNote }> = [
@@ -62,6 +72,8 @@ const LEGAL_SUBCATEGORIES: Array<{ key: LegalSubcategory; label: string }> = [
   { key: 'consultation', label: '문의 상담' },
   { key: 'law_reference', label: '관련법령' },
 ];
+
+const YEARS = Array.from({ length: 27 }, (_, i) => String(2026 - i));
 
 const COURTS = ['서울중앙지방법원', '서울동부지방법원', '서울서부지방법원', '서울남부지방법원', '서울북부지방법원', '의정부지방법원', '인천지방법원', '수원지방법원', '대전지방법원', '대구지방법원', '부산지방법원', '광주지방법원', '울산지방법원', '창원지방법원', '청주지방법원', '춘천지방법원', '전주지방법원', '제주지방법원'];
 
@@ -93,6 +105,7 @@ function getVisibilityLabel(v: string): string {
   if (v === 'branch') return '지사';
   if (v === 'department') return '팀';
   if (v.startsWith('team:')) return v.replace('team:', '');
+  if (v.startsWith('user:')) return '단일 대상';
   return '전체';
 }
 
@@ -127,6 +140,10 @@ export default function AdminNotes() {
     const tab = searchParams.get('tab');
     return tab === 'eviction_quote' || tab === 'legal_support' || tab === 'cooperation' ? tab : 'community';
   });
+  const [communitySection, setCommunitySection] = useState<CommunitySection>(() =>
+    searchParams.get('section') === 'briefing_schedule' ? 'briefing_schedule' : searchParams.get('section') === 'article_news' ? 'article_news' : 'posts'
+  );
+  const [members, setMembers] = useState<Array<{ id: string; name: string; role: string; branch: string; department: string; position_title?: string }>>([]);
 
   // 작성 폼
   const [showForm, setShowForm] = useState(false);
@@ -139,6 +156,14 @@ export default function AdminNotes() {
   const [formCaseNumber, setFormCaseNumber] = useState('');
   const [formLegalSubcategory, setFormLegalSubcategory] = useState<LegalSubcategory>('consultation');
   const [formAttachments, setFormAttachments] = useState<NoteAttachment[]>([]);
+  const [formAssigneeId, setFormAssigneeId] = useState('');
+  const [formTargetDate, setFormTargetDate] = useState(() => new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10));
+  const [formCaseYear, setFormCaseYear] = useState('2026');
+  const [formBriefingCaseNo, setFormBriefingCaseNo] = useState('');
+  const [formItemNo, setFormItemNo] = useState('');
+  const [formClientName, setFormClientName] = useState('');
+  const [autofillHint, setAutofillHint] = useState('');
+  const [autofillMatch, setAutofillMatch] = useState<null | { target_date: string; activity_type: string; case_number: string; item_no: string; court: string; client_name: string }>(null);
   const [submitting, setSubmitting] = useState(false);
 
   // 수정 모드
@@ -152,23 +177,31 @@ export default function AdminNotes() {
   const [commentAnonymous, setCommentAnonymous] = useState(false);
   const [commentLoading, setCommentLoading] = useState(false);
 
-  // const isAdmin = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role); // 현재 미사용
+  const canCreateBriefingSchedule = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
   const isManager = !!user && ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user.role);
   const isMaster = user?.role === 'master';
 
   // 공유 범위 옵션: 역할에 따라 다름
   const teamOptions = departments.map(d => ({ value: `team:${d}`, label: `${d}` }));
+  const userVisibilityOptions = members
+    .filter(m => m.id !== user?.id)
+    .map(m => ({
+      value: `user:${m.id}`,
+      label: `단일 대상 · ${m.name}${m.position_title ? ` · ${m.position_title}` : ''}${m.department ? ` · ${m.department}` : ''}`,
+    }));
   const visibilityOptions = isManager
     ? [
         { value: 'all', label: '전체 공유' },
         { value: 'branch', label: `지사 (${user?.branch || '소속 지사'})` },
         { value: 'department', label: `내 팀 (${user?.department || '소속 팀'})` },
         ...teamOptions,
+        ...userVisibilityOptions,
       ]
     : [
         { value: 'branch', label: `지사 (${user?.branch || '소속 지사'})` },
         { value: 'department', label: `내 팀 (${user?.department || '소속 팀'})` },
         ...teamOptions,
+        ...userVisibilityOptions,
       ];
 
   const load = async () => {
@@ -179,8 +212,9 @@ export default function AdminNotes() {
     }
     setLoading(true);
     try {
+      const listCategory = activeCategory === 'community' && communitySection !== 'posts' ? communitySection : activeCategory;
       const res = await api.adminNotes.list({
-        category: activeCategory,
+        category: listCategory,
         search,
         legal_subcategory: activeCategory === 'legal_support' ? activeLegalSubcategory : undefined,
       });
@@ -192,7 +226,20 @@ export default function AdminNotes() {
   useEffect(() => {
     const tab = searchParams.get('tab');
     const next = tab === 'eviction_quote' || tab === 'legal_support' || tab === 'cooperation' ? tab : 'community';
+    const requestedSection = searchParams.get('section');
+    const nextCommunitySection = next === 'community'
+      ? requestedSection === 'article_news'
+        ? 'article_news'
+        : canCreateBriefingSchedule && requestedSection === 'briefing_schedule'
+          ? 'briefing_schedule'
+          : 'posts'
+      : 'posts';
     const nextLegalSubcategory = searchParams.get('section') === 'law_reference' ? 'law_reference' : 'consultation';
+    if (next === 'community' && nextCommunitySection !== communitySection) {
+      setCommunitySection(nextCommunitySection);
+      setDetail(null);
+      resetForm();
+    }
     if (next === 'legal_support' && nextLegalSubcategory !== activeLegalSubcategory) {
       setActiveLegalSubcategory(nextLegalSubcategory);
       setFormLegalSubcategory(nextLegalSubcategory);
@@ -203,9 +250,54 @@ export default function AdminNotes() {
       setDetail(null);
       resetForm();
     }
-  }, [searchParams]);
+  }, [searchParams, canCreateBriefingSchedule]);
 
-  useEffect(() => { load(); }, [activeCategory, activeLegalSubcategory]);
+  useEffect(() => { load(); }, [activeCategory, activeLegalSubcategory, communitySection]);
+
+  useEffect(() => {
+    if (!(canCreateBriefingSchedule || activeCategory === 'community')) return;
+    api.journal.members()
+      .then(res => {
+        setMembers(res.members);
+        setFormAssigneeId(prev => prev || res.members[0]?.id || '');
+      })
+      .catch(() => undefined);
+  }, [canCreateBriefingSchedule, activeCategory]);
+
+  const assigneeOptions = members.map(m => ({
+    value: m.id,
+    label: `${m.name}${m.position_title ? ` · ${m.position_title}` : ''}${m.department ? ` · ${m.department}` : ''}`,
+  }));
+
+  useEffect(() => {
+    if (!(activeCategory === 'community' && communitySection === 'briefing_schedule')) return;
+    if (!formAssigneeId) {
+      setAutofillMatch(null);
+      setAutofillHint('');
+      return;
+    }
+    const caseNumber = formBriefingCaseNo.trim() ? `${formCaseYear}타경${formBriefingCaseNo.trim()}` : '';
+    const clientName = formClientName.trim();
+    if (!caseNumber && !clientName) {
+      setAutofillMatch(null);
+      setAutofillHint('');
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      api.adminNotes.briefingAutofill({
+        assignee_id: formAssigneeId,
+        case_number: caseNumber,
+        client_name: clientName,
+      }).then(res => {
+        setAutofillMatch(res.match);
+        setAutofillHint(res.match ? '' : '일치하는 기존 일지가 없습니다.');
+      }).catch(() => {
+        setAutofillMatch(null);
+        setAutofillHint('');
+      });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [activeCategory, communitySection, formAssigneeId, formCaseYear, formBriefingCaseNo, formClientName]);
 
   const openDetail = async (note: Note) => {
     setDetail(note);
@@ -240,13 +332,22 @@ export default function AdminNotes() {
   };
 
   const handleCreate = async () => {
-    if (activeCategory !== 'eviction_quote' && !formTitle.trim()) { alert('제목을 입력하세요.'); return; }
+    const isBriefingSchedule = activeCategory === 'community' && communitySection === 'briefing_schedule';
+    if (activeCategory === 'community' && communitySection === 'article_news') { alert('오늘의 뉴스는 외부 API 업로드로만 등록됩니다.'); return; }
+    if (!isBriefingSchedule && activeCategory !== 'eviction_quote' && !formTitle.trim()) { alert('제목을 입력하세요.'); return; }
     if (activeCategory === 'eviction_quote' && !formCaseNumber.trim()) { alert('사건번호를 입력하세요.'); return; }
-    if (!formContent.trim()) { alert('내용을 입력하세요.'); return; }
+    if (isBriefingSchedule && !canCreateBriefingSchedule) { alert('브리핑자료 일정 등록 권한이 없습니다.'); return; }
+    if (isBriefingSchedule && !formAssigneeId) { alert('담당자를 목록에서 선택하세요.'); return; }
+    if (isBriefingSchedule && !formTargetDate) { alert('일정일을 입력하세요.'); return; }
+    if (isBriefingSchedule && (!formBriefingCaseNo.trim() || !formCourt || !formClientName.trim())) { alert('사건번호, 법원, 계약자명을 입력하세요.'); return; }
+    if (!isBriefingSchedule && !formContent.trim()) { alert('내용을 입력하세요.'); return; }
     setSubmitting(true);
     try {
+      const briefingCaseNumber = `${formCaseYear}타경${formBriefingCaseNo.trim()}`;
       const title = activeCategory === 'eviction_quote'
         ? `${formCourt} ${formCaseNumber.trim()} 명도 견적 의뢰`
+        : isBriefingSchedule
+          ? ''
         : formTitle.trim();
       if (editingId) {
         await api.adminNotes.update(editingId, { title, content: formContent.trim(), pinned: formPinned });
@@ -258,15 +359,19 @@ export default function AdminNotes() {
       } else {
         await api.adminNotes.create({
           title,
-          content: formContent.trim(),
+          content: isBriefingSchedule ? '' : formContent.trim(),
           pinned: formPinned,
           is_anonymous: activeCategory === 'legal_support' ? formAnonymous : formAnonymous,
-          visibility: activeCategory === 'community' ? formVisibility : 'all',
-          category: activeCategory,
-          court: activeCategory === 'eviction_quote' ? formCourt : undefined,
-          case_number: activeCategory === 'eviction_quote' ? formCaseNumber.trim() : undefined,
+          visibility: activeCategory === 'community' && !isBriefingSchedule ? formVisibility : 'all',
+          category: isBriefingSchedule ? 'briefing_schedule' : activeCategory,
           legal_subcategory: activeCategory === 'legal_support' ? formLegalSubcategory : undefined,
           attachments: activeCategory === 'legal_support' ? formAttachments : [],
+          assignee_id: isBriefingSchedule ? formAssigneeId : undefined,
+          target_date: isBriefingSchedule ? formTargetDate : undefined,
+          court: activeCategory === 'eviction_quote' || isBriefingSchedule ? formCourt : undefined,
+          case_number: activeCategory === 'eviction_quote' ? formCaseNumber.trim() : isBriefingSchedule ? briefingCaseNumber : undefined,
+          item_no: isBriefingSchedule ? formItemNo.trim() : undefined,
+          client_name: isBriefingSchedule ? formClientName.trim() : undefined,
         });
       }
       resetForm();
@@ -279,6 +384,8 @@ export default function AdminNotes() {
     setFormTitle(''); setFormContent(''); setFormPinned(false);
     setFormAnonymous(false); setFormVisibility(isManager ? 'all' : 'branch');
     setFormCourt(COURTS[0]); setFormCaseNumber(''); setFormLegalSubcategory(activeLegalSubcategory); setFormAttachments([]);
+    setFormAssigneeId(members[0]?.id || ''); setFormTargetDate(new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10));
+    setFormCaseYear('2026'); setFormBriefingCaseNo(''); setFormItemNo(''); setFormClientName(''); setAutofillHint(''); setAutofillMatch(null);
     setShowForm(false); setEditingId(null);
   };
 
@@ -327,6 +434,47 @@ export default function AdminNotes() {
     } catch (err: any) { alert(err.message); }
   };
 
+  const openAttachment = async (file: NoteAttachment) => {
+    if (!file.download_url) {
+      const link = document.createElement('a');
+      link.href = file.file_data;
+      link.download = file.file_name;
+      link.click();
+      return;
+    }
+    try {
+      const blob = await api.adminNotes.downloadAttachment(file.download_url);
+      const url = URL.createObjectURL(blob);
+      const opened = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!opened) {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = file.file_name;
+        link.click();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 120000);
+    } catch (err: any) {
+      alert(err.message || '파일을 열 수 없습니다.');
+    }
+  };
+
+  const applyBriefingAutofill = (match: NonNullable<typeof autofillMatch>) => {
+    const matchedCase = match.case_number.match(/^(\d{4})타경(.+)$/);
+    if (matchedCase) {
+      setFormCaseYear(matchedCase[1]);
+      setFormBriefingCaseNo(matchedCase[2].replace(/[^0-9]/g, ''));
+    }
+    if (match.item_no) setFormItemNo(match.item_no);
+    if (match.court) setFormCourt(match.court);
+    if (match.client_name) setFormClientName(match.client_name);
+    setAutofillHint(`${match.target_date} ${match.activity_type} 이력으로 자동채움`);
+  };
+
+  const autofillCaseDigits = autofillMatch?.case_number.match(/^(\d{4})타경(.+)$/)?.[2]?.replace(/[^0-9]/g, '') || '';
+  const autofillLabel = autofillMatch
+    ? `${autofillMatch.target_date} · ${autofillMatch.activity_type} · ${autofillMatch.case_number || '-'} · ${autofillMatch.client_name || '-'}`
+    : '';
+
   const handlePrintDetail = () => {
     if (!detail) return;
     const popup = window.open('', '_blank', 'width=900,height=700');
@@ -370,7 +518,7 @@ export default function AdminNotes() {
           <span>${escapeHtml(authorLabel(detail))}</span>
           <span>${escapeHtml(formatDate(detail.created_at))}</span>
           <span class="badge">${escapeHtml(getVisibilityLabel(detail.visibility))}</span>
-          ${detail.category === 'eviction_quote' ? `<span class="badge">법원: ${escapeHtml(detail.court || '-')}</span><span class="badge">사건번호: ${escapeHtml(detail.case_number || '-')}</span>` : ''}
+          ${detail.category === 'eviction_quote' || detail.category === 'briefing_schedule' ? `<span class="badge">법원: ${escapeHtml(detail.court || '-')}</span><span class="badge">사건번호: ${escapeHtml(detail.case_number || '-')}</span>` : ''}
           ${detail.category === 'legal_support' ? `<span class="badge">${escapeHtml(getLegalSubcategoryLabel(detail.legal_subcategory))}</span>` : ''}
         </div>
         <div class="content">${escapeHtml(detail.content)}</div>
@@ -384,7 +532,9 @@ export default function AdminNotes() {
   };
 
   const filtered = notes.filter(n =>
-    n.title.includes(search) || n.content.includes(search) || (n.author_name || '').includes(search) || (n.court || '').includes(search) || (n.case_number || '').includes(search)
+    n.title.includes(search) || n.content.includes(search) || (n.author_name || '').includes(search) ||
+    (n.court || '').includes(search) || (n.case_number || '').includes(search) ||
+    (n.client_name || '').includes(search) || (n.target_date || '').includes(search)
   );
 
   if (loading) return <div className="page-loading">로딩중...</div>;
@@ -426,10 +576,13 @@ export default function AdminNotes() {
             )}
             <span className="admin-note-visibility-badge">{getVisibilityLabel(detail.visibility)}</span>
           </div>
-          {detail.category === 'eviction_quote' && (
+          {(detail.category === 'eviction_quote' || detail.category === 'briefing_schedule') && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 0' }}>
+              {detail.category === 'briefing_schedule' && <span className="admin-note-visibility-badge">일정일: {detail.target_date || '-'}</span>}
               <span className="admin-note-visibility-badge">법원: {detail.court || '-'}</span>
               <span className="admin-note-visibility-badge">사건번호: {detail.case_number || '-'}</span>
+              {detail.item_no && <span className="admin-note-visibility-badge">물건번호: {detail.item_no}</span>}
+              {detail.client_name && <span className="admin-note-visibility-badge">계약자명: {detail.client_name}</span>}
             </div>
           )}
           {detail.category === 'legal_support' && (
@@ -444,12 +597,13 @@ export default function AdminNotes() {
           {attachments.length > 0 && (
             <div style={{ marginTop: 16, display: 'grid', gap: 8 }}>
               {attachments.map(file => (
-                <a key={file.id} href={file.file_data} download={file.file_name} className="btn btn-sm" style={{ justifyContent: 'flex-start', width: 'fit-content' }}>
+                <button key={file.id} type="button" onClick={() => openAttachment(file)} className="btn btn-sm" style={{ justifyContent: 'flex-start', width: 'fit-content' }}>
                   <Download size={13} /> {file.file_name}
-                </a>
+                  {file.expires_at && <span style={{ color: '#5f6368', fontSize: '0.75rem' }}>({file.expires_at} 만료)</span>}
+                </button>
               ))}
               <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
-                {attachments.filter(file => file.file_type?.startsWith('image/')).map(file => (
+                {attachments.filter(file => file.file_data && file.file_type?.startsWith('image/')).map(file => (
                   <img key={file.id + '-preview'} src={file.file_data} alt={file.file_name} style={{ maxWidth: '100%', borderRadius: 6, border: '1px solid #e0e0e0' }} />
                 ))}
               </div>
@@ -507,9 +661,9 @@ export default function AdminNotes() {
     <div className="page">
       <div className="page-header">
         <h2><StickyNote size={20} style={{ marginRight: 6, verticalAlign: 'middle' }} />사내 커뮤니티</h2>
-        {activeCategory !== 'cooperation' && (
+        {activeCategory !== 'cooperation' && !(activeCategory === 'community' && communitySection === 'article_news') && !(activeCategory === 'community' && communitySection === 'briefing_schedule' && !canCreateBriefingSchedule) && (
           <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); if (showForm) resetForm(); }}>
-            {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> 새 게시글</>}
+            {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> {activeCategory === 'community' && communitySection === 'briefing_schedule' ? '브리핑자료 일정 등록' : '새 게시글'}</>}
           </button>
         )}
       </div>
@@ -521,6 +675,7 @@ export default function AdminNotes() {
             className={`btn btn-sm ${activeCategory === key ? 'btn-primary' : ''}`}
             onClick={() => {
               setActiveCategory(key);
+              setCommunitySection('posts');
               setDetail(null);
               resetForm();
               setSearchParams(key === 'community' ? {} : key === 'legal_support' ? { tab: key, section: activeLegalSubcategory } : { tab: key });
@@ -534,6 +689,50 @@ export default function AdminNotes() {
       {activeCategory === 'cooperation' && <Cooperation embedded />}
 
       {activeCategory !== 'cooperation' && <>
+      {activeCategory === 'community' && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          <button
+            className={`btn btn-sm ${communitySection === 'posts' ? 'btn-primary' : ''}`}
+            onClick={() => {
+              setCommunitySection('posts');
+              setDetail(null);
+              resetForm();
+              setSearchParams({});
+            }}
+          >
+            커뮤니티 게시글
+          </button>
+          <button
+            className={`btn btn-sm ${communitySection === 'article_news' ? 'btn-primary' : ''}`}
+            onClick={() => {
+              setCommunitySection('article_news');
+              setDetail(null);
+              resetForm();
+              setSearchParams({ section: 'article_news' });
+            }}
+          >
+            <Newspaper size={14} /> 오늘의 뉴스
+          </button>
+          {canCreateBriefingSchedule && (
+            <button
+              className={`btn btn-sm ${communitySection === 'briefing_schedule' ? 'btn-primary' : ''}`}
+              onClick={() => {
+                setCommunitySection('briefing_schedule');
+                setDetail(null);
+                resetForm();
+                setSearchParams({ section: 'briefing_schedule' });
+              }}
+            >
+              <CalendarDays size={14} /> 브리핑자료 일정 등록
+            </button>
+          )}
+          {communitySection === 'article_news' && (
+            <div style={{ flexBasis: '100%', color: '#5f6368', fontSize: '0.82rem', padding: '2px 0 0 2px' }}>
+              매일 오전 08:00 업로드 됩니다.
+            </div>
+          )}
+        </div>
+      )}
       {activeCategory === 'legal_support' && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
           {LEGAL_SUBCATEGORIES.map(item => (
@@ -561,7 +760,7 @@ export default function AdminNotes() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
-              placeholder={activeCategory === 'eviction_quote' ? '법원, 사건번호, 내용 검색...' : activeCategory === 'legal_support' ? '궁금한 법률 내용을 검색하세요' : '제목, 내용, 작성자 검색...'}
+              placeholder={activeCategory === 'eviction_quote' ? '법원, 사건번호, 내용 검색...' : activeCategory === 'legal_support' ? '궁금한 법률 내용을 검색하세요' : communitySection === 'briefing_schedule' ? '담당자, 사건번호, 계약자명 검색...' : communitySection === 'article_news' ? '뉴스 제목, 내용 검색...' : '제목, 내용, 작성자 검색...'}
               style={{ flex: 1, border: 'none', outline: 'none', padding: activeCategory === 'legal_support' ? '12px 18px' : '8px 12px', fontSize: activeCategory === 'legal_support' ? 15 : 13 }}
             />
             <button onClick={load} aria-label="검색" style={{ width: activeCategory === 'legal_support' ? 66 : 44, alignSelf: 'stretch', border: 'none', background: activeCategory === 'legal_support' ? 'var(--primary)' : '#f8f9fa', color: activeCategory === 'legal_support' ? '#fff' : '#5f6368', display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
@@ -573,9 +772,96 @@ export default function AdminNotes() {
       {showForm && (
         <div className="card" style={{ marginBottom: 20, padding: 20 }}>
           <h3 style={{ margin: '0 0 12px', fontSize: '0.95rem' }}>
-            {editingId ? '게시글 수정' : activeCategory === 'eviction_quote' ? '명도 견적 의뢰' : activeCategory === 'legal_support' ? `${getLegalSubcategoryLabel(formLegalSubcategory)} 작성` : '새 게시글 작성'}
+            {editingId ? '게시글 수정' : activeCategory === 'eviction_quote' ? '명도 견적 의뢰' : activeCategory === 'legal_support' ? `${getLegalSubcategoryLabel(formLegalSubcategory)} 작성` : activeCategory === 'community' && communitySection === 'briefing_schedule' ? '브리핑자료 일정 등록' : '새 게시글 작성'}
           </h3>
-          {activeCategory === 'eviction_quote' ? (
+          {activeCategory === 'community' && communitySection === 'briefing_schedule' ? (
+            <div style={{ display: 'grid', gap: 12, marginBottom: 12 }}>
+              {!canCreateBriefingSchedule && (
+                <div className="empty-state" style={{ padding: 16 }}>관리자 이상급 및 cc참조자만 등록할 수 있습니다.</div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>일정일 *</label>
+                  <input className="form-input" type="date" value={formTargetDate} onChange={(e) => setFormTargetDate(e.target.value)} />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>담당자 *</label>
+                  <Select
+                    options={assigneeOptions}
+                    value={assigneeOptions.find(o => o.value === formAssigneeId) || null}
+                    onChange={(o: any) => setFormAssigneeId(o?.value || '')}
+                    placeholder="담당자 검색"
+                    isSearchable
+                  />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(310px, 1.2fr) minmax(140px, 1fr)', gap: 10, alignItems: 'end' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>사건번호 *</label>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'nowrap' }}>
+                    <select className="form-input" value={formCaseYear} onChange={(e) => setFormCaseYear(e.target.value)} style={{ width: 88 }}>
+                      {YEARS.map(year => <option key={year} value={year}>{year}</option>)}
+                    </select>
+                    <span style={{ whiteSpace: 'nowrap' }}>타경</span>
+                    <input
+                      className="form-input"
+                      list="briefing-case-history"
+                      value={formBriefingCaseNo}
+                      onChange={(e) => {
+                        const next = e.target.value.replace(/[^0-9]/g, '');
+                        setFormBriefingCaseNo(next);
+                        if (autofillMatch && next === autofillCaseDigits) applyBriefingAutofill(autofillMatch);
+                      }}
+                      placeholder="1234"
+                      maxLength={6}
+                      style={{ width: 86, minWidth: 86 }}
+                    />
+                    <span style={{ marginLeft: 6, whiteSpace: 'nowrap', fontSize: '0.78rem', color: '#5f6368' }}>물건번호</span>
+                    <input
+                      className="form-input"
+                      value={formItemNo}
+                      onChange={(e) => setFormItemNo(e.target.value.replace(/[^0-9]/g, ''))}
+                      maxLength={3}
+                      style={{ width: 42, minWidth: 42, padding: '6px 4px', textAlign: 'center' }}
+                    />
+                  </div>
+                  {autofillMatch && autofillCaseDigits && (
+                    <datalist id="briefing-case-history">
+                      <option value={autofillCaseDigits}>{autofillLabel}</option>
+                    </datalist>
+                  )}
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>계약자명 *</label>
+                  <input
+                    className="form-input"
+                    list="briefing-client-history"
+                    value={formClientName}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setFormClientName(next);
+                      if (autofillMatch && next === autofillMatch.client_name) applyBriefingAutofill(autofillMatch);
+                    }}
+                    placeholder="계약자명"
+                  />
+                  {autofillMatch && autofillMatch.client_name && (
+                    <datalist id="briefing-client-history">
+                      <option value={autofillMatch.client_name}>{autofillLabel}</option>
+                    </datalist>
+                  )}
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) auto', gap: 10, alignItems: 'end' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>법원 *</label>
+                  <select className="form-input" value={formCourt} onChange={(e) => setFormCourt(e.target.value)} style={{ width: '100%' }}>
+                    {COURTS.map(court => <option key={court} value={court}>{court}</option>)}
+                  </select>
+                </div>
+              </div>
+              {autofillHint && <div style={{ fontSize: '0.78rem', color: autofillHint.includes('없습니다') ? '#5f6368' : '#188038' }}>{autofillHint}</div>}
+            </div>
+          ) : activeCategory === 'eviction_quote' ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 12 }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>법원 *</label>
@@ -604,6 +890,7 @@ export default function AdminNotes() {
               </div>
             </>
           )}
+          {!(activeCategory === 'community' && communitySection === 'briefing_schedule') && (
           <div className="form-group" style={{ marginBottom: 12 }}>
             <label>{activeCategory === 'legal_support' && formLegalSubcategory === 'consultation' ? '질문 내용 *' : '내용 *'}</label>
             <textarea className="form-input" value={formContent} onChange={(e) => setFormContent(e.target.value)}
@@ -611,6 +898,7 @@ export default function AdminNotes() {
               placeholder={activeCategory === 'eviction_quote' ? '현장 상황, 점유자 정보, 특이사항 등을 입력하세요.' : activeCategory === 'legal_support' && formLegalSubcategory === 'consultation' ? '질문 내용을 입력하세요. 이미지는 붙여넣기로 추가할 수 있습니다.' : activeCategory === 'legal_support' ? '법령명, 조문, 실무 메모를 입력하세요.' : '게시글 내용을 입력하세요...'}
               rows={6} style={{ width: '100%', resize: 'vertical' }} />
           </div>
+          )}
           {activeCategory === 'legal_support' && (
             <div style={{ marginBottom: 12 }}>
               <label className="btn btn-sm" style={{ width: 'fit-content' }}>
@@ -631,7 +919,7 @@ export default function AdminNotes() {
           )}
           {!editingId && (
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-              {activeCategory === 'community' && (
+              {activeCategory === 'community' && communitySection !== 'briefing_schedule' && (
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label style={{ fontSize: '0.8rem', marginBottom: 4, display: 'block' }}>공유 범위</label>
                   <select className="form-input" value={formVisibility} onChange={(e) => setFormVisibility(e.target.value)}
@@ -640,23 +928,17 @@ export default function AdminNotes() {
                   </select>
                 </div>
               )}
-              {(activeCategory === 'community' || activeCategory === 'legal_support') && (
+              {((activeCategory === 'community' && communitySection !== 'briefing_schedule') || activeCategory === 'legal_support') && (
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.82rem', marginTop: activeCategory === 'community' ? 18 : 0 }}>
                   <input type="checkbox" checked={formAnonymous} onChange={(e) => setFormAnonymous(e.target.checked)} />
                   <EyeOff size={13} /> 익명으로 작성
-                </label>
-              )}
-              {user?.role === 'master' && (
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.82rem', marginTop: 18 }}>
-                  <input type="checkbox" checked={formPinned} onChange={(e) => setFormPinned(e.target.checked)} />
-                  <Pin size={13} /> 상단 고정
                 </label>
               )}
             </div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-primary" onClick={handleCreate} disabled={submitting}>
-              {submitting ? '저장 중...' : editingId ? '수정' : '등록'}
+              {submitting ? '저장 중...' : editingId ? '수정' : activeCategory === 'community' && communitySection === 'briefing_schedule' ? '일정 등록' : '등록'}
             </button>
             <button className="btn" onClick={resetForm}>취소</button>
           </div>
@@ -675,15 +957,19 @@ export default function AdminNotes() {
                 <div className="admin-notes-card-title">
                   {note.pinned ? <Pin size={13} className="pin-icon" /> : null}
                   {note.source_type === 'minutes' && <BookOpen size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
+                  {note.category === 'article_news' && <Newspaper size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
                   {note.category === 'eviction_quote' && <Gavel size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
                   {note.category === 'legal_support' && <Scale size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
+                  {note.category === 'briefing_schedule' && <CalendarDays size={13} style={{ color: '#0d47a1', flexShrink: 0 }} />}
                   {note.is_anonymous ? <EyeOff size={12} style={{ color: '#9aa0a6', flexShrink: 0 }} /> : null}
                   {note.title}
                 </div>
-                {note.category === 'eviction_quote' && (
+                {(note.category === 'eviction_quote' || note.category === 'briefing_schedule') && (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '4px 0 6px' }}>
+                    {note.category === 'briefing_schedule' && <span className="admin-note-visibility-badge">{note.target_date || '-'}</span>}
                     <span className="admin-note-visibility-badge">{note.court || '-'}</span>
                     <span className="admin-note-visibility-badge">{note.case_number || '-'}</span>
+                    {note.client_name && <span className="admin-note-visibility-badge">{note.client_name}</span>}
                   </div>
                 )}
                 {note.category === 'legal_support' && (

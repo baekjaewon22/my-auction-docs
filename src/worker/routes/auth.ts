@@ -73,6 +73,23 @@ auth.post('/login', async (c) => {
 // GET /api/auth/me
 auth.get('/me', authMiddleware, async (c) => {
   const payload = c.get('user');
+  if (payload.auth_type === 'service_token') {
+    return c.json({
+      user: {
+        id: payload.sub,
+        email: payload.email,
+        name: payload.name,
+        role: payload.role,
+        team_id: payload.team_id,
+        branch: payload.branch,
+        department: payload.department,
+        auth_type: payload.auth_type,
+        service_token_id: payload.service_token_id,
+        service_token_scope: payload.service_token_scope,
+      },
+    });
+  }
+
   const db = c.env.DB;
   const user = await db.prepare(
     'SELECT id, email, name, phone, role, team_id, branch, department, position_title, saved_signature, login_type, created_at FROM users WHERE id = ?'

@@ -70,7 +70,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
   } else if (docStatus !== 'draft') {
     // 결재선 없는 레거시 문서: 기존 고정 슬롯 표시
     const isApprover = (docStatus === 'submitted' || docStatus === 'approved') &&
-      ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(currentUserRole || '');
+      ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(currentUserRole || '');
     const alreadyApproved = signatures.find(s => s.user_id === currentUserId && signatures.indexOf(s) >= 1);
 
     slots.push({

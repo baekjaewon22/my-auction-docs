@@ -7,11 +7,20 @@ CREATE TABLE IF NOT EXISTS alimtalk_logs (
   content TEXT NOT NULL,
   request_id TEXT,
   message_id TEXT,
+  request_status_code TEXT,
+  request_status_name TEXT,
+  request_status_desc TEXT,
+  message_status_code TEXT,
+  message_status_name TEXT,
+  message_status_desc TEXT,
+  complete_time TEXT,
+  delivery_checked_at TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   error_message TEXT,
   related_type TEXT,
   related_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT,
   FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
@@ -40,5 +49,8 @@ CREATE TABLE IF NOT EXISTS signup_verifications (
 
 CREATE INDEX IF NOT EXISTS idx_alimtalk_logs_template ON alimtalk_logs(template_code);
 CREATE INDEX IF NOT EXISTS idx_alimtalk_logs_related ON alimtalk_logs(related_type, related_id);
+CREATE INDEX IF NOT EXISTS idx_alimtalk_logs_message_id ON alimtalk_logs(message_id);
+CREATE INDEX IF NOT EXISTS idx_alimtalk_logs_status ON alimtalk_logs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_alimtalk_logs_dedupe ON alimtalk_logs(template_code, related_type, related_id, recipient_phone);
 CREATE INDEX IF NOT EXISTS idx_alimtalk_recipients_category ON alimtalk_recipients(category);
 CREATE INDEX IF NOT EXISTS idx_signup_verifications_phone ON signup_verifications(phone);

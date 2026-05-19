@@ -1,0 +1,4 @@
+/*
+  ! X-Frame-Options
+  Content-Security-Policy: frame-ancestors 'self' http://127.0.0.1:5173 http://127.0.0.1:5174;
+  Cross-Origin-Opener-Policy: same-origin-allow-popups

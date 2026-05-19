@@ -135,6 +135,90 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
 // 관리자: 팀장/팀원 삭제 가능
 // 대표: 관리자 이하 삭제 가능
 // 마스터: 전부 삭제 가능 (본인 제외)
+// PUT /api/users/:id/convert-to-employee - freelancer login/accounting conversion
+users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant'), async (c) => {
+  const id = c.req.param('id');
+  const currentUser = c.get('user');
+  const db = c.env.DB;
+  const { salary, grade, position_allowance } = await c.req.json<{
+    salary?: number;
+    grade?: string;
+    position_allowance?: number;
+  }>();
+
+  const target = await db.prepare('SELECT * FROM users WHERE id = ? AND approved = 1').bind(id).first<any>();
+  if (!target) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
+  if ((target.login_type || 'employee') !== 'freelancer') {
+    return c.json({ error: '프리랜서 계정만 정규직으로 전환할 수 있습니다.' }, 400);
+  }
+  if (target.role === 'master' && currentUser.role !== 'master') {
+    return c.json({ error: '마스터 계정은 마스터만 변경할 수 있습니다.' }, 403);
+  }
+  if (target.role === 'resigned') {
+    return c.json({ error: '퇴사자는 정규직 전환할 수 없습니다.' }, 400);
+  }
+
+  const rawSalary = Number(salary);
+  const rawAllowance = position_allowance === undefined ? 0 : Number(position_allowance);
+  const nextSalary = Math.trunc(rawSalary);
+  const nextAllowance = Math.trunc(rawAllowance);
+  const nextGrade = String(grade || '').trim();
+  if (!Number.isFinite(rawSalary) || nextSalary <= 0) {
+    return c.json({ error: '정규직 전환에는 0보다 큰 급여가 필요합니다.' }, 400);
+  }
+  if (!Number.isFinite(rawAllowance) || nextAllowance < 0) {
+    return c.json({ error: '직책수당은 0 이상 숫자로 입력해주세요.' }, 400);
+  }
+  if (!['', 'M1', 'M2', 'M3', 'M4'].includes(nextGrade)) {
+    return c.json({ error: '유효하지 않은 직급입니다.' }, 400);
+  }
+
+  const existingAccounting = await db.prepare('SELECT id FROM user_accounting WHERE user_id = ?').bind(id).first<any>();
+  const standardSales = Math.round(nextSalary * 1.3 * 4);
+  const statements = [
+    db.prepare("UPDATE users SET login_type = 'employee', updated_at = datetime('now') WHERE id = ?").bind(id),
+  ];
+
+  if (existingAccounting) {
+    statements.push(db.prepare(`
+      UPDATE user_accounting
+      SET salary = ?,
+          standard_sales = ?,
+          grade = ?,
+          position_allowance = ?,
+          pay_type = 'salary',
+          commission_rate = 0,
+          ssn = '',
+          address = '',
+          updated_at = datetime('now')
+      WHERE user_id = ?
+    `).bind(nextSalary, standardSales, nextGrade, nextAllowance, id));
+  } else {
+    statements.push(db.prepare(`
+      INSERT INTO user_accounting (id, user_id, salary, standard_sales, grade, position_allowance, pay_type, commission_rate, ssn, address)
+      VALUES (?, ?, ?, ?, ?, ?, 'salary', 0, '', '')
+    `).bind(crypto.randomUUID(), id, nextSalary, standardSales, nextGrade, nextAllowance));
+  }
+
+  await db.batch(statements);
+
+  return c.json({
+    success: true,
+    user: { ...target, login_type: 'employee' },
+    account: {
+      user_id: id,
+      salary: nextSalary,
+      standard_sales: standardSales,
+      grade: nextGrade,
+      position_allowance: nextAllowance,
+      pay_type: 'salary',
+      commission_rate: 0,
+      ssn: '',
+      address: '',
+    },
+  });
+});
+
 users.delete('/:id', requireRole('master', 'ceo', 'admin'), async (c) => {
   const id = c.req.param('id');
   const currentUser = c.get('user');

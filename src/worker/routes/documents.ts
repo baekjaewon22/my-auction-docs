@@ -418,7 +418,7 @@ documents.post('/:id/submit', async (c) => {
 });
 
 // POST /api/documents/:id/approve (다단계 결재)
-documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 'accountant'), async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
@@ -635,7 +635,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'),
 });
 
 // POST /api/documents/:id/reject (결재선 기반 반려)
-documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager', 'accountant'), async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
   const { reason } = await c.req.json<{ reason?: string }>();
@@ -650,7 +650,7 @@ documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager'), 
     "SELECT * FROM approval_steps WHERE document_id = ? AND approver_id = ? AND status = 'pending'"
   ).bind(id, user.sub).first();
 
-  if (!myStep && !['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user.role)) {
+  if (!myStep && !['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user.role)) {
     return c.json({ error: '결재선에 포함되지 않았습니다.' }, 403);
   }
 
