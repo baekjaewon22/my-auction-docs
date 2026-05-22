@@ -60,6 +60,7 @@ auth.post('/login', async (c) => {
   const token = await createToken({
     sub: user.id, email: user.email, name: user.name, phone: user.phone,
     role: user.role, team_id: user.team_id, branch: user.branch, department: user.department,
+    login_type: userLoginType,
   });
 
   return c.json({

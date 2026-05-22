@@ -35,13 +35,21 @@ export default function ArchivePage() {
   // 외근 보고서에서 외근 일자 추출
   const extractOutingDate = (content: string): string | null => {
     if (!content) return null;
-    // "외근 일자 : 2026년 4월 3일" 또는 "외근 일자 : 2026 년 4 월 3일" 등 다양한 형태
-    const text = content.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
-    const m = text.match(/외근\s*일자\s*[:\s]*(\d{2,4})\s*년?\s*(\d{1,2})\s*월?\s*(\d{1,2})\s*일/);
-    if (m) {
+    const text = content
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const formatDate = (m: RegExpMatchArray) => {
       const year = m[1].length === 2 ? '20' + m[1] : m[1];
       return `${year}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
-    }
+    };
+    // 일반 외근보고서 자동채우기: "외근 일자 : 2026년 4월 3일"
+    const outdoorDate = text.match(/외근\s*일자\s*[:\s]*(\d{2,4})\s*[년.\-]?\s*(\d{1,2})\s*[월.\-]?\s*(\d{1,2})\s*일?/);
+    if (outdoorDate) return formatDate(outdoorDate);
+    // 일지 비작성 대상자 수동 작성: "일시: 2026년 5월 21일", "일시: 2026-05-21", "일시: 2026.05.21"
+    const manualDate = text.match(/일시\s*[:\s]*(\d{2,4})\s*[년.\-]?\s*(\d{1,2})\s*[월.\-]?\s*(\d{1,2})\s*일?/);
+    if (manualDate) return formatDate(manualDate);
     return null;
   };
 

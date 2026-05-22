@@ -228,9 +228,9 @@ export const api = {
     update: (userId: string, data: { total_days?: number; used_days?: number; monthly_days?: number; monthly_used?: number; leave_type?: string }) =>
       request('/leave/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
     // 휴가 신청
-    createRequest: (data: { leave_type: string; start_date: string; end_date: string; hours?: number; reason: string }) =>
+    createRequest: (data: { leave_type: string; start_date: string; end_date: string; hours?: number; reason: string; user_id?: string }) =>
       request('/leave/request', { method: 'POST', body: JSON.stringify(data) }),
-    listRequests: (params?: { status?: string; month?: string }) =>
+    listRequests: (params?: { status?: string; month?: string; user_id?: string }) =>
       request<{ requests: any[] }>('/leave/requests' + (params ? '?' + new URLSearchParams(params as any).toString() : '')),
     approveRequest: (id: string) =>
       request('/leave/requests/' + id + '/approve', { method: 'POST' }),
@@ -327,7 +327,7 @@ export const api = {
       }
       return res.blob();
     },
-    create: (data: { title?: string; content?: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; legal_subcategory?: string; attachments?: any[]; assignee_id?: string; target_date?: string; item_no?: string; client_name?: string }) =>
+    create: (data: { title?: string; content?: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; legal_subcategory?: string; lawsuit_cost_requested?: boolean; attachments?: any[]; assignee_id?: string; target_date?: string; item_no?: string; client_name?: string }) =>
       request<{ success: boolean; id: string }>('/admin-notes', { method: 'POST', body: JSON.stringify(data) }),
     briefingAutofill: (params: { assignee_id: string; client_name?: string; case_number?: string }) => {
       const q = new URLSearchParams();
@@ -336,13 +336,51 @@ export const api = {
     },
     myAlerts: () =>
       request<{ alerts: Array<{ type: string; priority: number; label: string; note_id?: string; title: string; message: string; comment_count?: number; link: string; created_at: string }> }>('/admin-notes/my-alerts'),
-    update: (id: string, data: { title?: string; content?: string; pinned?: boolean }) =>
+    update: (id: string, data: { title?: string; content?: string; pinned?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean }) =>
       request('/admin-notes/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request('/admin-notes/' + id, { method: 'DELETE' }),
     addComment: (noteId: string, content: string, is_anonymous?: boolean) =>
       request('/admin-notes/' + noteId + '/comments', { method: 'POST', body: JSON.stringify({ content, is_anonymous }) }),
     deleteComment: (commentId: string) =>
       request('/admin-notes/comments/' + commentId, { method: 'DELETE' }),
+    bidAnalysisList: (params: { from?: string; to?: string; branch?: string; assignee?: string; page?: number; page_size?: number } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
+      return request<{
+        rows: Array<{
+          id: string; bid_datetime: string; assignee_name: string; branch_name?: string; case_number: string; property_type: string;
+          suggested_bid_price: number | null; actual_bid_price: number | null; winning_price: number | null;
+          is_won: number; bid_result?: '실패' | '낙찰' | '취소'; client_name: string; source_type?: string; manual_override?: number; created_at: string;
+        }>;
+        total: number; page: number; page_size: number; filters?: { branches: string[]; assignees: string[] };
+      }>('/admin-notes/bid-analysis' + (q.toString() ? '?' + q.toString() : ''));
+    },
+    bidAnalysisStats: (params: { from?: string; to?: string } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
+      return request<{
+        rows: Array<{
+          id: string; bid_datetime: string; assignee_name: string; branch_name?: string; case_number: string; property_type: string;
+          suggested_bid_price: number | null; actual_bid_price: number | null; winning_price: number | null;
+          is_won: number; bid_result?: '실패' | '낙찰' | '취소'; client_name: string; source_type?: string; manual_override?: number; created_at: string;
+        }>;
+      }>('/admin-notes/bid-analysis/stats' + (q.toString() ? '?' + q.toString() : ''));
+    },
+    bidAnalysisCreate: (data: Record<string, unknown>) =>
+      request<{ success: boolean; id: string }>('/admin-notes/bid-analysis', { method: 'POST', body: JSON.stringify(data) }),
+    bidAnalysisUpdate: (id: string, data: Record<string, unknown>) =>
+      request<{ success: boolean }>('/admin-notes/bid-analysis/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    bidAnalysisUpload: (rows: any[], source_file_name?: string) =>
+      request<{ success: boolean; inserted: number; batch_id: string }>('/admin-notes/bid-analysis/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ rows, source_file_name }),
+      }),
+    bidMatchCheck: () =>
+      request<{
+        briefing_unmatched: any[];
+        analysis_unmatched: any[];
+        counts: { briefing_total: number; analysis_total: number; briefing_unmatched: number; analysis_unmatched: number };
+      }>('/admin-notes/bid-match-check'),
   },
 
   commissions: {
@@ -762,6 +800,22 @@ export const api = {
     },
     duplicateInspections: (all?: boolean) =>
       request<{ duplicates: { case_no: string; court: string; branch: string; user_names: string; user_count: number; first_date: string; last_date: string }[] }>('/journal/duplicate-inspections' + (all ? '?all=true' : '')),
+  },
+
+  freelancerBids: {
+    list: () =>
+      request<{ rows: Array<{
+        id: string; bid_date: string; court: string; case_number: string; item_no: string;
+        client_name: string; bidder_name: string; property_type: string;
+        suggested_price: number | null; actual_bid_price: number | null; winning_price: number | null;
+        bid_result: '실패' | '낙찰' | '취소'; deviation_reason: string; created_at: string; updated_at: string;
+      }> }>('/freelancer-bids'),
+    create: (data: Record<string, unknown>) =>
+      request<{ success: boolean; id: string }>('/freelancer-bids', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Record<string, unknown>) =>
+      request<{ success: boolean }>('/freelancer-bids/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      request<{ success: boolean }>('/freelancer-bids/' + id, { method: 'DELETE' }),
   },
 
   alimtalk: {

@@ -29,6 +29,7 @@ import linksRoute from './routes/links';
 import approvalAlertsRoute from './routes/approval-alerts';
 import journalAlertsRoute from './routes/journal-alerts';
 import serviceTokensRoute from './routes/service-tokens';
+import freelancerBidsRoute from './routes/freelancer-bids';
 import { jwtVerify } from 'jose';
 import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
@@ -101,6 +102,7 @@ app.route('/api/links', linksRoute);
 app.route('/api/approval-alerts', approvalAlertsRoute);
 app.route('/api/journal-alerts', journalAlertsRoute);
 app.route('/api/service-tokens', serviceTokensRoute);
+app.route('/api/freelancer-bids', freelancerBidsRoute);
 
 // OAuth 콜백 — Google이 /oauth/drive/callback 으로 redirect (최상위 경로)
 app.get('/oauth/drive/callback', async (c) => {

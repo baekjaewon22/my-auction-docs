@@ -31,6 +31,7 @@ import RoomReservation from './pages/RoomReservation';
 import ContractTracker from './pages/ContractTracker';
 import LinkReview from './pages/LinkReview';
 import Print from './pages/Print';
+import FreelancerBidHistory from './pages/FreelancerBidHistory';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -57,10 +58,26 @@ function TopRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function BidHistoryRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  if (!user || (user as any).login_type === 'freelancer' || !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
 function ApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function FreelancerRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  if (!user || (user as any).login_type !== 'freelancer') {
+    return <Navigate to="/dashboard" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -123,6 +140,13 @@ function CooperationRedirect() {
   return <Navigate to={`/admin-notes?${query.toString()}`} replace />;
 }
 
+function BidHistoryRedirect() {
+  const location = useLocation();
+  const query = new URLSearchParams(location.search);
+  query.set('section', 'briefing_schedule');
+  return <Navigate to={`/bid-history?${query.toString()}`} replace />;
+}
+
 function FinanceAnalyticsRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   // 회계분석은 cc_ref·총무보조 제외
@@ -173,6 +197,22 @@ export default function App() {
           />
           <Route path="cases" element={<Cases />} />
           <Route path="profile" element={<Profile />} />
+          <Route
+            path="freelancer-bids"
+            element={
+              <FreelancerRoute>
+                <FreelancerBidHistory />
+              </FreelancerRoute>
+            }
+          />
+          <Route
+            path="bid-history"
+            element={
+              <BidHistoryRoute>
+                <AdminNotes mode="bid_history" />
+              </BidHistoryRoute>
+            }
+          />
           <Route
             path="templates/:id"
             element={
@@ -272,6 +312,7 @@ export default function App() {
               </PrivateRoute>
             }
           />
+          <Route path="bid-schedule" element={<BidHistoryRoute><BidHistoryRedirect /></BidHistoryRoute>} />
           <Route
             path="rooms"
             element={

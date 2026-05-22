@@ -6,9 +6,14 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { ensureBidAnalysisTable } from '../lib/bid-analysis';
 
 const comprehensive = new Hono<AuthEnv>();
 comprehensive.use('*', authMiddleware);
+
+const HOLIDAYS = new Set([
+  '2026-05-25',
+]);
 
 // 백필/수동 갱신 엔드포인트 (master·ceo·accountant만)
 comprehensive.post('/backfill', requireRole('master', 'ceo', 'accountant'), async (c) => {
@@ -252,6 +257,36 @@ comprehensive.get('/', async (c) => {
     activityMap[r.user_id][r.activity_type] = r.cnt;
   });
 
+  // 입찰은 일지뿐 아니라 엑셀/프리랜서/수기 보정까지 포함된 입찰분석 테이블을 평가 원천으로 사용한다.
+  await ensureBidAnalysisTable(db);
+  const bidRows = await db.prepare(`
+    SELECT bid_datetime, assignee_name, branch_name, suggested_bid_price, actual_bid_price, bid_result
+    FROM bid_analysis_entries
+    WHERE substr(bid_datetime, 1, 10) BETWEEN ? AND ?
+  `).bind(periodStart, periodEnd).all<any>();
+  const memberByBranchName = new Map<string, any>();
+  const memberByName = new Map<string, any>();
+  members.forEach((m: any) => {
+    if (!m.name) return;
+    memberByName.set(String(m.name).trim(), m);
+    memberByBranchName.set(`${m.branch || ''}|${String(m.name).trim()}`, m);
+    if (!activityMap[m.id]) activityMap[m.id] = {};
+    activityMap[m.id]['입찰'] = 0;
+  });
+  const winMap: Record<string, number> = {};
+  const deviationMap: Record<string, number> = {};
+  (bidRows.results || []).forEach((row: any) => {
+    const member = memberByBranchName.get(`${row.branch_name || ''}|${row.assignee_name || ''}`) || memberByName.get(row.assignee_name || '');
+    if (!member) return;
+    activityMap[member.id]['입찰'] = (activityMap[member.id]['입찰'] || 0) + 1;
+    if (row.bid_result === '낙찰') winMap[member.id] = (winMap[member.id] || 0) + 1;
+    const suggested = Number(row.suggested_bid_price || 0);
+    const actual = Number(row.actual_bid_price || 0);
+    if (suggested > 0 && actual > 0 && (suggested - actual) / suggested >= 0.05) {
+      deviationMap[member.id] = (deviationMap[member.id] || 0) + 1;
+    }
+  });
+
   // 3. 매출 (기간 내)
   const salesRes = await db.prepare(`
     SELECT user_id, status,
@@ -341,27 +376,7 @@ comprehensive.get('/', async (c) => {
     if (!evalMap[r.user_id]) evalMap[r.user_id] = r; // 최신만
   });
 
-  // 6. 5% 편차 입찰 수 (이상지표) + 낙찰 수 (입찰→낙찰 전환율 계산)
-  const deviationRes = await db.prepare(`
-    SELECT user_id, COUNT(*) as cnt
-    FROM journal_entries
-    WHERE activity_type = '입찰' AND target_date BETWEEN ? AND ?
-      AND data LIKE '%deviationReason%'
-    GROUP BY user_id
-  `).bind(periodStart, periodEnd).all<any>();
-  const deviationMap: Record<string, number> = {};
-  (deviationRes.results || []).forEach((r: any) => { deviationMap[r.user_id] = r.cnt; });
-
-  // 낙찰(bidWon=true) 카운트
-  const winRes = await db.prepare(`
-    SELECT user_id, COUNT(*) as cnt
-    FROM journal_entries
-    WHERE activity_type = '입찰' AND target_date BETWEEN ? AND ?
-      AND (data LIKE '%"bidWon":true%' OR data LIKE '%"bidWon":1%')
-    GROUP BY user_id
-  `).bind(periodStart, periodEnd).all<any>();
-  const winMap: Record<string, number> = {};
-  (winRes.results || []).forEach((r: any) => { winMap[r.user_id] = r.cnt; });
+  // 6. 5% 편차 입찰 수 + 낙찰 수는 위 입찰분석 테이블 기준으로 계산한다.
 
   // 7. 전 지사 비율제(commission) 평균 매출 — analytics_snapshots 캐시 lookup, 없으면 실시간 fallback
   const queryYM = month || curYM;
@@ -396,7 +411,7 @@ comprehensive.get('/', async (c) => {
 
   // ─── 멤버별 데이터 합성 ───
   const result = members.map((m: any) => {
-    const isFreelancer = m.pay_type === 'commission' || m.role === 'freelancer';
+    const isFreelancer = m.pay_type === 'commission' || m.role === 'freelancer' || m.login_type === 'freelancer';
     const myActivity = activityMap[m.id] || {};
     const activityCount = Object.values(myActivity).reduce((a, b) => a + b, 0);
     const bidCount = myActivity['입찰'] || 0;
@@ -497,8 +512,8 @@ comprehensive.get('/', async (c) => {
       org_activity_avg: Math.round(orgActivityAvg * 10) / 10,
       freelancer_avg_sales: Math.round(freelancerAvgSales),
       member_count: members.length,
-      full_time_count: members.filter((m) => m.pay_type !== 'commission' && m.role !== 'freelancer').length,
-      freelancer_count: members.filter((m) => m.pay_type === 'commission' || m.role === 'freelancer').length,
+      full_time_count: members.filter((m) => m.pay_type !== 'commission' && m.role !== 'freelancer' && m.login_type !== 'freelancer').length,
+      freelancer_count: members.filter((m) => m.pay_type === 'commission' || m.role === 'freelancer' || m.login_type === 'freelancer').length,
     },
     metadata: { period_start: periodStart, period_end: periodEnd },
   });
@@ -511,7 +526,8 @@ function countWeekdays(start: string, end: string): number {
   const cur = new Date(s);
   while (cur <= e) {
     const day = cur.getDay();
-    if (day !== 0 && day !== 6) count++;
+    const dateStr = cur.toISOString().slice(0, 10);
+    if (day !== 0 && day !== 6 && !HOLIDAYS.has(dateStr)) count++;
     cur.setDate(cur.getDate() + 1);
   }
   return count;

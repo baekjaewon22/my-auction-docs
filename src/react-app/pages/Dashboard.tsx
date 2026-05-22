@@ -4,7 +4,7 @@ import { useAuthStore } from '../store';
 import { api } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 
@@ -114,8 +114,9 @@ export default function Dashboard() {
   const [pendingSalesBranch, setPendingSalesBranch] = useState('');
   const [accountantLeaves, setAccountantLeaves] = useState<any[]>([]);
   const [coopAlerts, setCoopAlerts] = useState<any[]>([]);
-  const [myAlerts, setMyAlerts] = useState<any[]>([]);
+  const [noticeItems, setNoticeItems] = useState<any[]>([]);
   const [todayNews, setTodayNews] = useState<any[]>([]);
+  const [legalFacts, setLegalFacts] = useState<any[]>([]);
   const [driveStatus, setDriveStatus] = useState<{ last_backup_at: string | null; pending_count: number; connected: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '');
@@ -282,8 +283,9 @@ export default function Dashboard() {
           coopRes,
           dupRes,
           alimtalkRes,
+          noticeRes,
           newsRes,
-          myAlertsRes,
+          legalFactsRes,
         ] = await Promise.all([
           needSalesList ? api.sales.list({}).catch(() => null) : Promise.resolve(null),
           submittedDocsForSteps.length > 0
@@ -304,8 +306,9 @@ export default function Dashboard() {
           (canSeeAccountingAlerts && ['accountant', 'accountant_asst'].includes(user?.role || '') && user?.id)
             ? api.users.getAlimtalkSettings(user.id).catch(() => null)
             : Promise.resolve(null),
+          api.adminNotes.list({ category: 'notice' }).catch(() => null),
           api.adminNotes.list({ category: 'article_news' }).catch(() => null),
-          api.adminNotes.myAlerts().catch(() => null),
+          api.adminNotes.list({ category: 'legal_support', legal_subcategory: 'legal_terms' }).catch(() => null),
         ]);
 
         // ─── 결과 처리 ───
@@ -407,6 +410,14 @@ export default function Dashboard() {
           setDupInspections((dupRes.duplicates || []).filter((d: any) => !localDismissed.has(`dup_${d.case_no}_${d.court}_${d.branch || ''}`)));
         }
 
+        if (noticeRes) {
+          const latestNotices = (noticeRes.notes || [])
+            .slice()
+            .sort((a: any, b: any) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))
+            .slice(0, 1);
+          setNoticeItems(latestNotices);
+        }
+
         if (newsRes) {
           const latestNews = (newsRes.notes || [])
             .slice()
@@ -415,8 +426,8 @@ export default function Dashboard() {
           setTodayNews(latestNews);
         }
 
-        if (myAlertsRes) {
-          setMyAlerts(myAlertsRes.alerts || []);
+        if (legalFactsRes) {
+          setLegalFacts(legalFactsRes.notes || []);
         }
       })
       .finally(() => setLoading(false));
@@ -440,6 +451,31 @@ export default function Dashboard() {
 
   const newsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const newsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
+  const NoticePanel = () => {
+    const notice = noticeItems[0];
+    const preview = notice ? newsPreview(notice.content || '') : '';
+    return (
+      <section className="section dashboard-notice-section">
+        <div className="dashboard-notice-panel">
+          <div className="dashboard-today-news-header">
+            <span><Bell size={16} /> 공지사항</span>
+              <Link to="/admin-notes?section=notice" className="dashboard-today-news-more">전체보기</Link>
+          </div>
+          {!notice ? (
+            <div className="dashboard-today-news-empty">등록된 공지사항이 없습니다.</div>
+          ) : (
+            <Link to={`/admin-notes?section=notice&note=${notice.id}`} className="dashboard-notice-item">
+              <div className="dashboard-notice-line">
+                <strong>{notice.title}</strong>
+                {preview && <span>{preview.length > 90 ? preview.slice(0, 90) + '...' : preview}</span>}
+                <time>{newsDate(notice.updated_at || notice.created_at)}</time>
+              </div>
+            </Link>
+          )}
+        </div>
+      </section>
+    );
+  };
   const TodayNewsPanel = () => (
     <div className="dashboard-today-news-panel">
       <div className="dashboard-today-news-header">
@@ -450,7 +486,7 @@ export default function Dashboard() {
         <div className="dashboard-today-news-empty">업데이트된 뉴스가 없습니다.</div>
       ) : (
         <div className="dashboard-today-news-list">
-          {todayNews.map((note: any) => {
+          {todayNews.slice(0, 1).map((note: any) => {
             const preview = newsPreview(note.content || '');
             return (
               <Link key={note.id} to="/admin-notes?section=article_news" className="dashboard-today-news-item">
@@ -465,30 +501,38 @@ export default function Dashboard() {
     </div>
   );
   const ownMissingAlerts = alerts.filter((a) => a.userId === user?.id);
-  const alertDate = (value: string = '') => value ? value.slice(0, 16).replace('T', ' ') : '';
-  const topMyAlert = myAlerts[0] || null;
-  const MyAlertsPanel = () => (
+  const getTodayLegalFact = () => {
+    if (legalFacts.length === 0) return null;
+    const ordered = legalFacts
+      .slice()
+      .sort((a: any, b: any) => String(a.created_at || a.updated_at || '').localeCompare(String(b.created_at || b.updated_at || '')));
+    const kstDayIndex = Math.floor((Date.now() + 9 * 60 * 60 * 1000) / 86400000);
+    return ordered[Math.floor(kstDayIndex / 3) % ordered.length];
+  };
+  const todayLegalFact = getTodayLegalFact();
+  const LegalFactPanel = () => {
+    const preview = todayLegalFact ? newsPreview(todayLegalFact.content || '') : '';
+    return (
     <div className="dashboard-top-alert-panel dashboard-my-alert-panel">
       <div className="dashboard-today-news-header">
-        <span><Bell size={16} /> 내 알림</span>
-        <Link to="/admin-notes" className="dashboard-today-news-more">커뮤니티</Link>
+        <span><Scale size={16} /> 오늘의 한줄 법률상식</span>
+        <Link to="/admin-notes?tab=legal_support&section=legal_terms" className="dashboard-today-news-more">전체보기</Link>
       </div>
-      {!topMyAlert ? (
-        <div className="dashboard-today-news-empty">확인할 새 알림이 없습니다.</div>
+      {!todayLegalFact ? (
+        <div className="dashboard-today-news-empty">등록된 법률용어가 없습니다.</div>
       ) : (
-        <Link to={topMyAlert.link || '/admin-notes'} className={`dashboard-my-alert-item priority-${topMyAlert.priority || 4}`}>
+        <Link to={`/admin-notes?tab=legal_support&section=legal_terms&note=${todayLegalFact.id}`} className="dashboard-my-alert-item priority-3">
           <div className="dashboard-my-alert-row">
-            <span className="dashboard-my-alert-badge">{topMyAlert.label || '알림'}</span>
-            {topMyAlert.comment_count > 1 && <span className="dashboard-my-alert-count">{topMyAlert.comment_count}</span>}
-            {myAlerts.length > 1 && <span className="dashboard-my-alert-more-badge">+{myAlerts.length - 1}</span>}
+            <span className="dashboard-my-alert-badge">법률용어</span>
           </div>
-          <div className="dashboard-my-alert-title">{topMyAlert.title}</div>
-          <div className="dashboard-my-alert-message">{topMyAlert.message}</div>
-          <div className="dashboard-today-news-date">{alertDate(topMyAlert.created_at)}</div>
+          <div className="dashboard-my-alert-title">{todayLegalFact.title}</div>
+          {preview && <div className="dashboard-my-alert-message">{preview.length > 88 ? preview.slice(0, 88) + '...' : preview}</div>}
+          <div className="dashboard-today-news-date">클릭해서 자세히 보기</div>
         </Link>
       )}
     </div>
-  );
+    );
+  };
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -531,8 +575,10 @@ export default function Dashboard() {
         );
       })()}
 
+      <NoticePanel />
+
       <section className="section dashboard-news-row">
-        <MyAlertsPanel />
+        <LegalFactPanel />
         <TodayNewsPanel />
       </section>
 

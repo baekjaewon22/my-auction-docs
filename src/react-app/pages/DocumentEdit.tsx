@@ -18,6 +18,9 @@ import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
 import { FileDown, Printer } from 'lucide-react';
 
+const OUTDOOR_PLACEHOLDER_REGEX = /<p[^>]*class="outdoor-placeholder"[^>]*>[\s\S]*?<\/p>/;
+const MANUAL_OUTDOOR_FIELDS = '<p>일시:</p><p>장소:</p><p>내용:</p>';
+
 export default function DocumentEdit() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -164,20 +167,27 @@ export default function DocumentEdit() {
         navigate(`/property-report/${d.id}`, { replace: true });
         return;
       }
-      setDoc(d);
+      const rawContent = d.content === '{}' ? '' : d.content;
+      const canEdit =
+        ((d.status === 'draft' || d.status === 'rejected') && (d.author_id === user?.id || user?.role === 'master')) ||
+        (d.status === 'submitted' && ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || ''));
+      const content = d.template_id === 'tpl-work-007' && !isJournalUser
+        ? rawContent.replace(OUTDOOR_PLACEHOLDER_REGEX, MANUAL_OUTDOOR_FIELDS)
+        : rawContent;
+      setDoc({ ...d, content });
       setTitle(d.title);
       setLogs(logRes.logs);
       setSignatures(sigRes.signatures);
       setApprovalSteps(stepsRes.steps || []);
       if (editor) {
-        editor.commands.setContent(d.content === '{}' ? '' : d.content);
-        const canEdit =
-          ((d.status === 'draft' || d.status === 'rejected') && (d.author_id === user?.id || user?.role === 'master')) ||
-          (d.status === 'submitted' && ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || ''));
+        editor.commands.setContent(content);
         editor.setEditable(canEdit);
       }
+      if (canEdit && content !== rawContent) {
+        api.documents.update(d.id, { content }).catch(() => undefined);
+      }
     }).catch((err) => { console.error('문서 로딩 실패:', err); navigate('/documents'); });
-  }, [id, editor]);
+  }, [id, editor, isJournalUser, user?.id, user?.role]);
 
   // 외근보고서일 때 일지 entry 목록 + 현재 link 조회 (일지 비작성 직책은 스킵)
   const loadLinkData = useCallback(async () => {
@@ -247,12 +257,11 @@ export default function DocumentEdit() {
 
     // 본문에서 외근 내역 섹션 위치 찾아 교체 (재실행 안전)
     const html = editor.getHTML();
-    const placeholderRegex = /<p[^>]*class="outdoor-placeholder"[^>]*>[\s\S]*?<\/p>/;
     const sectionRegex = /(<h2[^>]*>\s*외근\s*내역\s*<\/h2>)([\s\S]*?)(?=<h2|<p[^>]*>\s*위와 같이)/;
 
-    if (placeholderRegex.test(html)) {
+    if (OUTDOOR_PLACEHOLDER_REGEX.test(html)) {
       // 1) placeholder 안내 문구가 있으면 그것만 교체 (첫 자동 채우기)
-      editor.commands.setContent(html.replace(placeholderRegex, lines));
+      editor.commands.setContent(html.replace(OUTDOOR_PLACEHOLDER_REGEX, lines));
     } else if (sectionRegex.test(html)) {
       // 2) 이미 한 번 채워진 상태 → 외근 내역 섹션 전체 교체 (link 변경 후 재실행)
       editor.commands.setContent(html.replace(sectionRegex, `$1${lines}`));
@@ -677,7 +686,7 @@ export default function DocumentEdit() {
             </div>
             <div style={{ fontSize: '0.78rem', color: '#5f6368', marginTop: 6, lineHeight: 1.5 }}>
               총무 / 보조총무 / 총괄이사 / 지원팀은 외근 일지를 작성하지 않으므로 일지 연결이 면제됩니다.<br />
-              본문에 외근 일자·장소·내용을 직접 기재한 후 제출해주세요.
+              본문에 준비된 일시·장소·내용 항목을 직접 기재한 후 제출해주세요.
             </div>
           </div>
         )}

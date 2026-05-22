@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../api';
 import {
   ACTIVITY_TYPES, MEETING_SUBTYPES, OFFICE_SUBTYPES,
-  COURT_OPTIONS, generateTimeOptions, generateYears,
+  BID_PROPERTY_CATEGORIES, COURT_OPTIONS, generateTimeOptions, generateYears,
   type ActivityType, type CourtOption,
 } from './types';
 import Select, { toOptions } from '../components/Select';
@@ -12,6 +12,7 @@ const TIME_OPTS = toOptions(generateTimeOptions());
 const YEAR_OPTS = generateYears().map((y) => ({ value: String(y), label: String(y) }));
 const MEETING_OPTS = toOptions(MEETING_SUBTYPES as unknown as string[]);
 const OFFICE_OPTS = toOptions(OFFICE_SUBTYPES as unknown as string[]);
+const PROPERTY_MAIN_OPTS = BID_PROPERTY_CATEGORIES.map((c) => ({ value: c.main, label: c.main }));
 
 const formatCourtLabel = (opt: CourtOption) => (
   <span style={{ fontWeight: opt.isMain ? 700 : 400 }}>{opt.label}</span>
@@ -73,7 +74,12 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   const [bidDeviationReason, setBidDeviationReason] = useState('');
   const [bidItemNo, setBidItemNo] = useState('');
   const [bidBidderName, setBidBidderName] = useState(''); // 입찰자명 (고객명과 다를 때)
+  const [bidPropertyMain, setBidPropertyMain] = useState('');
+  const [bidPropertyType, setBidPropertyType] = useState('');
   const [showDeviationWarning, setShowDeviationWarning] = useState(false);
+  const bidPropertyDetailOptions = BID_PROPERTY_CATEGORIES
+    .find((c) => c.main === bidPropertyMain)?.details
+    .map((detail) => ({ value: detail, label: detail })) || [];
 
   useEffect(() => {
     const suggested = Number(bidSuggestedPrice.replace(/[^0-9]/g, ''));
@@ -197,6 +203,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     if (activityType === '입찰' && !bidCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '입찰' && !bidCourt) { alert('법원을 선택해주세요.'); return null; }
     if (activityType === '입찰' && !bidBidder.trim()) { alert('계약자명을 입력해주세요.'); return null; }
+    if (activityType === '입찰' && (!bidPropertyMain || !bidPropertyType)) { alert('물건종류를 선택해주세요.'); return null; }
     if (activityType === '임장' && !inspCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '임장' && !inspCourt) { alert('법원을 선택해주세요.'); return null; }
     if (activityType === '임장' && inspClientType === '고객명' && !inspClient.trim()) { alert(`${companion ? '담당자' : '계약자명'}을 입력해주세요.`); return null; }
@@ -222,10 +229,11 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
       case '입찰': {
         const actualBidder = bidBidderName.trim() || bidBidder;
         data = { ...data, caseNo: `${bidYear}타경${bidCaseNo}`, itemNo: bidItemNo, bidder: actualBidder, client: bidBidder, court: bidCourt,
+          propertyCategory: bidPropertyMain, propertyType: bidPropertyType,
           suggestedPrice: bidSuggestedPrice, bidPrice, winPrice: bidWon ? bidPrice : bidWinPrice,
           bidWon, bidProxy, bidCancelled, deviationReason: bidDeviationReason };
         subtype = `${bidYear}타경${bidCaseNo}`;
-        label = `입찰 — ${subtype}${bidItemNo ? ` | ${bidItemNo}` : ''} | ${bidBidder}${actualBidder !== bidBidder ? `(입찰자:${actualBidder})` : ''}${bidProxy ? ' (대리)' : ''}${bidCancelled ? ' (취하/변경)' : ''}`;
+        label = `입찰 — ${subtype}${bidItemNo ? ` | ${bidItemNo}` : ''} | ${bidPropertyType} | ${bidBidder}${actualBidder !== bidBidder ? `(입찰자:${actualBidder})` : ''}${bidProxy ? ' (대리)' : ''}${bidCancelled ? ' (취하/변경)' : ''}`;
         break;
       }
       case '임장':
@@ -273,7 +281,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     setFieldCheckIn(false); setFieldCheckOut(false);
     setTimeFrom(''); setTimeTo('');
     setBidCaseNo(''); setBidItemNo(''); setBidBidder(''); setBidBidderName(''); setBidSuggestedPrice(''); setBidPrice('');
-    setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidCancelled(false); setBidDeviationReason('');
+    setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidCancelled(false); setBidDeviationReason(''); setBidPropertyMain(''); setBidPropertyType('');
     setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient('');
     setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo(''); setMeetingItemNo(''); setMeetingInternal(false);
     setCompanion(false);
@@ -437,6 +445,32 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
               <div className="form-group">
                 <label>법원</label>
                 <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === bidCourt) || null} onChange={(o: any) => setBidCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
+              </div>
+              <div className="form-row form-row-inline">
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>물건종류 대분류 *</label>
+                  <Select
+                    size="sm"
+                    options={PROPERTY_MAIN_OPTS}
+                    value={PROPERTY_MAIN_OPTS.find((o) => o.value === bidPropertyMain) || null}
+                    onChange={(o: any) => {
+                      setBidPropertyMain(o?.value || '');
+                      setBidPropertyType('');
+                    }}
+                    placeholder="대분류 선택"
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>물건종류 세부 *</label>
+                  <Select
+                    size="sm"
+                    options={bidPropertyDetailOptions}
+                    value={bidPropertyDetailOptions.find((o) => o.value === bidPropertyType) || null}
+                    onChange={(o: any) => setBidPropertyType(o?.value || '')}
+                    placeholder="세부 선택"
+                    isDisabled={!bidPropertyMain}
+                  />
+                </div>
               </div>
               <div className="form-row form-row-inline">
                 <div className="form-group" style={{ flex: 1 }}>

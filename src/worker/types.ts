@@ -114,6 +114,7 @@ export interface JwtPayload {
   team_id: string | null;
   branch: string;
   department: string;
+  login_type?: string;
   auth_type?: 'user' | 'service_token';
   service_token_id?: string;
   service_token_scope?: 'read' | 'write' | 'admin';

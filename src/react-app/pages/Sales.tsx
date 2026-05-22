@@ -193,7 +193,6 @@ export default function Sales() {
 
   // 랭킹 모드: 2달 단위(기본) vs 연간
   const [rankingYearly, setRankingYearly] = useState(false);
-  const [rankingRecords, setRankingRecords] = useState<SalesRecord[]>([]);
   const [rankingData, setRankingData] = useState<Array<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>>([]);
   const [settleDate, setSettleDate] = useState('');
   const [invoiceDrafts, setInvoiceDrafts] = useState<Record<string, string>>({});
@@ -288,32 +287,6 @@ export default function Sales() {
         const rk = await api.sales.ranking(startMonth, endMonth);
         setRankingData(rk.ranking || []);
       } catch { setRankingData([]); }
-      // 관리자/총괄이사용 원본 레코드 (상단 계약건수 카드 집계 소스)
-      if (isAdminPlus || isDirector) {
-        try {
-          const year = new Date().getFullYear();
-          if (rankingYearly) {
-            const periods = Array.from({ length: 6 }, (_, i) => {
-              const m = i * 2 + 1;
-              return [`${year}-${String(m).padStart(2, '0')}`, `${year}-${String(m + 1).padStart(2, '0')}`];
-            });
-            const results = await Promise.all(
-              periods.flat().map(m => api.sales.list({ month: m, date_mode: 'settle' }))
-            );
-            const all = results.flatMap(r => r.records || []);
-            setRankingRecords(all);
-          } else {
-            const pStart = rankingPeriodIdx * 2 + 1;
-            const startMonth = `${year}-${String(pStart).padStart(2, '0')}`;
-            const endMonth = `${year}-${String(pStart + 1).padStart(2, '0')}`;
-            const [m1, m2] = await Promise.all([
-              api.sales.list({ month: startMonth, date_mode: 'settle' }),
-              api.sales.list({ month: endMonth, date_mode: 'settle' }),
-            ]);
-            setRankingRecords([...m1.records, ...m2.records]);
-          }
-        } catch { setRankingRecords([]); }
-      }
     } catch (err: any) { console.error(err); }
     finally { if (!silent) setLoading(false); }
   };
@@ -495,18 +468,16 @@ export default function Sales() {
   dupCounter.forEach((cnt, k) => { if (cnt >= 2) duplicateKeys.add(k); });
   const isDuplicate = (r: SalesRecord) => !!(r.client_name && r.client_phone && duplicateKeys.has(`${r.client_name}|${r.client_phone}`));
 
-  // 계약건수: 2개월 기준 (랭킹 데이터 활용), 220만원 이상이면 2건으로 카운트, exclude_from_count=1은 제외
-  const contractCountSource = rankingRecords.length > 0 ? rankingRecords : branchRecords;
-  let contractCountFiltered = filterBranch
-    ? contractCountSource.filter(r => r.branch === filterBranch)
-    : contractCountSource;
-  if (filterUser) contractCountFiltered = contractCountFiltered.filter(r => r.user_id === filterUser);
-  const contractCount = calculateContractCount(contractCountFiltered);
+  // 상단 계약건수는 매출월 SELECT 기준으로 표시한다. 2개월 기준은 하단 계약 랭킹에서만 사용한다.
+  const contractCount = calculateContractCount(branchRecords);
   // 확정매출/카드대기/입금신청: 공급가액 기준 (÷1.1)
   const toSupply = (amount: number) => Math.round(amount / 1.1);
   const confirmedTotal = branchRecords.filter(r => r.status === 'confirmed').reduce((sum, r) => sum + toSupply(r.amount), 0);
   const cardPendingTotal = branchRecords.filter(r => r.status === 'card_pending').reduce((sum, r) => sum + toSupply(r.amount), 0);
   const pendingTotal = branchRecords.filter(r => r.status === 'pending').reduce((sum, r) => sum + toSupply(r.amount), 0);
+  const summaryPeriodLabel = filterMonthEnd && filterMonthEnd !== filterMonth
+    ? `${Number(filterMonth.slice(5, 7))}~${Number(filterMonthEnd.slice(5, 7))}월`
+    : `${Number(filterMonth.slice(5, 7))}월`;
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -527,11 +498,11 @@ export default function Sales() {
       {/* 요약 카드 */}
       <div className="sales-summary-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #1a73e8' }}>
-          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>계약건수 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({rankingYearly ? `${new Date().getFullYear()}년` : `${rankingPeriodIdx * 2 + 1}~${rankingPeriodIdx * 2 + 2}월`})</span></div>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>계약건수 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({summaryPeriodLabel})</span></div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#1a73e8' }}>{contractCount}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>건</span></div>
         </div>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #188038' }}>
-          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>확정매출</div>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>확정매출 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({summaryPeriodLabel})</span></div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#188038' }}>{formatCurrency(confirmedTotal)}</div>
         </div>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #7b1fa2' }}>

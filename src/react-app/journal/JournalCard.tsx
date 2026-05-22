@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { JournalEntry } from './types';
-import { ACTIVITY_COLORS, formatShortDate, type ActivityType } from './types';
+import { ACTIVITY_COLORS, BID_PROPERTY_CATEGORIES, formatShortDate, type ActivityType } from './types';
 import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import { api } from '../api';
@@ -162,7 +162,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
   };
 
   const ed = (key: string) => editData[key] || '';
-  const setEd = (key: string, val: any) => setEditData({ ...editData, [key]: val });
+  const setEd = (key: string, val: any) => setEditData(prev => ({ ...prev, [key]: val }));
 
   // 읽기 모드에서 값 표시
   const showVal = (val: string, unit?: string) => {
@@ -288,6 +288,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                             <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.bidder)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">물건종류</span>{showVal(d.propertyType)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">제시입찰가</span>{showVal(d.suggestedPrice, '원')}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">작성입찰가</span>{showVal(d.bidPrice, '원')}</div>
                             <div className="journal-detail-row">
@@ -531,6 +532,8 @@ function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd
   const s = Number((ed('suggestedPrice') || '').replace(/[^0-9]/g, ''));
   const a = Number((ed('bidPrice') || '').replace(/[^0-9]/g, ''));
   const hasDeviation = s > 0 && a > 0 && (s - a) / s >= 0.05;
+  const propertyMain = ed('propertyCategory') || BID_PROPERTY_CATEGORIES.find((category) => (category.details as readonly string[]).includes(ed('propertyType')))?.main || '';
+  const propertyDetails = BID_PROPERTY_CATEGORIES.find((category) => category.main === propertyMain)?.details || [];
 
   return (
     <div className="journal-edit-form">
@@ -538,6 +541,27 @@ function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd
       <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
       <div className="journal-edit-row"><label>고객명</label><input value={ed('bidder')} onChange={(e) => setEd('bidder', e.target.value)} /></div>
       <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
+      <div className="journal-edit-row">
+        <label>물건종류</label>
+        <select
+          value={propertyMain}
+          onChange={(e) => {
+            setEd('propertyCategory', e.target.value);
+            setEd('propertyType', '');
+          }}
+        >
+          <option value="">대분류</option>
+          {BID_PROPERTY_CATEGORIES.map((category) => (
+            <option key={category.main} value={category.main}>{category.main}</option>
+          ))}
+        </select>
+        <select value={ed('propertyType')} onChange={(e) => setEd('propertyType', e.target.value)} disabled={!propertyMain}>
+          <option value="">세부</option>
+          {propertyDetails.map((detail) => (
+            <option key={detail} value={detail}>{detail}</option>
+          ))}
+        </select>
+      </div>
       <div className="journal-edit-row"><label>제시입찰가</label><input value={ed('suggestedPrice')} onChange={(e) => setEd('suggestedPrice', fmtCurrency(e.target.value))} /></div>
       <div className="journal-edit-row"><label>작성입찰가</label><input value={ed('bidPrice')} onChange={(e) => setEd('bidPrice', fmtCurrency(e.target.value))} /></div>
       {hasDeviation && (

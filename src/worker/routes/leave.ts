@@ -7,28 +7,74 @@ const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
 
 // ───── 헬퍼 ─────
+const HOURS_PER_DAY = 8;
+
+function normalizeLeaveType(type: string): '연차' | '반차' | '시간차' | '특별휴가' {
+  if (type === '월차') return '연차';
+  if (type === '반차' || type === '시간차' || type === '특별휴가') return type;
+  return '연차';
+}
+
+function hoursToDays(hours: number): number {
+  return Math.round((hours / HOURS_PER_DAY) * 1000) / 1000;
+}
+
+function daysToHours(days: number): number {
+  return Math.round((Number(days || 0) * HOURS_PER_DAY) * 1000) / 1000;
+}
+
+function leaveDisplayFields(data: any) {
+  const annualTotalHours = daysToHours(data.total_days || 0);
+  const annualUsedHours = daysToHours(data.used_days || 0);
+  const monthlyTotalHours = daysToHours(data.monthly_days || 0);
+  const monthlyUsedHours = daysToHours(data.monthly_used || 0);
+  const annualRemainingHours = annualTotalHours - annualUsedHours;
+  const monthlyRemainingHours = monthlyTotalHours - monthlyUsedHours;
+  const totalRemainingHours = annualRemainingHours + monthlyRemainingHours;
+  return {
+    total_hours: annualTotalHours + monthlyTotalHours,
+    used_hours: annualUsedHours + monthlyUsedHours,
+    annual_total_hours: annualTotalHours,
+    annual_used_hours: annualUsedHours,
+    annual_remaining_hours: annualRemainingHours,
+    monthly_total_hours: monthlyTotalHours,
+    monthly_used_hours: monthlyUsedHours,
+    monthly_remaining_hours: monthlyRemainingHours,
+    total_remaining_hours: totalRemainingHours,
+    annual_remaining: hoursToDays(annualRemainingHours),
+    monthly_remaining: hoursToDays(monthlyRemainingHours),
+    total_remaining: hoursToDays(totalRemainingHours),
+  };
+}
 
 /**
- * leave_requests 이력 기반으로 사용량 합계 산출 (사용자 타입 인자 받음)
+ * leave_requests 이력 기반으로 사용 시간 합계 산출 (사용자 타입 인자 받음)
  */
-async function sumApprovedLeave(db: D1Database, userId: string, userType: 'monthly' | 'annual'): Promise<{ used_days: number; monthly_used: number }> {
+async function sumApprovedLeave(db: D1Database, userId: string, userType: 'monthly' | 'annual'): Promise<{ used_days: number; monthly_used: number; used_hours: number; monthly_used_hours: number }> {
   const result = await db.prepare(`
-    SELECT leave_type, COALESCE(SUM(days), 0) as total
+    SELECT leave_type,
+      COALESCE(SUM(CASE WHEN leave_type = '시간차' THEN hours ELSE days * ? END), 0) as total_hours
     FROM leave_requests
     WHERE user_id = ? AND status = 'approved' AND leave_type != '특별휴가'
     GROUP BY leave_type
-  `).bind(userId).all<{ leave_type: string; total: number }>();
+  `).bind(HOURS_PER_DAY, userId).all<{ leave_type: string; total_hours: number }>();
 
-  let usedDays = 0;
-  let monthlyUsed = 0;
+  let usedHours = 0;
+  let monthlyUsedHours = 0;
   for (const row of (result.results || [])) {
-    if (userType === 'monthly' || row.leave_type === '월차') {
-      monthlyUsed += Number(row.total) || 0;
+    const rowHours = Number(row.total_hours) || 0;
+    if (userType === 'monthly') {
+      monthlyUsedHours += rowHours;
     } else {
-      usedDays += Number(row.total) || 0;
+      usedHours += rowHours;
     }
   }
-  return { used_days: usedDays, monthly_used: monthlyUsed };
+  return {
+    used_hours: usedHours,
+    monthly_used_hours: monthlyUsedHours,
+    used_days: hoursToDays(usedHours),
+    monthly_used: hoursToDays(monthlyUsedHours),
+  };
 }
 
 /**
@@ -118,10 +164,10 @@ export function calculateLeaveEntitlement(hireDate: string) {
   return { type: 'annual' as const, totalAnnual, totalMonthly: 0 };
 }
 
-/** 환급금 계산: 월급 ÷ 209h × 8 × 잔여일수 */
-function calculateRefund(salary: number, remainingDays: number): number {
-  if (salary <= 0 || remainingDays <= 0) return 0;
-  return Math.round((salary / 209) * 8 * remainingDays);
+/** 환급금 계산: 월급 ÷ 209h × 잔여시간 */
+function calculateRefund(salary: number, remainingHours: number): number {
+  if (salary <= 0 || remainingHours <= 0) return 0;
+  return Math.round((salary / 209) * remainingHours);
 }
 
 // ───── 연차 목록 (관리자+) ─────
@@ -170,13 +216,11 @@ leave.get('/me', async (c) => {
     leave_type: entitlement.type,
   };
 
-  // 잔여일 계산
-  const annualRemaining = (data.total_days || 0) - (data.used_days || 0);
-  const monthlyRemaining = (data.monthly_days || 0) - (data.monthly_used || 0);
-  const totalRemaining = annualRemaining + monthlyRemaining;
+  // 잔여시간 계산. 기존 days 컬럼은 호환용으로 두고 시간 단위로 환산한다.
+  const display = leaveDisplayFields(data);
 
   // 환급금 계산
-  const refundAmount = calculateRefund(salary, totalRemaining);
+  const refundAmount = calculateRefund(salary, display.total_remaining_hours);
 
   // 연차촉진 알림 확인 (입사 6개월)
   const months = getMonthsSinceHire(hireDate);
@@ -185,11 +229,9 @@ leave.get('/me', async (c) => {
   return c.json({
     leave: {
       ...data,
+      ...display,
       hire_date: hireDate,
       months_since_hire: months,
-      annual_remaining: annualRemaining,
-      monthly_remaining: monthlyRemaining,
-      total_remaining: totalRemaining,
       salary,
       refund_amount: refundAmount,
       entitlement,
@@ -228,21 +270,17 @@ leave.get('/user/:userId', requireRole('master', 'ceo', 'admin', 'accountant', '
     leave_type: entitlement.type,
   };
 
-  const annualRemaining = (data.total_days || 0) - (data.used_days || 0);
-  const monthlyRemaining = (data.monthly_days || 0) - (data.monthly_used || 0);
-  const totalRemaining = annualRemaining + monthlyRemaining;
-  const refundAmount = calculateRefund(salary, totalRemaining);
+  const display = leaveDisplayFields(data);
+  const refundAmount = calculateRefund(salary, display.total_remaining_hours);
   const months = getMonthsSinceHire(hireDate);
   const promotionAlert = months >= 6 && months < 12;
 
   return c.json({
     leave: {
       ...data,
+      ...display,
       hire_date: hireDate,
       months_since_hire: months,
-      annual_remaining: annualRemaining,
-      monthly_remaining: monthlyRemaining,
-      total_remaining: totalRemaining,
       salary,
       refund_amount: refundAmount,
       entitlement,
@@ -292,8 +330,10 @@ leave.put('/:userId', requireRole('master', 'ceo', 'admin'), async (c) => {
 
 // ───── 연차 차감 (문서 승인 시 호출) ─────
 leave.post('/deduct', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
-  const { user_id, days } = await c.req.json<{ user_id: string; days: number }>();
+  const { user_id, days, hours } = await c.req.json<{ user_id: string; days?: number; hours?: number }>();
   const db = c.env.DB;
+  const deductHours = Number(hours ?? daysToHours(days || 0));
+  const deductDays = hoursToDays(deductHours);
 
   const reqUser = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(user_id).first<any>();
   const hireDate = reqUser?.hire_date || reqUser?.created_at || '';
@@ -310,13 +350,21 @@ leave.post('/deduct', requireRole('master', 'ceo', 'admin', 'manager'), async (c
   const leaveType = existing.leave_type || entitlement.type;
   if (leaveType === 'monthly') {
     await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-      .bind(days, user_id).run();
-    return c.json({ success: true, used_days: existing.monthly_used + days, remaining: existing.monthly_days - existing.monthly_used - days });
+      .bind(deductDays, user_id).run();
+    return c.json({
+      success: true,
+      used_hours: daysToHours(existing.monthly_used || 0) + deductHours,
+      remaining_hours: daysToHours((existing.monthly_days || 0) - (existing.monthly_used || 0)) - deductHours,
+    });
   } else {
-    const newUsed = existing.used_days + days;
+    const newUsed = existing.used_days + deductDays;
     await db.prepare("UPDATE annual_leave SET used_days = ?, updated_at = datetime('now') WHERE user_id = ?")
       .bind(newUsed, user_id).run();
-    return c.json({ success: true, used_days: newUsed, remaining: existing.total_days - newUsed });
+    return c.json({
+      success: true,
+      used_hours: daysToHours(newUsed),
+      remaining_hours: daysToHours(existing.total_days - newUsed),
+    });
   }
 });
 
@@ -397,64 +445,74 @@ leave.post('/request', async (c) => {
     end_date: string;
     hours?: number;
     reason: string;
+    user_id?: string;
   }>();
+  const requestedLeaveType = normalizeLeaveType(body.leave_type);
+  const targetUserId = user.role === 'master' && body.user_id ? body.user_id : user.sub;
+  if (body.user_id && body.user_id !== user.sub && user.role !== 'master') {
+    return c.json({ error: '다른 직원의 휴가는 마스터만 대신 신청할 수 있습니다.' }, 403);
+  }
+  const targetUser = await db.prepare('SELECT id, name, branch, department, hire_date, created_at FROM users WHERE id = ? AND approved = 1')
+    .bind(targetUserId).first<any>();
+  if (!targetUser) return c.json({ error: '휴가를 신청할 직원을 찾을 수 없습니다.' }, 404);
 
-  // 차감일수 계산
-  let days = 1;
-  if (body.leave_type === '반차') {
-    days = 0.5;
-  } else if (body.leave_type === '시간차') {
+  // 차감시간 계산. days는 기존 이력 호환용으로만 함께 저장한다.
+  let deductHours = HOURS_PER_DAY;
+  if (requestedLeaveType === '반차') {
+    deductHours = 4;
+  } else if (requestedLeaveType === '시간차') {
     const hours = body.hours || 1;
-    days = Math.round((hours / 8) * 1000) / 1000; // 1/8 단위
-  } else if (body.leave_type === '특별휴가') {
+    deductHours = Math.round(hours * 1000) / 1000;
+  } else if (requestedLeaveType === '특별휴가') {
     // 특별휴가: 시작~종료일 기준
     const start = new Date(body.start_date);
     const end = new Date(body.end_date);
-    days = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-  } else if (body.leave_type === '연차' || body.leave_type === '월차') {
+    deductHours = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1) * HOURS_PER_DAY;
+  } else if (requestedLeaveType === '연차') {
     const start = new Date(body.start_date);
     const end = new Date(body.end_date);
-    days = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    deductHours = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1) * HOURS_PER_DAY;
   }
+  const days = hoursToDays(deductHours);
 
   // [중복 방지] 같은 user + 같은 날짜 + 같은 타입의 미취소 신청이 이미 있으면 차단
   const existingDup = await db.prepare(
     "SELECT id, status FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
-  ).bind(user.sub, body.leave_type, body.start_date, body.end_date).first<any>();
+  ).bind(targetUserId, requestedLeaveType, body.start_date, body.end_date).first<any>();
   if (existingDup) {
     const statusLabel = existingDup.status === 'approved' ? '승인됨' : existingDup.status === 'pending' ? '대기 중' : '취소 요청 중';
     return c.json({ error: `동일 날짜·유형의 휴가가 이미 ${statusLabel}입니다. 중복 신청은 불가합니다.` }, 400);
   }
 
   // 특별휴가는 연차 차감 안 함 → 잔여 확인 불필요
-  if (body.leave_type === '특별휴가') {
+  if (requestedLeaveType === '특별휴가') {
     const id = crypto.randomUUID();
     await db.prepare(`INSERT INTO leave_requests
       (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, user.sub, body.leave_type, body.start_date, body.end_date,
-        body.hours || 8, days, body.reason || '', user.branch, user.department).run();
+      .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
+        deductHours, days, body.reason || '', targetUser.branch || '', targetUser.department || '').run();
     return c.json({ success: true, id });
   }
 
-  // 잔여 연차 확인: 월차는 음수 허용 (차월 월차 누적 시 자동 상쇄), 연차는 부족 시 차단
-  await reinitUserLeave(db, user.sub);
-  const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(user.sub).first<any>();
+  // 잔여 연차 확인: 1년 미만자는 월별 발생분을 초과해 신청할 수 없다.
+  await reinitUserLeave(db, targetUserId);
+  const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(targetUserId).first<any>();
   if (leaveInfo) {
-    const isMonthly = body.leave_type === '월차';
-    if (!isMonthly) {
-      const remaining = leaveInfo.total_days - leaveInfo.used_days;
-      if (remaining < days) return c.json({ error: `연차 잔여일이 부족합니다. (잔여: ${remaining}일)` }, 400);
+    const availableHours = leaveInfo.leave_type === 'monthly'
+      ? daysToHours((leaveInfo.monthly_days || 0) - (leaveInfo.monthly_used || 0))
+      : daysToHours((leaveInfo.total_days || 0) - (leaveInfo.used_days || 0));
+    if (availableHours < deductHours) {
+      return c.json({ error: `연차 잔여시간이 부족합니다. (잔여: ${hoursToDays(availableHours)}일 / ${availableHours}시간)` }, 400);
     }
-    // 월차: 잔여 부족해도 신청 허용 → monthly_used 증가시켜 음수 잔여 기록
   }
 
   const id = crypto.randomUUID();
   await db.prepare(`INSERT INTO leave_requests
     (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(id, user.sub, body.leave_type, body.start_date, body.end_date,
-      body.hours || 8, days, body.reason, user.branch, user.department).run();
+    .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
+      deductHours, days, body.reason, targetUser.branch || '', targetUser.department || '').run();
 
   // 알림톡: 관리자/총무에게 LEAVE_REQUEST
   const admins = await db.prepare(
@@ -464,7 +522,7 @@ leave.post('/request', async (c) => {
   if (phones.length > 0) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
-      { user_name: user.name, leave_type: body.leave_type, start_date: body.start_date, end_date: body.end_date, branch: user.branch || '', link: `${APP_URL}/leave` },
+      { user_name: targetUser.name, leave_type: requestedLeaveType, start_date: body.start_date, end_date: body.end_date, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
       phones,
     ).catch(() => {}));
   }
@@ -548,19 +606,18 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
     }
 
     const leaveType = existing.leave_type || entitlement.type;
+    const deductHours = req.leave_type === '시간차'
+      ? Number(req.hours || 0)
+      : daysToHours(req.days || 0);
+    const deductDays = hoursToDays(deductHours);
     if (leaveType === 'monthly') {
-      // 월차 타입 → monthly_used에서 차감 (연차, 반차, 시간차, 월차 모두)
+      // 1년 미만 발생 방식 → monthly_used에 시간 기준 환산값 누적
       await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-        .bind(req.days, req.user_id).run();
+        .bind(deductDays, req.user_id).run();
     } else {
-      // 연차 타입
-      if (req.leave_type === '월차') {
-        await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-          .bind(req.days, req.user_id).run();
-      } else {
-        await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
-          .bind(req.days, req.user_id).run();
-      }
+      // 1년 이상 발생 방식 → used_days에 시간 기준 환산값 누적
+      await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
+        .bind(deductDays, req.user_id).run();
     }
   }
 
@@ -678,15 +735,16 @@ leave.get('/refund/:userId', requireRole('master', 'ceo', 'admin', 'accountant',
 
   if (!leaveInfo || !accounting) return c.json({ error: '정보가 부족합니다.' }, 404);
 
-  const totalRemaining = (leaveInfo.total_days - leaveInfo.used_days) +
-    ((leaveInfo.monthly_days || 0) - (leaveInfo.monthly_used || 0));
-  const refund = calculateRefund(accounting.salary, totalRemaining);
+  const display = leaveDisplayFields(leaveInfo);
+  const refund = calculateRefund(accounting.salary, display.total_remaining_hours);
 
   return c.json({
     user_name: userInfo?.name,
     salary: accounting.salary,
-    remaining_days: totalRemaining,
+    remaining_days: display.total_remaining,
+    remaining_hours: display.total_remaining_hours,
     refund_per_day: Math.round((accounting.salary / 209) * 8),
+    refund_per_hour: Math.round(accounting.salary / 209),
     refund_total: refund,
   });
 });
@@ -776,7 +834,7 @@ leave.get('/accountant-leaves', async (c) => {
   const future = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const result = await db.prepare(`
-    SELECT lr.id, lr.user_id, lr.leave_type, lr.start_date, lr.end_date, lr.days, lr.reason,
+    SELECT lr.id, lr.user_id, lr.leave_type, lr.start_date, lr.end_date, lr.hours, lr.days, lr.reason,
       u.name, u.branch, u.department, u.position_title
     FROM leave_requests lr
     JOIN users u ON u.id = lr.user_id

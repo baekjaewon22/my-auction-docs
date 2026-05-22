@@ -47,6 +47,7 @@ export default function Layout() {
   const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'support'].includes(role);
   const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canViewBidHistory = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
   const canPayroll = canAccounting || PAYROLL_EXTRA_IDS.includes(user?.id || '');
   // 회계분석은 총무보조 제외 (cc_ref도 제외)
@@ -85,11 +86,16 @@ export default function Layout() {
           <LayoutDashboard size={18} /> {!collapsed && '대시보드'}
         </Link>
 
-        {!isFreelancer && <div className="nav-divider" />}
-        {!isFreelancer && !collapsed && <span className="nav-label">마이페이지</span>}
+        <div className="nav-divider" />
+        {!collapsed && <span className="nav-label">마이페이지</span>}
         <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="사내 커뮤니티" onClick={() => setMobileOpen(false)}>
           <StickyNote size={18} /> {!collapsed && '사내 커뮤니티'}
         </Link>
+        {isFreelancer && (
+          <Link to="/freelancer-bids" className={`nav-item ${isActive('/freelancer-bids') ? 'active' : ''}`} title="입찰 내역" onClick={() => setMobileOpen(false)}>
+            <CalendarDays size={18} /> {!collapsed && '입찰 내역'}
+          </Link>
+        )}
         {!isAccountingOnly && !isFreelancer && !isDirector && !isSupport && (
           <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
             <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
@@ -139,6 +145,11 @@ export default function Layout() {
             <Link to="/review" className={`nav-item ${isActive('/review') ? 'active' : ''}`} title="문서 승인" onClick={() => setMobileOpen(false)}>
               <CheckCircle size={18} /> {!collapsed && '문서 승인'}
             </Link>
+            {canViewBidHistory && (
+              <Link to="/bid-history" className={`nav-item ${isActive('/bid-history') ? 'active' : ''}`} title="입찰내역" onClick={() => setMobileOpen(false)}>
+                <CalendarDays size={18} /> {!collapsed && '입찰내역'}
+              </Link>
+            )}
           </>
         )}
 

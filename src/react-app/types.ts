@@ -257,6 +257,15 @@ export interface LeaveBalance {
   used_days: number;
   monthly_days: number;
   monthly_used: number;
+  total_hours?: number;
+  used_hours?: number;
+  annual_total_hours?: number;
+  annual_used_hours?: number;
+  annual_remaining_hours?: number;
+  monthly_total_hours?: number;
+  monthly_used_hours?: number;
+  monthly_remaining_hours?: number;
+  total_remaining_hours?: number;
   leave_type: 'monthly' | 'annual';
   hire_date: string;
   months_since_hire: number;

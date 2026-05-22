@@ -16,8 +16,24 @@ import { useBranches } from '../hooks/useBranches';
 import ComprehensiveAnalysis from '../components/ComprehensiveAnalysis';
 
 interface Member {
-  id: string; name: string; role: string; branch: string; department: string;
+  id: string; name: string; role: string; branch: string; department: string; login_type?: string;
 }
+
+type BidAnalysisStatRow = {
+  id: string;
+  bid_datetime: string;
+  assignee_name: string;
+  branch_name?: string;
+  case_number: string;
+  property_type: string;
+  suggested_bid_price: number | null;
+  actual_bid_price: number | null;
+  winning_price: number | null;
+  is_won: number;
+  bid_result?: '실패' | '낙찰' | '취소';
+  client_name: string;
+  source_type?: string;
+};
 
 // 본사관리 인원 판별 (실적 통계 제외 대상)
 const isHQStaff = (m: Member) => m.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(m.role);
@@ -35,12 +51,61 @@ function isCompanionEntry(entry: JournalEntry): boolean {
   }
 }
 
+function monthEndDate(month: string): string {
+  if (!/^\d{4}-\d{2}$/.test(month)) return '';
+  const [year, mm] = month.split('-').map(Number);
+  return new Date(Date.UTC(year, mm, 0)).toISOString().slice(0, 10);
+}
+
+function bidRowsToJournalEntries(rows: BidAnalysisStatRow[], members: Member[]): JournalEntry[] {
+  const memberByBranchName = new Map<string, Member>();
+  const memberByName = new Map<string, Member>();
+  members.forEach((m) => {
+    const name = String(m.name || '').trim();
+    if (!name) return;
+    memberByName.set(name, m);
+    memberByBranchName.set(`${m.branch || ''}|${name}`, m);
+  });
+  return rows.map((row) => {
+    const member = memberByBranchName.get(`${row.branch_name || ''}|${row.assignee_name || ''}`) || memberByName.get(row.assignee_name || '');
+    const bidWon = row.bid_result === '낙찰' || row.is_won === 1;
+    const bidCancelled = row.bid_result === '취소';
+    return {
+      id: `bid-analysis:${row.id}`,
+      user_id: member?.id || `bid-analysis:${row.assignee_name || row.id}`,
+      user_name: row.assignee_name,
+      target_date: String(row.bid_datetime || '').slice(0, 10),
+      activity_type: '입찰',
+      activity_subtype: row.case_number || '',
+      data: JSON.stringify({
+        caseNo: row.case_number || '',
+        bidder: row.client_name || '',
+        client: row.client_name || '',
+        propertyType: row.property_type || '',
+        suggestedPrice: row.suggested_bid_price ? String(row.suggested_bid_price) : '',
+        bidPrice: row.actual_bid_price ? String(row.actual_bid_price) : '',
+        winPrice: row.winning_price ? String(row.winning_price) : '',
+        bidWon,
+        bidCancelled,
+        sourceType: row.source_type || 'analysis',
+      }),
+      completed: 1,
+      fail_reason: '',
+      branch: row.branch_name || member?.branch || '',
+      department: member?.department || '',
+      created_at: '',
+      updated_at: '',
+    } as JournalEntry;
+  }).filter(e => e.target_date);
+}
+
 const COLORS = ['#1a73e8', '#e65100', '#188038', '#7b1fa2', '#f9ab00', '#d93025', '#00897b', '#5c6bc0'];
 
 export default function Statistics() {
   const { user } = useAuthStore();
   const { branches } = useBranches();
   const [entries, setEntries] = useState<JournalEntry[]>([]);
+  const [bidAnalysisEntries, setBidAnalysisEntries] = useState<JournalEntry[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState(0);
@@ -59,12 +124,20 @@ export default function Statistics() {
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || (user?.role === 'admin' && user?.branch === '의정부');
 
   useEffect(() => {
+    const statsFrom = filterMonth ? `${filterMonth}-01` : undefined;
+    const statsTo = filterMonthEnd ? monthEndDate(filterMonthEnd) : filterMonth ? monthEndDate(filterMonth) : undefined;
     Promise.all([
       api.journal.list({ range: 'all' }),
       api.journal.members(),
+      api.adminNotes.bidAnalysisStats({ from: statsFrom, to: statsTo }).catch(() => ({ rows: [] })),
       api.sales.stats({ month: filterMonth || undefined, month_end: filterMonthEnd || undefined, branch: filterBranch || undefined, department: filterDept || undefined, user_id: filterUser || undefined }).catch(() => ({ records: [] })),
     ])
-      .then(([eRes, mRes, sRes]) => { setEntries(eRes.entries); setMembers(mRes.members); setSalesRecords(sRes.records || []); })
+      .then(([eRes, mRes, bRes, sRes]) => {
+        setEntries(eRes.entries);
+        setMembers(mRes.members);
+        setBidAnalysisEntries(bidRowsToJournalEntries(bRes.rows || [], mRes.members));
+        setSalesRecords(sRes.records || []);
+      })
       .finally(() => setLoading(false));
   }, [filterMonth, filterMonthEnd, filterBranch, filterDept, filterUser]);
 
@@ -83,6 +156,7 @@ export default function Statistics() {
   // 월별 옵션 — 일지(target_date)와 매출(contract_date) 양쪽에서 수집
   const monthSet = new Set<string>();
   entries.forEach((e) => { if (e.target_date) monthSet.add(e.target_date.slice(0, 7)); });
+  bidAnalysisEntries.forEach((e) => { if (e.target_date) monthSet.add(e.target_date.slice(0, 7)); });
   salesRecords.forEach((r) => { if (r.contract_date) monthSet.add(r.contract_date.slice(0, 7)); });
   const monthOptions = [...monthSet].filter((m) => /^\d{4}-\d{2}$/.test(m)).sort((a, b) => b.localeCompare(a))
     .map((m) => ({ value: m, label: m }));
@@ -97,6 +171,17 @@ export default function Statistics() {
   );
   const filteredEntries = entries.filter((e) => {
     if (isCompanionEntry(e)) return false;
+    if (filterMonth) {
+      const m = e.target_date.slice(0, 7);
+      const end = filterMonthEnd || filterMonth;
+      if (m < filterMonth || m > end) return false;
+    }
+    if (filterUser) return e.user_id === filterUser;
+    if (filterDept) return e.department === filterDept && (!filterBranch || e.branch === filterBranch);
+    if (filterBranch) return e.branch === filterBranch;
+    return true;
+  });
+  const filteredBidAnalysisEntries = bidAnalysisEntries.filter((e) => {
     if (filterMonth) {
       const m = e.target_date.slice(0, 7);
       const end = filterMonthEnd || filterMonth;
@@ -210,7 +295,7 @@ export default function Statistics() {
       </div>
 
       <div className="stats-content">
-        {tabs[tab] === '입찰 분석' && <BidAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch) && !isCompanionEntry(e))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
+        {tabs[tab] === '입찰 분석' && <BidAnalysis entries={filteredBidAnalysisEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={bidAnalysisEntries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
         {tabs[tab] === '브리핑 분석' && <BriefingAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
         {tabs[tab] === '근태 분석' && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch) && !isCompanionEntry(e))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
         {tabs[tab] === '이상 감지' && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m) && m.role !== 'freelancer' && (m as any).login_type !== 'freelancer')} />}
@@ -801,11 +886,13 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
   });
 
   // 5. 일지 미작성
+  const HOLIDAYS = new Set(['2026-05-25']);
   const today = new Date();
   const last30: string[] = [];
   for (let i = 0; i < 30; i++) {
     const d = new Date(today); d.setDate(d.getDate() - i);
-    if (d.getDay() !== 0 && d.getDay() !== 6) last30.push(d.toISOString().split('T')[0]);
+    const dateStr = d.toISOString().split('T')[0];
+    if (d.getDay() !== 0 && d.getDay() !== 6 && !HOLIDAYS.has(dateStr)) last30.push(dateStr);
   }
   const missingDays = members.filter((m) => ['member', 'manager'].includes(m.role)).map((m) => {
     const myDates = new Set(entries.filter((e) => e.user_id === m.id).map((e) => e.target_date));

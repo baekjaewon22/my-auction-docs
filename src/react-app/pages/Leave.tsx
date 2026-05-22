@@ -9,11 +9,11 @@ import {
   Calculator, Calendar, FileText, ExternalLink, Eye
 } from 'lucide-react';
 
-type FormLeaveType = '연차/월차' | '반차' | '시간차' | '특별휴가';
+type FormLeaveType = '연차' | '반차' | '시간차' | '특별휴가';
 
 const FORM_LEAVE_TYPES: { value: FormLeaveType; label: string; desc: string; color: string }[] = [
-  { value: '연차/월차', label: '연차/월차', desc: '1일 단위 사용', color: '#1a73e8' },
-  { value: '반차', label: '반차', desc: '0.5일 차감', color: '#e65100' },
+  { value: '연차', label: '연차', desc: '8시간 사용', color: '#1a73e8' },
+  { value: '반차', label: '반차', desc: '4시간 사용', color: '#e65100' },
   { value: '시간차', label: '시간차', desc: '시간 단위 사용', color: '#9aa0a6' },
   { value: '특별휴가', label: '특별휴가', desc: '경조사 등', color: '#7b1fa2' },
 ];
@@ -52,6 +52,31 @@ function formatCurrency(n: number): string {
   return n.toLocaleString('ko-KR') + '원';
 }
 
+function formatLeaveHours(hours: number): string {
+  const safeHours = Math.max(0, Math.round((Number(hours || 0)) * 1000) / 1000);
+  const days = Math.floor(safeHours / 8);
+  const rest = Math.round((safeHours - days * 8) * 1000) / 1000;
+  if (days > 0 && rest > 0) return `${days}일 ${rest}시간`;
+  if (days > 0) return `${days}일`;
+  return `${rest}시간`;
+}
+
+function balanceHours(balance: any, kind: 'total' | 'used' | 'remaining'): number {
+  if (!balance) return 0;
+  if (kind === 'total') return Number(balance.total_hours ?? ((balance.total_days || 0) + (balance.monthly_days || 0)) * 8);
+  if (kind === 'used') return Number(balance.used_hours ?? ((balance.used_days || 0) + (balance.monthly_used || 0)) * 8);
+  return Number(balance.total_remaining_hours ?? (balance.total_remaining || 0) * 8);
+}
+
+function requestHours(req: LeaveRequest): number {
+  if (req.leave_type === '시간차') return Number(req.hours || 0);
+  return Math.round(Number(req.days || 0) * 8 * 1000) / 1000;
+}
+
+function displayLeaveType(type: string): string {
+  return type === '월차' ? '연차' : type;
+}
+
 export default function Leave() {
   const { user } = useAuthStore();
   const navigate = useNavigate();
@@ -65,10 +90,13 @@ export default function Leave() {
   const [manageFilter, setManageFilter] = useState<{ status: string; month: string; userQuery: string }>({ status: '', month: '', userQuery: '' });
 
   // 폼
-  const [formType, setFormType] = useState<FormLeaveType>('연차/월차');
+  const [formType, setFormType] = useState<FormLeaveType>('연차');
   const [formStartDate, setFormStartDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [formEndDate, setFormEndDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [, setFormReason] = useState('');
+  const [formUserId, setFormUserId] = useState('');
+  const [formUserBalance, setFormUserBalance] = useState<any>(null);
+  const [formUserRequests, setFormUserRequests] = useState<LeaveRequest[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   // 시간차 폼
@@ -93,6 +121,7 @@ export default function Leave() {
   const canViewOthers = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canViewHourly = ['master', 'ceo', 'admin'].includes(role);
   const canManageAll = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
+  const canRequestForOthers = role === 'master';
 
   // 담당자 열람 기능
   const [members, setMembers] = useState<User[]>([]);
@@ -132,6 +161,27 @@ export default function Leave() {
       setViewRequests(reqRes.requests?.filter((r: any) => r.user_id === userId) || []);
     } catch (err: any) { console.error(err); }
     finally { setViewLoading(false); }
+  };
+
+  const loadFormUser = async (userId: string) => {
+    if (!userId) {
+      setFormUserBalance(null);
+      setFormUserRequests([]);
+      return;
+    }
+    try {
+      const [balRes, reqRes] = await Promise.all([
+        api.leave.userLeave(userId),
+        api.leave.listRequests({ user_id: userId } as any),
+      ]);
+      setFormUserBalance(balRes.leave);
+      setFormUserRequests(reqRes.requests?.filter((r: any) => r.user_id === userId) || []);
+    } catch (err: any) {
+      alert('담당자 휴가 정보를 불러오지 못했습니다: ' + err.message);
+      setFormUserId('');
+      setFormUserBalance(null);
+      setFormUserRequests([]);
+    }
   };
 
   const load = async () => {
@@ -183,6 +233,8 @@ export default function Leave() {
   const halfDayTemplate = templates.find(t => t.title.includes('반차'));
 
   const handleSubmit = async () => {
+    const requestUserId = canRequestForOthers && formUserId ? formUserId : undefined;
+    const requestBalance = requestUserId ? formUserBalance : balance;
     // 특별휴가만 사유 검증
     if (formType === '특별휴가') {
       if (specialSubtype === '기타' && !specialEtcReason.trim()) {
@@ -195,8 +247,8 @@ export default function Leave() {
         if (summerChain < 0 || summerChain > SUMMER_MAX_CHAIN) {
           alert(`연차 연결은 최대 ${SUMMER_MAX_CHAIN}일까지 가능합니다.`); return;
         }
-        if (summerChain > 0 && (balance?.total_remaining ?? 0) < summerChain) {
-          alert(`연차 잔여(${balance?.total_remaining ?? 0}일)가 부족합니다.`); return;
+        if (summerChain > 0 && balanceHours(requestBalance, 'remaining') < summerChain * 8) {
+          alert(`연차 잔여(${formatLeaveHours(balanceHours(requestBalance, 'remaining'))})가 부족합니다.`); return;
         }
       }
     }
@@ -221,7 +273,7 @@ export default function Leave() {
         summerEnd = new Date(summerStart); summerEnd.setDate(summerStart.getDate() + summerDays - 1);
       }
       const fmt = (d: Date) => d.toISOString().slice(0, 10);
-      const annualType = balance?.entitlement?.type === 'monthly' ? '월차' : '연차';
+      const annualType = '연차';
       const summerReason = summerChain > 0
         ? `[여름휴가] ${summerDays}일 (${annualType} ${summerChain}일 연결 ${summerChainPos === 'after' ? '뒤' : '앞'})`
         : `[여름휴가] ${summerDays}일`;
@@ -229,6 +281,7 @@ export default function Leave() {
       setSubmitting(true);
       try {
         await api.leave.createRequest({
+          user_id: requestUserId,
           leave_type: '특별휴가',
           start_date: fmt(summerStart),
           end_date: fmt(summerEnd),
@@ -237,6 +290,7 @@ export default function Leave() {
         });
         if (summerChain > 0 && chainStart && chainEnd) {
           await api.leave.createRequest({
+            user_id: requestUserId,
             leave_type: annualType,
             start_date: fmt(chainStart),
             end_date: fmt(chainEnd),
@@ -246,6 +300,7 @@ export default function Leave() {
         }
         setShowForm(false); setFormReason(''); setSpecialEtcReason('');
         setSummerChain(0); setSummerDays(1);
+        if (requestUserId) loadFormUser(requestUserId);
         load();
       } catch (err: any) { alert(err.message); }
       finally { setSubmitting(false); }
@@ -264,8 +319,8 @@ export default function Leave() {
 
     // 실제 전송하는 leave_type 결정
     let apiLeaveType: string;
-    if (formType === '연차/월차') {
-      apiLeaveType = balance?.entitlement?.type === 'monthly' ? '월차' : '연차';
+    if (formType === '연차') {
+      apiLeaveType = '연차';
     } else if (formType === '반차') {
       apiLeaveType = '반차';
     } else if (formType === '시간차') {
@@ -274,12 +329,13 @@ export default function Leave() {
       apiLeaveType = '특별휴가';
     }
 
-    // 차감일수
-    const _days = previewDays(); void _days;
+    // 차감시간
+    const _hours = previewHours(); void _hours;
 
     setSubmitting(true);
     try {
       await api.leave.createRequest({
+        user_id: requestUserId,
         leave_type: apiLeaveType,
         start_date: formStartDate,
         end_date: formType === '반차' || formType === '시간차' ? formStartDate : formEndDate,
@@ -289,6 +345,7 @@ export default function Leave() {
       setShowForm(false);
       setFormReason('');
       setSpecialEtcReason('');
+      if (requestUserId) loadFormUser(requestUserId);
       load();
     } catch (err: any) { alert(err.message); }
     finally { setSubmitting(false); }
@@ -327,9 +384,10 @@ export default function Leave() {
   };
 
   // 여름휴가 — 올해 사용량 집계 (pending + approved)
+  const summerSourceRequests = canRequestForOthers && formUserId ? formUserRequests : requests;
   const summerUsed = (() => {
     const yr = new Date().getFullYear();
-    return requests
+    return summerSourceRequests
       .filter(r => r.leave_type === '특별휴가' && ['pending', 'approved'].includes(r.status)
         && (r.reason || '').includes('[여름휴가]')
         && r.start_date >= `${yr}-01-01` && r.start_date <= `${yr}-12-31`)
@@ -340,19 +398,19 @@ export default function Leave() {
   })();
   const summerRemaining = Math.max(0, SUMMER_TOTAL_DAYS - summerUsed);
 
-  // 차감일수 미리보기
-  const previewDays = (): number => {
-    if (formType === '반차') return 0.5;
-    if (formType === '시간차') return Math.round((formHours / 8) * 1000) / 1000;
+  // 차감시간 미리보기
+  const previewHours = (): number => {
+    if (formType === '반차') return 4;
+    if (formType === '시간차') return Math.round(formHours * 1000) / 1000;
     if (formType === '특별휴가' && specialSubtype === '특별유급휴가') {
-      return SPECIAL_LEAVE_ITEMS[specialItem].days;
+      return SPECIAL_LEAVE_ITEMS[specialItem].days * 8;
     }
     if (formType === '특별휴가' && specialSubtype === '여름휴가') {
-      return summerDays; // 여름휴가 자체는 연차 차감 없음, 이어붙인 연차는 별도 계산
+      return summerDays * 8; // 여름휴가 자체는 연차 차감 없음, 이어붙인 연차는 별도 계산
     }
     const start = new Date(formStartDate);
     const end = new Date(formEndDate);
-    return Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    return Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1) * 8;
   };
 
   if (loading) return <div className="page-loading">로딩중...</div>;
@@ -379,7 +437,7 @@ export default function Leave() {
               />
             </div>
           )}
-          <button className="btn btn-primary" onClick={() => setShowForm(true)}>
+          <button className="btn btn-primary" onClick={() => { setShowForm(true); if (!canRequestForOthers) { setFormUserId(''); setFormUserBalance(null); setFormUserRequests([]); } }}>
             <Plus size={14} /> 휴가 신청
           </button>
         </div>
@@ -453,37 +511,18 @@ export default function Leave() {
           ) : viewBalance ? (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
-                {viewBalance.entitlement?.type === 'annual' ? (
-                  <>
-                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #7b1fa2' }}>
-                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>연차 총일수</div>
-                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#7b1fa2' }}>{viewBalance.total_days}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
-                    </div>
-                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #d93025' }}>
-                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>사용일수</div>
-                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#d93025' }}>{viewBalance.used_days}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
-                    </div>
-                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #188038' }}>
-                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>잔여일수</div>
-                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#188038' }}>{viewBalance.annual_remaining}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #7b1fa2' }}>
-                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>월차 총일수</div>
-                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#7b1fa2' }}>{viewBalance.monthly_days}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
-                    </div>
-                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #d93025' }}>
-                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>사용일수</div>
-                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#d93025' }}>{viewBalance.monthly_used}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
-                    </div>
-                    <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #188038' }}>
-                      <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>잔여일수</div>
-                      <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#188038' }}>{viewBalance.monthly_remaining}<span style={{ fontSize: '0.75rem', fontWeight: 400 }}>일</span></div>
-                    </div>
-                  </>
-                )}
+                <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #7b1fa2' }}>
+                  <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>연차 발생</div>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#7b1fa2' }}>{formatLeaveHours(balanceHours(viewBalance, 'total'))}</div>
+                </div>
+                <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #d93025' }}>
+                  <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>연차 사용</div>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#d93025' }}>{formatLeaveHours(balanceHours(viewBalance, 'used'))}</div>
+                </div>
+                <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #188038' }}>
+                  <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>연차 잔여</div>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#188038' }}>{formatLeaveHours(balanceHours(viewBalance, 'remaining'))}</div>
+                </div>
                 <div className="card" style={{ padding: '14px 16px', borderLeft: '4px solid #5f6368' }}>
                   <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>입사기준일</div>
                   <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#5f6368' }}>{viewBalance.hire_date || '-'}</div>
@@ -499,9 +538,9 @@ export default function Leave() {
                       const st = STATUS_MAP[req.status] || STATUS_MAP.pending;
                       return (
                         <div key={req.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', background: '#fafafa', borderRadius: 8, fontSize: '0.82rem' }}>
-                          <span style={{ background: getTypeColor(req.leave_type), color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.72rem', fontWeight: 600 }}>{req.leave_type}</span>
+                          <span style={{ background: getTypeColor(req.leave_type), color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.72rem', fontWeight: 600 }}>{displayLeaveType(req.leave_type)}</span>
                           <span style={{ color: '#202124' }}>{req.start_date}{req.start_date !== req.end_date ? ` ~ ${req.end_date}` : ''}</span>
-                          <span style={{ color: '#5f6368' }}>({req.days}일)</span>
+                          <span style={{ color: '#5f6368' }}>({formatLeaveHours(requestHours(req))})</span>
                           <span style={{ background: st.bg, color: st.color, padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem', fontWeight: 600 }}>{st.label}</span>
                           {req.reason && <span style={{ color: '#9aa0a6', fontSize: '0.75rem', flex: 1, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{req.reason}</span>}
                         </div>
@@ -521,43 +560,24 @@ export default function Leave() {
       {/* 잔여 현황 카드 */}
       {balance && (
         <div className="leave-balance-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
-          {balance.entitlement.type === 'annual' ? (
-            <>
-              <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #1a73e8' }}>
-                <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>연차 총일수</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1a73e8' }}>{balance.total_days}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>일</span></div>
-              </div>
-              <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #d93025' }}>
-                <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>사용일수</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#d93025' }}>{balance.used_days}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>일</span></div>
-              </div>
-              <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #188038' }}>
-                <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>잔여일수</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#188038' }}>{balance.annual_remaining}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>일</span></div>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #188038' }}>
-                <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>월차 누적</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#188038' }}>{balance.monthly_days}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>일</span></div>
-              </div>
-              <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #d93025' }}>
-                <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>월차 사용</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#d93025' }}>{balance.monthly_used}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>일</span></div>
-              </div>
-              <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #1a73e8' }}>
-                <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>월차 잔여</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1a73e8' }}>{balance.monthly_remaining}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>일</span></div>
-              </div>
-            </>
-          )}
+          <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #1a73e8' }}>
+            <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>연차 발생</div>
+            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1a73e8' }}>{formatLeaveHours(balanceHours(balance, 'total'))}</div>
+          </div>
+          <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #d93025' }}>
+            <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>연차 사용</div>
+            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#d93025' }}>{formatLeaveHours(balanceHours(balance, 'used'))}</div>
+          </div>
+          <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #188038' }}>
+            <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>연차 잔여</div>
+            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#188038' }}>{formatLeaveHours(balanceHours(balance, 'remaining'))}</div>
+          </div>
           {/* 예상환급금: 대표자 이상 + 회계만 */}
           {canViewSensitive && (
             <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #7b1fa2' }}>
               <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>예상 환급금</div>
               <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#7b1fa2' }}>{formatCurrency(balance.refund_amount)}</div>
-              <div style={{ fontSize: '0.7rem', color: '#9aa0a6', marginTop: 2 }}>월급÷209h×8×잔여일</div>
+              <div style={{ fontSize: '0.7rem', color: '#9aa0a6', marginTop: 2 }}>월급÷209h×잔여시간</div>
             </div>
           )}
         </div>
@@ -571,7 +591,7 @@ export default function Leave() {
             <strong style={{ color: '#e65100' }}>연차촉진제도 안내</strong>
           </div>
           <p style={{ margin: '8px 0 0', fontSize: '0.85rem', color: '#5f6368' }}>
-            입사 6개월이 경과하여 연차촉진제도가 발동됩니다. 미사용 월차는 입사 1년 시점에 환급 처리됩니다.
+            입사 6개월이 경과하여 연차촉진제도가 발동됩니다. 1년 미만 발생 연차의 미사용분은 입사 1년 시점에 환급 처리됩니다.
           </p>
         </div>
       )}
@@ -582,7 +602,7 @@ export default function Leave() {
           <span>입사일: <strong>{balance.hire_date}</strong></span>
           <span>근속: <strong>{Math.floor(balance.months_since_hire / 12)}년 {balance.months_since_hire % 12}개월</strong></span>
           <span>유형: <strong style={{ color: balance.entitlement.type === 'monthly' ? '#188038' : '#1a73e8' }}>
-            {balance.entitlement.type === 'monthly' ? '월차 누적 방식 (1년 미만)' : '선불 연차 방식 (1년 이상)'}
+            {balance.entitlement.type === 'monthly' ? '1년 미만 연차 발생 방식' : '선불 연차 방식 (1년 이상)'}
           </strong></span>
         </div>
       )}
@@ -630,6 +650,34 @@ export default function Leave() {
               <button className="btn-close" onClick={() => setShowForm(false)}><X size={18} /></button>
             </div>
             <div className="journal-form-body">
+              {canRequestForOthers && (
+                <div style={{ marginBottom: 16 }}>
+                  <label className="form-label">담당자 선택</label>
+                  <Select
+                    options={[
+                      { value: '', label: '본인' },
+                      ...members.map(m => ({ value: m.id, label: `${m.name} (${m.department || m.branch || ''})` })),
+                    ]}
+                    value={formUserId
+                      ? { value: formUserId, label: members.find(m => m.id === formUserId)?.name || '' }
+                      : { value: '', label: '본인' }}
+                    onChange={async (opt) => {
+                      const nextUserId = opt?.value || '';
+                      setFormUserId(nextUserId);
+                      await loadFormUser(nextUserId);
+                    }}
+                    placeholder="담당자 선택..."
+                    size="sm"
+                    isSearchable
+                  />
+                  {formUserId && formUserBalance && (
+                    <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, background: '#f8f9fa', color: '#5f6368', fontSize: '0.78rem' }}>
+                      선택 담당자 잔여: <strong style={{ color: '#188038' }}>{formatLeaveHours(balanceHours(formUserBalance, 'remaining'))}</strong>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* 휴가 유형 선택 */}
               <div style={{ marginBottom: 16 }}>
                 <label className="form-label">휴가 유형</label>
@@ -780,8 +828,8 @@ export default function Leave() {
 
               {/* 차감 미리보기 */}
               <div style={{ padding: '10px 14px', borderRadius: 8, background: '#f8f9fa', marginBottom: 16, fontSize: '0.85rem' }}>
-                <span style={{ color: '#5f6368' }}>차감일수: </span>
-                <strong style={{ color: '#d93025' }}>{previewDays()}일</strong>
+                <span style={{ color: '#5f6368' }}>차감시간: </span>
+                <strong style={{ color: '#d93025' }}>{formatLeaveHours(previewHours())}</strong>
                 {formType === '특별휴가' && specialSubtype === '특별유급휴가' && (
                   <span style={{ color: '#7b1fa2', marginLeft: 8, fontSize: '0.78rem' }}>({SPECIAL_LEAVE_ITEMS[specialItem].label})</span>
                 )}
@@ -833,14 +881,14 @@ export default function Leave() {
                   <div key={req.id} className="card" style={{ padding: '14px 18px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                        <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: '0.78rem', fontWeight: 600, background: typeColor + '18', color: typeColor }}>{req.leave_type}</span>
+                        <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: '0.78rem', fontWeight: 600, background: typeColor + '18', color: typeColor }}>{displayLeaveType(req.leave_type)}</span>
                         {req.leave_type === '특별휴가' && req.reason?.startsWith('[기타]') && (
                           <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: '0.72rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>무급</span>
                         )}
                         <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
                           {req.start_date === req.end_date ? req.start_date : `${req.start_date} ~ ${req.end_date}`}
                         </span>
-                        <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>({req.days}일)</span>
+                        <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>({formatLeaveHours(requestHours(req))})</span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: '0.75rem', fontWeight: 600, background: st.bg, color: st.color }}>{st.label}</span>
@@ -885,14 +933,14 @@ export default function Leave() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                         <strong style={{ fontSize: '0.9rem' }}>{req.user_name}</strong>
-                        <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: '0.78rem', fontWeight: 600, background: typeColor + '18', color: typeColor }}>{req.leave_type}</span>
+                        <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: '0.78rem', fontWeight: 600, background: typeColor + '18', color: typeColor }}>{displayLeaveType(req.leave_type)}</span>
                         {req.leave_type === '특별휴가' && req.reason?.startsWith('[기타]') && (
                           <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: '0.72rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>무급</span>
                         )}
                         <span style={{ fontSize: '0.85rem' }}>
                           {req.start_date === req.end_date ? req.start_date : `${req.start_date} ~ ${req.end_date}`}
                         </span>
-                        <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>({req.days}일)</span>
+                        <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>({formatLeaveHours(requestHours(req))})</span>
                       </div>
                       <div style={{ display: 'flex', gap: 6 }}>
                         {req.status === 'cancel_requested' ? (
@@ -948,7 +996,7 @@ export default function Leave() {
       {/* 전체 휴가 관리 — 관리자/회계 */}
       {tab === 'manage' && canManageAll && (() => {
         const typeColors: Record<string, string> = {
-          '연차': '#1a73e8', '월차': '#188038', '반차': '#7c4dff', '시간차': '#e65100', '특별휴가': '#d93025',
+          '연차': '#1a73e8', '월차': '#1a73e8', '반차': '#7c4dff', '시간차': '#e65100', '특별휴가': '#d93025',
         };
         const statusLabels: Record<string, { label: string; bg: string; color: string }> = {
           'pending': { label: '대기', bg: '#fff3e0', color: '#e65100' },
@@ -958,15 +1006,15 @@ export default function Leave() {
           'cancelled': { label: '취소', bg: '#f5f5f5', color: '#5f6368' },
         };
 
-        // 중복 감지: (user_id, leave_type, start_date, days) 동일 건 2건+
+        // 중복 감지: (user_id, 표시유형, start_date, 차감시간) 동일 건 2건+
         const dupSet = new Set<string>();
         const counter = new Map<string, number>();
         manageAll.forEach(r => {
-          const k = `${r.user_id}|${r.leave_type}|${r.start_date}|${r.days}`;
+          const k = `${r.user_id}|${displayLeaveType(r.leave_type)}|${r.start_date}|${requestHours(r)}`;
           counter.set(k, (counter.get(k) || 0) + 1);
         });
         counter.forEach((cnt, k) => { if (cnt >= 2) dupSet.add(k); });
-        const isDup = (r: any) => dupSet.has(`${r.user_id}|${r.leave_type}|${r.start_date}|${r.days}`);
+        const isDup = (r: any) => dupSet.has(`${r.user_id}|${displayLeaveType(r.leave_type)}|${r.start_date}|${requestHours(r)}`);
 
         const RESTRICTED_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
         let list = manageAll;
@@ -1012,7 +1060,7 @@ export default function Leave() {
                     <th>지사/부서</th>
                     <th>유형</th>
                     <th>기간</th>
-                    <th>일수</th>
+                    <th>차감시간</th>
                     <th>상태</th>
                     <th>신청일</th>
                     <th>사유/반려사유</th>
@@ -1027,9 +1075,9 @@ export default function Leave() {
                         {isDup(req) && <span style={{ fontSize: '0.66rem', padding: '1px 5px', borderRadius: 6, background: '#fce4ec', color: '#d93025', fontWeight: 700, marginLeft: 4 }}>중복</span>}
                       </td>
                       <td style={{ whiteSpace: 'nowrap', fontSize: '0.78rem', color: '#5f6368' }}>{req.branch}{req.department ? ' / ' + req.department : ''}</td>
-                      <td><span style={{ color: typeColors[req.leave_type] || '#5f6368', fontWeight: 600 }}>{req.leave_type}</span></td>
+                      <td><span style={{ color: typeColors[req.leave_type] || '#5f6368', fontWeight: 600 }}>{displayLeaveType(req.leave_type)}</span></td>
                       <td style={{ whiteSpace: 'nowrap' }}>{req.start_date}{req.end_date !== req.start_date ? ' ~ ' + req.end_date : ''}</td>
-                      <td>{req.days}{req.hours && req.hours < 8 ? `일(${req.hours}h)` : '일'}</td>
+                      <td>{formatLeaveHours(requestHours(req))}</td>
                       <td>
                         <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: statusLabels[req.status]?.bg, color: statusLabels[req.status]?.color }}>
                           {statusLabels[req.status]?.label || req.status}
@@ -1043,7 +1091,7 @@ export default function Leave() {
                       <td>
                         <button className="btn btn-sm btn-danger" style={{ fontSize: '0.72rem', padding: '2px 8px' }}
                           onClick={async () => {
-                            if (!confirm(`${req.user_name} ${req.leave_type} ${req.start_date} (${req.days}일) 삭제하시겠습니까?${req.status === 'approved' ? '\n승인된 건이므로 차감된 연차가 복원됩니다.' : ''}`)) return;
+                            if (!confirm(`${req.user_name} ${displayLeaveType(req.leave_type)} ${req.start_date} (${formatLeaveHours(requestHours(req))}) 삭제하시겠습니까?${req.status === 'approved' ? '\n승인된 건이므로 차감된 연차가 복원됩니다.' : ''}`)) return;
                             try { await api.leave.deleteRequest(req.id); load(); }
                             catch (err: any) { alert(err.message); }
                           }}>삭제</button>
@@ -1096,7 +1144,7 @@ function RefundCalc() {
           <Calculator size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> 연차 환급 계산
         </h4>
         <p style={{ fontSize: '0.82rem', color: '#5f6368', margin: '0 0 16px' }}>
-          환급 공식: <strong>월급 ÷ 209시간 × 8시간 × 잔여일수</strong>
+          환급 공식: <strong>월급 ÷ 209시간 × 잔여시간</strong>
         </p>
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ minWidth: 200 }}>
@@ -1123,8 +1171,8 @@ function RefundCalc() {
               <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>{formatCurrency(refundData.salary)}</div>
             </div>
             <div>
-              <div style={{ fontSize: '0.75rem', color: '#9aa0a6' }}>잔여일수</div>
-              <div style={{ fontWeight: 600, fontSize: '1.1rem', color: '#1a73e8' }}>{refundData.remaining_days}일</div>
+              <div style={{ fontSize: '0.75rem', color: '#9aa0a6' }}>잔여시간</div>
+              <div style={{ fontWeight: 600, fontSize: '1.1rem', color: '#1a73e8' }}>{formatLeaveHours(refundData.remaining_hours ?? refundData.remaining_days * 8)}</div>
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', color: '#9aa0a6' }}>1일 환급액</div>
@@ -1136,7 +1184,7 @@ function RefundCalc() {
             </div>
           </div>
           <div style={{ marginTop: 12, fontSize: '0.78rem', color: '#9aa0a6' }}>
-            계산식: {formatCurrency(refundData.salary)} ÷ 209h × 8h × {refundData.remaining_days}일 = {formatCurrency(refundData.refund_total)}
+            계산식: {formatCurrency(refundData.salary)} ÷ 209h × {refundData.remaining_hours ?? refundData.remaining_days * 8}h = {formatCurrency(refundData.refund_total)}
           </div>
         </div>
       )}

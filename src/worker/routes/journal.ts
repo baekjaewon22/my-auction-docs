@@ -2,12 +2,13 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { recheckAlertsForJournalEntry, recheckAlertsAfterEntryDelete } from '../lib/journal-alerts';
+import { deleteBidAnalysisForJournal, upsertBidAnalysisFromJournal } from '../lib/bid-analysis';
 
 // KST (한국 시간) 기준 날짜 — 연도별 공휴일
 const HOLIDAYS: Record<string, string[]> = {
   '2026': [
     '2026-01-01','2026-01-28','2026-01-29','2026-01-30','2026-03-01',
-    '2026-05-05','2026-05-24','2026-06-06','2026-08-15',
+    '2026-05-05','2026-05-24','2026-05-25','2026-06-06','2026-08-15',
     '2026-09-24','2026-09-25','2026-09-26','2026-10-03','2026-10-09','2026-12-25',
   ],
   '2027': [
@@ -165,6 +166,9 @@ journal.post('/', async (c) => {
   if (!body.target_date || !body.activity_type) {
     return c.json({ error: '날짜와 활동 유형은 필수입니다.' }, 400);
   }
+  if (body.activity_type === '입찰' && !String(body.data?.propertyType || '').trim()) {
+    return c.json({ error: '물건종류를 선택하세요.' }, 400);
+  }
 
   const today = getKSTToday();
   // 과거 날짜 등록 불가 (master/ceo/cc_ref 제외)
@@ -195,6 +199,16 @@ journal.post('/', async (c) => {
   ).bind(id, assignee.id, body.target_date, body.activity_type, body.activity_subtype || '', JSON.stringify(body.data), assignee.branch, assignee.department).run();
 
   // 영속 알림 재계산 (개인/입찰/출장/일정공백)
+  if (body.activity_type === '입찰') {
+    const inserted = await db.prepare(`
+      SELECT j.*, u.name as user_name
+      FROM journal_entries j
+      LEFT JOIN users u ON u.id = j.user_id
+      WHERE j.id = ?
+    `).bind(id).first<any>();
+    if (inserted) await upsertBidAnalysisFromJournal(db, inserted).catch((err) => console.error('[bid analysis sync on insert]', err));
+  }
+
   await recheckAlertsForJournalEntry(db, id).catch((err) => console.error('[recheckAlerts on insert]', err));
 
   return c.json({ entry: { id, target_date: body.target_date, activity_type: body.activity_type } }, 201);
@@ -267,6 +281,18 @@ journal.put('/:id', async (c) => {
   ).run();
 
   // 영속 알림 재계산
+  const synced = await db.prepare(`
+    SELECT j.*, u.name as user_name
+    FROM journal_entries j
+    LEFT JOIN users u ON u.id = j.user_id
+    WHERE j.id = ?
+  `).bind(id).first<any>();
+  if (synced?.activity_type === '입찰') {
+    await upsertBidAnalysisFromJournal(db, synced).catch((err) => console.error('[bid analysis sync on update]', err));
+  } else {
+    await deleteBidAnalysisForJournal(db, id).catch((err) => console.error('[bid analysis delete on update]', err));
+  }
+
   await recheckAlertsForJournalEntry(db, id).catch((err) => console.error('[recheckAlerts on update]', err));
 
   return c.json({ success: true });
@@ -286,6 +312,7 @@ journal.delete('/:id', async (c) => {
   if (entry.target_date < today && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '지난 일정은 삭제할 수 없습니다.' }, 400);
 
   await db.prepare('DELETE FROM journal_entries WHERE id = ?').bind(id).run();
+  await deleteBidAnalysisForJournal(db, id).catch((err) => console.error('[bid analysis delete on journal delete]', err));
 
   // FK CASCADE로 entry-level alert 자동 삭제됨. day-level 알림(일정공백)은 재계산 필요.
   await recheckAlertsAfterEntryDelete(db, entry.user_id, entry.target_date)

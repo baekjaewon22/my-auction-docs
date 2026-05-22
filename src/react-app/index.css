@@ -547,14 +547,439 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 16px;
-  margin-bottom: 32px;
+  margin-bottom: 14px;
+}
+
+.bid-analysis {
+  display: grid;
+  gap: 14px;
+}
+
+.bid-analysis-toolbar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr)) auto auto auto;
+  gap: 10px;
+  align-items: end;
+  padding: 14px;
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+.bid-analysis-manual-form {
+  background: #fff;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.06);
+  padding: 14px;
+}
+
+.bid-analysis-manual-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.bid-analysis-manual-head strong {
+  color: #0f172a;
+  font-size: 0.95rem;
+}
+
+.bid-analysis-manual-head button,
+.bid-analysis-edit-btn {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #d6dbe3;
+  border-radius: 6px;
+  color: #475569;
+  cursor: pointer;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+
+.bid-analysis-manual-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.bid-analysis-manual-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.bid-analysis-manual-grid span {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.bid-analysis-manual-grid input,
+.bid-analysis-manual-grid select {
+  border: 1px solid #d6dbe3;
+  border-radius: 6px;
+  color: #1f2937;
+  min-height: 34px;
+  padding: 7px 9px;
+  width: 100%;
+}
+
+.bid-analysis-manual-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.bid-analysis-source {
+  background: #f1f5f9;
+  border-radius: 999px;
+  color: #475569;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.bid-analysis-field {
+  display: grid;
+  gap: 5px;
+}
+
+.bid-analysis-field label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.bid-analysis-field input,
+.bid-analysis-field select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid #d6dbe3;
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 0.82rem;
+  background: #fff;
+  color: #1f2937;
+}
+
+.bid-analysis-action {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.bid-analysis-table-wrap {
+  overflow-x: auto;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.05);
+}
+
+.bid-analysis-table {
+  width: 100%;
+  min-width: 1060px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.bid-analysis-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-align: left;
+  padding: 10px 9px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.bid-analysis-table td {
+  padding: 10px 9px;
+  font-size: 0.78rem;
+  color: #1f2937;
+  border-bottom: 1px solid #eef2f7;
+  vertical-align: middle;
+}
+
+.bid-analysis-table tbody tr:hover {
+  background: #f8fbff;
+}
+
+.bid-analysis-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.bid-analysis-no {
+  width: 46px;
+  color: #64748b !important;
+  font-weight: 700;
+}
+
+.bid-analysis-date {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.bid-analysis-person {
+  min-width: 72px;
+  line-height: 1.25;
+}
+
+.bid-analysis-person span,
+.bid-analysis-person strong {
+  display: block;
+}
+
+.bid-analysis-person span {
+  color: #64748b;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.bid-analysis-person strong {
+  color: #0f172a;
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+
+.bid-analysis-case {
+  font-weight: 700;
+  color: #0f172a !important;
+}
+
+.bid-analysis-money {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.bid-result-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.bid-result-pill.won {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.bid-result-pill.failed {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.bid-result-pill.cancelled {
+  color: #9a3412;
+  background: #ffedd5;
+}
+
+.bid-analysis-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: #64748b;
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.bid-analysis-pages {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.bid-analysis-pages button {
+  min-width: 32px;
+  height: 32px;
+  border: 1px solid #d6dbe3;
+  border-radius: 6px;
+  background: #fff;
+  color: #475569;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bid-analysis-pages button:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.bid-analysis-pages button.active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.bid-analysis-pages button.next-group,
+.bid-analysis-pages button.prev-group {
+  display: inline-grid;
+  place-items: center;
+}
+
+.bid-match-check {
+  display: grid;
+  gap: 14px;
+}
+
+.bid-match-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.bid-match-summary > div {
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+.bid-match-summary span {
+  display: block;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.bid-match-summary strong {
+  color: #0f172a;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.bid-match-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.bid-match-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.bid-match-panel {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.05);
+}
+
+.bid-match-panel h3 {
+  margin: 0;
+  padding: 13px 14px;
+  font-size: 0.9rem;
+  color: #0f172a;
+  border-bottom: 1px solid #eef2f7;
+  background: #f8fafc;
+}
+
+.bid-match-list {
+  display: grid;
+}
+
+.bid-match-item {
+  padding: 12px 14px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.bid-match-item:last-child {
+  border-bottom: none;
+}
+
+.bid-match-item > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.bid-match-item strong {
+  color: #0f172a;
+  font-size: 0.86rem;
+}
+
+.bid-match-item p {
+  margin: 5px 0 3px;
+  color: #334155;
+  font-size: 0.78rem;
+}
+
+.bid-match-item small {
+  color: #64748b;
+  font-size: 0.72rem;
+}
+
+.bid-match-muted {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: #f1f5f9;
+  border-radius: 999px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .bid-match-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bid-match-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .bid-analysis-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bid-analysis-manual-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bid-analysis-action {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 560px) {
+  .bid-analysis-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .bid-analysis-manual-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .stat-card {
   background: #fff;
   border: 1px solid var(--gray-200);
   border-radius: var(--radius);
-  padding: 20px;
+  padding: 9px 12px;
   text-align: center;
   transition: box-shadow 0.15s;
 }
@@ -562,20 +987,23 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .stat-card:hover { box-shadow: var(--shadow-md); }
 
 .stat-number {
-  font-size: 2rem;
+  font-size: 1.35rem;
   font-weight: 700;
   color: var(--gray-900);
+  line-height: 1.05;
 }
 
 .stat-label {
-  font-size: 0.8rem;
+  font-size: 0.7rem;
   color: var(--gray-500);
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .stat-icon {
   color: var(--gray-400);
-  margin-bottom: 8px;
+  width: 20px;
+  height: 20px;
+  margin-bottom: 3px;
 }
 
 .stat-draft .stat-icon { color: var(--gray-500); }
@@ -623,6 +1051,67 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .dashboard-today-news-panel {
   min-width: 0;
   height: 100%;
+}
+
+.dashboard-notice-section {
+  margin-bottom: 16px;
+}
+
+.dashboard-notice-panel {
+  padding: 14px 18px;
+  border: 1px solid #dfe3ea;
+  border-top: 3px solid #f59f00;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(60, 64, 67, 0.08);
+}
+
+.dashboard-notice-item {
+  display: block;
+  padding: 10px 12px;
+  border: 1px solid var(--gray-100);
+  border-radius: 8px;
+  background: #f8f9fa;
+  color: inherit;
+  text-decoration: none;
+}
+
+.dashboard-notice-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.dashboard-notice-line strong {
+  flex: 0 0 auto;
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--gray-900);
+  font-size: 0.88rem;
+}
+
+.dashboard-notice-line span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--gray-600);
+  font-size: 0.8rem;
+}
+
+.dashboard-notice-line time {
+  flex: 0 0 auto;
+  color: var(--gray-500);
+  font-size: 0.74rem;
+}
+
+.dashboard-notice-item:hover {
+  border-color: var(--primary);
+  background: #fff;
 }
 
 .dashboard-top-alert-panel {
@@ -6424,3 +6913,874 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   }
 }
 
+.freelancer-bid-page {
+  max-width: 1180px;
+}
+
+.freelancer-bid-form,
+.freelancer-bid-list {
+  background: #fff;
+  border: 1px solid #e4e8f0;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(17, 24, 39, 0.04);
+  padding: 18px;
+}
+
+.freelancer-bid-form {
+  margin-bottom: 18px;
+}
+
+.freelancer-bid-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.freelancer-bid-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.freelancer-bid-form label span {
+  color: #4b5563;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.freelancer-bid-form input,
+.freelancer-bid-form select,
+.freelancer-bid-form textarea {
+  width: 100%;
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+  color: #111827;
+  font-size: 0.9rem;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.freelancer-bid-form textarea {
+  resize: vertical;
+}
+
+.freelancer-bid-form .case-no-inline {
+  display: grid;
+  grid-template-columns: 86px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.freelancer-bid-form .case-no-fixed {
+  color: #4b5563;
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.freelancer-bid-wide {
+  grid-column: span 2;
+}
+
+.freelancer-bid-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.freelancer-bid-list-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.freelancer-bid-list-head h2 {
+  color: #111827;
+  font-size: 1rem;
+  margin: 0;
+}
+
+.freelancer-bid-list-head span {
+  color: #6b7280;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.freelancer-bid-table-wrap {
+  overflow-x: auto;
+}
+
+.freelancer-bid-table {
+  border-collapse: collapse;
+  min-width: 980px;
+  width: 100%;
+}
+
+.freelancer-bid-table th,
+.freelancer-bid-table td {
+  border-bottom: 1px solid #eef1f5;
+  color: #374151;
+  font-size: 0.84rem;
+  padding: 10px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.freelancer-bid-table th {
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 800;
+}
+
+.freelancer-bid-table strong {
+  color: #111827;
+}
+
+.bid-result-pill {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 3px 8px;
+}
+
+.bid-result-pill.won {
+  background: #e6f4ea;
+  color: #137333;
+}
+
+.bid-result-pill.failed {
+  background: #fce8e6;
+  color: #c5221f;
+}
+
+.bid-result-pill.cancelled {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.row-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.row-actions button {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+  color: #4b5563;
+  cursor: pointer;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+
+@media (max-width: 920px) {
+  .freelancer-bid-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.fee-calc-page {
+  display: grid;
+  gap: 20px;
+  max-width: 980px;
+  margin: 4px auto 0;
+}
+
+.fee-calc-card,
+.fee-calc-rule-card,
+.fee-calc-table-card {
+  background: #fff;
+  border: 1px solid #d9e2d6;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.05);
+  padding: 22px;
+}
+
+.fee-calc-card h3,
+.fee-calc-table-card h3 {
+  align-items: center;
+  color: #4f63ff;
+  display: flex;
+  font-size: 1.08rem;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+
+.fee-calc-card h3 span {
+  align-items: center;
+  background: #ff9800;
+  border-radius: 999px;
+  color: #fff;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 800;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+
+.fee-calc-card h3 small,
+.fee-calc-table-card h3 small {
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.fee-calc-box {
+  border: 1px solid #d7cdf8;
+  overflow: hidden;
+}
+
+.fee-calc-input-row,
+.fee-calc-result {
+  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(150px, 0.5fr) minmax(180px, 1fr) 34px;
+}
+
+.fee-calc-input-row label,
+.fee-calc-result label {
+  background: #f4eef8;
+  color: #1f2937;
+  font-weight: 700;
+  height: 100%;
+  padding: 12px 18px;
+}
+
+.fee-calc-input-row input,
+.fee-calc-result strong {
+  border: 1px solid #cbd5e1;
+  color: #111827;
+  font-size: 0.95rem;
+  margin: 8px;
+  min-height: 34px;
+  padding: 6px 10px;
+  text-align: right;
+}
+
+.fee-calc-result strong {
+  background: #fff;
+  display: block;
+  font-weight: 800;
+}
+
+.fee-calc-check-area {
+  background: #edf9ef;
+  color: #243442;
+  padding: 10px 18px 14px;
+}
+
+.fee-calc-check {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.fee-calc-check input {
+  height: 18px;
+  width: 18px;
+}
+
+.fee-calc-check-area p {
+  line-height: 1.8;
+  margin: 0;
+}
+
+.fee-calc-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.fee-calc-result-title {
+  color: #4f63ff;
+  font-size: 1.02rem;
+  font-weight: 900;
+  margin: 24px 0 10px;
+}
+
+.fee-calc-result-title::before {
+  color: #139313;
+  content: '▶';
+  margin-right: 6px;
+}
+
+.fee-calc-result {
+  border: 1px solid #d7cdf8;
+}
+
+.fee-calc-result label {
+  background: #edf9ef;
+}
+
+.fee-calc-rule-card h4 {
+  color: #673ab7;
+  font-size: 0.95rem;
+  margin: 0 0 12px;
+}
+
+.fee-calc-rule-card p {
+  color: #374151;
+  font-size: 0.9rem;
+  line-height: 2;
+  margin: 0 0 16px;
+}
+
+.fee-calc-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.fee-calc-table th {
+  background: #edf9ef;
+  border-bottom: 14px solid #d8c9f0;
+  color: #111827;
+  font-size: 0.94rem;
+  padding: 16px 18px;
+  text-align: center;
+}
+
+.fee-calc-table th:first-child {
+  width: 64%;
+}
+
+.fee-calc-table th:last-child,
+.fee-calc-table td:last-child {
+  background: #edf9ef;
+  text-align: center;
+}
+
+.fee-calc-table td {
+  border-bottom: 1px solid #eef2f7;
+  color: #374151;
+  font-size: 0.9rem;
+  line-height: 1.7;
+  padding: 10px 18px;
+  vertical-align: middle;
+}
+
+.fee-calc-table td b {
+  color: #334155;
+  font-weight: 700;
+}
+
+@media (max-width: 720px) {
+  .fee-calc-card,
+  .fee-calc-rule-card,
+  .fee-calc-table-card {
+    padding: 16px;
+  }
+
+  .fee-calc-input-row,
+  .fee-calc-result {
+    grid-template-columns: 1fr;
+  }
+
+  .fee-calc-input-row label,
+  .fee-calc-result label {
+    padding: 10px 12px;
+  }
+
+  .fee-calc-input-row span,
+  .fee-calc-result span {
+    padding: 0 10px 10px;
+    text-align: right;
+  }
+
+  .fee-calc-table {
+    min-width: 680px;
+  }
+
+  .fee-calc-table-card {
+    overflow-x: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .freelancer-bid-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .freelancer-bid-wide {
+    grid-column: auto;
+  }
+}
+
+/* 보수계산: 외부 예시 화면에 맞춘 CSS 전용 스타일 조정 */
+.fee-calc-page {
+  color: #3f4a54;
+  gap: 18px;
+  margin: 6px auto 0;
+  max-width: 930px;
+}
+
+.fee-calc-card,
+.fee-calc-rule-card,
+.fee-calc-table-card {
+  background: #fff;
+  border: 1px solid #416b39;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 28px 30px;
+}
+
+.fee-calc-card h3,
+.fee-calc-table-card h3 {
+  color: #5069ff;
+  font-size: 1.12rem;
+  gap: 7px;
+  letter-spacing: 0;
+  line-height: 1.35;
+  margin: 0 0 24px;
+}
+
+.fee-calc-card h3 span {
+  background: #ff9800;
+  font-size: 0.76rem;
+  height: 20px;
+  width: 20px;
+}
+
+.fee-calc-card h3 small,
+.fee-calc-table-card h3 small {
+  color: #2d3640;
+  font-size: 0.82rem;
+}
+
+.fee-calc-box {
+  border: 1px solid #cfc4ed;
+}
+
+.fee-calc-input-row,
+.fee-calc-result {
+  grid-template-columns: 31% minmax(220px, 1fr) 38px;
+  min-height: 46px;
+}
+
+.fee-calc-input-row label,
+.fee-calc-result label {
+  background: #f6eef8;
+  color: #27323c;
+  font-weight: 500;
+  padding: 10px 18px;
+}
+
+.fee-calc-input-row input,
+.fee-calc-result strong {
+  border: 1px solid #bfc6d1;
+  color: #111827;
+  font-size: 0.9rem;
+  height: 30px;
+  margin: 8px;
+  min-height: 30px;
+  padding: 4px 10px;
+}
+
+.fee-calc-check-area {
+  background: #edf9ef;
+  color: #27323c;
+  padding: 7px 20px 12px;
+}
+
+.fee-calc-check {
+  font-weight: 500;
+  margin-bottom: 9px;
+}
+
+.fee-calc-check-area p {
+  color: #27323c;
+  font-size: 0.92rem;
+  line-height: 1.95;
+}
+
+.fee-calc-actions {
+  margin-top: 16px;
+}
+
+.fee-calc-actions .btn,
+.fee-calc-card .btn,
+.fee-calc-table-card .btn {
+  background: linear-gradient(#fff, #e9e9e9);
+  border: 1px solid #b9b9b9;
+  border-radius: 2px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  color: #1f2933;
+  font-size: 0.82rem;
+  font-weight: 800;
+  min-height: 28px;
+  padding: 4px 12px;
+}
+
+.fee-calc-actions .btn:hover,
+.fee-calc-card .btn:hover,
+.fee-calc-table-card .btn:hover {
+  background: linear-gradient(#fff, #dedede);
+  transform: none;
+}
+
+.fee-calc-result-title {
+  color: #5069ff;
+  font-size: 1.02rem;
+  margin: 28px 0 12px;
+}
+
+.fee-calc-result-title::before {
+  color: #139313;
+  content: '>';
+  margin-right: 6px;
+}
+
+.fee-calc-result {
+  border: 1px solid #cfc4ed;
+}
+
+.fee-calc-result label {
+  background: #edf9ef;
+}
+
+.fee-calc-rule-card h4 {
+  color: #6b4cff;
+  font-size: 0.95rem;
+  margin: 0 0 14px;
+}
+
+.fee-calc-rule-card p {
+  color: #555f69;
+  font-size: 0.9rem;
+  line-height: 2.05;
+  margin: 0 0 18px;
+}
+
+.fee-calc-table {
+  border: 1px solid #303030;
+}
+
+.fee-calc-table th {
+  background: #edf9ef;
+  border-bottom: 16px solid #d8c9f0;
+  color: #111827;
+  font-size: 1rem;
+  font-weight: 500;
+  padding: 16px 18px;
+}
+
+.fee-calc-table th:last-child,
+.fee-calc-table td:last-child {
+  background: #edf9ef;
+}
+
+.fee-calc-table td {
+  border-bottom: 0;
+  color: #4a5560;
+  font-size: 0.92rem;
+  line-height: 1.75;
+  padding: 8px 18px;
+}
+
+.fee-calc-table td b {
+  color: #34404b;
+  font-weight: 500;
+}
+
+@media (max-width: 720px) {
+  .fee-calc-card,
+  .fee-calc-rule-card,
+  .fee-calc-table-card {
+    padding: 18px;
+  }
+
+  .fee-calc-input-row,
+  .fee-calc-result {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Fee calculator: modern app-native styling */
+.fee-calc-page {
+  color: #1f2937;
+  gap: 18px;
+  margin: 4px auto 0;
+  max-width: 980px;
+}
+
+.fee-calc-card,
+.fee-calc-rule-card,
+.fee-calc-table-card {
+  background: #fff;
+  border: 1px solid #e4e8f0;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  padding: 24px;
+}
+
+.fee-calc-card h3,
+.fee-calc-table-card h3 {
+  color: #0f172a;
+  font-size: 1.08rem;
+  gap: 9px;
+  letter-spacing: 0;
+  line-height: 1.4;
+  margin: 0 0 18px;
+}
+
+.fee-calc-card h3 span {
+  background: linear-gradient(135deg, #1a73e8, #4f8df7);
+  box-shadow: 0 6px 14px rgba(26, 115, 232, 0.22);
+  font-size: 0.72rem;
+  height: 22px;
+  width: 22px;
+}
+
+.fee-calc-card h3 small,
+.fee-calc-table-card h3 small {
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.fee-calc-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.fee-calc-input-row,
+.fee-calc-result {
+  grid-template-columns: 170px max-content max-content 1fr;
+  min-height: 54px;
+}
+
+.fee-calc-input-row label,
+.fee-calc-result label {
+  align-items: center;
+  background: #f1f5f9;
+  border-right: 1px solid #e2e8f0;
+  color: #475569;
+  display: flex;
+  font-size: 0.86rem;
+  font-weight: 800;
+  padding: 0 16px;
+}
+
+.fee-calc-input-row input,
+.fee-calc-result strong {
+  background: #fff;
+  border: 1px solid #d6dbe3;
+  border-radius: 8px;
+  color: #111827;
+  font-size: 0.95rem;
+  height: 36px;
+  margin: 9px 0 9px 12px;
+  min-height: 36px;
+  padding: 7px 12px;
+  width: 280px;
+}
+
+.fee-calc-input-row span,
+.fee-calc-result span {
+  align-items: center;
+  color: #64748b;
+  display: flex;
+  font-size: 0.86rem;
+  font-weight: 700;
+  justify-content: flex-start;
+  min-width: 24px;
+  padding-left: 6px;
+}
+
+.fee-calc-check-area {
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  color: #334155;
+  padding: 14px 16px 16px;
+}
+
+.fee-calc-check {
+  color: #0f172a;
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+.fee-calc-check-area p {
+  color: #475569;
+  font-size: 0.86rem;
+  line-height: 1.75;
+}
+
+.fee-calc-actions {
+  margin-top: 14px;
+}
+
+.fee-calc-actions .btn,
+.fee-calc-card .btn,
+.fee-calc-table-card .btn {
+  background: #fff;
+  border: 1px solid #d6dbe3;
+  border-radius: 8px;
+  box-shadow: none;
+  color: #334155;
+  font-size: 0.84rem;
+  font-weight: 800;
+  min-height: 36px;
+  padding: 7px 14px;
+}
+
+.fee-calc-actions .btn:hover,
+.fee-calc-card .btn:hover,
+.fee-calc-table-card .btn:hover {
+  background: #f8fafc;
+  border-color: #b8c3d3;
+  transform: translateY(-1px);
+}
+
+.fee-calc-actions .btn-primary {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #fff;
+}
+
+.fee-calc-actions .btn-primary:hover {
+  background: #155fc0;
+  border-color: #155fc0;
+}
+
+.fee-calc-result-title {
+  align-items: center;
+  color: #0f172a;
+  display: flex;
+  font-size: 0.98rem;
+  font-weight: 900;
+  gap: 8px;
+  margin: 24px 0 10px;
+}
+
+.fee-calc-result-title::before {
+  background: #e8f0fe;
+  border-radius: 6px;
+  color: #1a73e8;
+  content: '>';
+  display: inline-flex;
+  font-size: 0.82rem;
+  font-weight: 900;
+  height: 22px;
+  justify-content: center;
+  margin-right: 0;
+  width: 22px;
+}
+
+.fee-calc-result {
+  background: #f8fafc;
+  border: 1px solid #dbe6f6;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.fee-calc-result label {
+  background: #eef6ff;
+  color: #1e4f88;
+}
+
+.fee-calc-result strong {
+  align-items: center;
+  display: flex;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+  justify-content: flex-end;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.fee-calc-rule-card h4 {
+  color: #0f172a;
+  font-size: 0.95rem;
+  margin: 0 0 12px;
+}
+
+.fee-calc-rule-card p {
+  color: #4b5563;
+  font-size: 0.88rem;
+  line-height: 1.85;
+  margin: 0 0 16px;
+}
+
+.fee-calc-table {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+}
+
+.fee-calc-table th {
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  color: #475569;
+  font-size: 0.84rem;
+  font-weight: 900;
+  padding: 13px 16px;
+}
+
+.fee-calc-table th:last-child,
+.fee-calc-table td:last-child {
+  background: #f8fbff;
+}
+
+.fee-calc-table td {
+  border-bottom: 1px solid #eef2f7;
+  color: #334155;
+  font-size: 0.88rem;
+  line-height: 1.7;
+  padding: 10px 16px;
+}
+
+.fee-calc-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.fee-calc-table td b {
+  color: #0f172a;
+  font-weight: 800;
+}
+
+@media (max-width: 720px) {
+  .fee-calc-card,
+  .fee-calc-rule-card,
+  .fee-calc-table-card {
+    padding: 16px;
+  }
+
+  .fee-calc-input-row,
+  .fee-calc-result {
+    grid-template-columns: 1fr;
+  }
+
+  .fee-calc-input-row label,
+  .fee-calc-result label {
+    border-right: 0;
+    border-bottom: 1px solid #e2e8f0;
+    min-height: 42px;
+  }
+
+  .fee-calc-input-row input,
+  .fee-calc-result strong {
+    margin: 10px 12px 0;
+    width: calc(100% - 24px);
+  }
+
+  .fee-calc-input-row span,
+  .fee-calc-result span {
+    justify-content: flex-end;
+    padding: 4px 14px 10px;
+  }
+}

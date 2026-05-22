@@ -513,7 +513,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
     if (isLeaveDoc) {
       const leaveType = isSpecial
         ? '특별휴가'
-        : title.includes('반차') ? '반차' : title.includes('월차') ? '월차' : '연차';
+        : title.includes('반차') ? '반차' : '연차';
 
       // 날짜 결정: "휴가 기간 : 2026년 4월 28일 ~ 2026년 4월 30일" 처럼 시작/종료가 다르면 다일로 처리
       const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -537,7 +537,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
         if (endDate < startDate) endDate = startDate;
       }
 
-      // days 계산: 반차 0.5 / 특별휴가는 본문 "총 N일" 우선, 못 찾으면 (end-start)+1 / 그 외 연차 동일
+      // days는 호환 저장값, 실제 차감은 hours 기준(연차 8h, 반차 4h)
       let days: number;
       if (leaveType === '반차') {
         days = 0.5;
@@ -558,6 +558,8 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
         ) + 1;
         days = Math.min(31, Math.max(1, diff));
       }
+      const deductHours = leaveType === '반차' ? 4 : days * 8;
+      const deductDays = Math.round((deductHours / 8) * 1000) / 1000;
 
       // [중복 방지]
       const dup = await db.prepare(
@@ -582,10 +584,10 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
           const leaveData = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
           if (leaveData?.leave_type === 'monthly') {
             await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-              .bind(days, doc.author_id).run();
+              .bind(deductDays, doc.author_id).run();
           } else {
             await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
-              .bind(days, doc.author_id).run();
+              .bind(deductDays, doc.author_id).run();
           }
         }
 
@@ -594,9 +596,9 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
           ? `특별휴가 (${doc.title})`
           : `문서결재 자동등록 (${doc.title})`;
         await db.prepare(
-          "INSERT INTO leave_requests (id, user_id, leave_type, start_date, end_date, days, reason, status, approved_by, approved_at, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), ?, ?)"
+          "INSERT INTO leave_requests (id, user_id, leave_type, start_date, end_date, hours, days, reason, status, approved_by, approved_at, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), ?, ?)"
         ).bind(
-          crypto.randomUUID(), doc.author_id, leaveType, startDate, endDate, days,
+          crypto.randomUUID(), doc.author_id, leaveType, startDate, endDate, deductHours, deductDays,
           reason, user.sub, doc.branch || '', doc.department || ''
         ).run();
       }

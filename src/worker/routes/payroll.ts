@@ -199,13 +199,14 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
   // 무급휴가 공제 계산: 해당 월 내 승인된 무급휴가(특별휴가-기타) 조회
   const unpaidLeaveResult = await db.prepare(`
-    SELECT COALESCE(SUM(days), 0) as total_days FROM leave_requests
+    SELECT COALESCE(SUM(COALESCE(hours, days * 8)), 0) as total_hours FROM leave_requests
     WHERE user_id = ? AND status = 'approved'
       AND leave_type = '특별휴가' AND instr(reason, '기타') > 0
       AND start_date >= ? AND start_date <= ?
   `).bind(userId, monthStart, monthEnd).first<any>();
-  const unpaidLeaveDays = unpaidLeaveResult?.total_days || 0;
-  const unpaidLeaveDeduction = salary > 0 ? Math.round((salary / 209) * 8 * unpaidLeaveDays) : 0;
+  const unpaidLeaveHours = unpaidLeaveResult?.total_hours || 0;
+  const unpaidLeaveDays = unpaidLeaveHours / 8;
+  const unpaidLeaveDeduction = salary > 0 ? Math.round((salary / 209) * unpaidLeaveHours) : 0;
 
   // 본사관리 인원은 실적 기반 성과금 없음
   const isHQ = user.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
