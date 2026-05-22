@@ -1104,6 +1104,9 @@ adminNotes.post('/', async (c) => {
   if (category === 'eviction_quote' && (!court?.trim() || !case_number?.trim())) {
     return c.json({ error: '법원과 사건번호를 입력하세요.' }, 400);
   }
+  if (category === 'legal_support' && legalSubcategory === 'auction' && (!court?.trim() || !case_number?.trim())) {
+    return c.json({ error: '경매 상담은 법원과 사건번호를 입력하세요.' }, 400);
+  }
 
   // 사용자 정보
   const profile = await db.prepare(
@@ -1196,8 +1199,8 @@ adminNotes.post('/', async (c) => {
     category === 'briefing_schedule' || category === 'notice' ? 'all' : visibility || 'all',
     profile?.branch || '', profile?.department || '',
     category,
-    category === 'eviction_quote' || category === 'briefing_schedule' ? court.trim() : null,
-    category === 'eviction_quote' || category === 'briefing_schedule' ? case_number.trim() : null,
+    category === 'eviction_quote' || category === 'briefing_schedule' || (category === 'legal_support' && legalSubcategory === 'auction') ? String(court || '').trim() : null,
+    category === 'eviction_quote' || category === 'briefing_schedule' || (category === 'legal_support' && legalSubcategory === 'auction') ? String(case_number || '').trim().replace(/\s+/g, '') : null,
     legalSubcategory,
     category === 'legal_support' && shouldTrackLawsuitCost(legalSubcategory) && lawsuit_cost_requested ? 1 : 0,
     category === 'briefing_schedule' ? assignee?.id : null,
@@ -1249,7 +1252,7 @@ adminNotes.put('/:id', async (c) => {
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);
   const id = c.req.param('id');
-  const { title, content, pinned, legal_subcategory, lawsuit_cost_requested } = await c.req.json();
+  const { title, content, pinned, legal_subcategory, lawsuit_cost_requested, court, case_number } = await c.req.json();
 
   const note = await db.prepare('SELECT * FROM admin_notes WHERE id = ?').bind(id).first<any>();
   if (!note) return c.json({ error: '노트를 찾을 수 없습니다.' }, 404);
@@ -1268,6 +1271,9 @@ adminNotes.put('/:id', async (c) => {
   if (note.category === 'legal_support' && nextLegalSubcategory === 'legal_terms' && !canCreateLegalTerms(role, profile?.department)) {
     return c.json({ error: '법률용어는 법률지원팀 및 관리자급 이상만 작성할 수 있습니다.' }, 403);
   }
+  if (note.category === 'legal_support' && nextLegalSubcategory === 'auction' && (!String(court || note.court || '').trim() || !String(case_number || note.case_number || '').trim())) {
+    return c.json({ error: '경매 상담은 법원과 사건번호를 입력하세요.' }, 400);
+  }
 
   // pinned 수정은 master만
   const canPin = role === 'master';
@@ -1275,10 +1281,16 @@ adminNotes.put('/:id', async (c) => {
   const nextCostRequested = note.category === 'legal_support' && shouldTrackLawsuitCost(nextLegalSubcategory)
     ? (lawsuit_cost_requested === undefined ? (note.lawsuit_cost_requested ? 1 : 0) : lawsuit_cost_requested ? 1 : 0)
     : 0;
+  const nextCourt = note.category === 'legal_support' && nextLegalSubcategory === 'auction'
+    ? String(court || note.court || '').trim()
+    : note.category === 'legal_support' ? null : note.court;
+  const nextCaseNumber = note.category === 'legal_support' && nextLegalSubcategory === 'auction'
+    ? String(case_number || note.case_number || '').trim().replace(/\s+/g, '')
+    : note.category === 'legal_support' ? null : note.case_number;
 
   await db.prepare(
-    `UPDATE admin_notes SET title = ?, content = ?, pinned = ?, legal_subcategory = ?, lawsuit_cost_requested = ?, updated_at = ${KST_NOW_SQL} WHERE id = ?`
-  ).bind(title?.trim() || note.title, content?.trim() || note.content, newPinned, nextLegalSubcategory, nextCostRequested, id).run();
+    `UPDATE admin_notes SET title = ?, content = ?, pinned = ?, legal_subcategory = ?, lawsuit_cost_requested = ?, court = ?, case_number = ?, updated_at = ${KST_NOW_SQL} WHERE id = ?`
+  ).bind(title?.trim() || note.title, content?.trim() || note.content, newPinned, nextLegalSubcategory, nextCostRequested, nextCourt, nextCaseNumber, id).run();
 
   return c.json({ success: true });
 });

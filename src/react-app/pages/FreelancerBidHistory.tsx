@@ -340,7 +340,6 @@ export default function FreelancerBidHistory() {
       <div className="page-header compact">
         <div>
           <h1>입찰 내역</h1>
-          <p>프리랜서 전용 입찰 작성 내역입니다. 저장된 내용은 관리자 입찰분석에 자동 반영됩니다.</p>
         </div>
         {editingId && canCreate && (
           <button type="button" className="btn-secondary" onClick={reset}>

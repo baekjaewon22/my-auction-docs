@@ -379,11 +379,12 @@ export default function Payroll() {
                   // (매출금액 - 대리비용) 을 부가세 포함 금액으로 보고 공급가(÷1.1)로 환산 → 원천세는 전체 소득 합산 시 3.3% 적용
                   const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
                   const proxyIncome = proxyRecords.reduce((sum: number, r: any) => {
-                    const amt = r.amount || 0;
                     const cost = r.proxy_cost || 0;
-                    const net = amt - cost;
-                    const supply = Math.round(net / 1.1); // 공급가
-                    return sum + Math.max(supply, 0);
+                    const amt = r.amount || 0;
+                    const isLegacyProxy = String(r.type_detail || '').includes('수익');
+                    const grossAmount = isLegacyProxy ? cost + (r.direction === 'expense' ? -amt : amt) : amt;
+                    const payrollAmount = Math.round(grossAmount / 1.1) - cost;
+                    return sum + Math.max(payrollAmount, 0);
                   }, 0);
 
                   // 전체 공급가 (표시용)
@@ -897,7 +898,12 @@ export default function Payroll() {
             const netSales = normalSupply - normalRefundSupply;
             const commAmt = Math.round(netSales * rate / 100);
             const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
-            const proxyTotal = proxyRecords.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
+            const proxyTotal = proxyRecords.reduce((sum: number, r: any) => {
+              const amt = r.amount || 0;
+              const cost = r.proxy_cost || 0;
+              const isLegacyProxy = String(r.type_detail || '').includes('수익');
+              return sum + (isLegacyProxy ? cost + (r.direction === 'expense' ? -amt : amt) : amt);
+            }, 0);
             const proxyCostTotal = proxyRecords.reduce((sum: number, r: any) => sum + (r.proxy_cost || 0), 0);
             const compRev = netSales - commAmt;
             return (

@@ -41,11 +41,12 @@ comprehensive.post('/run-monthly', requireRole('master', 'ceo', 'accountant'), a
 // ───────────────────────────────────────
 // 점수 계산 — 직군별 가중치
 // 정직원: 매출35 / 전환20 / 활동15 / 출근15 / 안정10 / 이상-5
-// 프리랜서: 매출25 / 전환25 / 활동20 / 출근15 / 성장15
+// 프리랜서: 입찰률50 / 낙찰률50
 // ───────────────────────────────────────
 type ScoreInput = {
   isFreelancer: boolean;
   targetRate: number;        // 정직원: standard 대비 / 프리랜서: 비율제 평균 대비
+  bidCompletionRate: number; // 입찰 처리율
   bidWinRate: number;        // 입찰→낙찰률 (0~100)
   activityIndex: number;     // 본인 활동수 / 조직 평균 × 100
   journalRate: number;       // 평일 일지 작성률 (0~100)
@@ -60,11 +61,8 @@ function calculateScore(input: ScoreInput) {
 
   if (input.isFreelancer) {
     const breakdown = {
-      매출: Math.round((targetScore100 / 100) * 25),
-      전환: Math.round((clamp(input.bidWinRate) / 100) * 25),
-      활동: Math.round((clamp(input.activityIndex, 0, 150) / 150) * 20),
-      출근: Math.round((clamp(input.journalRate) / 100) * 15),
-      성장: Math.round((clamp(input.growthRate + 50, 0, 100) / 100) * 15),
+      입찰률: Math.round((clamp(input.bidCompletionRate) / 100) * 50),
+      낙찰률: Math.round((clamp(input.bidWinRate) / 100) * 50),
     };
     const total = Object.values(breakdown).reduce((a, b) => a + b, 0);
     return { total, breakdown, grade: gradeOf(total) };
@@ -105,6 +103,13 @@ type TagKey =
 
 function generateTags(m: any, isFreelancer: boolean, hireMonths: number): TagKey[] {
   const tags: TagKey[] = [];
+  if (isFreelancer) {
+    if ((m.bidCompletionRate || 0) >= 90) tags.push('active');
+    else if ((m.bidCompletionRate || 0) < 50 && (m.bidCount || 0) > 0) tags.push('inactive');
+    if ((m.bidWinRate || 0) >= 50) tags.push('efficient');
+    if (m.deviationCount === 0 && m.processedBidCount > 0) tags.push('precise');
+    return tags;
+  }
   const targetRate = m.targetRate || 0;
   if (targetRate >= 120) tags.push('champion');
   else if (targetRate >= 90) tags.push('stable');
@@ -137,6 +142,14 @@ function generateTags(m: any, isFreelancer: boolean, hireMonths: number): TagKey
 function generateDiagnosis(m: any, breakdown: any, maxByKey: Record<string, number>, isFreelancer: boolean): { strengths: string[]; weaknesses: string[] } {
   const strengths: string[] = [];
   const weaknesses: string[] = [];
+  if (isFreelancer) {
+    if ((m.bidCompletionRate || 0) >= 90) strengths.push(`입찰 처리율 ${m.bidCompletionRate.toFixed(0)}%로 우수`);
+    if ((m.bidWinRate || 0) >= 50) strengths.push(`낙찰률 ${m.bidWinRate.toFixed(0)}%로 우수`);
+    if ((m.bidCompletionRate || 0) < 50 && (m.bidCount || 0) > 0) weaknesses.push(`입찰 처리율 ${m.bidCompletionRate.toFixed(0)}% — 낮음`);
+    if ((m.bidWinRate || 0) < 20 && (m.processedBidCount || 0) > 0) weaknesses.push(`낙찰률 ${m.bidWinRate.toFixed(0)}% — 낮음`);
+    if (strengths.length === 0 && weaknesses.length === 0) strengths.push('입찰 데이터 누적 중');
+    return { strengths, weaknesses };
+  }
   if (m.targetRate >= 110) strengths.push(`매출 ${m.targetRate.toFixed(0)}% 달성 — 우수`);
   if (m.bidWinRate >= 70) strengths.push(`입찰→낙찰 전환율 ${m.bidWinRate.toFixed(0)}%로 우수`);
   if (m.deviationCount === 0 && m.bidCount > 0) strengths.push('5% 편차 없음 — 입찰 정확도 우수');
@@ -274,11 +287,15 @@ comprehensive.get('/', async (c) => {
     activityMap[m.id]['입찰'] = 0;
   });
   const winMap: Record<string, number> = {};
+  const processedBidMap: Record<string, number> = {};
   const deviationMap: Record<string, number> = {};
   (bidRows.results || []).forEach((row: any) => {
     const member = memberByBranchName.get(`${row.branch_name || ''}|${row.assignee_name || ''}`) || memberByName.get(row.assignee_name || '');
     if (!member) return;
     activityMap[member.id]['입찰'] = (activityMap[member.id]['입찰'] || 0) + 1;
+    if (Number(row.actual_bid_price || 0) > 0 || row.bid_result === '낙찰') {
+      processedBidMap[member.id] = (processedBidMap[member.id] || 0) + 1;
+    }
     if (row.bid_result === '낙찰') winMap[member.id] = (winMap[member.id] || 0) + 1;
     const suggested = Number(row.suggested_bid_price || 0);
     const actual = Number(row.actual_bid_price || 0);
@@ -428,7 +445,9 @@ comprehensive.get('/', async (c) => {
       ? (freelancerAvgSales > 0 ? (totalSales / freelancerAvgSales) * 100 : 0)
       : (proratedStandard > 0 ? (totalSales / proratedStandard) * 100 : 0);
 
-    const bidWinRate = bidCount > 0 ? (winCount / bidCount) * 100 : 0;
+    const processedBidCount = processedBidMap[m.id] || 0;
+    const bidCompletionRate = bidCount > 0 ? (processedBidCount / bidCount) * 100 : 0;
+    const bidWinRate = processedBidCount > 0 ? (winCount / processedBidCount) * 100 : 0;
     const activityIndex = orgActivityAvg > 0 ? (activityCount / orgActivityAvg) * 100 : 100;
     // 프리랜서는 일지 작성 의무가 없으므로 결근율 평가 제외 (만점 처리)
     const journalDays = Object.values(myActivity).reduce((a, b) => a + b, 0);
@@ -460,14 +479,14 @@ comprehensive.get('/', async (c) => {
       : 0;
 
     const score = calculateScore({
-      isFreelancer, targetRate, bidWinRate, activityIndex, journalRate, refundRate, anomalyCount, growthRate,
+      isFreelancer, targetRate, bidCompletionRate, bidWinRate, activityIndex, journalRate, refundRate, anomalyCount, growthRate,
     });
 
-    const tagsCtx = { targetRate, activityIndex, bidWinRate, deviationCount, refundCount: sales.refunded_count, salesCount: sales.sales_count, journalRate, growthRate, bidCount };
+    const tagsCtx = { targetRate, activityIndex, bidCompletionRate, bidWinRate, deviationCount, refundCount: sales.refunded_count, salesCount: sales.sales_count, journalRate, growthRate, bidCount, processedBidCount };
     const tags = generateTags(tagsCtx, isFreelancer, hireMonths);
 
     const maxByKey: Record<string, number> = isFreelancer
-      ? { 매출: 25, 전환: 25, 활동: 20, 출근: 15, 성장: 15 }
+      ? { 입찰률: 50, 낙찰률: 50 }
       : { 매출: 35, 전환: 20, 활동: 15, 출근: 15, 안정: 10 };
     const diag = generateDiagnosis({ ...tagsCtx, targetRate }, score.breakdown, maxByKey, isFreelancer);
 
@@ -496,7 +515,7 @@ comprehensive.get('/', async (c) => {
         monthly_trend: trendArr,
         growth_rate: Math.round(growthRate * 10) / 10,
       },
-      conversion: { bid_to_win: Math.round(bidWinRate * 10) / 10 },
+      conversion: { bid_completion: Math.round(bidCompletionRate * 10) / 10, bid_to_win: Math.round(bidWinRate * 10) / 10 },
       anomalies: { deviation: deviationCount, refund: sales.refunded_count, total: anomalyCount },
       score,
       tags,

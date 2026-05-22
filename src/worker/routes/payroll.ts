@@ -146,7 +146,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const salesQuery = `
     SELECT id, type, type_detail, client_name, client_phone, depositor_name, depositor_different,
       amount, contract_date, deposit_date, status, confirmed_at, memo, exclude_from_count,
-      payment_type, card_deposit_date, proxy_cost
+      payment_type, card_deposit_date, proxy_cost, direction
     FROM sales_records
     WHERE user_id = ? AND status IN ('confirmed', 'refunded')
       AND (
@@ -549,7 +549,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       ? rateOverrides[u.id]
       : (Number(u.commission_rate) || (isJanFeb2026 ? 50 : 0));
     const salesRes = await db.prepare(`
-      SELECT type, type_detail, amount, proxy_cost, payment_type, card_deposit_date, deposit_date, contract_date
+      SELECT type, type_detail, amount, proxy_cost, direction, payment_type, card_deposit_date, deposit_date, contract_date
       FROM sales_records
       WHERE user_id = ? AND status = 'confirmed'
         AND (
@@ -566,8 +566,12 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
         // sales_records의 명도성과금 INSERT 건은 제외 (cases 직접 조회로 중복 방지)
         continue;
       } else if (r.type === '매수신청대리') {
-        const net = (r.amount || 0) - (r.proxy_cost || 0);
-        proxyIncome += Math.max(Math.round(net / 1.1), 0);
+        const amount = r.amount || 0;
+        const cost = r.proxy_cost || 0;
+        const isLegacyProxy = String(r.type_detail || '').includes('수익');
+        const grossAmount = isLegacyProxy ? cost + (r.direction === 'expense' ? -amount : amount) : amount;
+        const payrollAmount = Math.round(grossAmount / 1.1) - cost;
+        proxyIncome += Math.max(payrollAmount, 0);
       } else {
         normalSupply += Math.round((r.amount || 0) / 1.1);
       }

@@ -30,14 +30,39 @@ interface ScheduleGapAlert {
   gaps: string[]; // ["09:00~10:00", "14:00~15:30"]
 }
 
+const dashboardNewsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+const dashboardNewsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
+
+function pickTodayLegalFact(legalFacts: any[]) {
+  if (legalFacts.length === 0) return null;
+  const ordered = legalFacts
+    .slice()
+    .sort((a: any, b: any) => String(a.created_at || a.updated_at || '').localeCompare(String(b.created_at || b.updated_at || '')));
+  const kstDayIndex = Math.floor((Date.now() + 9 * 60 * 60 * 1000) / 86400000);
+  return ordered[Math.floor(kstDayIndex / 3) % ordered.length];
+}
+
 function FreelancerDashboard() {
   const { user } = useAuthStore();
   const [mySales, setMySales] = useState<SalesRecord[]>([]);
+  const [todayNews, setTodayNews] = useState<any[]>([]);
+  const [legalFacts, setLegalFacts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.sales.list({}).then(res => {
-      setMySales((res.records || []).filter((r: SalesRecord) => r.user_id === user?.id));
+    Promise.all([
+      api.sales.list({}).catch(() => null),
+      api.adminNotes.list({ category: 'article_news' }).catch(() => null),
+      api.adminNotes.list({ category: 'legal_support', legal_subcategory: 'legal_terms' }).catch(() => null),
+    ]).then(([salesRes, newsRes, legalFactsRes]) => {
+      if (salesRes) setMySales((salesRes.records || []).filter((r: SalesRecord) => r.user_id === user?.id));
+      if (newsRes) {
+        const latestNews = (newsRes.notes || [])
+          .slice()
+          .sort((a: any, b: any) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+        setTodayNews(latestNews);
+      }
+      if (legalFactsRes) setLegalFacts(legalFactsRes.notes || []);
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
@@ -47,6 +72,8 @@ function FreelancerDashboard() {
   const pendingCount = mySales.filter(r => r.status === 'pending').length;
   const cardPendingCount = mySales.filter(r => r.status === 'card_pending').length;
   const confirmedCount = mySales.filter(r => r.status === 'confirmed').length;
+  const todayLegalFact = pickTodayLegalFact(legalFacts);
+  const legalPreview = todayLegalFact ? dashboardNewsPreview(todayLegalFact.content || '') : '';
 
   return (
     <div className="page dashboard-page">
@@ -67,6 +94,49 @@ function FreelancerDashboard() {
         <div className="stat-card stat-approved"><FileCheck size={28} className="stat-icon" /><div className="stat-number">{confirmedCount}</div><div className="stat-label">확정</div></div>
         <div className="stat-card" style={{ borderTop: '3px solid #7b1fa2' }}><TrendingDown size={28} className="stat-icon" style={{ color: '#7b1fa2' }} /><div className="stat-number" style={{ color: '#7b1fa2' }}>{totalAmount.toLocaleString()}</div><div className="stat-label">확정 매출액</div></div>
       </div>
+
+      <section className="section dashboard-news-row">
+        <div className="dashboard-today-news-panel">
+          <div className="dashboard-today-news-header">
+            <span><Newspaper size={16} /> 오늘의 뉴스</span>
+            <Link to="/admin-notes?section=article_news" className="dashboard-today-news-more">전체보기</Link>
+          </div>
+          {todayNews.length === 0 ? (
+            <div className="dashboard-today-news-empty">업데이트된 뉴스가 없습니다.</div>
+          ) : (
+            <div className="dashboard-today-news-list">
+              {todayNews.slice(0, 1).map((note: any) => {
+                const preview = dashboardNewsPreview(note.content || '');
+                return (
+                  <Link key={note.id} to="/admin-notes?section=article_news" className="dashboard-today-news-item">
+                    <div className="dashboard-today-news-title">{note.title}</div>
+                    {preview && <div className="dashboard-today-news-preview">{preview.length > 72 ? preview.slice(0, 72) + '...' : preview}</div>}
+                    <div className="dashboard-today-news-date">{dashboardNewsDate(note.updated_at || note.created_at)}</div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <div className="dashboard-top-alert-panel dashboard-my-alert-panel">
+          <div className="dashboard-today-news-header">
+            <span><Scale size={16} /> 오늘의 한줄 법률상식</span>
+            <Link to="/admin-notes?tab=legal_support&section=legal_terms" className="dashboard-today-news-more">전체보기</Link>
+          </div>
+          {!todayLegalFact ? (
+            <div className="dashboard-today-news-empty">등록된 법률용어가 없습니다.</div>
+          ) : (
+            <Link to={`/admin-notes?tab=legal_support&section=legal_terms&note=${todayLegalFact.id}`} className="dashboard-my-alert-item priority-3">
+              <div className="dashboard-my-alert-row">
+                <span className="dashboard-my-alert-badge">법률용어</span>
+              </div>
+              <div className="dashboard-my-alert-title">{todayLegalFact.title}</div>
+              {legalPreview && <div className="dashboard-my-alert-message">{legalPreview.length > 88 ? legalPreview.slice(0, 88) + '...' : legalPreview}</div>}
+              <div className="dashboard-today-news-date">클릭해서 자세히 보기</div>
+            </Link>
+          )}
+        </div>
+      </section>
 
       {mySales.length > 0 && (
         <section className="section">

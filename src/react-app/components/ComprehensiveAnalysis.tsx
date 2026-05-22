@@ -1,7 +1,7 @@
 // 종합분석 — 개인별 360° KPI 대시보드 + 한눈에 보기 그리드
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine } from 'recharts';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine } from 'recharts';
 import {
   X, Award, AlertTriangle, ChevronLeft, ChevronRight, HelpCircle,
   Trophy, TrendingUp, Flame, Target, Moon, Gem, AlertCircle,
@@ -66,7 +66,7 @@ interface CompMember {
     monthly_trend: { ym: string; amount: number }[];
     growth_rate: number;
   };
-  conversion: { bid_to_win: number };
+  conversion: { bid_completion?: number; bid_to_win: number };
   anomalies: { deviation: number; refund: number; total: number };
   score: { total: number; grade: string; breakdown: Record<string, number> };
   tags: TagKey[];
@@ -228,6 +228,7 @@ export default function ComprehensiveAnalysis({
 function MemberCard({ m, onClick }: { m: CompMember; onClick: () => void }) {
   const targetPct = Math.min(150, Math.max(0, m.sales.target_rate));
   const barColor = targetPct >= 120 ? '#188038' : targetPct >= 90 ? '#1a73e8' : targetPct >= 70 ? '#e65100' : '#d93025';
+  const bidCompletion = m.conversion.bid_completion ?? 0;
 
   return (
     <div onClick={onClick} style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 10, padding: 12, cursor: 'pointer', transition: 'box-shadow 0.15s', position: 'relative' }}
@@ -257,15 +258,15 @@ function MemberCard({ m, onClick }: { m: CompMember; onClick: () => void }) {
         </>
       ) : (
         <>
-          <div style={{ fontSize: 10, color: '#5f6368', marginBottom: 2 }}>
-            매출 {fmtKRW(m.sales.confirmed)} (평균 대비 {m.sales.target_rate.toFixed(0)}%)
-          </div>
-          <div style={{ height: 30, marginBottom: 6 }}>
-            <ResponsiveContainer>
-              <LineChart data={m.sales.monthly_trend}>
-                <Line type="monotone" dataKey="amount" stroke="#1a73e8" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
+            <div style={{ background: '#e8f0fe', borderRadius: 8, padding: '6px 8px' }}>
+              <div style={{ fontSize: 10, color: '#5f6368' }}>입찰률</div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: '#1a73e8' }}>{bidCompletion.toFixed(1)}%</div>
+            </div>
+            <div style={{ background: '#e8f5e9', borderRadius: 8, padding: '6px 8px' }}>
+              <div style={{ fontSize: 10, color: '#5f6368' }}>낙찰률</div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: '#188038' }}>{m.conversion.bid_to_win.toFixed(1)}%</div>
+            </div>
           </div>
         </>
       )}
@@ -291,6 +292,7 @@ function MemberCard({ m, onClick }: { m: CompMember; onClick: () => void }) {
 function PersonalDashboard({ member: m, benchmarks }: { member: CompMember; benchmarks: any }) {
   const targetPct = Math.min(150, Math.max(0, m.sales.target_rate));
   const barColor = targetPct >= 120 ? '#188038' : targetPct >= 90 ? '#1a73e8' : targetPct >= 70 ? '#e65100' : '#d93025';
+  const bidCompletion = m.conversion.bid_completion ?? 0;
 
   return (
     <div>
@@ -313,42 +315,61 @@ function PersonalDashboard({ member: m, benchmarks }: { member: CompMember; benc
         </div>
       </div>
 
-      {/* 매출 카드 — 정직원: 1인분 대비 / 프리랜서: 비율제 평균 대비 */}
-      <div style={{ background: '#f8f9fa', borderRadius: 10, padding: 14, marginBottom: 14 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-          <span style={{ fontSize: 12, color: '#5f6368', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            <Target size={13} strokeWidth={2.2} />
-            {m.is_freelancer
-              ? '비율제 평균 대비'
-              : `1인분(기준매출) 대비 ${m.sales.period_months ? `· ${m.sales.period_months}개월 안분` : ''}`}
-          </span>
-          <span style={{ fontSize: 22, fontWeight: 700, color: barColor }}>{m.sales.target_rate.toFixed(1)}%</span>
-        </div>
-        {!m.is_freelancer && m.sales.target_base !== undefined && m.sales.period_months !== undefined && m.sales.period_months !== 2 && (
-          <div style={{ fontSize: 10, color: '#9aa0a6', marginBottom: 6 }}>
-            ※ 기준매출 {fmtKRW(m.sales.target_base)} (2개월) × {m.sales.period_months}/2 = {fmtKRW(m.sales.target_amount)}
+      {m.is_freelancer ? (
+        <div style={{ background: '#f8f9fa', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10, color: '#3c4043', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <Target size={13} strokeWidth={2.2} /> 입찰 성과
           </div>
-        )}
-        <div style={{ background: '#fff', borderRadius: 10, height: 22, overflow: 'hidden', position: 'relative', border: '1px solid #e0e0e0' }}>
-          <div style={{ background: barColor, height: '100%', width: `${(targetPct / 150) * 100}%`, transition: 'width 0.3s' }} />
-          <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, color: targetPct >= 50 ? '#fff' : '#202124' }}>
-            {fmtKRW(m.sales.confirmed)} / {fmtKRW(m.sales.target_amount)}
-          </span>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, fontSize: 11 }}>
+            <div style={{ background: '#fff', border: '1px solid #d2e3fc', borderRadius: 10, padding: 10 }}>
+              <div style={{ color: '#5f6368' }}>등록 입찰</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#1a73e8' }}>{m.activity.입찰}건</div>
+            </div>
+            <div style={{ background: '#fff', border: '1px solid #d2e3fc', borderRadius: 10, padding: 10 }}>
+              <div style={{ color: '#5f6368' }}>입찰률</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#1a73e8' }}>{bidCompletion.toFixed(1)}%</div>
+            </div>
+            <div style={{ background: '#fff', border: '1px solid #c8e6c9', borderRadius: 10, padding: 10 }}>
+              <div style={{ color: '#5f6368' }}>낙찰률</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#188038' }}>{m.conversion.bid_to_win.toFixed(1)}%</div>
+            </div>
+          </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginTop: 10, fontSize: 11 }}>
-          <div><div style={{ color: '#5f6368' }}>확정</div><div style={{ fontWeight: 700, color: '#188038' }}>{fmtKRW(m.sales.confirmed)}</div></div>
-          <div><div style={{ color: '#5f6368' }}>대기</div><div style={{ fontWeight: 700, color: '#e65100' }}>{fmtKRW(m.sales.pending)}</div></div>
-          <div><div style={{ color: '#5f6368' }}>환불</div><div style={{ fontWeight: 700, color: '#d93025' }}>{fmtKRW(m.sales.refunded)}</div></div>
-          <div><div style={{ color: '#5f6368' }}>건수</div><div style={{ fontWeight: 700 }}>{m.sales.confirmed_count}건</div></div>
+      ) : (
+        <div style={{ background: '#f8f9fa', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+            <span style={{ fontSize: 12, color: '#5f6368', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <Target size={13} strokeWidth={2.2} />
+              {`1인분(기준매출) 대비 ${m.sales.period_months ? `· ${m.sales.period_months}개월 안분` : ''}`}
+            </span>
+            <span style={{ fontSize: 22, fontWeight: 700, color: barColor }}>{m.sales.target_rate.toFixed(1)}%</span>
+          </div>
+          {m.sales.target_base !== undefined && m.sales.period_months !== undefined && m.sales.period_months !== 2 && (
+            <div style={{ fontSize: 10, color: '#9aa0a6', marginBottom: 6 }}>
+              ※ 기준매출 {fmtKRW(m.sales.target_base)} (2개월) × {m.sales.period_months}/2 = {fmtKRW(m.sales.target_amount)}
+            </div>
+          )}
+          <div style={{ background: '#fff', borderRadius: 10, height: 22, overflow: 'hidden', position: 'relative', border: '1px solid #e0e0e0' }}>
+            <div style={{ background: barColor, height: '100%', width: `${(targetPct / 150) * 100}%`, transition: 'width 0.3s' }} />
+            <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, color: targetPct >= 50 ? '#fff' : '#202124' }}>
+              {fmtKRW(m.sales.confirmed)} / {fmtKRW(m.sales.target_amount)}
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginTop: 10, fontSize: 11 }}>
+            <div><div style={{ color: '#5f6368' }}>확정</div><div style={{ fontWeight: 700, color: '#188038' }}>{fmtKRW(m.sales.confirmed)}</div></div>
+            <div><div style={{ color: '#5f6368' }}>대기</div><div style={{ fontWeight: 700, color: '#e65100' }}>{fmtKRW(m.sales.pending)}</div></div>
+            <div><div style={{ color: '#5f6368' }}>환불</div><div style={{ fontWeight: 700, color: '#d93025' }}>{fmtKRW(m.sales.refunded)}</div></div>
+            <div><div style={{ color: '#5f6368' }}>건수</div><div style={{ fontWeight: 700 }}>{m.sales.confirmed_count}건</div></div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 종합 점수 breakdown */}
       <div style={{ background: '#f8f9fa', borderRadius: 10, padding: 14, marginBottom: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: '#3c4043' }}>종합 점수 분해</div>
         {Object.entries(m.score.breakdown).map(([k, v]) => {
           const max = m.is_freelancer
-            ? ({ 매출: 25, 전환: 25, 활동: 20, 출근: 15, 성장: 15 } as Record<string, number>)[k] || 100
+            ? ({ 입찰률: 50, 낙찰률: 50 } as Record<string, number>)[k] || 100
             : ({ 매출: 35, 전환: 20, 활동: 15, 출근: 15, 안정: 10, 이상: -5 } as Record<string, number>)[k] || 100;
           const isNeg = (v as number) < 0;
           const pct = isNeg ? Math.min(100, Math.abs(v as number) / Math.abs(max) * 100) : ((v as number) / Math.abs(max)) * 100;

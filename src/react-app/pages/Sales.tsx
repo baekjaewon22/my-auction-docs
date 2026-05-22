@@ -80,6 +80,11 @@ function isMissingAction(r: SalesRecord): boolean {
   return false;
 }
 
+function compactSalesName(value: string | null | undefined, max = 6): string {
+  const text = String(value || '').trim();
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
 const CONFIRM_WAITING_STATUSES = ['pending', 'card_pending', 'refund_requested'];
 
 export default function Sales() {
@@ -345,15 +350,14 @@ export default function Sales() {
     try {
       const rawAmount = Number(fromMoneyDisplay(formAmount)) || 0;
       const proxyCost = formType === '매수신청대리' ? (Number(fromMoneyDisplay(formProxyCost)) || 0) : 0;
-      const proxyProfit = rawAmount - proxyCost; // 매수신청대리: 수익금액 (음수 가능)
-      const finalAmount = formType === '매수신청대리' ? Math.abs(proxyProfit) : rawAmount;
-      const finalDirection = formType === '매수신청대리' && proxyProfit < 0 ? 'expense' : undefined;
+      const proxySupply = Math.round(rawAmount / 1.1);
+      const proxyPayrollAmount = proxySupply - proxyCost;
+      const finalAmount = rawAmount;
       await api.sales.create({
-        type: formType, type_detail: formType === '기타' ? formTypeDetail : (formType === '매수신청대리' ? `대리비용 ${proxyCost.toLocaleString()}원 / 수익 ${proxyProfit >= 0 ? '' : '-'}${Math.abs(proxyProfit).toLocaleString()}원` : rateDeviationReason),
+        type: formType, type_detail: formType === '기타' ? formTypeDetail : (formType === '매수신청대리' ? `대리비용 ${proxyCost.toLocaleString()}원 / 급여반영 ${proxyPayrollAmount >= 0 ? '' : '-'}${Math.abs(proxyPayrollAmount).toLocaleString()}원` : rateDeviationReason),
         client_name: formClientName, depositor_name: formDepositorDiff ? formDepositorName : '',
         depositor_different: formDepositorDiff, amount: finalAmount,
         contract_date: formContractDate,
-        direction: finalDirection,
         payment_type: formPaymentType,
         receipt_type: formPaymentType === '이체' ? formReceiptType : '',
         receipt_phone: formReceiptType === '현금영수증' ? formReceiptPhone : '',
@@ -1377,7 +1381,8 @@ export default function Sales() {
           {formType === '매수신청대리' && (() => {
             const amt = Number(fromMoneyDisplay(formAmount)) || 0;
             const cost = Number(fromMoneyDisplay(formProxyCost)) || 0;
-            const profit = amt - cost;
+            const supply = Math.round(amt / 1.1);
+            const profit = supply - cost;
             return (
               <div style={{ marginTop: 14, padding: 16, background: '#f0f4ff', borderRadius: 8, border: '1px solid #c8d6e5' }}>
                 <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: 10, color: '#3c4043' }}>매수신청대리비용</div>
@@ -1387,12 +1392,12 @@ export default function Sales() {
                     <input className="form-input" value={toMoneyDisplay(formProxyCost)} onChange={(e) => setFormProxyCost(fromMoneyDisplay(e.target.value))} style={{ width: '100%' }} placeholder="대리비용" />
                   </div>
                   <div style={{ textAlign: 'center', padding: '8px 0' }}>
-                    <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginBottom: 4 }}>담당자 수익금액</div>
+                    <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginBottom: 4 }}>급여반영액</div>
                     <div style={{ fontSize: '1.2rem', fontWeight: 700, color: profit >= 0 ? '#188038' : '#d93025' }}>
                       {profit >= 0 ? formatCurrency(profit) : '-' + formatCurrency(Math.abs(profit))}
                     </div>
                     <div style={{ fontSize: '0.68rem', color: '#9aa0a6', marginTop: 4 }}>
-                      매수신청대리비용 - 대리비용
+                      매수신청대리비용 ÷ 1.1 - 대리비용
                     </div>
                     {profit < 0 && (
                       <div style={{ fontSize: '0.7rem', color: '#d93025', marginTop: 4, fontWeight: 600 }}>
@@ -1620,11 +1625,18 @@ export default function Sales() {
                       </div>
                     )}
                   </td>
-                  <td style={{ whiteSpace: 'nowrap', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.client_name + (r.client_phone ? ' / ' + r.client_phone : '') + (r.depositor_different === 1 && r.depositor_name ? ' / 입금자: ' + r.depositor_name : '')}>
-                    {r.client_name}
-                    {isDuplicate(r) && <span style={{ fontSize: '0.66rem', padding: '0 4px', borderRadius: 6, background: '#fce4ec', color: '#d93025', fontWeight: 700, marginLeft: 4 }}>중복</span>}
-                    {r.exclude_from_count ? <span style={{ fontSize: '0.66rem', padding: '0 4px', borderRadius: 6, background: '#f5f5f5', color: '#5f6368', marginLeft: 3 }}>미포함</span> : null}
-                    {r.depositor_different === 1 && r.depositor_name && <span style={{ fontSize: '0.7rem', color: '#e65100', marginLeft: 4 }}>({r.depositor_name})</span>}
+                  <td className="sales-client-cell" title={r.client_name + (r.client_phone ? ' / ' + r.client_phone : '') + (r.depositor_different === 1 && r.depositor_name ? ' / 입금자: ' + r.depositor_name : '')}>
+                    <div className="sales-client-main-line">
+                      <span className="sales-client-name">{compactSalesName(r.client_name)}</span>
+                      {isDuplicate(r) && <span className="sales-client-chip duplicate">중복</span>}
+                      {r.exclude_from_count ? <span className="sales-client-chip muted">미포함</span> : null}
+                    </div>
+                    {r.depositor_different === 1 && r.depositor_name && (
+                      <div className="sales-depositor-line">
+                        <span>입금자</span>
+                        <strong>{compactSalesName(r.depositor_name)}</strong>
+                      </div>
+                    )}
                   </td>
                   <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{formatCurrency(r.amount)}</td>
                   <td style={{ fontSize: '0.72rem', whiteSpace: 'nowrap', textAlign: 'center' }}>
@@ -2237,7 +2249,7 @@ export default function Sales() {
                               try { await api.sales.update(detailRecord.id, { proxy_cost: val } as any); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
                             }
                           }} />
-                        <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 4 }}>수익 = 매출금액({formatCurrency(detailRecord.amount)}) - 대리비용</div>
+                        <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 4 }}>급여반영액 = 매출금액({formatCurrency(detailRecord.amount)}) ÷ 1.1 - 대리비용</div>
                       </div>
                     )}
                     {detailRecord.type === '계약' && (

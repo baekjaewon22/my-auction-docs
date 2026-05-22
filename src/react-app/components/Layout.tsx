@@ -147,8 +147,8 @@ export default function Layout() {
               <CheckCircle size={18} /> {!collapsed && '문서 승인'}
             </Link>
             {canViewBidHistory && (
-              <Link to="/bid-history" className={`nav-item ${isActive('/bid-history') ? 'active' : ''}`} title="입찰내역" onClick={() => setMobileOpen(false)}>
-                <CalendarDays size={18} /> {!collapsed && '입찰내역'}
+              <Link to="/bid-history" className={`nav-item ${isActive('/bid-history') ? 'active' : ''}`} title="경매분석" onClick={() => setMobileOpen(false)}>
+                <CalendarDays size={18} /> {!collapsed && '경매분석'}
               </Link>
             )}
           </>

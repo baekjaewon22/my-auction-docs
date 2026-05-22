@@ -336,7 +336,7 @@ export const api = {
     },
     myAlerts: () =>
       request<{ alerts: Array<{ type: string; priority: number; label: string; note_id?: string; title: string; message: string; comment_count?: number; link: string; created_at: string }> }>('/admin-notes/my-alerts'),
-    update: (id: string, data: { title?: string; content?: string; pinned?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean }) =>
+    update: (id: string, data: { title?: string; content?: string; pinned?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean; court?: string; case_number?: string }) =>
       request('/admin-notes/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request('/admin-notes/' + id, { method: 'DELETE' }),
     addComment: (noteId: string, content: string, is_anonymous?: boolean) =>
