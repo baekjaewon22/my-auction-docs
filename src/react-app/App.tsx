@@ -75,7 +75,8 @@ function ApproverRoute({ children }: { children: React.ReactNode }) {
 
 function FreelancerRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  if (!user || (user as any).login_type !== 'freelancer') {
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
+  if (!user || ((user as any).login_type !== 'freelancer' && !allowed.includes(user.role))) {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;

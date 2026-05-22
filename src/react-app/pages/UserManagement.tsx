@@ -6,7 +6,7 @@ import { ROLE_LABELS, VISIBLE_ROLES } from '../types';
 import { useBranches } from '../hooks/useBranches';
 import type { Role } from '../types';
 import Select, { toOptions } from '../components/Select';
-import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingUp, AlertTriangle, ArrowDownCircle } from 'lucide-react';
+import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingUp, AlertTriangle, ArrowDownCircle, KeyRound } from 'lucide-react';
 
 import { useDepartments } from '../hooks/useDepartments';
 const ROLE_OPTS = [...VISIBLE_ROLES, 'resigned' as const].map((v) => ({ value: v, label: ROLE_LABELS[v] }));
@@ -38,6 +38,8 @@ export default function UserManagement() {
   const [loading, setLoading] = useState(true);
   const [pendingDepts, setPendingDepts] = useState<Record<string, string>>({});
   const [userSearchTerm, setUserSearchTerm] = useState('');
+  const [resetPasswordInput, setResetPasswordInput] = useState('');
+  const [resettingPassword, setResettingPassword] = useState(false);
 
   // 상세페이지 관련
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -130,9 +132,30 @@ export default function UserManagement() {
     catch (err: any) { alert(err.message); }
   };
 
+  const handlePasswordReset = async () => {
+    if (!selectedUser || !isAdminPlus || selectedUser.id === currentUser?.id) return;
+    const nextPassword = resetPasswordInput.trim();
+    if (nextPassword.length < 4) {
+      alert('임시 비밀번호는 4자 이상으로 입력하세요.');
+      return;
+    }
+    if (!confirm(`${selectedUser.name}님의 비밀번호를 입력한 임시 비밀번호로 초기화하시겠습니까?`)) return;
+    setResettingPassword(true);
+    try {
+      await api.users.update(selectedUser.id, { password: nextPassword });
+      setResetPasswordInput('');
+      alert('비밀번호가 초기화되었습니다.');
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setResettingPassword(false);
+    }
+  };
+
   // ── 상세 페이지: 사용자 클릭 시 ──
   const handleSelectUser = async (u: User) => {
     setSelectedUser(u);
+    setResetPasswordInput('');
     setHireDateInput(u.hire_date || '');
     // 알림톡 설정 로드
     try {
@@ -359,6 +382,31 @@ export default function UserManagement() {
               )}
             </div>
           </div>
+          {isAdminPlus && selectedUser.id !== currentUser?.id && (
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #e8eaed' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, fontWeight: 700, color: '#1a1a2e' }}>
+                <KeyRound size={16} /> 비밀번호 초기화
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={resetPasswordInput}
+                  onChange={(e) => setResetPasswordInput(e.target.value)}
+                  placeholder="임시 비밀번호 입력"
+                  style={{ width: 220, maxWidth: '100%' }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger"
+                  onClick={handlePasswordReset}
+                  disabled={resettingPassword || resetPasswordInput.trim().length < 4}
+                >
+                  {resettingPassword ? '초기화 중...' : '비밀번호 초기화'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 회계 정보 카드 (회계 열람 가능자만, 총무보조 제한 대상 제외) */}

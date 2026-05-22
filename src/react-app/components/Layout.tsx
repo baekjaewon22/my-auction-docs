@@ -48,6 +48,7 @@ export default function Layout() {
   const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canViewBidHistory = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canViewFreelancerBids = isFreelancer || (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role));
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
   const canPayroll = canAccounting || PAYROLL_EXTRA_IDS.includes(user?.id || '');
   // 회계분석은 총무보조 제외 (cc_ref도 제외)
@@ -91,11 +92,6 @@ export default function Layout() {
         <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="사내 커뮤니티" onClick={() => setMobileOpen(false)}>
           <StickyNote size={18} /> {!collapsed && '사내 커뮤니티'}
         </Link>
-        {isFreelancer && (
-          <Link to="/freelancer-bids" className={`nav-item ${isActive('/freelancer-bids') ? 'active' : ''}`} title="입찰 내역" onClick={() => setMobileOpen(false)}>
-            <CalendarDays size={18} /> {!collapsed && '입찰 내역'}
-          </Link>
-        )}
         {!isAccountingOnly && !isFreelancer && !isDirector && !isSupport && (
           <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
             <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
@@ -104,6 +100,11 @@ export default function Layout() {
         {!isSupport && (
           <Link to="/sales" className={`nav-item ${isActive('/sales') ? 'active' : ''}`} title="업무성과" onClick={() => setMobileOpen(false)}>
             <DollarSign size={18} /> {!collapsed && '업무성과'}
+          </Link>
+        )}
+        {canViewFreelancerBids && (
+          <Link to="/freelancer-bids" className={`nav-item ${isActive('/freelancer-bids') ? 'active' : ''}`} title="입찰 내역" onClick={() => setMobileOpen(false)}>
+            <span className="nav-freelancer-bid-icon" aria-hidden="true">F</span> {!collapsed && '입찰 내역'}
           </Link>
         )}
         {!isFreelancer && (

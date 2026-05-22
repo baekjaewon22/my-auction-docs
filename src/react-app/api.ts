@@ -803,13 +803,21 @@ export const api = {
   },
 
   freelancerBids: {
-    list: () =>
-      request<{ rows: Array<{
-        id: string; bid_date: string; court: string; case_number: string; item_no: string;
+    list: (params: { branch?: string; assignee?: string } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
+      return request<{ rows: Array<{
+        id: string; user_id: string; owner_name?: string; owner_branch?: string; owner_department?: string;
+        can_edit?: number; can_delete?: number;
+        bid_date: string; court: string; case_number: string; item_no: string;
         client_name: string; bidder_name: string; property_type: string;
         suggested_price: number | null; actual_bid_price: number | null; winning_price: number | null;
         bid_result: '실패' | '낙찰' | '취소'; deviation_reason: string; created_at: string; updated_at: string;
-      }> }>('/freelancer-bids'),
+      }>; filters?: {
+        branches: Array<{ branch: string }>;
+        assignees: Array<{ id: string; name: string; branch: string }>;
+      } }>(`/freelancer-bids${q.toString() ? '?' + q.toString() : ''}`);
+    },
     create: (data: Record<string, unknown>) =>
       request<{ success: boolean; id: string }>('/freelancer-bids', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: Record<string, unknown>) =>

@@ -148,6 +148,27 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   opacity: 1;
 }
 
+.nav-freelancer-bid-icon {
+  align-items: center;
+  background: var(--gray-200);
+  border-radius: 999px;
+  color: var(--gray-700);
+  display: inline-flex;
+  flex: 0 0 18px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  height: 18px;
+  justify-content: center;
+  line-height: 1;
+  width: 18px;
+}
+
+.nav-item:hover .nav-freelancer-bid-icon,
+.nav-item.active .nav-freelancer-bid-icon {
+  background: var(--primary);
+  color: #fff;
+}
+
 .nav-divider {
   height: 1px;
   background: var(--gray-200);
@@ -6983,11 +7004,100 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   grid-column: span 2;
 }
 
+.freelancer-bid-price-panel {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  grid-column: span 2;
+  padding: 12px;
+}
+
+.freelancer-bid-edit-result-panel {
+  background: #fff8e6;
+  border: 1px solid #f3d08b;
+  border-radius: 8px;
+  grid-column: span 2;
+  padding: 12px;
+}
+
+.freelancer-bid-edit-result-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.freelancer-bid-section-title {
+  color: #1f2937;
+  font-size: 0.84rem;
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+.freelancer-bid-price-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.freelancer-bid-price-grid input {
+  background: #fff;
+  font-weight: 700;
+}
+
+.freelancer-bid-price-grid input::placeholder {
+  color: #9aa4b2;
+  font-weight: 500;
+}
+
 .freelancer-bid-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #edf1f7;
+}
+
+.freelancer-bid-save-btn,
+.freelancer-bid-cancel-btn {
+  align-items: center;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.9rem;
+  font-weight: 800;
   gap: 8px;
-  margin-top: 14px;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 18px;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.freelancer-bid-save-btn {
+  background: linear-gradient(135deg, #1769e0, #0f8f7a);
+  box-shadow: 0 10px 22px rgba(15, 104, 183, 0.22);
+  color: #fff;
+}
+
+.freelancer-bid-save-btn:hover:not(:disabled) {
+  box-shadow: 0 13px 26px rgba(15, 104, 183, 0.28);
+  transform: translateY(-1px);
+}
+
+.freelancer-bid-save-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+  transform: none;
+}
+
+.freelancer-bid-cancel-btn {
+  background: #eef2f7;
+  color: #475569;
+}
+
+.freelancer-bid-cancel-btn:hover {
+  background: #e2e8f0;
 }
 
 .freelancer-bid-list-head {
@@ -7007,6 +7117,36 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   color: #6b7280;
   font-size: 0.82rem;
   font-weight: 700;
+}
+
+.freelancer-bid-filter-bar {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.freelancer-bid-filter-bar label {
+  display: grid;
+  gap: 5px;
+  min-width: 180px;
+}
+
+.freelancer-bid-filter-bar span {
+  color: #64748b;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.freelancer-bid-filter-bar select {
+  background: #fff;
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+  color: #111827;
+  font-size: 0.86rem;
+  min-height: 36px;
+  padding: 6px 10px;
 }
 
 .freelancer-bid-table-wrap {
@@ -7037,6 +7177,91 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .freelancer-bid-table strong {
   color: #111827;
+}
+
+.freelancer-bid-actual-control,
+.freelancer-bid-win-control {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 170px;
+}
+
+.freelancer-bid-actual-control input,
+.freelancer-bid-win-control input,
+.freelancer-bid-inline-result input {
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  min-height: 32px;
+  padding: 6px 8px;
+  width: 100px;
+}
+
+.freelancer-bid-actual-control button,
+.win-mark-btn,
+.fail-mark-btn,
+.fail-save-btn,
+.cancel-save-btn {
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 800;
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.freelancer-bid-actual-control button {
+  background: #edf2ff;
+  color: #2f56d6;
+}
+
+.freelancer-bid-result-control {
+  display: grid;
+  gap: 8px;
+  min-width: 260px;
+}
+
+.freelancer-bid-result-buttons,
+.freelancer-bid-inline-result {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.freelancer-bid-inline-result input {
+  width: 136px;
+}
+
+.win-mark-btn {
+  background: #e6f4ea;
+  color: #137333;
+}
+
+.fail-mark-btn,
+.fail-save-btn {
+  background: #fff4e5;
+  color: #b06000;
+}
+
+.cancel-save-btn {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.freelancer-bid-actual-control button:disabled,
+.win-mark-btn:disabled,
+.fail-mark-btn:disabled,
+.fail-save-btn:disabled,
+.cancel-save-btn:disabled,
+.freelancer-bid-win-control input:disabled,
+.freelancer-bid-actual-control input:disabled,
+.freelancer-bid-inline-result input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .bid-result-pill {
@@ -7083,6 +7308,22 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 @media (max-width: 920px) {
   .freelancer-bid-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .freelancer-bid-price-panel {
+    grid-column: span 2;
+  }
+
+  .freelancer-bid-edit-result-panel {
+    grid-column: span 2;
+  }
+
+  .freelancer-bid-price-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .freelancer-bid-edit-result-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -7312,6 +7553,14 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   }
 
   .freelancer-bid-wide {
+    grid-column: auto;
+  }
+
+  .freelancer-bid-price-panel {
+    grid-column: auto;
+  }
+
+  .freelancer-bid-edit-result-panel {
     grid-column: auto;
   }
 }
