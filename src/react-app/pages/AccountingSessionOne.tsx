@@ -213,6 +213,11 @@ function canAccessProfitLossReportForUser(user?: { id?: string; role?: string; b
   return ['master', 'ceo', 'accountant'].includes(user.role || '') || PROFIT_LOSS_EXTRA_USER_IDS.includes(user.id || '');
 }
 
+function canAccessForecastReportForUser(user?: { id?: string; role?: string } | null) {
+  if (!user) return false;
+  return ['master', 'ceo', 'accountant'].includes(user.role || '') || PROFIT_LOSS_EXTRA_USER_IDS.includes(user.id || '');
+}
+
 function canAccessLaborCostReportForUser(user?: { id?: string; role?: string } | null) {
   return !!user && (['master', 'ceo', 'accountant'].includes(user.role || '') || LABOR_COST_EXTRA_USER_IDS.includes(user.id || ''));
 }
@@ -1004,7 +1009,7 @@ export function AccountingReportsHub() {
           const meta = ACCOUNTING_REPORT_META[kind];
           return <Link key={kind} to={meta.path} className="accounting-output-card"><strong>{meta.title}</strong><span>{meta.desc}</span><em><FileDown size={13} /> 장부 확인</em></Link>;
         })}
-        {canAccessProfitLossReportForUser(user) && <Link to="/accounting-session2/reports/forecast" className="accounting-output-card confidential"><strong>다음달 예상 손익</strong><span>매출과 반복 지출 패턴으로 다음달 손익을 예측합니다.</span></Link>}
+        {canAccessForecastReportForUser(user) && <Link to="/accounting-session2/reports/forecast" className="accounting-output-card confidential"><strong>다음달 예상 손익</strong><span>매출과 반복 지출 패턴으로 다음달 손익을 예측합니다.</span></Link>}
         {canAccessLaborCostReportForUser(user) && <Link to="/accounting-session2/reports/labor-cost" className="accounting-output-card confidential"><strong>인건비 통합</strong><span>직원관리 고정급 인원을 지사, 팀, 직급 순으로 확인합니다.</span></Link>}
       </div>
     </div>

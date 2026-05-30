@@ -179,6 +179,13 @@ function ProfitLossReportRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function ForecastReportRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'accountant'];
+  if (!user || (!allowed.includes(user.role) && !PROFIT_LOSS_EXTRA_IDS.includes(user.id))) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
 function LaborCostReportRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant'];
@@ -480,9 +487,9 @@ export default function App() {
           <Route
             path="accounting-session2/reports/forecast"
             element={
-              <ProfitLossReportRoute>
+              <ForecastReportRoute>
                 <AccountingForecastReport />
-              </ProfitLossReportRoute>
+              </ForecastReportRoute>
             }
           />
           <Route

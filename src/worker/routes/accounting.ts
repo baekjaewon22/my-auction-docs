@@ -60,10 +60,14 @@ function canAccessProfitLossReport(user: any) {
     || PROFIT_LOSS_EXTRA_USER_IDS.includes(String(user?.sub || ''));
 }
 
+function canAccessForecastReport(user: any) {
+  return user?.role === 'master'
+    || user?.role === 'ceo'
+    || user?.role === 'accountant'
+    || PROFIT_LOSS_EXTRA_USER_IDS.includes(String(user?.sub || ''));
+}
+
 function canEditProfitLossForecast(user: any) {
-  if (user?.role === 'accountant_asst') {
-    return !!String(user?.branch || '').trim() && !isRestrictedBranchForAsst(user?.branch);
-  }
   return user?.role === 'master' || user?.role === 'accountant';
 }
 
@@ -407,11 +411,11 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
   });
 });
 
-accounting.get('/session2/forecast-adjustments', requireRole(...ACCOUNTING_ROLES), async (c) => {
+accounting.get('/session2/forecast-adjustments', async (c) => {
   const db = c.env.DB;
   await ensureAccountingSession2Tables(db);
   const user = c.get('user');
-  if (!canAccessProfitLossReport(user)) return c.json({ error: 'Permission denied.' }, 403);
+  if (!canAccessForecastReport(user)) return c.json({ error: 'Permission denied.' }, 403);
   const month = String(c.req.query('month') || '').slice(0, 7);
   const branch = getScopedAccountingReportBranch(user, String(c.req.query('branch') || '').trim());
   if (!month) return c.json({ error: 'month is required.' }, 400);
@@ -433,11 +437,11 @@ accounting.get('/session2/forecast-adjustments', requireRole(...ACCOUNTING_ROLES
   return c.json({ rows: Array.isArray(rows) ? rows : [], updated_at: row?.updated_at || '', updated_by: row?.updated_by || '' });
 });
 
-accounting.put('/session2/forecast-adjustments', requireRole(...ACCOUNTING_ROLES), async (c) => {
+accounting.put('/session2/forecast-adjustments', async (c) => {
   const db = c.env.DB;
   await ensureAccountingSession2Tables(db);
   const user = c.get('user');
-  if (!canAccessProfitLossReport(user)) return c.json({ error: 'Permission denied.' }, 403);
+  if (!canAccessForecastReport(user)) return c.json({ error: 'Permission denied.' }, 403);
   if (!canEditProfitLossForecast(user)) return c.json({ error: 'Permission denied.' }, 403);
   const body = await c.req.json<{ month?: string; branch?: string; rows?: any[] }>();
   const month = String(body.month || '').slice(0, 7);
