@@ -501,7 +501,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
                   </label>
                   {bidWon && <span style={{ fontSize: '0.75rem', color: '#188038' }}>실제입찰가가 낙찰가로 자동 적용됩니다.</span>}
                   {bidProxy && <span style={{ fontSize: '0.75rem', color: '#7b1fa2' }}>외근보고서 제출 불필요</span>}
-                  {bidCancelled && <span style={{ fontSize: '0.75rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용</span>}
+                  {bidCancelled && <span style={{ fontSize: '0.75rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용 · 외근보고서 제출 불필요</span>}
                 </div>
               </div>
               {!bidWon && !bidCancelled && (

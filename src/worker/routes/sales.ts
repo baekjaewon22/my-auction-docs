@@ -87,6 +87,8 @@ const SALES_DIFF_FIELDS = [
   { key: 'contract_date', label: '계약일' },
   { key: 'deposit_date', label: '입금일' },
   { key: 'card_deposit_date', label: '카드정산일' },
+  { key: 'tax_invoice_date', label: '증빙일자' },
+  { key: 'tax_invoice_type', label: '증빙구분' },
   { key: 'payment_type', label: '결제방식' },
   { key: 'status', label: '상태' },
   { key: 'memo', label: '메모' },
@@ -319,6 +321,101 @@ sales.get('/contract-tracker', async (c) => {
   });
 });
 
+// GET /api/sales/missing-documents — 컨설팅 계약서/물건분석보고서 미제출 현황
+sales.get('/missing-documents', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const month = c.req.query('month') || '';
+  const role = user.role;
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant', 'accountant_asst'];
+  if (!allowed.includes(role)) return c.json({ error: '권한이 없습니다.' }, 403);
+
+  let query = `
+    SELECT sr.id, sr.type, sr.client_name, sr.amount, sr.contract_date, sr.status,
+      sr.branch, sr.department, sr.user_id,
+      u.name as user_name, u.position_title
+    FROM sales_records sr
+    JOIN users u ON u.id = sr.user_id
+    WHERE sr.status != 'refunded'
+      AND sr.type IN ('계약', '낙찰')
+      AND COALESCE(sr.contract_submitted, 0) = 0
+      AND COALESCE(sr.contract_not_submitted, 0) = 0
+  `;
+  const params: any[] = [];
+
+  if (month && /^\d{4}-\d{2}$/.test(month)) {
+    const [y, m] = month.split('-').map(Number);
+    query += ' AND sr.contract_date >= ? AND sr.contract_date <= ?';
+    params.push(`${month}-01`, `${month}-${new Date(y, m, 0).getDate()}`);
+  }
+
+  if (role === 'manager') {
+    query += ' AND (sr.user_id = ? OR (sr.branch = ? AND sr.department = ?))';
+    params.push(user.sub, user.branch, user.department);
+  } else if (role === 'director') {
+    query += " AND (sr.user_id = ? OR sr.branch IN ('대전', '부산') OR sr.attribution_branch IN ('대전', '부산'))";
+    params.push(user.sub);
+  } else if (role === 'admin' && user.branch !== '의정부') {
+    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
+    if (extra.length > 0) {
+      const allBranches = [user.branch, ...extra];
+      const placeholders = allBranches.map(() => '?').join(',');
+      query += ` AND (sr.branch IN (${placeholders}) OR sr.attribution_branch IN (${placeholders}))`;
+      params.push(...allBranches, ...allBranches);
+    } else {
+      query += ' AND sr.branch = ?';
+      params.push(user.branch);
+    }
+  }
+  query += ' ORDER BY u.branch, u.department, u.name, sr.contract_date DESC';
+
+  const result = params.length ? await db.prepare(query).bind(...params).all<any>() : await db.prepare(query).all<any>();
+  const grouped = new Map<string, any>();
+  for (const row of result.results || []) {
+    const key = row.user_id;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        user_id: row.user_id,
+        user_name: row.user_name,
+        position_title: row.position_title || '',
+        branch: row.branch || '',
+        department: row.department || '',
+        contract_missing: 0,
+        property_report_missing: 0,
+        total_missing: 0,
+        records: [],
+      });
+    }
+    const item = grouped.get(key);
+    if (row.type === '낙찰') item.property_report_missing += 1;
+    else item.contract_missing += 1;
+    item.total_missing += 1;
+    item.records.push({
+      id: row.id,
+      type: row.type,
+      doc_type: row.type === '낙찰' ? '물건분석보고서' : '컨설팅 계약서',
+      client_name: row.client_name || '',
+      amount: row.amount || 0,
+      contract_date: row.contract_date || '',
+      status: row.status || '',
+    });
+  }
+
+  const users = Array.from(grouped.values()).sort((a, b) =>
+    (b.total_missing - a.total_missing) || String(a.branch).localeCompare(String(b.branch), 'ko') || String(a.user_name).localeCompare(String(b.user_name), 'ko')
+  );
+  return c.json({
+    month: month || null,
+    users,
+    totals: {
+      consultants: users.length,
+      contract_missing: users.reduce((s, u) => s + u.contract_missing, 0),
+      property_report_missing: users.reduce((s, u) => s + u.property_report_missing, 0),
+      total_missing: users.reduce((s, u) => s + u.total_missing, 0),
+    },
+  });
+});
+
 // GET /api/sales/ranking — 전사 계약건수 랭킹 (집계만, 전 직원 열람 가능)
 sales.get('/ranking', async (c) => {
   const db = c.env.DB;
@@ -492,17 +589,34 @@ sales.put('/:id', async (c) => {
     statusUpdate = 'card_pending';
   }
 
+  // 매수신청대리: amount 또는 proxy_cost 변경 시 type_detail 자동 갱신
+  // (총무가 detail 뷰에서 proxy_cost를 편집할 때 type_detail이 stale로 남는 문제 방지)
+  let resolvedTypeDetail = body.type_detail ?? record.type_detail;
+  const resolvedType = body.type || record.type;
+  const resolvedAmount = body.amount ?? record.amount;
+  const resolvedProxyCost = body.proxy_cost ?? record.proxy_cost ?? 0;
+  if (
+    resolvedType === '매수신청대리' &&
+    body.type_detail === undefined &&
+    (body.proxy_cost !== undefined || body.amount !== undefined)
+  ) {
+    const payroll = Math.round((resolvedAmount || 0) / 1.1) - resolvedProxyCost;
+    resolvedTypeDetail = `대리비용 ${resolvedProxyCost.toLocaleString()}원 / 급여반영 ${payroll >= 0 ? '' : '-'}${Math.abs(payroll).toLocaleString()}원`;
+  }
+
   const nextRecord = {
     ...record,
-    type: body.type || record.type,
-    type_detail: body.type_detail ?? record.type_detail,
+    type: resolvedType,
+    type_detail: resolvedTypeDetail,
     client_name: body.client_name ?? record.client_name,
     depositor_name: body.depositor_name ?? record.depositor_name,
-    amount: body.amount ?? record.amount,
+    amount: resolvedAmount,
     contract_date: body.contract_date ?? record.contract_date,
     deposit_date: body.deposit_date ?? record.deposit_date,
     payment_type: body.payment_type ?? record.payment_type ?? '',
     card_deposit_date: newCardDepDate,
+    tax_invoice_date: body.tax_invoice_date ?? record.tax_invoice_date ?? '',
+    tax_invoice_type: body.tax_invoice_type ?? record.tax_invoice_type ?? '',
     status: statusUpdate,
   };
 
@@ -515,10 +629,10 @@ sales.put('/:id', async (c) => {
       status = ?, updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(
-    body.type || record.type, body.type_detail ?? record.type_detail,
+    resolvedType, resolvedTypeDetail,
     body.client_name ?? record.client_name, body.depositor_name ?? record.depositor_name,
     body.depositor_different !== undefined ? (body.depositor_different ? 1 : 0) : record.depositor_different,
-    body.amount ?? record.amount, body.contract_date ?? record.contract_date,
+    resolvedAmount, body.contract_date ?? record.contract_date,
     body.deposit_date ?? record.deposit_date ?? '',
     body.payment_type ?? record.payment_type ?? '', body.receipt_type ?? record.receipt_type ?? '',
     body.receipt_phone ?? record.receipt_phone ?? '', newCardDepDate,
@@ -526,7 +640,7 @@ sales.put('/:id', async (c) => {
     body.tax_invoice_type ?? record.tax_invoice_type ?? '',
     body.appraisal_rate ?? record.appraisal_rate ?? 0, body.winning_rate ?? record.winning_rate ?? 0,
     body.client_phone ?? record.client_phone ?? '',
-    body.proxy_cost ?? record.proxy_cost ?? 0,
+    resolvedProxyCost,
     statusUpdate, id
   ).run();
 
@@ -1080,11 +1194,12 @@ sales.delete('/deposits/:id', requireRole('master', 'accountant', 'accountant_as
 sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  const { amount, content, date, assignee_id, direction } = await c.req.json<{
-    amount: number; content: string; date: string; assignee_id: string; direction?: string;
+  const { amount, content, date, assignee_id, direction, payment_method } = await c.req.json<{
+    amount: number; content: string; date: string; assignee_id: string; direction?: string; payment_method?: string;
   }>();
 
   const dir = direction === 'expense' ? 'expense' : 'income';
+  const paymentType = payment_method === '카드' ? '카드' : '이체';
   const actualAssignee = assignee_id === '__all__' ? user.sub : assignee_id;
   const assignee = await db.prepare('SELECT id, branch, department FROM users WHERE id = ?').bind(actualAssignee).first<any>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
@@ -1092,8 +1207,8 @@ sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
   const id = crypto.randomUUID();
   await db.prepare(`
     INSERT INTO sales_records (id, user_id, type, type_detail, client_name, amount, contract_date, status, confirmed_at, confirmed_by, direction, branch, department, payment_type)
-    VALUES (?, ?, '기타', ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, '이체')
-  `).bind(id, actualAssignee, content, content, amount, date, user.sub, dir, assignee.branch || '', assignee.department || '').run();
+    VALUES (?, ?, '기타', ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, ?)
+  `).bind(id, actualAssignee, content, content, amount, date, user.sub, dir, assignee.branch || '', assignee.department || '', paymentType).run();
 
   return c.json({ success: true, id });
 });

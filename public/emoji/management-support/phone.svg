@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+  <defs>
+    <linearGradient id="ph-cover" x1="5" y1="3" x2="31" y2="33" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3a8fff"/>
+      <stop offset=".5" stop-color="#1a73e8"/>
+      <stop offset="1" stop-color="#0f3a7a"/>
+    </linearGradient>
+    <linearGradient id="ph-gloss" x1="0" y1="3" x2="0" y2="15" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="ph-gold" x1="0" y1="0" x2="0" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="18" cy="32.5" rx="13" ry="1.2" fill="#0f172a" opacity=".18"/>
+  <rect x="5" y="4.5" width="24" height="27.5" rx="2" fill="#e8edf5"/>
+  <rect x="4" y="4" width="25" height="28" rx="2.2" fill="url(#ph-cover)"/>
+  <rect x="7.7" y="4" width="0.9" height="28" fill="#0f172a" opacity=".22"/>
+  <rect x="4" y="4" width="25" height="11" rx="2.2" fill="url(#ph-gloss)"/>
+  <rect x="29" y="8" width="3.2" height="3.2" rx=".6" fill="url(#ph-gold)"/>
+  <rect x="29" y="13" width="3.2" height="3.2" rx=".6" fill="#ffffff" opacity=".85"/>
+  <rect x="29" y="18" width="3.2" height="3.2" rx=".6" fill="#ffffff" opacity=".65"/>
+  <rect x="29" y="23" width="3.2" height="3.2" rx=".6" fill="#ffffff" opacity=".45"/>
+  <circle cx="17.5" cy="17" r="6.8" fill="#ffffff" opacity=".96"/>
+  <circle cx="17.5" cy="15.3" r="2.4" fill="url(#ph-cover)"/>
+  <path d="M 12.4 21.6 C 13.4 19.1 15.5 18 17.5 18 C 19.5 18 21.6 19.1 22.6 21.6 Z" fill="url(#ph-cover)"/>
+  <rect x="11" y="26.4" width="13" height="1.2" rx=".6" fill="#fff" opacity=".6"/>
+  <rect x="13.5" y="28.8" width="8" height="1" rx=".5" fill="#fff" opacity=".45"/>
+</svg>

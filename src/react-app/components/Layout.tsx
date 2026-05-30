@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store';
 import { ROLE_LABELS } from '../types';
@@ -6,7 +6,7 @@ import type { Role } from '../types';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase,
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
   Scale, ExternalLink,
 } from 'lucide-react';
 
@@ -20,6 +20,15 @@ function shouldShowDiagnosisBox(pathname: string): boolean {
 // 컨설턴트 계약관리: 대표/마스터/총무급 + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+
+function compactBranchName(value: unknown): string {
+  return String(value || '').replace(/\s+/g, '').trim();
+}
+
+function isRestrictedAccountingAsstBranch(branch: unknown): boolean {
+  const compact = compactBranchName(branch);
+  return compact === '의정부' || compact === '의정부본사';
+}
 
 export default function Layout() {
   const { user, logout } = useAuthStore();
@@ -39,18 +48,26 @@ export default function Layout() {
 
   const handleLogout = () => { logout(); navigate('/login'); };
   const isActive = (path: string) => location.pathname.startsWith(path);
+  const isAccountingBookActive = location.pathname === '/accounting' || location.pathname.startsWith('/accounting/');
   const navTo = (path: string) => { navigate(path); setMobileOpen(false); };
+
+  useEffect(() => {
+    if (location.pathname.startsWith('/accounting-session1')) {
+      setCollapsed(true);
+    }
+  }, [location.pathname]);
 
   const role = (user?.role || 'member') as Role;
   const isFreelancer = (user as any)?.login_type === 'freelancer';
   const isSupport = role === 'support';
+  const isRestrictedAsst = role === 'accountant_asst' && isRestrictedAccountingAsstBranch(user?.branch);
   const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'support'].includes(role);
   const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canViewBidHistory = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canViewFreelancerBids = isFreelancer || (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role));
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
-  const canPayroll = canAccounting || PAYROLL_EXTRA_IDS.includes(user?.id || '');
+  const canPayroll = (canAccounting && !isRestrictedAsst) || PAYROLL_EXTRA_IDS.includes(user?.id || '');
   // 회계분석은 총무보조 제외 (cc_ref도 제외)
   const canFinanceAnalytics = !isFreelancer && !isSupport && (
     ['master', 'ceo', 'accountant'].includes(role) ||
@@ -62,6 +79,7 @@ export default function Layout() {
     ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role) ||
     CONTRACT_TRACKER_EXTRA_IDS.includes(user?.id || '')
   );
+  const canViewMissingDocuments = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant', 'accountant_asst'].includes(role);
 
   const sidebarContent = (
     <>
@@ -100,6 +118,11 @@ export default function Layout() {
         {!isSupport && (
           <Link to="/sales" className={`nav-item ${isActive('/sales') ? 'active' : ''}`} title="업무성과" onClick={() => setMobileOpen(false)}>
             <DollarSign size={18} /> {!collapsed && '업무성과'}
+          </Link>
+        )}
+        {canViewMissingDocuments && (
+          <Link to="/missing-documents" className={`nav-item ${isActive('/missing-documents') ? 'active' : ''}`} title="미제출 문서 현황" onClick={() => setMobileOpen(false)}>
+            <FileText size={18} /> {!collapsed && '미제출 문서 현황'}
           </Link>
         )}
         {canViewFreelancerBids && (
@@ -205,16 +228,26 @@ export default function Layout() {
             <div className="nav-divider" />
             {!collapsed && <span className="nav-label">회계</span>}
             {canAccounting && (
-              <Link to="/accounting" className={`nav-item ${isActive('/accounting') ? 'active' : ''}`} title="회계장부" onClick={() => setMobileOpen(false)}>
+              <Link to="/accounting" className={`nav-item ${isAccountingBookActive ? 'active' : ''}`} title="회계장부" onClick={() => setMobileOpen(false)}>
                 <BookOpenCheck size={18} /> {!collapsed && '회계장부'}
               </Link>
             )}
-            <Link to="/payroll" className={`nav-item ${isActive('/payroll') ? 'active' : ''}`} title="급여정산" onClick={() => setMobileOpen(false)}>
-              <Receipt size={18} /> {!collapsed && '급여정산'}
-            </Link>
+            {canPayroll && (
+              <Link to="/payroll" className={`nav-item ${isActive('/payroll') ? 'active' : ''}`} title="급여정산" onClick={() => setMobileOpen(false)}>
+                <Receipt size={18} /> {!collapsed && '급여정산'}
+              </Link>
+            )}
             {canFinanceAnalytics && (
               <Link to="/finance-analytics" className={`nav-item ${isActive('/finance-analytics') ? 'active' : ''}`} title="회계분석" onClick={() => setMobileOpen(false)}>
                 <PieChart size={18} /> {!collapsed && '회계분석'}
+              </Link>
+            )}
+            <Link to="/management-support" className={`nav-item ${isActive('/management-support') ? 'active' : ''}`} title="경영지원" onClick={() => setMobileOpen(false)}>
+              <Briefcase size={18} /> {!collapsed && '경영지원'}
+            </Link>
+            {canAccounting && !isRestrictedAsst && (
+              <Link to="/accounting-session2/reports" className={`nav-item ${isActive('/accounting-session2/reports') ? 'active' : ''}`} title="출력물" onClick={() => setMobileOpen(false)}>
+                <FileSpreadsheet size={18} /> {!collapsed && '출력물'}
               </Link>
             )}
           </>

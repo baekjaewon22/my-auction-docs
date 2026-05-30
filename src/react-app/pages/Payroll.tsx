@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { User } from '../types';
@@ -9,6 +10,7 @@ import EmployeeBonusTab from '../components/EmployeeBonusTab';
 import { Receipt, Camera } from 'lucide-react';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
+function truncMoney(n: number): number { return Math.trunc(Number(n) || 0); }
 function toMoneyDisplay(val: string): string {
   const num = val.replace(/[^0-9]/g, '');
   return num ? Number(num).toLocaleString('ko-KR') : '';
@@ -17,8 +19,29 @@ function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
 }
 
-export default function Payroll() {
+function compactBranchName(value: unknown): string {
+  return String(value || '').replace(/\s+/g, '').trim();
+}
+
+function isRestrictedBranchForAccountingAsst(branch: unknown): boolean {
+  const compact = compactBranchName(branch);
+  return compact === '의정부' || compact === '의정부본사';
+}
+
+type PayrollTab = 'payroll' | 'summary' | 'branch' | 'business_income' | 'employee_bonus';
+
+const PAYROLL_BRANCH_SELECTOR = [
+  { label: '의정부 본사', value: '의정부', meta: '본사 정산' },
+  { label: '서초지사', value: '서초', meta: '지사 정산' },
+  { label: '대전지사', value: '대전', meta: '지사 정산' },
+  { label: '부산지사', value: '부산', meta: '지사 정산' },
+  { label: '본사관리', value: '본사 관리', meta: '관리 조직' },
+  { label: '전체', value: '', meta: '전체 지사' },
+];
+
+export default function Payroll({ initialTab = 'payroll', requireBranchSelection = false }: { initialTab?: PayrollTab; requireBranchSelection?: boolean }) {
   const { user: currentUser } = useAuthStore();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { branches: BRANCHES } = useBranches();
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('');
@@ -26,7 +49,7 @@ export default function Payroll() {
   const [filterBranch, setFilterBranch] = useState('');
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<'payroll' | 'summary' | 'branch' | 'business_income' | 'employee_bonus'>('payroll');
+  const [tab, setTab] = useState<PayrollTab>(initialTab);
 
   // 회계 수동 입력 필드
   const [deduction, setDeduction] = useState('0');
@@ -41,8 +64,8 @@ export default function Payroll() {
   const [commDeductions, setCommDeductions] = useState<{ label: string; amount: string; isFood?: boolean; skipTax?: boolean }[]>([]);
   const [isLocked, setIsLocked] = useState(false);
   const [saving, setSaving] = useState(false);
-  // 명도 성과금 (외부 사건 수신 — 2개월 단위 짝수월에만 지급, 정액-15만/실비÷1.1 조정 후 등급 산정)
-  const [myungdoBonus, setMyungdoBonus] = useState<{ total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; period_label: string } | null>(null);
+  // 안건 수당 (외부 사건 수신 — 2개월 단위 짝수월에만 지급, 정액-15만/실비÷1.1 조정 후 등급 산정)
+  const [caseAllowance, setCaseAllowance] = useState<{ total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; period_label: string } | null>(null);
 
   // 지사별 합산
   const [branchData, setBranchData] = useState<any[]>([]);
@@ -55,6 +78,28 @@ export default function Payroll() {
   useEffect(() => {
     api.users.list().then(res => setUsers(res.users)).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
+    if (currentUser?.role !== 'accountant_asst') return;
+    const branch = currentUser.branch || '';
+    setFilterBranch(isRestrictedBranchForAccountingAsst(branch) ? '__blocked__' : branch);
+    setSelectedUserId('');
+    setData(null);
+  }, [currentUser?.branch, currentUser?.role]);
+
+  useEffect(() => {
+    if (!requireBranchSelection) return;
+    const branchParam = searchParams.get('branch');
+    if (branchParam === null) return;
+    const nextBranch = branchParam === '__all' ? '' : branchParam;
+    setFilterBranch(nextBranch);
+    setSelectedUserId('');
+    setData(null);
+  }, [requireBranchSelection, searchParams]);
 
   const loadPayroll = async () => {
     if (!selectedUserId) return;
@@ -91,7 +136,7 @@ export default function Payroll() {
         }
       } catch { /* 저장 없음 */ }
 
-      // 명도 성과금 — 짝수월에만 (예: 4월 → 3~4월 합계)
+      // 안건 수당 — 짝수월에만 (예: 4월 → 3~4월 합계)
       try {
         if (res.is_payout_month) {
           const [y, mStr] = selectedMonth.split('-');
@@ -99,7 +144,7 @@ export default function Payroll() {
           const mdPeriod = `${y}-${String(m - 1).padStart(2, '0')}_${String(m).padStart(2, '0')}`;
           const bonusRes = await api.cases.bonusSummary(mdPeriod);
           const mine = bonusRes.summary.find((x: any) => x.consultant_user_id === selectedUserId);
-          setMyungdoBonus({
+          setCaseAllowance({
             total_fee_raw: mine?.total_fee_raw || 0,
             total_fee_adjusted: mine?.total_fee_adjusted || mine?.total_fee || 0,
             case_count: mine?.cnt || 0,
@@ -107,9 +152,9 @@ export default function Payroll() {
             period_label: bonusRes.period_label,
           });
         } else {
-          setMyungdoBonus(null);
+          setCaseAllowance(null);
         }
-      } catch { setMyungdoBonus(null); }
+      } catch { setCaseAllowance(null); }
     } catch (err: any) { alert(err.message); }
     finally { setLoading(false); }
   };
@@ -135,7 +180,7 @@ export default function Payroll() {
   const loadBranch = async () => {
     setBranchLoading(true);
     try {
-      const res = await api.payroll.branchSummary(selectedMonth);
+      const res = await api.payroll.branchSummary(selectedMonth, currentUser?.role === 'accountant_asst' ? filterBranch : undefined);
       setBranchData(res.branches || []);
     } catch { setBranchData([]); }
     finally { setBranchLoading(false); }
@@ -173,7 +218,10 @@ export default function Payroll() {
   // 총무보조(accountant_asst)는 팀장·관리자급·이사·대표자 열람 제한
   const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
   const currentRole = (currentUser?.role || '') as string;
-  const branchFiltered = (filterBranch ? users.filter(u => u.branch === filterBranch) : users)
+  const effectiveFilterBranch = currentRole === 'accountant_asst'
+    ? (isRestrictedBranchForAccountingAsst(currentUser?.branch) ? '__blocked__' : (currentUser?.branch || '__blocked__'))
+    : filterBranch;
+  const branchFiltered = (effectiveFilterBranch ? users.filter(u => u.branch === effectiveFilterBranch) : users)
     .filter(u => u.role !== 'master')
     .filter(u => currentRole !== 'accountant_asst' || !RESTRICTED_ROLES_FOR_ASST.includes(u.role as string));
   const activeUsers = branchFiltered.filter(u => (u.role as string) !== 'resigned');
@@ -185,7 +233,14 @@ export default function Payroll() {
   });
   const filteredUsers = [...activeUsers, ...resignedUsers];
   const userOpts = filteredUsers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''} · ${u.branch || ''})${(u.role as string) === 'resigned' ? ' [퇴사]' : ''}` }));
-  const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
+  const branchOptionValues = Array.from(new Set([
+    ...BRANCHES,
+    ...PAYROLL_BRANCH_SELECTOR.map(item => item.value).filter(Boolean),
+  ]));
+  const branchOpts = branchOptionValues.map(b => ({ value: b, label: b }));
+  const visibleBranchCards = currentRole === 'accountant_asst'
+    ? PAYROLL_BRANCH_SELECTOR.filter((item) => item.value && item.value === currentUser?.branch && !isRestrictedBranchForAccountingAsst(item.value))
+    : PAYROLL_BRANCH_SELECTOR;
 
   const s = data?.summary;
 
@@ -196,25 +251,52 @@ export default function Payroll() {
   const unpaidDeduction = s?.unpaid_leave_deduction || 0;
   const basePay = s ? s.salary + s.position_allowance : 0;
   const afterDeduction = basePay - deductionNum - unpaidDeduction - extraDeductionNum;
-  const myungdoBonusAmount = myungdoBonus?.bonus || 0;
+  const caseAllowanceValue = caseAllowance?.bonus || 0;
   const contractAwardAmount = (data?.is_payout_month && data?.contract_award?.rank) ? (data.contract_award.award || 0) : 0;
-  const totalPay = s ? afterDeduction + s.bonus + extraPayNum + myungdoBonusAmount + contractAwardAmount : 0;
+  const totalPay = s ? afterDeduction + s.bonus + extraPayNum + caseAllowanceValue + contractAwardAmount : 0;
+
+  if (requireBranchSelection && searchParams.get('branch') === null) {
+    return (
+      <div className="page payroll-page payroll-branch-page">
+        <div className="page-header">
+          <div>
+            <h2><Receipt size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 급여정산</h2>
+            <p className="payroll-branch-subtitle">정산할 지사를 선택하세요.</p>
+          </div>
+        </div>
+
+        <div className="payroll-branch-grid">
+          {visibleBranchCards.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              className="payroll-branch-card"
+              onClick={() => setSearchParams({ branch: item.value || '__all' })}
+            >
+              <span className="payroll-branch-title">{item.label}</span>
+              <span className="payroll-branch-meta">{item.meta}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="page">
+    <div className="page payroll-page">
       <div className="page-header">
         <h2><Receipt size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 급여정산</h2>
       </div>
 
       {/* 필터 */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <div style={{ minWidth: 120 }}>
+      <div className="payroll-control-panel">
+        {currentRole !== 'accountant_asst' && <div style={{ minWidth: 120 }}>
           <label className="form-label">지사</label>
           <Select size="sm" options={[{ value: '', label: '전체 지사' }, ...branchOpts]}
             value={branchOpts.find(o => o.value === filterBranch) || { value: '', label: '전체 지사' }}
             onChange={(o: any) => { setFilterBranch(o?.value || ''); setSelectedUserId(''); setData(null); }}
             placeholder="지사" isClearable />
-        </div>
+        </div>}
         <div style={{ minWidth: 260 }}>
           <label className="form-label">담당자</label>
           <Select options={userOpts}
@@ -230,7 +312,7 @@ export default function Payroll() {
       </div>
 
       {/* 탭 */}
-      <div className="filter-bar" style={{ marginBottom: 20 }}>
+      <div className="filter-bar payroll-tab-bar">
         <button className={`filter-btn ${tab === 'payroll' ? 'active' : ''}`} onClick={() => setTab('payroll')}>
           급여정산
         </button>
@@ -370,20 +452,17 @@ export default function Payroll() {
 
                   // 일반 매출 (매수신청대리 제외)
                   const normalRecords = (data.records || []).filter((r: any) => r.type !== '매수신청대리');
-                  const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || Math.round(r.amount / 1.1)), 0);
-                  const normalRefundSupply = Math.round((data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + Math.round(r.amount / 1.1), 0));
+                  const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || truncMoney(r.amount / 1.1)), 0);
+                  const normalRefundSupply = truncMoney((data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + truncMoney(r.amount / 1.1), 0));
                   const netNormalSales = normalSupply - normalRefundSupply;
-                  const commissionAmount = Math.round(netNormalSales * rate / 100);
+                  const commissionAmount = truncMoney(netNormalSales * rate / 100);
 
                   // 매수신청대리: 100% 지급 (비율 적용 안 함)
-                  // (매출금액 - 대리비용) 을 부가세 포함 금액으로 보고 공급가(÷1.1)로 환산 → 원천세는 전체 소득 합산 시 3.3% 적용
+                  // amount = 매출 gross(VAT 포함), proxy_cost = 대리비용
+                  // 담당자 지급 = amount/1.1 - cost (원천세는 전체 소득 합산 시 3.3% 적용)
                   const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
                   const proxyIncome = proxyRecords.reduce((sum: number, r: any) => {
-                    const cost = r.proxy_cost || 0;
-                    const amt = r.amount || 0;
-                    const isLegacyProxy = String(r.type_detail || '').includes('수익');
-                    const grossAmount = isLegacyProxy ? cost + (r.direction === 'expense' ? -amt : amt) : amt;
-                    const payrollAmount = Math.round(grossAmount / 1.1) - cost;
+                    const payrollAmount = truncMoney((r.amount || 0) / 1.1) - (r.proxy_cost || 0);
                     return sum + Math.max(payrollAmount, 0);
                   }, 0);
 
@@ -393,7 +472,7 @@ export default function Payroll() {
                   // 추가 정산: 비율 적용 후 금액 (원천세는 마지막에 한번에)
                   const extraDetails = commExtras.map(e => {
                     const raw = Number(e.amount.replace(/[^0-9]/g, '')) || 0;
-                    const afterRate = e.skipRate ? raw : Math.round(raw * rate / 100);
+                    const afterRate = e.skipRate ? raw : truncMoney(raw * rate / 100);
                     return { ...e, raw, afterRate, skipTax: !!e.skipTax };
                   });
                   // 공제 분류: 세전공제(식대 또는 원천세면제) vs 세후공제(기타)
@@ -408,7 +487,7 @@ export default function Payroll() {
                   // 원천세: (소득 - 세전공제 - 원천세면제항목) × 3.3%
                   const taxExemptAmount = extraDetails.filter(e => e.skipTax).reduce((s, e) => s + e.afterRate, 0);
                   const taxableIncome = totalIncome - taxExemptAmount - preTaxDeductions;
-                  const tax33 = Math.round(taxableIncome * 0.033);
+                  const tax33 = truncMoney(taxableIncome * 0.033);
                   // 실지급 = 소득 - 세전공제 - 원천세 - 세후공제
                   const finalPay = totalIncome - preTaxDeductions - tax33 - otherDeductions;
                   return (
@@ -491,36 +570,36 @@ export default function Payroll() {
                         </div>
                       </div>
 
-                      {/* 명도 성과금 — 짝수월에만, 외부 명승 사건 기반 (commission rate 미적용, 33% 세금만 차감) */}
-                      {data.is_payout_month && myungdoBonus && myungdoBonus.case_count > 0 && (
+                      {/* 안건 수당 — 짝수월에만, 외부 명승 사건 기반 (commission rate 미적용, 33% 세금만 차감) */}
+                      {data.is_payout_month && caseAllowance && caseAllowance.case_count > 0 && (
                         <>
                           <div className="payroll-section-title" style={{ marginTop: 16 }}>
-                            명도 성과금 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({myungdoBonus.period_label} · 외부 명승 사건)</span>
+                            안건 수당 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({caseAllowance.period_label} · 외부 명승 사건)</span>
                           </div>
                           <div className="payroll-bonus-box">
                             <div className="payroll-bonus-row">
-                              <span>명도 사건 수</span>
-                              <span className="num">{myungdoBonus.case_count}건</span>
+                              <span>사건 수</span>
+                              <span className="num">{caseAllowance.case_count}건</span>
                             </div>
                             <div className="payroll-bonus-row">
                               <span>수임료 원본 합계</span>
-                              <span className="num" style={{ color: '#9aa0a6' }}>{fmtWon(myungdoBonus.total_fee_raw)}</span>
+                              <span className="num" style={{ color: '#9aa0a6' }}>{fmtWon(caseAllowance.total_fee_raw)}</span>
                             </div>
                             <div className="payroll-bonus-row">
                               <span>조정 후 매출 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(정액 −15만 / 실비 ÷1.1)</span></span>
-                              <span className="num" style={{ fontWeight: 600 }}>{fmtWon(myungdoBonus.total_fee_adjusted)}</span>
+                              <span className="num" style={{ fontWeight: 600 }}>{fmtWon(caseAllowance.total_fee_adjusted)}</span>
                             </div>
                             <div className="payroll-bonus-row">
-                              <span>등급 성과금 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(부가세 없음)</span></span>
-                              <span className="num" style={{ fontWeight: 600, color: '#188038' }}>+{fmtWon(myungdoBonus.bonus)}</span>
+                              <span>등급 수당 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(부가세 없음)</span></span>
+                              <span className="num" style={{ fontWeight: 600, color: '#188038' }}>+{fmtWon(caseAllowance.bonus)}</span>
                             </div>
                             <div className="payroll-bonus-row" style={{ color: '#d93025', fontSize: '0.85rem' }}>
                               <span>　└ 원천세 (3.3%)</span>
-                              <span className="num">−{fmtWon(Math.round(myungdoBonus.bonus * 0.033))}</span>
+                              <span className="num">−{fmtWon(truncMoney(caseAllowance.bonus * 0.033))}</span>
                             </div>
                             <div className="payroll-bonus-row total">
-                              <span>명도 성과금</span>
-                              <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(myungdoBonus.bonus - Math.round(myungdoBonus.bonus * 0.033))}</span>
+                              <span>안건 수당 실수령</span>
+                              <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(caseAllowance.bonus - truncMoney(caseAllowance.bonus * 0.033))}</span>
                             </div>
                           </div>
                         </>
@@ -547,11 +626,11 @@ export default function Payroll() {
                             </div>
                             <div className="payroll-bonus-row" style={{ color: '#d93025', fontSize: '0.85rem' }}>
                               <span>　└ 원천세 (3.3%)</span>
-                              <span className="num">−{fmtWon(Math.round(data.contract_award.award * 0.033))}</span>
+                              <span className="num">−{fmtWon(truncMoney(data.contract_award.award * 0.033))}</span>
                             </div>
                             <div className="payroll-bonus-row total">
                               <span>계약포상</span>
-                              <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(data.contract_award.award - Math.round(data.contract_award.award * 0.033))}</span>
+                              <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(data.contract_award.award - truncMoney(data.contract_award.award * 0.033))}</span>
                             </div>
                           </div>
                         </>
@@ -711,14 +790,14 @@ export default function Payroll() {
                 <span>2개월 매출 합계 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(공급가액)</span></span>
                 <span className="num">{fmtWon(s.bonus_regular_supply || 0)}</span>
               </div>
-              {(s.bonus_myungdo_sum || 0) > 0 && (
+              {(s.bonus_case_allowance || 0) > 0 && (
                 <div className="payroll-bonus-row" style={{ background: '#fff8e1', padding: '4px 8px', borderRadius: 4 }}>
-                  <span>＋ 명도포상 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(부가세 없음)</span></span>
-                  <span className="num" style={{ color: '#e65100', fontWeight: 600 }}>{fmtWon(s.bonus_myungdo_sum)}</span>
+                  <span>＋ 안건 수당 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(부가세 없음)</span></span>
+                  <span className="num" style={{ color: '#e65100', fontWeight: 600 }}>{fmtWon(s.bonus_case_allowance)}</span>
                 </div>
               )}
               <div className="payroll-bonus-row" style={{ borderTop: '1px solid #e0e0e0', paddingTop: 6 }}>
-                <span>산정 기준 합계 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(공급가 + 명도)</span></span>
+                <span>산정 기준 합계 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(공급가 + 안건 수당)</span></span>
                 <span className="num" style={{ fontWeight: 700 }}>{fmtWon(s.bonus_total_sales || 0)}</span>
               </div>
               <div className="payroll-bonus-row">
@@ -746,28 +825,28 @@ export default function Payroll() {
               </div>
             )}
 
-            {/* 명도 성과금 — 짝수월에만, 외부 명승 사건 기반 */}
-            {!data.is_hq && data.is_payout_month && myungdoBonus && myungdoBonus.case_count > 0 && (
+            {/* 안건 수당 — 짝수월에만, 외부 명승 사건 기반 */}
+            {!data.is_hq && data.is_payout_month && caseAllowance && caseAllowance.case_count > 0 && (
               <>
                 <div className="payroll-section-title">
-                  명도 성과금 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({myungdoBonus.period_label} · 외부 명승 사건)</span>
+                  안건 수당 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({caseAllowance.period_label} · 외부 명승 사건)</span>
                 </div>
                 <div className="payroll-bonus-box">
                   <div className="payroll-bonus-row">
-                    <span>명도 사건 수</span>
-                    <span className="num">{myungdoBonus.case_count}건</span>
+                    <span>사건 수</span>
+                    <span className="num">{caseAllowance.case_count}건</span>
                   </div>
                   <div className="payroll-bonus-row">
                     <span>수임료 원본 합계</span>
-                    <span className="num" style={{ color: '#9aa0a6' }}>{fmtWon(myungdoBonus.total_fee_raw)}</span>
+                    <span className="num" style={{ color: '#9aa0a6' }}>{fmtWon(caseAllowance.total_fee_raw)}</span>
                   </div>
                   <div className="payroll-bonus-row">
                     <span>조정 후 매출 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(정액 −15만 / 실비 ÷1.1)</span></span>
-                    <span className="num" style={{ fontWeight: 600 }}>{fmtWon(myungdoBonus.total_fee_adjusted)}</span>
+                    <span className="num" style={{ fontWeight: 600 }}>{fmtWon(caseAllowance.total_fee_adjusted)}</span>
                   </div>
                   <div className="payroll-bonus-row total">
-                    <span>명도 성과금</span>
-                    <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(myungdoBonus.bonus)}</span>
+                    <span>안건 수당</span>
+                    <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(caseAllowance.bonus)}</span>
                   </div>
                 </div>
               </>
@@ -833,10 +912,10 @@ export default function Payroll() {
                 <span className="num">{fmtWon(s.bonus)}</span>
               </div>
               )}
-              {!data.is_hq && data.is_payout_month && myungdoBonusAmount > 0 && (
+              {!data.is_hq && data.is_payout_month && caseAllowanceValue > 0 && (
               <div className="payroll-bonus-row" style={{ color: '#188038' }}>
-                <span>명도 성과금 ({myungdoBonus?.period_label})</span>
-                <span className="num">+{fmtWon(myungdoBonusAmount)}</span>
+                <span>안건 수당 ({caseAllowance?.period_label})</span>
+                <span className="num">+{fmtWon(caseAllowanceValue)}</span>
               </div>
               )}
               {!data.is_hq && data.is_payout_month && contractAwardAmount > 0 && (
@@ -893,17 +972,12 @@ export default function Payroll() {
           {data.accounting.pay_type === 'commission' && (() => {
             const rate = data.accounting.commission_rate || 0;
             const normalRecords = (data.records || []).filter((r: any) => r.type !== '매수신청대리');
-            const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || Math.round(r.amount / 1.1)), 0);
-            const normalRefundSupply = Math.round((data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + Math.round(r.amount / 1.1), 0));
+            const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || truncMoney(r.amount / 1.1)), 0);
+            const normalRefundSupply = truncMoney((data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + truncMoney(r.amount / 1.1), 0));
             const netSales = normalSupply - normalRefundSupply;
-            const commAmt = Math.round(netSales * rate / 100);
+            const commAmt = truncMoney(netSales * rate / 100);
             const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
-            const proxyTotal = proxyRecords.reduce((sum: number, r: any) => {
-              const amt = r.amount || 0;
-              const cost = r.proxy_cost || 0;
-              const isLegacyProxy = String(r.type_detail || '').includes('수익');
-              return sum + (isLegacyProxy ? cost + (r.direction === 'expense' ? -amt : amt) : amt);
-            }, 0);
+            const proxyTotal = proxyRecords.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
             const proxyCostTotal = proxyRecords.reduce((sum: number, r: any) => sum + (r.proxy_cost || 0), 0);
             const compRev = netSales - commAmt;
             return (
@@ -1273,14 +1347,14 @@ function getBonusBreakdown(excess: number) {
   const T2 = 15010000; // 1501만원
 
   if (excess < T1) {
-    tiers.push({ label: '0~501만 미만', base: excess, rate: 20, amount: Math.round(excess * 0.20) });
+    tiers.push({ label: '0~501만 미만', base: excess, rate: 20, amount: truncMoney(excess * 0.20) });
   } else if (excess < T2) {
-    tiers.push({ label: '0~501만 미만', base: T1, rate: 20, amount: Math.round(T1 * 0.20) });
-    tiers.push({ label: '501만~1,501만 미만', base: excess - T1, rate: 25, amount: Math.round((excess - T1) * 0.25) });
+    tiers.push({ label: '0~501만 미만', base: T1, rate: 20, amount: truncMoney(T1 * 0.20) });
+    tiers.push({ label: '501만~1,501만 미만', base: excess - T1, rate: 25, amount: truncMoney((excess - T1) * 0.25) });
   } else {
-    tiers.push({ label: '0~501만 미만', base: T1, rate: 20, amount: Math.round(T1 * 0.20) });
-    tiers.push({ label: '501만~1,501만 미만', base: T2 - T1, rate: 25, amount: Math.round((T2 - T1) * 0.25) });
-    tiers.push({ label: '1,501만 이상', base: excess - T2, rate: 30, amount: Math.round((excess - T2) * 0.30) });
+    tiers.push({ label: '0~501만 미만', base: T1, rate: 20, amount: truncMoney(T1 * 0.20) });
+    tiers.push({ label: '501만~1,501만 미만', base: T2 - T1, rate: 25, amount: truncMoney((T2 - T1) * 0.25) });
+    tiers.push({ label: '1,501만 이상', base: excess - T2, rate: 30, amount: truncMoney((excess - T2) * 0.30) });
   }
   return tiers;
 }

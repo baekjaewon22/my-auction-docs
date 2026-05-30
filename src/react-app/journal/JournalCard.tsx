@@ -576,7 +576,7 @@ function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd
         <label className={`field-check-label ${ed('bidCancelled') ? 'checked' : ''}`} style={{ cursor: 'pointer', fontSize: '0.78rem', padding: '4px 8px' }}>
           <input type="checkbox" checked={!!ed('bidCancelled')} onChange={(e) => setEd('bidCancelled', e.target.checked)} /> 취하/변경
         </label>
-        {ed('bidCancelled') && <span style={{ marginLeft: 6, fontSize: '0.72rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용</span>}
+        {ed('bidCancelled') && <span style={{ marginLeft: 6, fontSize: '0.72rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용 · 외근보고서 제출 불필요</span>}
       </div>
       <FieldCheckEdit ed={ed} setEd={setEd} />
     </div>

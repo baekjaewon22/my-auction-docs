@@ -53,12 +53,14 @@ function formatCurrency(n: number): string {
 }
 
 function formatLeaveHours(hours: number): string {
-  const safeHours = Math.max(0, Math.round((Number(hours || 0)) * 1000) / 1000);
-  const days = Math.floor(safeHours / 8);
-  const rest = Math.round((safeHours - days * 8) * 1000) / 1000;
-  if (days > 0 && rest > 0) return `${days}일 ${rest}시간`;
-  if (days > 0) return `${days}일`;
-  return `${rest}시간`;
+  const safeHours = Math.round((Number(hours || 0)) * 1000) / 1000;
+  const sign = safeHours < 0 ? '-' : '';
+  const absHours = Math.abs(safeHours);
+  const days = Math.floor(absHours / 8);
+  const rest = Math.round((absHours - days * 8) * 1000) / 1000;
+  if (days > 0 && rest > 0) return `${sign}${days}일 ${rest}시간`;
+  if (days > 0) return `${sign}${days}일`;
+  return `${sign}${rest}시간`;
 }
 
 function balanceHours(balance: any, kind: 'total' | 'used' | 'remaining'): number {
@@ -234,7 +236,6 @@ export default function Leave() {
 
   const handleSubmit = async () => {
     const requestUserId = canRequestForOthers && formUserId ? formUserId : undefined;
-    const requestBalance = requestUserId ? formUserBalance : balance;
     // 특별휴가만 사유 검증
     if (formType === '특별휴가') {
       if (specialSubtype === '기타' && !specialEtcReason.trim()) {
@@ -246,9 +247,6 @@ export default function Leave() {
         }
         if (summerChain < 0 || summerChain > SUMMER_MAX_CHAIN) {
           alert(`연차 연결은 최대 ${SUMMER_MAX_CHAIN}일까지 가능합니다.`); return;
-        }
-        if (summerChain > 0 && balanceHours(requestBalance, 'remaining') < summerChain * 8) {
-          alert(`연차 잔여(${formatLeaveHours(balanceHours(requestBalance, 'remaining'))})가 부족합니다.`); return;
         }
       }
     }

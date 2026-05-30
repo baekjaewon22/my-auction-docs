@@ -495,17 +495,8 @@ leave.post('/request', async (c) => {
     return c.json({ success: true, id });
   }
 
-  // 잔여 연차 확인: 1년 미만자는 월별 발생분을 초과해 신청할 수 없다.
+  // 잔여 연차는 안내용으로만 관리한다. 부족해도 신청/승인은 가능하며 잔여가 음수로 표시될 수 있다.
   await reinitUserLeave(db, targetUserId);
-  const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(targetUserId).first<any>();
-  if (leaveInfo) {
-    const availableHours = leaveInfo.leave_type === 'monthly'
-      ? daysToHours((leaveInfo.monthly_days || 0) - (leaveInfo.monthly_used || 0))
-      : daysToHours((leaveInfo.total_days || 0) - (leaveInfo.used_days || 0));
-    if (availableHours < deductHours) {
-      return c.json({ error: `연차 잔여시간이 부족합니다. (잔여: ${hoursToDays(availableHours)}일 / ${availableHours}시간)` }, 400);
-    }
-  }
 
   const id = crypto.randomUUID();
   await db.prepare(`INSERT INTO leave_requests

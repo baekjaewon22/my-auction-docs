@@ -1,6 +1,6 @@
 const KST_NOW_SQL = "datetime('now', '+9 hours')";
 
-export type BidResult = '실패' | '낙찰' | '취소';
+export type BidResult = '실패' | '낙찰' | '취소' | '취하/변경';
 
 export interface BidAnalysisInput {
   bid_datetime: string;
@@ -73,7 +73,8 @@ export function normalizeAmount(value: unknown): number | null {
 
 export function normalizeBidResult(value: unknown): BidResult {
   const text = String(value ?? '').trim().toLowerCase();
-  if (['취소', '취하', '변경', '취하/변경', 'cancel', 'cancelled'].includes(text)) return '취소';
+  if (['취하', '변경', '취하/변경'].includes(text)) return '취하/변경';
+  if (['취소', 'cancel', 'cancelled'].includes(text)) return '취소';
   if (['낙찰', '성공', 'y', 'yes', 'true', '1', 'o'].includes(text)) return '낙찰';
   return '실패';
 }
@@ -150,7 +151,7 @@ export async function upsertBidAnalysisFromJournal(db: D1Database, entry: {
   if (entry.activity_type !== '입찰') return;
   let data: any = {};
   try { data = JSON.parse(entry.data || '{}'); } catch { data = {}; }
-  const bidResult = data.bidCancelled ? '취소' : data.bidWon ? '낙찰' : '실패';
+  const bidResult = data.bidCancelled ? '취하/변경' : data.bidWon ? '낙찰' : '실패';
   await upsertBidAnalysisEntry(db, {
     bid_datetime: `${entry.target_date}${data.timeFrom ? ` ${data.timeFrom}` : ''}`,
     assignee_name: entry.user_name || '',

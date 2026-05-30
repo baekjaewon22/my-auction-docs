@@ -9,7 +9,7 @@ type BonusRow = {
   position: string;
   org: string;
   performance_bonus: number;
-  myungdo_bonus: number;
+  case_allowance: number;
   contract_award: number;
   extra_bonus: number;
   extra_label: string;
@@ -31,17 +31,17 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
       const [year, monthText] = month.split('-');
       const monthNumber = Number(monthText);
       const isPayoutMonth = monthNumber % 2 === 0;
-      let myungdoByUser: Record<string, number> = {};
+      let caseAllowanceByUser: Record<string, number> = {};
 
       if (isPayoutMonth) {
         try {
           const period = `${year}-${String(monthNumber - 1).padStart(2, '0')}_${String(monthNumber).padStart(2, '0')}`;
           const bonusRes = await api.cases.bonusSummary(period);
-          myungdoByUser = Object.fromEntries(
+          caseAllowanceByUser = Object.fromEntries(
             (bonusRes.summary || []).map((item: any) => [item.consultant_user_id, item.bonus || 0])
           );
         } catch {
-          myungdoByUser = {};
+          caseAllowanceByUser = {};
         }
       }
 
@@ -62,9 +62,9 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
           const contractAward = payroll.is_payout_month && payroll.contract_award?.rank
             ? (payroll.contract_award.award || 0)
             : 0;
-          const myungdoBonus = isPayoutMonth ? (myungdoByUser[user.id] || 0) : 0;
+          const caseAllowance = isPayoutMonth ? (caseAllowanceByUser[user.id] || 0) : 0;
           const extraBonus = parseMoney(saved.extraPay);
-          const totalBonus = performanceBonus + myungdoBonus + contractAward + extraBonus;
+          const totalBonus = performanceBonus + caseAllowance + contractAward + extraBonus;
 
           if (totalBonus <= 0) return null;
 
@@ -76,7 +76,7 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
             position: payroll.user?.position_title || user.position_title || '',
             org: [branch, department].filter(Boolean).join(' · '),
             performance_bonus: performanceBonus,
-            myungdo_bonus: myungdoBonus,
+            case_allowance: caseAllowance,
             contract_award: contractAward,
             extra_bonus: extraBonus,
             extra_label: saved.extraLabel || '',
@@ -98,12 +98,12 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
   const totals = useMemo(() => rows.reduce(
     (acc, row) => ({
       performance_bonus: acc.performance_bonus + row.performance_bonus,
-      myungdo_bonus: acc.myungdo_bonus + row.myungdo_bonus,
+      case_allowance: acc.case_allowance + row.case_allowance,
       contract_award: acc.contract_award + row.contract_award,
       extra_bonus: acc.extra_bonus + row.extra_bonus,
       total_bonus: acc.total_bonus + row.total_bonus,
     }),
-    { performance_bonus: 0, myungdo_bonus: 0, contract_award: 0, extra_bonus: 0, total_bonus: 0 }
+    { performance_bonus: 0, case_allowance: 0, contract_award: 0, extra_bonus: 0, total_bonus: 0 }
   ), [rows]);
 
   const exportExcel = async () => {
@@ -118,7 +118,7 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
       row.position,
       row.org,
       row.performance_bonus,
-      row.myungdo_bonus,
+      row.case_allowance,
       row.contract_award,
       row.extra_bonus,
       row.extra_label,
@@ -129,10 +129,10 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
       ['정직원 상여 지급내역'],
       [`기준월: ${yy}년 ${mm}월`, `작성일: ${new Date().toISOString().slice(0, 10)}`, `인원: ${rows.length}명`],
       [],
-      ['No', '이름', '직급', '소속', '성과금', '명도포상', '계약포상', '기타포상', '기타포상명', '상여 총금액'],
+      ['No', '이름', '직급', '소속', '성과금', '안건 수당', '계약포상', '기타포상', '기타포상명', '상여 총금액'],
       ...sheetRows,
       [],
-      ['합계', '', '', '', totals.performance_bonus, totals.myungdo_bonus, totals.contract_award, totals.extra_bonus, '', totals.total_bonus],
+      ['합계', '', '', '', totals.performance_bonus, totals.case_allowance, totals.contract_award, totals.extra_bonus, '', totals.total_bonus],
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(sheetData);
@@ -191,7 +191,7 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
                 <th style={{ width: 120 }}>직급</th>
                 <th>소속</th>
                 <th style={{ width: 120, textAlign: 'right' }}>성과금</th>
-                <th style={{ width: 120, textAlign: 'right' }}>명도포상</th>
+                <th style={{ width: 120, textAlign: 'right' }}>안건 수당</th>
                 <th style={{ width: 120, textAlign: 'right' }}>계약포상</th>
                 <th style={{ width: 120, textAlign: 'right' }}>기타포상</th>
                 <th style={{ width: 140, textAlign: 'right' }}>상여 총금액</th>
@@ -204,7 +204,7 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
                   <td>{row.position || '-'}</td>
                   <td>{row.org || '-'}</td>
                   <td style={{ textAlign: 'right' }}>{fmt(row.performance_bonus)}원</td>
-                  <td style={{ textAlign: 'right' }}>{fmt(row.myungdo_bonus)}원</td>
+                  <td style={{ textAlign: 'right' }}>{fmt(row.case_allowance)}원</td>
                   <td style={{ textAlign: 'right' }}>{fmt(row.contract_award)}원</td>
                   <td style={{ textAlign: 'right' }} title={row.extra_label}>{fmt(row.extra_bonus)}원</td>
                   <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(row.total_bonus)}원</td>
@@ -215,7 +215,7 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
               <tr className="bi-total">
                 <td colSpan={3} style={{ textAlign: 'right', fontWeight: 700 }}>합계</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.performance_bonus)}원</td>
-                <td style={{ textAlign: 'right' }}>{fmt(totals.myungdo_bonus)}원</td>
+                <td style={{ textAlign: 'right' }}>{fmt(totals.case_allowance)}원</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.contract_award)}원</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.extra_bonus)}원</td>
                 <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(totals.total_bonus)}원</td>
@@ -226,7 +226,7 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
       )}
 
       <div className="bi-note">
-        · 정직원 급여/직급수당은 제외하고 성과금, 명도포상, 계약포상, 기타포상만 상여로 합산합니다.<br/>
+        · 정직원 급여/직급수당은 제외하고 성과금, 안건 수당, 계약포상, 기타포상만 상여로 합산합니다.<br/>
         · 기타포상은 각 담당자 급여정산 저장 내역의 추가 정산 항목을 반영합니다.
       </div>
     </div>

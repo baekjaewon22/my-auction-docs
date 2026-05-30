@@ -36,13 +36,13 @@ export default function FinanceAnalytics() {
   const monthlyPL = (data.months as string[]).map(m => {
     const sale = (salesByMonth as any[]).find(s => s.month === m);
     const cards = (data.cardByMonth as any[]).filter(c => c.month === m);
-    const cardTotal = cards.reduce((s: number, c: any) => s + (c.total || 0), 0);
+    const expenseTotal = cards.reduce((s: number, c: any) => s + (c.total || 0), 0);
     return {
       month: m.slice(5) + '월',
       매출: sale?.revenue || 0,
-      카드지출: cardTotal,
+      통합지출: expenseTotal,
       인건비: ratios.monthlySalary,
-      순이익: (sale?.revenue || 0) - cardTotal - ratios.monthlySalary,
+      순이익: (sale?.revenue || 0) - expenseTotal - ratios.monthlySalary,
     };
   });
 
@@ -66,8 +66,8 @@ export default function FinanceAnalytics() {
           <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#1a73e8' }}>{fmtWon(ratios.totalRevenue)}</div>
         </div>
         <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #e65100' }}>
-          <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>카드 지출</div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#e65100' }}>{fmtWon(ratios.totalCardSpend)}</div>
+          <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>통합 지출</div>
+          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#e65100' }}>{fmtWon(ratios.totalExpenseSpend ?? ratios.totalCardSpend)}</div>
         </div>
         <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid #7b1fa2' }}>
           <div style={{ fontSize: '0.72rem', color: '#5f6368', marginBottom: 4 }}>월 인건비</div>
@@ -83,7 +83,7 @@ export default function FinanceAnalytics() {
       <div className="card" style={{ padding: '16px 20px', marginBottom: 20, display: 'flex', gap: 24, flexWrap: 'wrap' }}>
         {[
           { label: '인건비율', value: ratios.laborRatio, warn: 50, color: '#7b1fa2', icon: <Users size={16} /> },
-          { label: '카드지출률', value: ratios.cardRatio, warn: 30, color: '#e65100', icon: <CreditCard size={16} /> },
+          { label: '통합지출률', value: ratios.expenseRatio ?? ratios.cardRatio, warn: 30, color: '#e65100', icon: <CreditCard size={16} /> },
           { label: '수익률', value: ratios.profitRatio, warn: -1, color: ratios.profitRatio >= 0 ? '#188038' : '#d93025', icon: ratios.profitRatio >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} /> },
         ].map((r, i) => (
           <div key={i} style={{ flex: '1 1 140px', display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -148,7 +148,7 @@ export default function FinanceAnalytics() {
               <Tooltip formatter={(v: any) => fmtWon(Number(v) || 0)} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Bar dataKey="매출" fill="#1a73e8" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="카드지출" fill="#e65100" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="통합지출" fill="#e65100" radius={[4, 4, 0, 0]} />
               <Bar dataKey="순이익" fill="#188038" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -181,9 +181,9 @@ export default function FinanceAnalytics() {
           </ResponsiveContainer>
         </div>
 
-        {/* 카드 카테고리별 지출 */}
+        {/* 통합 지출 카테고리 */}
         <div className="card" style={{ padding: '16px 20px' }}>
-          <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem', color: '#1a1a2e' }}><CreditCard size={16} style={{ verticalAlign: 'middle' }} /> 카드 지출 유형</h3>
+          <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem', color: '#1a1a2e' }}><CreditCard size={16} style={{ verticalAlign: 'middle' }} /> 통합 지출 유형</h3>
           <ResponsiveContainer width="100%" height={250}>
             <PieChart>
               <Pie data={(cardByCategory as any[]).map(c => ({ name: c.category, value: c.total }))} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={50} outerRadius={90} label={({ name, percent }: any) => `${name} ${((percent || 0) * 100).toFixed(0)}%`} labelLine={false} fontSize={11}>

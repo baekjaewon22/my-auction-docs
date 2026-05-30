@@ -318,10 +318,10 @@ export const ALIMTALK_TEMPLATES = {
   // 사내 커뮤니티: 명도 견적 답변 완료 → 요청자
   COMMUNITY_EVICTION_QUOTE_ANSWERED: {
     code: 'lawa',
-    variables: ['receiver_name', 'court', 'case_number', 'responder_name', 'link'],
+    variables: ['court', 'case_number', 'responder_name', 'link'],
     content: `[마이옥션 오피스]
 
-#{receiver_name}님
+담당자님
 
 요청하신 명도 견적 의뢰에 답변이 등록되었습니다.
 

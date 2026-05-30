@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, setSourcePage } from '../api';
 import { useAuthStore } from '../store';
 import type { SalesRecord, DepositNotice } from '../types';
@@ -495,6 +496,11 @@ export default function Sales() {
           </button>
           {canDepositUpload && (
             <button className="btn btn-sm" onClick={() => setShowDepositForm(true)}>입금등록</button>
+          )}
+          {(isAdminPlus || isAccountant || isDirector || isManager) && (
+            <Link to="/missing-documents" className="premium-filter-btn">
+              미제출 현황
+            </Link>
           )}
         </div>
       </div>
@@ -1730,7 +1736,7 @@ export default function Sales() {
                         </div>
                       )}
                       {/* 세금계산서/현금영수증 발행 기록 (이체/현금 — 총무 메모용) */}
-                      {r.payment_type === '이체' && r.status !== 'refunded' && canApproveAccounting && (() => {
+                      {(r.payment_type === '이체' || r.payment_type === '현금') && r.status !== 'refunded' && canApproveAccounting && (() => {
                         const taxType = r.tax_invoice_type || '';
                         const taxDate = r.tax_invoice_date || '';
                         const isSet = !!taxDate;
@@ -1787,6 +1793,15 @@ export default function Sales() {
                                 const next = taxType === '계산' ? '' : '계산';
                                 try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
                               }}>계산</button>
+                            <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
+                              background: taxType === '자진' ? '#eef2ff' : '#fff',
+                              color: taxType === '자진' ? '#4338ca' : '#5f6368',
+                              fontWeight: taxType === '자진' ? 700 : 400,
+                              border: taxType === '자진' ? '1px solid #a5b4fc' : '1px solid #dadce0' }}
+                              onClick={async () => {
+                                const next = taxType === '자진' ? '' : '자진';
+                                try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
+                              }}>자진</button>
                           </div>
                         );
                       })()}

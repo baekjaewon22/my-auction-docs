@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Edit2, Plus, Save, Search, Upload, X } from 'lucide-react';
 import { api } from '../api';
 
-type BidResult = '실패' | '낙찰' | '취소';
+type BidResult = '실패' | '낙찰' | '취소' | '취하/변경';
 
 type BidAnalysisRow = {
   id: string;
@@ -59,7 +59,8 @@ function parseAmount(value: unknown) {
 
 function parseBidResult(value: unknown): BidResult {
   const text = String(value ?? '').trim().toLowerCase();
-  if (['취소', '취하', '변경', '취하/변경', 'cancel', 'cancelled'].includes(text)) return '취소';
+  if (['취하', '변경', '취하/변경'].includes(text)) return '취하/변경';
+  if (['취소', 'cancel', 'cancelled'].includes(text)) return '취소';
   if (['1', 'y', 'yes', 'o', 'true', '낙찰', '성공'].includes(text)) return '낙찰';
   return '실패';
 }
@@ -85,7 +86,7 @@ function formatBidDate(value: string) {
 
 function resultClass(result?: string) {
   if (result === '낙찰') return 'won';
-  if (result === '취소') return 'cancelled';
+  if (result === '취소' || result === '취하/변경') return 'cancelled';
   return 'failed';
 }
 
@@ -317,7 +318,7 @@ export default function BidAnalysis() {
             <label><span>예상낙찰가</span><input value={form.suggested_bid_price} onChange={(e) => setFormField('suggested_bid_price', e.target.value)} /></label>
             <label><span>입찰가</span><input value={form.actual_bid_price} onChange={(e) => setFormField('actual_bid_price', e.target.value)} /></label>
             <label><span>낙찰가</span><input value={form.winning_price} onChange={(e) => setFormField('winning_price', e.target.value)} /></label>
-            <label><span>낙찰유무</span><select value={form.bid_result} onChange={(e) => setFormField('bid_result', e.target.value as BidResult)}><option value="실패">실패</option><option value="낙찰">낙찰</option><option value="취소">취소</option></select></label>
+            <label><span>낙찰유무</span><select value={form.bid_result} onChange={(e) => setFormField('bid_result', e.target.value as BidResult)}><option value="실패">실패</option><option value="낙찰">낙찰</option><option value="취소">취소</option><option value="취하/변경">취하/변경</option></select></label>
           </div>
           <div className="bid-analysis-manual-actions">
             <button type="button" className="btn btn-secondary" onClick={closeForm}><X size={14} /> 취소</button>

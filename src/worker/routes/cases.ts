@@ -30,7 +30,7 @@ async function ensureCaseHiddenTable(db: D1Database): Promise<void> {
 //   700만 ~ 1000만 → 40만
 //   1000만 ~ 2000만 → 60만
 //   > 2000만 → 80만 (일괄)
-export function calculateMyungdoBonus(totalAmount: number): number {
+export function calculateCaseAllowance(totalAmount: number): number {
   if (totalAmount <= 0) return 0;
   if (totalAmount <= 2_000_000) return 100_000;
   if (totalAmount <= 5_000_000) return 200_000;
@@ -45,7 +45,7 @@ export function calculateMyungdoBonus(totalAmount: number): number {
 //   실비제(actual): fee / 1.1 (부가세 제외, 공급가액)
 export function adjustedFeeFor(amount: number, type: 'fixed' | 'actual'): number {
   if (type === 'fixed') return Math.max(0, amount - 150_000);
-  return Math.round(amount / 1.1);
+  return Math.trunc(amount / 1.1);
 }
 
 // 2개월 구간 식별: 1~2월 → '2026-01_02', 3~4월 → '2026-03_04', ...
@@ -564,7 +564,7 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
       COALESCE(SUM(
         CASE
           WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-          ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER)
+          ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER)
         END
       ), 0) as total_fee_adjusted
     FROM cases
@@ -577,7 +577,7 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
   const summary = (result.results || []).map((r: any) => ({
     ...r,
     total_fee: r.total_fee_adjusted, // 호환: 기존 클라이언트가 total_fee 사용
-    bonus: calculateMyungdoBonus(r.total_fee_adjusted),
+    bonus: calculateCaseAllowance(r.total_fee_adjusted),
   }));
 
   return c.json({
@@ -601,7 +601,7 @@ cases.get('/bonus/me', async (c) => {
       COALESCE(SUM(
         CASE
           WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-          ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER)
+          ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER)
         END
       ), 0) as total_fee_adjusted,
       COUNT(*) as cnt
@@ -618,7 +618,7 @@ cases.get('/bonus/me', async (c) => {
     total_fee_adjusted: adjusted,
     total_fee: adjusted, // 호환
     case_count: result?.cnt || 0,
-    bonus: calculateMyungdoBonus(adjusted),
+    bonus: calculateCaseAllowance(adjusted),
   });
 });
 
@@ -631,7 +631,7 @@ cases.get('/bonus/me', async (c) => {
 //   - INSERT OR IGNORE (external_id UNIQUE) — 한 번 들어가면 변동 없음
 //   - contract_date / deposit_date = 마감월 말일 (예: 2026-04-30)
 //   - amount = 등급 성과금 (10/20/30/40/60/80만), 부가세 없음
-export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
+export async function finalizeCaseAllowance(env: any, period: string): Promise<{
   period: string;
   period_label: string;
   inserted: number;
@@ -663,7 +663,7 @@ export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
       COALESCE(SUM(
         CASE
           WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-          ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER)
+          ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER)
         END
       ), 0) as total_fee_adjusted
     FROM cases
@@ -679,7 +679,7 @@ export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
   for (const r of (summaryRes.results || [])) {
     const userId = r.consultant_user_id;
     const userName = r.consultant_name || '';
-    const bonus = calculateMyungdoBonus(r.total_fee_adjusted);
+    const bonus = calculateCaseAllowance(r.total_fee_adjusted);
     if (bonus <= 0) {
       details.push({ user_id: userId, user_name: userName, bonus: 0, status: 'ineligible', reason: '등급 미달' });
       ineligible++;
@@ -707,6 +707,7 @@ export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
     }
 
     // INSERT OR IGNORE — external_id 중복이면 무시
+    // 안건 수당(구 명도포상)의 멱등성 키. 기존 DB 레코드 호환 위해 'myungdo-bonus-' prefix 유지
     const externalId = `myungdo-bonus-${userId}-${period}`;
     const id = `mb-${crypto.randomUUID().slice(0, 12)}`;
     const result = await db.prepare(`
@@ -746,7 +747,7 @@ cases.post('/finalize-bonus', requireRole('master', 'accountant'), async (c) => 
   const { period } = await c.req.json<{ period: string }>();
   if (!period) return c.json({ error: 'period is required' }, 400);
   try {
-    const result = await finalizeMyungdoBonus(c.env, period);
+    const result = await finalizeCaseAllowance(c.env, period);
     return c.json({ success: true, ...result });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);

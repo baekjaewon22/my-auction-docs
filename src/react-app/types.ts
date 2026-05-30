@@ -205,7 +205,7 @@ export interface SalesRecord {
   client_phone: string;
   // 세금계산서/현금영수증 발행 기록 (총무 메모용)
   tax_invoice_date?: string;
-  tax_invoice_type?: string; // '영수' | '계산'
+  tax_invoice_type?: string; // '영수' | '계산' | '자진'
   created_at: string;
   updated_at: string;
 }

@@ -306,7 +306,8 @@ export const api = {
       Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
       return request<{ notes: any[] }>('/admin-notes' + (q.toString() ? '?' + q.toString() : ''));
     },
-    get: (id: string) => request<{ note: any; comments: any[]; attachments: any[] }>('/admin-notes/' + id),
+    get: (id: string, options: { trackView?: boolean } = {}) =>
+      request<{ note: any; comments: any[]; attachments: any[] }>('/admin-notes/' + id + (options.trackView ? '?view=1' : '')),
     downloadAttachment: async (url: string) => {
       const token = getToken();
       const res = await fetch(url, {
@@ -350,7 +351,7 @@ export const api = {
         rows: Array<{
           id: string; bid_datetime: string; assignee_name: string; branch_name?: string; case_number: string; property_type: string;
           suggested_bid_price: number | null; actual_bid_price: number | null; winning_price: number | null;
-          is_won: number; bid_result?: '실패' | '낙찰' | '취소'; client_name: string; source_type?: string; manual_override?: number; created_at: string;
+          is_won: number; bid_result?: '실패' | '낙찰' | '취소' | '취하/변경'; client_name: string; source_type?: string; manual_override?: number; created_at: string;
         }>;
         total: number; page: number; page_size: number; filters?: { branches: string[]; assignees: string[] };
       }>('/admin-notes/bid-analysis' + (q.toString() ? '?' + q.toString() : ''));
@@ -362,7 +363,7 @@ export const api = {
         rows: Array<{
           id: string; bid_datetime: string; assignee_name: string; branch_name?: string; case_number: string; property_type: string;
           suggested_bid_price: number | null; actual_bid_price: number | null; winning_price: number | null;
-          is_won: number; bid_result?: '실패' | '낙찰' | '취소'; client_name: string; source_type?: string; manual_override?: number; created_at: string;
+          is_won: number; bid_result?: '실패' | '낙찰' | '취소' | '취하/변경'; client_name: string; source_type?: string; manual_override?: number; created_at: string;
         }>;
       }>('/admin-notes/bid-analysis/stats' + (q.toString() ? '?' + q.toString() : ''));
     },
@@ -436,6 +437,20 @@ export const api = {
         total_count: number; total_amount: number;
       }>('/sales/contract-tracker?' + q.toString());
     },
+    missingDocuments: (params?: { month?: string }) => {
+      const q = new URLSearchParams();
+      if (params?.month) q.set('month', params.month);
+      const qs = q.toString();
+      return request<{
+        month: string | null;
+        totals: { consultants: number; contract_missing: number; property_report_missing: number; total_missing: number };
+        users: Array<{
+          user_id: string; user_name: string; position_title: string; branch: string; department: string;
+          contract_missing: number; property_report_missing: number; total_missing: number;
+          records: Array<{ id: string; type: string; doc_type: string; client_name: string; amount: number; contract_date: string; status: string }>;
+        }>;
+      }>('/sales/missing-documents' + (qs ? '?' + qs : ''));
+    },
     create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; deposit_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
@@ -485,7 +500,7 @@ export const api = {
       request('/sales/deposits/' + id + '/approve', { method: 'POST' }),
     deleteDeposit: (id: string) =>
       request('/sales/deposits/' + id, { method: 'DELETE' }),
-    createAccountingEntry: (data: { amount: number; content: string; date: string; assignee_id: string; direction?: string }) =>
+    createAccountingEntry: (data: { amount: number; content: string; date: string; assignee_id: string; direction?: string; payment_method?: string }) =>
       request<{ success: boolean; id: string }>('/sales/accounting-entry', { method: 'POST', body: JSON.stringify(data) }),
     contractCheck: (id: string, data: { contract_submitted?: number; contract_not_submitted?: number; contract_not_reason?: string; contract_not_approved?: number }) =>
       request('/sales/' + id + '/contract-check', { method: 'PUT', body: JSON.stringify(data) }),
@@ -522,8 +537,10 @@ export const api = {
   card: {
     updateUserCard: (userId: string, card_number: string) =>
       request('/card/user/' + userId, { method: 'PUT', body: JSON.stringify({ card_number }) }),
-    upload: (rows: { card_number: string; transaction_date: string; merchant_name: string; amount: number; description: string; is_cancellation?: boolean; raw_text?: string }[]) =>
+    upload: (rows: { card_number: string; transaction_date: string; merchant_name: string; amount: number; description: string; usage_category?: string; usage_item?: string; is_cancellation?: boolean; raw_text?: string }[]) =>
       request<{ success: boolean; inserted: number; batch_id: string }>('/card/upload', { method: 'POST', body: JSON.stringify({ rows }) }),
+    updateTransaction: (id: string, data: { merchant_name?: string; description?: string; usage_category?: string; usage_item?: string }) =>
+      request<{ success: boolean }>('/card/transaction/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     transactions: (params?: { month?: string; branch?: string; user_id?: string }) => {
       const q = new URLSearchParams();
       if (params?.month) q.set('month', params.month);
@@ -660,6 +677,22 @@ export const api = {
       request<{ success: boolean; salary: number; standard_sales: number; grade: string }>('/accounting/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
     updateGrade: (userId: string, grade: string) =>
       request('/accounting/' + userId + '/grade', { method: 'PUT', body: JSON.stringify({ grade }) }),
+    laborCostReport: () =>
+      request<{ rows: any[]; summary: { total_salary: number; total_allowance: number; total_labor_cost: number; staff_count: number } }>('/accounting/reports/labor-cost'),
+    checkCardRules: () =>
+      request<{ card_rules: any[]; keyword_rules: any[] }>('/accounting/rules/check-card'),
+    createCheckCardRule: (data: { card_last4: string; branch: string; owner_name: string; memo?: string }) =>
+      request<{ rule: any }>('/accounting/rules/check-card/card', { method: 'POST', body: JSON.stringify(data) }),
+    updateCheckCardRule: (id: string, data: { card_last4: string; branch: string; owner_name: string; memo?: string }) =>
+      request<{ rule: any }>('/accounting/rules/check-card/card/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteCheckCardRule: (id: string) =>
+      request<{ success: boolean }>('/accounting/rules/check-card/card/' + id, { method: 'DELETE' }),
+    createMerchantKeywordRule: (data: { keyword: string; category: string; item: string; memo?: string }) =>
+      request<{ rule: any }>('/accounting/rules/check-card/keyword', { method: 'POST', body: JSON.stringify(data) }),
+    updateMerchantKeywordRule: (id: string, data: { keyword: string; category: string; item: string; memo?: string }) =>
+      request<{ rule: any }>('/accounting/rules/check-card/keyword/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteMerchantKeywordRule: (id: string) =>
+      request<{ success: boolean }>('/accounting/rules/check-card/keyword/' + id, { method: 'DELETE' }),
     evaluations: (userId: string) =>
       request<{ evaluations: import('./types').SalesEvaluation[] }>('/accounting/evaluations/' + userId),
     evaluate: (periodStart: string, periodEnd: string) =>
@@ -670,6 +703,23 @@ export const api = {
       request<{ pending_sales: import('./types').SalesRecord[]; settlement_deposits: any[] }>('/accounting/card-settlements/list' + (month ? '?month=' + month : '')),
     confirmCardSettlement: (id: string, data: { settlement_date?: string; settlement_amount?: number; staging_id?: string; note?: string }) =>
       request<{ success: boolean; sales_id: string; settlement_amount: number; fee_amount: number; settlement_date: string }>('/accounting/card-settlements/' + id + '/confirm', { method: 'POST', body: JSON.stringify(data) }),
+    commitSession2: (data: { batch_hash: string; file_name?: string; rows: any[] }) =>
+      request<{ success: boolean; batch_id: string; source_inserted: number; source_skipped: number; reconciliation_upserted: number; ledger_inserted: number; ledger_skipped: number }>('/accounting/session2/commit', { method: 'POST', body: JSON.stringify(data) }),
+    session2Report: (params: { report_type: string; month?: string; branch?: string }) => {
+      const query = new URLSearchParams();
+      query.set('report_type', params.report_type);
+      if (params.month) query.set('month', params.month);
+      if (params.branch) query.set('branch', params.branch);
+      return request<{ rows: any[]; summary: any; months: string[]; latest_import?: any }>('/accounting/session2/reports?' + query.toString());
+    },
+    forecastAdjustments: (params: { month: string; branch?: string }) => {
+      const query = new URLSearchParams();
+      query.set('month', params.month);
+      if (params.branch) query.set('branch', params.branch);
+      return request<{ rows: any[]; updated_at?: string; updated_by?: string }>('/accounting/session2/forecast-adjustments?' + query.toString());
+    },
+    saveForecastAdjustments: (data: { month: string; branch?: string; rows: any[] }) =>
+      request<{ success: boolean; rows: any[] }>('/accounting/session2/forecast-adjustments', { method: 'PUT', body: JSON.stringify(data) }),
     uploadBank: (rows: any[]) =>
       request<{ success: boolean; total: number; inserted: number; autoExpenses: number; dupSales: number; dupStaging: number; skipped: string[] }>('/accounting/upload-bank', { method: 'POST', body: JSON.stringify({ rows }) }),
     staging: (month?: string) =>

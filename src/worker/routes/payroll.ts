@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
-import { calculateMyungdoBonus } from './cases';
+import { calculateCaseAllowance } from './cases';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -9,6 +9,7 @@ import { calculateMyungdoBonus } from './cases';
 // 매출포상(일반 성과금) 산정에는 합산 X — 별도 항목으로만 표시
 const CONTRACT_AWARD_TIERS = [300_000, 200_000, 100_000];
 const CONTRACT_AWARD_MIN_COUNT = 10;
+const truncMoney = (value: number): number => Math.trunc(Number(value) || 0);
 function contractCustomerKey(r: any): string {
   const phone = String(r.client_phone || '').replace(/\D/g, '');
   const name = String(r.client_name || '').trim().toLowerCase();
@@ -88,10 +89,28 @@ const requirePayrollAccess = async (c: any, next: any) => {
 
 // 총무보조(accountant_asst) 열람 제한 — 팀장·관리자급·이사·대표자 정산은 총무담당만 접근 가능
 const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+function compactBranchName(value: unknown): string {
+  return String(value || '').replace(/\s+/g, '').trim();
+}
+
+function isRestrictedBranchForAsst(branch: unknown): boolean {
+  const compact = compactBranchName(branch);
+  return compact === '의정부' || compact === '의정부본사';
+}
+
+function getAsstScopedBranch(viewer: any): string | null {
+  if (viewer?.role !== 'accountant_asst') return '';
+  const branch = String(viewer?.branch || '').trim();
+  if (!branch || isRestrictedBranchForAsst(branch)) return null;
+  return branch;
+}
+
 async function canAccessUserPayroll(db: D1Database, viewer: any, targetUserId: string): Promise<boolean> {
   if (viewer.role !== 'accountant_asst') return true;
-  const target = await db.prepare('SELECT role FROM users WHERE id = ?').bind(targetUserId).first<any>();
+  if (isRestrictedBranchForAsst(viewer.branch)) return false;
+  const target = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(targetUserId).first<any>();
   if (!target) return true;
+  if (compactBranchName(target.branch) !== compactBranchName(viewer.branch)) return false;
   return !RESTRICTED_ROLES_FOR_ASST.includes(target.role);
 }
 
@@ -206,22 +225,33 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   `).bind(userId, monthStart, monthEnd).first<any>();
   const unpaidLeaveHours = unpaidLeaveResult?.total_hours || 0;
   const unpaidLeaveDays = unpaidLeaveHours / 8;
-  const unpaidLeaveDeduction = salary > 0 ? Math.round((salary / 209) * unpaidLeaveHours) : 0;
+  const unpaidLeaveDeduction = salary > 0 ? truncMoney((salary / 209) * unpaidLeaveHours) : 0;
 
   // 본사관리 인원은 실적 기반 성과금 없음
   const isHQ = user.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
 
-  // 성과금: 2개월 일반매출(공급가액) + 명도포상(amount 그대로) 합산 (급여제만)
+  // 성과금: 2개월 일반매출(공급가액) + 안건 수당(amount 그대로) 합산 (급여제만)
+  // 매수신청대리는 대리비용을 제3자에게 지급하므로 업무성과 산정에서 차감
+  // effective_raw = amount - proxy_cost*1.1 (VAT 포함 기준 환산)
+  // → effective_supply = effective_raw / 1.1 = amount/1.1 - proxy_cost
+  const proxyEffectiveRaw = (r: any) => {
+    if (r.type === '매수신청대리') {
+      return Math.max((r.amount || 0) - truncMoney((r.proxy_cost || 0) * 1.1), 0);
+    }
+    return r.amount || 0;
+  };
+  const totalSalesEffective = confirmedRecords.reduce((sum: number, r: any) => sum + proxyEffectiveRaw(r), 0);
+
   let bonus = 0;
-  // 일반매출 (부가세 분리 대상)
-  let bonusRegularRaw = totalSales;                          // 일반 원본
-  let bonusRegularSupply = Math.round(totalSales / 1.1);     // 일반 공급가액
-  let bonusRegularVat = totalSales - bonusRegularSupply;     // 일반 부가세
-  // 명도포상 (부가세 X)
-  let bonusMyungdoSum = 0;
-  // 합계 (성과금 산정 기준 = 일반공급가 + 명도포상)
-  let bonusTotalSalesRaw = bonusRegularRaw;                  // 호환: raw = 일반 원본 + 명도
-  let bonusTotalSales = bonusRegularSupply;                  // 호환: 합계 = 일반공급가 + 명도
+  // 일반매출 (부가세 분리 대상) — 매수신청대리는 대리비용 차감 후 환산
+  let bonusRegularRaw = totalSalesEffective;                          // 일반 원본 (effective)
+  let bonusRegularSupply = truncMoney(totalSalesEffective / 1.1);     // 일반 공급가액
+  let bonusRegularVat = totalSalesEffective - bonusRegularSupply;     // 일반 부가세
+  // 안건 수당 (부가세 X) — cases 테이블 등급별 산정
+  let bonusCaseAllowance = 0;
+  // 합계 (성과금 산정 기준 = 일반공급가 + 안건 수당)
+  let bonusTotalSalesRaw = bonusRegularRaw;                  // 호환: raw = 일반 원본 + 안건 수당
+  let bonusTotalSales = bonusRegularSupply;                  // 호환: 합계 = 일반공급가 + 안건 수당
   let bonusTotalVat = bonusRegularVat;                       // 호환: 부가세
   let bonusExcess = 0;
   const isPayoutMonth = m % 2 === 0; // 짝수월 = 성과금 지급월
@@ -231,43 +261,46 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     const bonusSalesResult = await db.prepare(salesQuery)
       .bind(userId, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd).all();
     const bonusConfirmed = (bonusSalesResult.results as any[]).filter((r: any) => r.status === 'confirmed');
-    // sales_records의 명도성과금은 일반매출 합산에서 제외 (cases 직접 조회로 중복 방지)
-    const isMyungdoSalesRow = (r: any) => (r.type_detail || '').startsWith('명도성과금');
-    bonusRegularRaw = bonusConfirmed.filter((r: any) => !isMyungdoSalesRow(r)).reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
-    bonusRegularSupply = Math.round(bonusRegularRaw / 1.1);
+    // sales_records의 안건 수당 자동 INSERT 건(type_detail '명도성과금' prefix — DB 레거시)은 일반매출 합산에서 제외
+    // cases 직접 조회로 중복 방지. 매수신청대리는 대리비용 차감 후 effective amount로 합산.
+    const isCaseAllowanceSalesRow = (r: any) => (r.type_detail || '').startsWith('명도성과금');
+    bonusRegularRaw = bonusConfirmed
+      .filter((r: any) => !isCaseAllowanceSalesRow(r))
+      .reduce((sum: number, r: any) => sum + proxyEffectiveRaw(r), 0);
+    bonusRegularSupply = truncMoney(bonusRegularRaw / 1.1);
     bonusRegularVat = bonusRegularRaw - bonusRegularSupply;
 
-    // 명도포상: cases 테이블에서 직접 등급 성과금 계산 (트리거 INSERT 여부 무관)
+    // 안건 수당: cases 테이블에서 직접 등급 성과금 계산 (트리거 INSERT 여부 무관)
     const periodKey = `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}_${String(bonusPeriodEndMonth).padStart(2, '0')}`;
-    const myungdoCases = await db.prepare(`
+    const caseAllowanceCases = await db.prepare(`
       SELECT COALESCE(SUM(
         CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-             ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER) END
+             ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER) END
       ), 0) as total_fee_adjusted
       FROM cases
       WHERE consultant_user_id = ? AND bimonthly_period = ?
     `).bind(userId, periodKey).first<any>();
-    bonusMyungdoSum = calculateMyungdoBonus(myungdoCases?.total_fee_adjusted || 0);
+    bonusCaseAllowance = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
 
-    bonusTotalSalesRaw = bonusRegularRaw + bonusMyungdoSum;
-    bonusTotalSales = bonusRegularSupply + bonusMyungdoSum;  // 산정 기준
+    bonusTotalSalesRaw = bonusRegularRaw + bonusCaseAllowance;
+    bonusTotalSales = bonusRegularSupply + bonusCaseAllowance;  // 산정 기준
     bonusTotalVat = bonusRegularVat;
     bonusExcess = Math.max(bonusTotalSales - standardSales, 0);
 
     if (bonusExcess > 0) {
       if (bonusExcess < 5010000) {
-        bonus = Math.round(bonusExcess * 0.20);
+        bonus = truncMoney(bonusExcess * 0.20);
       } else if (bonusExcess < 15010000) {
-        bonus = Math.round(5010000 * 0.20 + (bonusExcess - 5010000) * 0.25);
+        bonus = truncMoney(5010000 * 0.20 + (bonusExcess - 5010000) * 0.25);
       } else {
-        bonus = Math.round(5010000 * 0.20 + 10000000 * 0.25 + (bonusExcess - 15010000) * 0.30);
+        bonus = truncMoney(5010000 * 0.20 + 10000000 * 0.25 + (bonusExcess - 15010000) * 0.30);
       }
     }
   }
 
   // 부가세 분리
   const recordsWithVat = confirmedRecords.map((r: any) => {
-    const supply = Math.round(r.amount / 1.1);
+    const supply = truncMoney(r.amount / 1.1);
     const vat = r.amount - supply;
     return { ...r, supply_amount: supply, vat_amount: vat };
   });
@@ -285,11 +318,11 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       : r.deposit_date ? r.deposit_date : r.contract_date;
     return sd && sd < monthStart;
   }).map((r: any) => {
-    const supply = Math.round(r.amount / 1.1);
+    const supply = truncMoney(r.amount / 1.1);
     let recovery = 0;
     if (isCommission) {
-      const comm = Math.round(supply * effectiveRate / 100);
-      recovery = Math.round(comm * (1 - 0.033));
+      const comm = truncMoney(supply * effectiveRate / 100);
+      recovery = truncMoney(comm * (1 - 0.033));
     }
     return { ...r, supply_amount: supply, recovery_amount: recovery };
   });
@@ -319,18 +352,18 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     summary: {
       contract_count: contractCount,
       total_sales: totalSales,
-      total_supply: Math.round(totalSales / 1.1),
-      total_vat: totalSales - Math.round(totalSales / 1.1),
+      total_supply: truncMoney(totalSales / 1.1),
+      total_vat: totalSales - truncMoney(totalSales / 1.1),
       total_refund: totalRefund,
       net_sales: totalSales - totalRefund,
       standard_sales: standardSales,
       bonus_regular_raw: bonusRegularRaw,            // 일반매출 원본(부가세 포함)
       bonus_regular_vat: bonusRegularVat,            // 일반매출 부가세
       bonus_regular_supply: bonusRegularSupply,      // 일반매출 공급가액
-      bonus_myungdo_sum: bonusMyungdoSum,            // 명도포상 합계 (부가세 X)
-      bonus_total_sales_raw: bonusTotalSalesRaw,    // 합계: 일반원본 + 명도
+      bonus_case_allowance: bonusCaseAllowance,      // 안건 수당 합계 (부가세 X)
+      bonus_total_sales_raw: bonusTotalSalesRaw,    // 합계: 일반원본 + 안건 수당
       bonus_total_vat: bonusTotalVat,                // 호환
-      bonus_total_sales: bonusTotalSales,            // 산정 기준: 일반공급가 + 명도
+      bonus_total_sales: bonusTotalSales,            // 산정 기준: 일반공급가 + 안건 수당
       bonus_excess: bonusExcess,
       excess: bonusExcess,
       bonus,
@@ -347,7 +380,12 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 // GET /api/payroll/branch-summary?month=YYYY-MM&branch=xxx — 지사별 합산
 payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
   const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
-  const filterBranch = c.req.query('branch') || '';
+  const viewer = c.get('user');
+  const scopedBranch = getAsstScopedBranch(viewer);
+  if (scopedBranch === null) {
+    return c.json({ error: '총무보조는 의정부 본사 및 종합 지표를 열람할 수 없습니다.' }, 403);
+  }
+  const filterBranch = viewer?.role === 'accountant_asst' ? scopedBranch : (c.req.query('branch') || '');
   const db = c.env.DB;
 
   // 조건
@@ -495,6 +533,11 @@ payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
 // GET /api/payroll/reports/business-income?month=YYYY-MM
 payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   const db = c.env.DB;
+  const viewer = c.get('user');
+  const scopedBranch = getAsstScopedBranch(viewer);
+  if (scopedBranch === null) {
+    return c.json({ error: '총무보조는 의정부 본사 및 종합 지표를 열람할 수 없습니다.' }, 403);
+  }
   const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
   const [y, m] = month.split('-').map(Number);
   const monthStart = `${month}-01`;
@@ -506,6 +549,8 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
 
   // 비율제 대상 사용자 목록
   let usersResult;
+  const branchFilterSql = scopedBranch ? ' AND u.branch = ?' : '';
+  const branchFilterBinds = scopedBranch ? [scopedBranch] : [];
   if (isJanFeb2026) {
     // 전체 활성 컨설턴트 (본사관리/명도팀/support 제외, 퇴사자 포함 → 과거 회차 보고 위해)
     usersResult = await db.prepare(`
@@ -519,16 +564,18 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
         AND u.role IN ('member', 'manager', 'resigned')
         AND u.branch != '본사 관리'
         AND u.department != '명도팀'
+        ${branchFilterSql}
       ORDER BY u.branch, u.department, u.name
-    `).all<any>();
+    `).bind(...branchFilterBinds).all<any>();
   } else {
     usersResult = await db.prepare(`
       SELECT u.id, u.name, u.branch, u.department, ua.commission_rate, ua.ssn, ua.address
       FROM user_accounting ua
       JOIN users u ON u.id = ua.user_id
       WHERE ua.pay_type = 'commission' AND u.approved = 1 AND u.role != 'resigned'
+        ${branchFilterSql}
       ORDER BY u.branch, u.department, u.name
-    `).all<any>();
+    `).bind(...branchFilterBinds).all<any>();
   }
 
   // commission_rate_overrides 일괄 조회 (해당 월)
@@ -566,38 +613,36 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
         // sales_records의 명도성과금 INSERT 건은 제외 (cases 직접 조회로 중복 방지)
         continue;
       } else if (r.type === '매수신청대리') {
-        const amount = r.amount || 0;
-        const cost = r.proxy_cost || 0;
-        const isLegacyProxy = String(r.type_detail || '').includes('수익');
-        const grossAmount = isLegacyProxy ? cost + (r.direction === 'expense' ? -amount : amount) : amount;
-        const payrollAmount = Math.round(grossAmount / 1.1) - cost;
+        // amount = 매출 gross (VAT 포함), proxy_cost = 대리비용
+        // 담당자 지급 = (매출 - 부가세) - 대리비용 = amount/1.1 - cost
+        const payrollAmount = truncMoney((r.amount || 0) / 1.1) - (r.proxy_cost || 0);
         proxyIncome += Math.max(payrollAmount, 0);
       } else {
-        normalSupply += Math.round((r.amount || 0) / 1.1);
+        normalSupply += truncMoney((r.amount || 0) / 1.1);
       }
     }
 
-    // 명도성과금: 짝수월 정산 시 cases 직접 조회로 등급 성과금 자동 합산
+    // 안건 수당: 짝수월 정산 시 cases 직접 조회로 등급 성과금 자동 합산
     // (commission rate 미적용, 부가세 없음, 33% 세금만 차감)
-    let myungdoIncome = 0;
+    let caseAllowanceIncome = 0;
     if (m % 2 === 0) {
       const m1 = m - 1;
       const m2 = m;
       const periodKey = `${y}-${String(m1).padStart(2, '0')}_${String(m2).padStart(2, '0')}`;
-      const myungdoCases = await db.prepare(`
+      const caseAllowanceCases = await db.prepare(`
         SELECT COALESCE(SUM(
           CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-               ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER) END
+               ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER) END
         ), 0) as total_fee_adjusted
         FROM cases
         WHERE consultant_user_id = ? AND bimonthly_period = ?
       `).bind(u.id, periodKey).first<any>();
-      myungdoIncome = calculateMyungdoBonus(myungdoCases?.total_fee_adjusted || 0);
+      caseAllowanceIncome = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
     }
 
-    const commissionAmount = Math.round(normalSupply * rate / 100);
-    const amount = commissionAmount + proxyIncome + myungdoIncome; // 총 소득
-    const tax = Math.round(amount * 0.033);
+    const commissionAmount = truncMoney(normalSupply * rate / 100);
+    const amount = commissionAmount + proxyIncome + caseAllowanceIncome; // 총 소득
+    const tax = truncMoney(amount * 0.033);
     const net = amount - tax;
     autoMap[u.id] = { amount, tax, net };
   }
@@ -633,7 +678,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       branch: u.branch, department: u.department,
       is_ad_hoc: false, is_overridden: false, note: '',
     };
-  }).concat(adHocList.map((ov: any) => ({
+  }).concat(viewer?.role === 'accountant_asst' ? [] : adHocList.map((ov: any) => ({
     id: ov.id, user_id: null, name: ov.name,
     ssn: ov.ssn || '', address: ov.address || '',
     amount: Number(ov.amount), tax: Number(ov.tax), net_amount: Number(ov.net_amount),
@@ -665,6 +710,15 @@ payroll.put('/reports/business-income/save', requireRole(...ACCOUNTING_ROLES), a
 
   if (!body.month || !/^\d{4}-\d{2}$/.test(body.month)) return c.json({ error: 'month 형식 오류' }, 400);
   const isAdHoc = body.is_ad_hoc || !body.user_id;
+  if (user?.role === 'accountant_asst') {
+    const scopedBranch = getAsstScopedBranch(user);
+    if (scopedBranch === null || isAdHoc || !body.user_id) {
+      return c.json({ error: '총무보조는 본인 지사 자동 산정 항목만 수정할 수 있습니다.' }, 403);
+    }
+    if (!(await canAccessUserPayroll(db, user, body.user_id))) {
+      return c.json({ error: '총무보조는 본인 지사 항목만 수정할 수 있습니다.' }, 403);
+    }
+  }
 
   // 기존 entry 찾기
   let existingId: string | null = null;
@@ -692,6 +746,10 @@ payroll.put('/reports/business-income/save', requireRole(...ACCOUNTING_ROLES), a
 
 // DELETE /api/payroll/reports/business-income/:id — 오버라이드/ad-hoc 삭제
 payroll.delete('/reports/business-income/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  if (user?.role === 'accountant_asst') {
+    return c.json({ error: '총무보조는 사업소득 항목을 삭제할 수 없습니다.' }, 403);
+  }
   const id = c.req.param('id');
   await c.env.DB.prepare('DELETE FROM business_income_entries WHERE id = ?').bind(id).run();
   return c.json({ success: true });
@@ -699,12 +757,17 @@ payroll.delete('/reports/business-income/:id', requireRole(...ACCOUNTING_ROLES),
 
 // ━━ 사업소득신고 추가리스트 (풀) CRUD ━━
 payroll.get('/reports/business-income-pool', requirePayrollAccess, async (c) => {
+  const user = c.get('user');
+  if (user?.role === 'accountant_asst') {
+    return c.json({ pool: [] });
+  }
   const result = await c.env.DB.prepare('SELECT * FROM business_income_pool ORDER BY name').all();
   return c.json({ pool: result.results || [] });
 });
 
 payroll.post('/reports/business-income-pool', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
+  if (user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
   const { name, ssn, address, note } = await c.req.json<{ name: string; ssn?: string; address?: string; note?: string }>();
   if (!name?.trim()) return c.json({ error: '이름을 입력하세요.' }, 400);
   const id = crypto.randomUUID();
@@ -715,6 +778,8 @@ payroll.post('/reports/business-income-pool', requireRole(...ACCOUNTING_ROLES), 
 });
 
 payroll.put('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  if (user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
   const id = c.req.param('id');
   const { name, ssn, address, note } = await c.req.json<{ name: string; ssn?: string; address?: string; note?: string }>();
   if (!name?.trim()) return c.json({ error: '이름을 입력하세요.' }, 400);
@@ -725,6 +790,8 @@ payroll.put('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES
 });
 
 payroll.delete('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  if (user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
   await c.env.DB.prepare('DELETE FROM business_income_pool WHERE id = ?').bind(c.req.param('id')).run();
   return c.json({ success: true });
 });

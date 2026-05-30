@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import { useDepartments } from '../hooks/useDepartments';
-import { StickyNote, Plus, X, Trash2, ArrowLeft, Pin, MessageSquare, Send, Edit3, BookOpen, EyeOff, Search, Gavel, Scale, Paperclip, Download, Printer, Handshake, CalendarDays, Newspaper, Bell } from 'lucide-react';
+import { StickyNote, Plus, X, Trash2, ArrowLeft, Pin, MessageSquare, Send, Edit3, BookOpen, Eye, EyeOff, Search, Gavel, Scale, Paperclip, Download, Printer, Handshake, CalendarDays, Newspaper, Bell } from 'lucide-react';
 import Cooperation from './Cooperation';
 import Select from '../components/Select';
 import { COURTS as ALL_COURTS } from '../journal/types';
@@ -29,6 +29,7 @@ interface Note {
   created_at: string;
   updated_at: string;
   comment_count: number;
+  view_count?: number;
   attachment_count?: number;
   category?: NoteCategory;
   legal_subcategory?: LegalSubcategory;
@@ -326,6 +327,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const isFeeCalculationTool = activeCategory === 'legal_support' && activeLegalSubcategory === 'fee_calculation';
   const isManager = !!user && ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user.role);
   const isMaster = user?.role === 'master';
+  const canViewPostViews = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   // 공유 범위 옵션: 역할에 따라 다름
   const teamOptions = departments.map(d => ({ value: `team:${d}`, label: `${d}` }));
@@ -412,7 +414,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   useEffect(() => {
     const noteId = searchParams.get('note');
     if (!noteId || detail?.id === noteId) return;
-    api.adminNotes.get(noteId)
+    api.adminNotes.get(noteId, { trackView: true })
       .then(res => {
         setDetail(res.note);
         setComments(res.comments);
@@ -469,7 +471,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const openDetail = async (note: Note) => {
     setDetail(note);
     try {
-      const res = await api.adminNotes.get(note.id);
+      const res = await api.adminNotes.get(note.id, { trackView: true });
       setDetail(res.note);
       setComments(res.comments);
       setAttachments(res.attachments || []);
@@ -760,6 +762,9 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
             </span>
             <span>{formatDate(detail.created_at)}</span>
             {detail.updated_at !== detail.created_at && <span>(수정됨)</span>}
+            {canViewPostViews && detail.view_count !== undefined && (
+              <span className="comment-badge"><Eye size={12} /> 조회 {Number(detail.view_count || 0).toLocaleString('ko-KR')}</span>
+            )}
             {detail.source_type === 'minutes' && (
               <span className="admin-note-source-badge"><BookOpen size={11} /> 회의록</span>
             )}
@@ -1262,6 +1267,9 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                   <span className="admin-note-visibility-badge">{getVisibilityLabel(note.visibility)}</span>
                   {note.comment_count > 0 && !isLegalTerms(note) && (
                     <span className="comment-badge"><MessageSquare size={11} /> {note.comment_count}</span>
+                  )}
+                  {canViewPostViews && note.view_count !== undefined && (
+                    <span className="comment-badge"><Eye size={11} /> {Number(note.view_count || 0).toLocaleString('ko-KR')}</span>
                   )}
                   {!!note.attachment_count && (
                     <span className="comment-badge"><Paperclip size={11} /> {note.attachment_count}</span>

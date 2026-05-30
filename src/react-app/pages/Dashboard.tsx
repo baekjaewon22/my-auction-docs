@@ -1319,7 +1319,7 @@ function isOutdoorEntry(entry: JournalEntry): boolean {
     // 미팅: 회사 미팅(internalMeeting)은 제외, 그 외는 외근
     if (entry.activity_type === '미팅') return !d.internalMeeting;
     // 입찰: 현장출근 + 대리입찰 아닌 경우
-    if (entry.activity_type === '입찰' && (d.fieldCheckIn || d.fieldCheckOut) && !d.bidProxy) return true;
+    if (entry.activity_type === '입찰' && (d.fieldCheckIn || d.fieldCheckOut) && !d.bidProxy && !d.bidCancelled) return true;
   } catch { /* */ }
   return false;
 }
@@ -1465,6 +1465,7 @@ function detectMissing(entries: JournalEntry[], docs: Document[], linkedEntryIds
     const todayKst = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
     dayEntries.forEach((entry) => {
       if (entry.activity_type !== '입찰') return;
+      if (dDay !== 0) return;
       try {
         const d = JSON.parse(entry.data);
         const missing: string[] = [];

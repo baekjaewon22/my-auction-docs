@@ -30,7 +30,7 @@ type BidAnalysisStatRow = {
   actual_bid_price: number | null;
   winning_price: number | null;
   is_won: number;
-  bid_result?: '실패' | '낙찰' | '취소';
+  bid_result?: '실패' | '낙찰' | '취소' | '취하/변경';
   client_name: string;
   source_type?: string;
 };
@@ -69,7 +69,7 @@ function bidRowsToJournalEntries(rows: BidAnalysisStatRow[], members: Member[]):
   return rows.map((row) => {
     const member = memberByBranchName.get(`${row.branch_name || ''}|${row.assignee_name || ''}`) || memberByName.get(row.assignee_name || '');
     const bidWon = row.bid_result === '낙찰' || row.is_won === 1;
-    const bidCancelled = row.bid_result === '취소';
+    const bidCancelled = row.bid_result === '취소' || row.bid_result === '취하/변경';
     return {
       id: `bid-analysis:${row.id}`,
       user_id: member?.id || `bid-analysis:${row.assignee_name || row.id}`,

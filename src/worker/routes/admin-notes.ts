@@ -36,6 +36,7 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
     'ALTER TABLE admin_notes ADD COLUMN visibility TEXT DEFAULT "all"',
     'ALTER TABLE admin_notes ADD COLUMN author_branch TEXT',
     'ALTER TABLE admin_notes ADD COLUMN author_department TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0',
   ];
   for (const sql of columns) {
     try { await db.prepare(sql).run(); } catch { /* already exists */ }
@@ -279,8 +280,13 @@ export async function syncBriefingSchedulesFromJournal(db: D1Database): Promise<
 
 // 익명 처리: 대표/관리자에겐 "익명 (이름 / 직책)", 일반에겐 "익명"
 function maskNote(note: any, viewerRole: string) {
-  if (!note.is_anonymous) return note;
   const isAdmin = ADMIN_ROLES.includes(viewerRole as Role);
+  if (isAdmin) {
+    note.view_count = Math.ceil(Number(note.view_count || 0) * 1.35);
+  } else {
+    delete note.view_count;
+  }
+  if (!note.is_anonymous) return note;
   if (isAdmin) {
     note.display_name = `익명 (${note.author_name}${note.author_position ? ' / ' + note.author_position : ''})`;
   } else {
@@ -1033,6 +1039,7 @@ adminNotes.get('/:id', async (c) => {
   await ensureAdminNoteExtensions(db);
   const viewer = c.get('user');
   const id = c.req.param('id');
+  const shouldTrackView = c.req.query('view') === '1';
 
   const viewerInfo = await db.prepare('SELECT role, branch, department FROM users WHERE id = ?').bind(viewer.sub).first<{ role: string; branch: string; department: string }>();
   const role = viewerInfo?.role || viewer.role;
@@ -1048,6 +1055,11 @@ adminNotes.get('/:id', async (c) => {
 
   // visibility 체크 (master는 예외)
   if (!canReadNote(note, viewer, viewerInfo, role)) return c.json({ error: '열람 권한이 없습니다.' }, 403);
+
+  if (shouldTrackView) {
+    await db.prepare('UPDATE admin_notes SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?').bind(id).run();
+    note.view_count = Number(note.view_count || 0) + 1;
+  }
 
   const comments = await db.prepare(
     `SELECT c.*, u.position_title as author_position

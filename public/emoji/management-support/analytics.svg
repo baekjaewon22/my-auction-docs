@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+  <defs>
+    <linearGradient id="an-bar1" x1="0" y1="22" x2="0" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5fb3ff"/>
+      <stop offset="1" stop-color="#1557b0"/>
+    </linearGradient>
+    <linearGradient id="an-bar2" x1="0" y1="15" x2="0" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5eead4"/>
+      <stop offset="1" stop-color="#0e8a7a"/>
+    </linearGradient>
+    <linearGradient id="an-bar3" x1="0" y1="8" x2="0" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fcd34d"/>
+      <stop offset="1" stop-color="#b45309"/>
+    </linearGradient>
+    <linearGradient id="an-bg" x1="0" y1="3" x2="0" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e2e8f0"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="18" cy="32.5" rx="13" ry="1.2" fill="#0f172a" opacity=".18"/>
+  <rect x="3" y="3" width="30" height="29" rx="3" fill="url(#an-bg)" stroke="#cbd5e1" stroke-width=".6"/>
+  <rect x="3" y="3" width="30" height="11" rx="3" fill="#ffffff" opacity=".6"/>
+  <line x1="6" y1="12" x2="30" y2="12" stroke="#cbd5e1" stroke-width=".3" stroke-dasharray="1 1.5"/>
+  <line x1="6" y1="18" x2="30" y2="18" stroke="#cbd5e1" stroke-width=".3" stroke-dasharray="1 1.5"/>
+  <line x1="6" y1="24" x2="30" y2="24" stroke="#cbd5e1" stroke-width=".3" stroke-dasharray="1 1.5"/>
+  <line x1="6" y1="29" x2="30" y2="29" stroke="#94a3b8" stroke-width=".5"/>
+  <rect x="8" y="22" width="5" height="7" rx="1" fill="url(#an-bar1)"/>
+  <rect x="15.5" y="16" width="5" height="13" rx="1" fill="url(#an-bar2)"/>
+  <rect x="23" y="9" width="5" height="20" rx="1" fill="url(#an-bar3)"/>
+  <rect x="8" y="22" width="1.6" height="7" rx=".8" fill="#fff" opacity=".35"/>
+  <rect x="15.5" y="16" width="1.6" height="13" rx=".8" fill="#fff" opacity=".35"/>
+  <rect x="23" y="9" width="1.6" height="20" rx=".8" fill="#fff" opacity=".35"/>
+  <path d="M 9.5 17 L 16 13 L 21 10 L 28 5.5" stroke="#0f3a7a" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+  <path d="M 24.5 5 L 28.5 5 L 28.5 9" stroke="#0f3a7a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <circle cx="9.5" cy="17" r="1.1" fill="#0f3a7a"/>
+  <circle cx="16" cy="13" r="1.1" fill="#0f3a7a"/>
+  <circle cx="21" cy="10" r="1.1" fill="#0f3a7a"/>
+</svg>

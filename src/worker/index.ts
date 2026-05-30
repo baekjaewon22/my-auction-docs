@@ -427,7 +427,7 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
       ),
     ));
   } else if (cron === '45 15 1 * *') {
-    // 매월 1일 00:45 KST: 전월이 짝수월이면 명도성과금 매출 자동 INSERT
+    // 매월 1일 00:45 KST: 전월이 짝수월이면 안건 수당(구 명도성과금) 매출 자동 INSERT
     const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
     const prevMonth = nowKst.getUTCMonth(); // 0=1월. 5월 1일 KST면 0-base 4=5월 → prev=3=4월
     // 1일 00:45 KST 시점에선 이미 다음달 1일이므로, "방금 끝난 달" = (현재 - 1달)
@@ -439,14 +439,14 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
     if (pm % 2 === 0) {
       const m1 = pm - 1;
       const period = `${py}-${String(m1).padStart(2, '0')}_${String(pm).padStart(2, '0')}`;
-      ctx.waitUntil(import('./routes/cases').then(({ finalizeMyungdoBonus }) =>
-        finalizeMyungdoBonus(env, period).then(
-          (r) => console.log('[cron myungdo-bonus] done', r),
-          (err) => console.error('[cron myungdo-bonus] error', err),
+      ctx.waitUntil(import('./routes/cases').then(({ finalizeCaseAllowance }) =>
+        finalizeCaseAllowance(env, period).then(
+          (r) => console.log('[cron case-allowance] done', r),
+          (err) => console.error('[cron case-allowance] error', err),
         ),
       ));
     } else {
-      console.log('[cron myungdo-bonus] skipped (전월이 홀수월)');
+      console.log('[cron case-allowance] skipped (전월이 홀수월)');
     }
   } else {
     console.warn('[scheduled] unknown cron pattern', cron);
