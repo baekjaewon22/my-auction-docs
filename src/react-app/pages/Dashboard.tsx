@@ -7,6 +7,7 @@ import type { JournalEntry } from '../journal/types';
 import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
+import { sameBranchName } from '../lib/branchAliases';
 
 const statusConfig: Record<string, { label: string; className: string; icon: typeof FileText }> = {
   draft: { label: '작성중', className: 'status-draft', icon: FilePlus },
@@ -22,6 +23,7 @@ interface MissingAlert {
   activity: string;
   missingDoc: string;
   dDay: number; // 경과일
+  journalEntryIds?: string[];
 }
 
 interface ScheduleGapAlert {
@@ -176,6 +178,7 @@ export default function Dashboard() {
   const [depositNotices, setDepositNotices] = useState<DepositNotice[]>([]);
   const [refundImpacts, setRefundImpacts] = useState<any[]>([]);
   const [scheduleGaps, setScheduleGaps] = useState<ScheduleGapAlert[]>([]);
+  const [exemptionSubmitting, setExemptionSubmitting] = useState(false);
   const [contractAlerts, setContractAlerts] = useState<SalesRecord[]>([]);
   const [myMissingDocs, setMyMissingDocs] = useState<SalesRecord[]>([]);
   const [dupInspections, setDupInspections] = useState<{ case_no: string; court: string; user_names: string; user_count: number; first_date: string; last_date: string; branch?: string }[]>([]);
@@ -193,6 +196,7 @@ export default function Dashboard() {
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
   const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
   const isMaster = user?.role === 'master';
+  const canDismissScheduleGapAlerts = ['master', 'admin'].includes(user?.role || '');
 
   // 마스터 전용 섹션 전체 삭제 버튼 — 실수 방지를 위해 명확한 라벨 표시
   const MasterCloseBtn = ({ alertType, keys, onClose }: { alertType: string; keys: string[]; onClose: () => void }) => isMaster ? (
@@ -306,7 +310,7 @@ export default function Dashboard() {
             entriesForDetect = entries.filter(e => e.user_id === user?.id);
           } else if (user?.role === 'manager') {
             entriesForDetect = entries.filter(e =>
-              e.branch === user.branch && e.department === user.department,
+              sameBranchName(e.branch, user.branch) && e.department === user.department,
             );
           } else {
             entriesForDetect = entries;
@@ -571,6 +575,31 @@ export default function Dashboard() {
     </div>
   );
   const ownMissingAlerts = alerts.filter((a) => a.userId === user?.id);
+
+  const handleOutdoorExemptionRequest = async (missing: MissingAlert) => {
+    const ids = missing.journalEntryIds || [];
+    if (ids.length === 0) {
+      alert('면제 신청할 외근 일지 정보를 찾을 수 없습니다.');
+      return;
+    }
+    const reasonType = prompt('면제 사유 유형을 입력하세요.\n예: 실제 외근 취소, 내부 일정 전환, 동행/지원 업무, 입찰 취소, 대리입찰, 단순 이동, 기타');
+    if (!reasonType?.trim()) return;
+    const reasonDetail = prompt('상세 사유를 입력하세요. 관리자 승인 및 감사 기록으로 남습니다.');
+    if (!reasonDetail?.trim()) return;
+    setExemptionSubmitting(true);
+    try {
+      const res = await api.links.requestOutdoorExemption({
+        journal_entry_ids: ids,
+        reason_type: reasonType.trim(),
+        reason_detail: reasonDetail.trim(),
+      });
+      alert(`면제 사유서를 제출했습니다. 관리자 승인 후 미제출 알림에서 제외됩니다.\n신청 ${res.requested}건, 기존 신청/승인 ${res.skipped}건`);
+    } catch (err: any) {
+      alert('면제 사유서 제출 실패: ' + (err.message || ''));
+    } finally {
+      setExemptionSubmitting(false);
+    }
+  };
   const getTodayLegalFact = () => {
     if (legalFacts.length === 0) return null;
     const ordered = legalFacts
@@ -751,6 +780,16 @@ export default function Dashboard() {
                       </div>
                       <div className="missing-alert-detail">{a.date} · {a.activity}</div>
                     </div>
+                    {a.missingDoc.includes('외근 보고서') && (
+                      <button
+                        className="btn btn-sm"
+                        disabled={exemptionSubmitting}
+                        onClick={() => handleOutdoorExemptionRequest(a)}
+                        style={{ borderColor: '#e65100', color: '#e65100', whiteSpace: 'nowrap' }}
+                      >
+                        면제 사유서
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -811,15 +850,16 @@ export default function Dashboard() {
           <div className="missing-alert-list">
             {(() => {
               // 같은 사용자+카테고리 묶기
-              const grouped: { userName: string; missingDoc: string; count: number; dates: string[]; maxDDay: number }[] = [];
+              const grouped: { userName: string; missingDoc: string; count: number; dates: string[]; maxDDay: number; journalEntryIds: string[] }[] = [];
               alerts.forEach((a) => {
                 const existing = grouped.find((g) => g.userName === a.userName && g.missingDoc === a.missingDoc);
                 if (existing) {
                   existing.count++;
                   if (!existing.dates.includes(a.date)) existing.dates.push(a.date);
                   existing.maxDDay = Math.max(existing.maxDDay, a.dDay);
+                  existing.journalEntryIds.push(...(a.journalEntryIds || []));
                 } else {
-                  grouped.push({ userName: a.userName, missingDoc: a.missingDoc, count: 1, dates: [a.date], maxDDay: a.dDay });
+                  grouped.push({ userName: a.userName, missingDoc: a.missingDoc, count: 1, dates: [a.date], maxDDay: a.dDay, journalEntryIds: [...(a.journalEntryIds || [])] });
                 }
               });
               return grouped.slice(0, 15).map((g, i) => (
@@ -838,6 +878,24 @@ export default function Dashboard() {
                       {g.dates.sort().join(', ')}
                     </div>
                   </div>
+                  {g.missingDoc.includes('외근 보고서') && g.journalEntryIds.length > 0 && (
+                    <button
+                      className="btn btn-sm"
+                      disabled={exemptionSubmitting}
+                      onClick={() => handleOutdoorExemptionRequest({
+                        userName: g.userName,
+                        userId: '',
+                        date: g.dates.sort().join(', '),
+                        activity: `외근(${g.journalEntryIds.length}건)`,
+                        missingDoc: g.missingDoc,
+                        dDay: g.maxDDay,
+                        journalEntryIds: Array.from(new Set(g.journalEntryIds)),
+                      })}
+                      style={{ borderColor: '#e65100', color: '#e65100', whiteSpace: 'nowrap' }}
+                    >
+                      면제 사유서
+                    </button>
+                  )}
                 </div>
               ));
             })()}
@@ -858,7 +916,7 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Clock size={18} color="#e65100" /> {gapTitle}
             <span className="missing-alert-count">{filteredGaps.length}건</span>
-            {user?.role === 'master' && (
+            {canDismissScheduleGapAlerts && (
               <button className="btn btn-sm" style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#9aa0a6' }}
                 onClick={async () => {
                   if (!confirm(`${filteredGaps.length}건을 모두 삭제하시겠습니까?`)) return;
@@ -878,7 +936,7 @@ export default function Dashboard() {
                     공백: {g.gaps.join(', ')}
                   </span>
                 </div>
-                {user?.role === 'master' && (
+                {canDismissScheduleGapAlerts && (
                   <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#bdc1c6', padding: 2 }}
                     onClick={async () => {
                       const key = `gap_${g.userName}_${g.date}`;
@@ -1036,7 +1094,7 @@ export default function Dashboard() {
 
       {/* 입금 대기 매출 (회계/관리자급) */}
       {pendingSales.length > 0 && (() => {
-        const filteredPending = pendingSalesBranch ? pendingSales.filter((r: any) => r.branch === pendingSalesBranch) : pendingSales;
+        const filteredPending = pendingSalesBranch ? pendingSales.filter((r: any) => sameBranchName(r.branch, pendingSalesBranch)) : pendingSales;
         const branches = [...new Set(pendingSales.map((r: any) => r.branch).filter(Boolean))].sort();
         return (
         <section className="section">
@@ -1425,25 +1483,13 @@ function detectMissing(entries: JournalEntry[], docs: Document[], linkedEntryIds
     // 해당 사용자의 제출/승인된 문서
     const userDocs = docs.filter((d) => d.author_id === userId);
 
-    // 1. 개인 → 연차/반차/시간차/병가 신청서 필요
+    // 1. 개인 → 지각/조퇴/외출 사유서 필요
     dayEntries.forEach((entry) => {
       try {
         const d = JSON.parse(entry.data);
         if (entry.activity_type === '개인') {
           const reason = (d.reason || '').toLowerCase();
-          if (reason.includes('연차') || reason.includes('월차') || reason.includes('휴가')) {
-            const hasDoc = userDocs.some((doc) => doc.title.includes('연차') || doc.title.includes('휴가'));
-            if (!hasDoc) {
-              alerts.push({ userName, userId, date, activity: `개인 - ${d.reason}`, missingDoc: '연차휴가 신청서 미제출', dDay });
-            }
-          }
-          if (reason.includes('반차')) {
-            const hasDoc = userDocs.some((doc) => doc.title.includes('반차'));
-            if (!hasDoc) {
-              alerts.push({ userName, userId, date, activity: `개인 - ${d.reason}`, missingDoc: '반차 신청서 미제출', dDay });
-            }
-          }
-          if (reason.includes('시간차')) {
+          if (reason.includes('지각') || reason.includes('조퇴') || reason.includes('외출')) {
             const hasDoc = userDocs.some((doc) => doc.title.includes('시간차') || doc.title.includes('지각') || doc.title.includes('조퇴') || doc.title.includes('외출'));
             if (!hasDoc) {
               alerts.push({ userName, userId, date, activity: `개인 - ${d.reason}`, missingDoc: '지각/조퇴/외출 사유서 미제출', dDay });
@@ -1496,6 +1542,7 @@ function detectMissing(entries: JournalEntry[], docs: Document[], linkedEntryIds
             activity: `외근(${outdoorEntries.length}건)`,
             missingDoc: `외근 보고서 미제출 (${totalText})`,
             dDay,
+            journalEntryIds: outdoorEntries.filter((e) => !linkedEntryIds.has(e.id)).map((e) => e.id),
           });
         }
       }

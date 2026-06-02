@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import { Briefcase, Search, X, Calendar, User, Building2, Coins, Award, FileText, Hash, Trash2, Pencil, Save } from 'lucide-react';
+import { isHeadOfficeBranch } from '../lib/branchAliases';
 
 interface CaseRow {
   id: string;
@@ -93,7 +94,7 @@ export default function Cases() {
   const [bonus, setBonus] = useState<BonusSummaryRow[]>([]);
   const [bonusLoading, setBonusLoading] = useState(false);
 
-  const isAdminPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || user?.role === 'accountant_asst' || (user?.role === 'admin' && user?.branch === '의정부');
+  const isAdminPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || user?.role === 'accountant_asst' || (user?.role === 'admin' && isHeadOfficeBranch(user?.branch));
 
   const load = async () => {
     setLoading(true);

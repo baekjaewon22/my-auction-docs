@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../store';
+import { isRestrictedAccountingBranch } from '../lib/branchAliases';
 
 const supportItems = [
   {
@@ -76,13 +77,15 @@ const supportItems = [
   },
 ];
 
-function compactBranchName(value: unknown): string {
-  return String(value || '').replace(/\s+/g, '').trim();
-}
+supportItems.push({
+  to: '/management-support/holidays',
+  icon: '/emoji/management-support/board.svg',
+  title: '공휴일 관리',
+  desc: '법정·대체·임시공휴일을 사이트 기준일에 반영합니다.',
+});
 
 function isRestrictedAccountingAsstBranch(branch: unknown): boolean {
-  const compact = compactBranchName(branch);
-  return compact === '의정부' || compact === '의정부본사';
+  return isRestrictedAccountingBranch(branch);
 }
 
 export default function ManagementSupport() {
@@ -92,9 +95,14 @@ export default function ManagementSupport() {
   const isAsst = role === 'accountant_asst';
   const asstRestricted = isAsst && isRestrictedAccountingAsstBranch(user?.branch);
   const filteredItems = supportItems.filter((item) => {
+    if (role === 'admin') {
+      return ['/management-support/holidays', '/phone-directory', '/admin-notes', '/archive?drive=1'].includes(item.to);
+    }
     if (item.to === '/finance-analytics') return ['master', 'ceo', 'accountant'].includes(role);
+    if (item.to === '/management-support/holidays') return ['master', 'ceo', 'admin', 'accountant'].includes(role);
     if (item.to === '/accounting-staff') return !isAsst;
-    if (item.to === '/payroll' || item.to === '/payroll-business-income' || item.to.startsWith('/accounting-session2/reports')) {
+    if (item.to === '/payroll-business-income') return ['master', 'ceo', 'accountant'].includes(role);
+    if (item.to === '/payroll' || item.to.startsWith('/accounting-session2/reports')) {
       return !asstRestricted;
     }
     return true;

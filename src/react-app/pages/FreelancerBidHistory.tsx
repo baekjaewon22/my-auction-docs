@@ -3,6 +3,7 @@ import { Edit2, Plus, Save, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { BID_PROPERTY_CATEGORIES, COURT_OPTIONS, generateYears } from '../journal/types';
 import { useAuthStore } from '../store';
+import { sameBranchName } from '../lib/branchAliases';
 
 type BidResult = '실패' | '낙찰' | '취소';
 
@@ -126,7 +127,7 @@ export default function FreelancerBidHistory() {
   const canCreate = isFreelancer;
   const canUseAdminFilters = !isFreelancer;
   const assigneeOptions = branchFilter
-    ? filterOptions.assignees.filter(item => item.branch === branchFilter)
+    ? filterOptions.assignees.filter(item => sameBranchName(item.branch, branchFilter))
     : filterOptions.assignees;
 
   const caseNumber = useMemo(() => {

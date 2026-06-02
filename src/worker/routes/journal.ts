@@ -3,12 +3,13 @@ import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { recheckAlertsForJournalEntry, recheckAlertsAfterEntryDelete } from '../lib/journal-alerts';
 import { deleteBidAnalysisForJournal, upsertBidAnalysisFromJournal } from '../lib/bid-analysis';
+import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
 
 // KST (한국 시간) 기준 날짜 — 연도별 공휴일
 const HOLIDAYS: Record<string, string[]> = {
   '2026': [
     '2026-01-01','2026-01-28','2026-01-29','2026-01-30','2026-03-01',
-    '2026-05-05','2026-05-24','2026-05-25','2026-06-06','2026-08-15',
+    '2026-05-05','2026-05-24','2026-05-25','2026-06-03','2026-06-06','2026-08-15',
     '2026-09-24','2026-09-25','2026-09-26','2026-10-03','2026-10-09','2026-12-25',
   ],
   '2027': [
@@ -17,26 +18,44 @@ const HOLIDAYS: Record<string, string[]> = {
     '2027-10-13','2027-10-14','2027-10-15','2027-10-03','2027-10-09','2027-12-25',
   ],
 };
-const ALL_HOLIDAYS = new Set(Object.values(HOLIDAYS).flat());
+const STATIC_HOLIDAYS = new Set(Object.values(HOLIDAYS).flat());
 
 function fmtDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-function isOffDay(d: Date): boolean {
+function isOffDay(d: Date, extraHolidays = new Set<string>()): boolean {
   const day = d.getUTCDay();
-  return day === 0 || day === 6 || ALL_HOLIDAYS.has(fmtDate(d));
+  const date = fmtDate(d);
+  return day === 0 || day === 6 || STATIC_HOLIDAYS.has(date) || extraHolidays.has(date);
 }
 
-function prevBizDay(d: Date): Date {
+function prevBizDay(d: Date, extraHolidays = new Set<string>()): Date {
   let r = new Date(d.getTime());
-  while (isOffDay(r)) r = new Date(r.getTime() - 86400000);
+  while (isOffDay(r, extraHolidays)) r = new Date(r.getTime() - 86400000);
   return r;
 }
 
-function getKSTToday(): string {
+async function loadDynamicJournalHolidays(db: D1Database, year: string): Promise<Set<string>> {
+  try {
+    const result = await db.prepare(`
+      SELECT holiday_date
+      FROM system_holidays
+      WHERE enabled = 1
+        AND substr(holiday_date, 1, 4) = ?
+        AND (applies_to = 'all' OR applies_to = 'journal')
+    `).bind(year).all<{ holiday_date: string }>();
+    return new Set((result.results || []).map((row) => row.holiday_date).filter(Boolean));
+  } catch (err) {
+    console.warn('[journal holidays] dynamic holiday table unavailable', err);
+    return new Set();
+  }
+}
+
+async function getKSTToday(db: D1Database): Promise<string> {
   const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  return isOffDay(kst) ? fmtDate(prevBizDay(kst)) : fmtDate(kst);
+  const extraHolidays = await loadDynamicJournalHolidays(db, String(kst.getUTCFullYear()));
+  return isOffDay(kst, extraHolidays) ? fmtDate(prevBizDay(kst, extraHolidays)) : fmtDate(kst);
 }
 
 interface JournalEntry {
@@ -66,6 +85,7 @@ const journal = new Hono<AuthEnv>();
 journal.use('*', authMiddleware);
 
 const canManageJournalAssignees = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+const FIELD_ACTIVITY_TYPES = new Set(['입찰', '미팅', '임장']);
 
 async function getJournalAssignee(db: D1Database, userId: string) {
   return db.prepare('SELECT id, role, branch, department, approved FROM users WHERE id = ?')
@@ -77,8 +97,26 @@ function canUseAssignee(currentUser: { role: string; branch: string; sub: string
   if (assignee.approved !== 1 || assignee.role === 'master') return false;
   if (assignee.id === currentUser.sub) return true;
   if (!canManageJournalAssignees(currentUser.role)) return false;
-  if (currentUser.role === 'admin') return assignee.branch === currentUser.branch;
+  if (currentUser.role === 'admin') return sameBranchName(assignee.branch, currentUser.branch);
   return true;
+}
+
+function normalizeJournalData(activityType: string, data: Record<string, unknown>): Record<string, unknown> {
+  const isFieldType = FIELD_ACTIVITY_TYPES.has(activityType);
+  const isExcluded = !!data.companion || !!data.bidProxy || !!data.internalMeeting;
+  return {
+    ...data,
+    fieldCheckIn: isFieldType && !isExcluded && data.timeFrom === '09:00',
+    fieldCheckOut: isFieldType && !isExcluded && data.timeTo === '18:00',
+  };
+}
+
+function parseJournalData(data: string): Record<string, unknown> {
+  try {
+    return JSON.parse(data || '{}');
+  } catch {
+    return {};
+  }
 }
 
 // GET /api/journal?date=2026-03-30&range=all
@@ -99,7 +137,7 @@ journal.get('/', async (c) => {
   } else if (user.role === 'manager') {
     conditions.push('j.branch = ?');
     params.push(user.branch);
-  } else if (user.role === 'admin' && user.branch === '의정부') {
+  } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
     conditions.push('j.branch = ?');
@@ -139,7 +177,7 @@ journal.get('/members', async (c) => {
   } else if (user.role === 'manager') {
     query += ' AND branch = ?';
     params.push(user.branch);
-  } else if (user.role === 'admin' && user.branch === '의정부') {
+  } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
     query += ' AND branch = ?';
@@ -170,7 +208,8 @@ journal.post('/', async (c) => {
     return c.json({ error: '물건종류를 선택하세요.' }, 400);
   }
 
-  const today = getKSTToday();
+  const db = c.env.DB;
+  const today = await getKSTToday(db);
   // 과거 날짜 등록 불가 (master/ceo/cc_ref 제외)
   if (body.target_date < today && !canManageJournalAssignees(user.role)) {
     return c.json({ error: '과거 날짜에는 일정을 등록할 수 없습니다.' }, 400);
@@ -183,7 +222,6 @@ journal.post('/', async (c) => {
     }
   }
 
-  const db = c.env.DB;
   const id = crypto.randomUUID();
   const assigneeId = body.user_id || user.sub;
   const assignee = assigneeId === user.sub
@@ -196,7 +234,7 @@ journal.post('/', async (c) => {
 
   await db.prepare(
     'INSERT INTO journal_entries (id, user_id, target_date, activity_type, activity_subtype, data, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, assignee.id, body.target_date, body.activity_type, body.activity_subtype || '', JSON.stringify(body.data), assignee.branch, assignee.department).run();
+  ).bind(id, assignee.id, body.target_date, body.activity_type, body.activity_subtype || '', JSON.stringify(normalizeJournalData(body.activity_type, body.data || {})), assignee.branch, assignee.department).run();
 
   // 영속 알림 재계산 (개인/입찰/출장/일정공백)
   if (body.activity_type === '입찰') {
@@ -222,10 +260,10 @@ journal.put('/:id', async (c) => {
 
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(id).first<JournalEntry>();
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
-  const canEditAssignedEntry = canManageJournalAssignees(user.role) && (user.role !== 'admin' || entry.branch === user.branch);
+  const canEditAssignedEntry = canManageJournalAssignees(user.role) && (user.role !== 'admin' || sameBranchName(entry.branch, user.branch));
   if (entry.user_id !== user.sub && !canEditAssignedEntry) return c.json({ error: '권한이 없습니다.' }, 403);
 
-  const today = getKSTToday();
+  const today = await getKSTToday(db);
   const isTopRole = ['master', 'ceo', 'cc_ref'].includes(user.role);
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
   const isBidEntry = entry.activity_type === '입찰';
@@ -267,12 +305,16 @@ journal.put('/:id', async (c) => {
     }
   }
 
+  const nextData = body.data
+    ? normalizeJournalData(entry.activity_type, body.data)
+    : normalizeJournalData(entry.activity_type, parseJournalData(entry.data));
+
   await db.prepare(
     "UPDATE journal_entries SET user_id = ?, activity_subtype = ?, data = ?, completed = ?, fail_reason = ?, branch = ?, department = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(
     assignee?.id || entry.user_id,
     body.activity_subtype ?? entry.activity_subtype,
-    body.data ? JSON.stringify(body.data) : entry.data,
+    JSON.stringify(nextData),
     body.completed ?? entry.completed,
     body.fail_reason ?? entry.fail_reason,
     assignee?.branch || entry.branch,
@@ -308,7 +350,7 @@ journal.delete('/:id', async (c) => {
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
   if (entry.user_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
 
-  const today = getKSTToday();
+  const today = await getKSTToday(db);
   if (entry.target_date < today && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '지난 일정은 삭제할 수 없습니다.' }, 400);
 
   await db.prepare('DELETE FROM journal_entries WHERE id = ?').bind(id).run();
@@ -321,8 +363,8 @@ journal.delete('/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/journal/dismiss-alert — 알림 삭제 (마스터 전용)
-journal.post('/dismiss-alert', requireRole('master'), async (c) => {
+// POST /api/journal/dismiss-alert — 알림 삭제 (마스터/관리자)
+journal.post('/dismiss-alert', requireRole('master', 'admin'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const { alert_type, alert_key } = await c.req.json<{ alert_type: string; alert_key: string }>();
@@ -332,8 +374,8 @@ journal.post('/dismiss-alert', requireRole('master'), async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/journal/dismiss-alerts-bulk — 알림 일괄 삭제
-journal.post('/dismiss-alerts-bulk', requireRole('master'), async (c) => {
+// POST /api/journal/dismiss-alerts-bulk — 알림 일괄 삭제 (마스터/관리자)
+journal.post('/dismiss-alerts-bulk', requireRole('master', 'admin'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const { keys } = await c.req.json<{ keys: { alert_type: string; alert_key: string }[] }>();
@@ -438,7 +480,7 @@ journal.get('/duplicate-inspections', async (c) => {
     results = results.filter((r: any) => {
       // 해당 중복건 관련자의 department 중 본인 부서가 있는지
       const depts = (r.user_departments || '').split(',').map((d: string) => d.trim());
-      return r.branch === branch && depts.includes(department);
+      return sameBranchName(r.branch, branch) && depts.includes(department);
     });
   }
 

@@ -8,6 +8,7 @@ import { useDepartments } from '../hooks/useDepartments';
 import { useBranches } from '../hooks/useBranches';
 import { Archive, FileCheck, FileText, Search, Trash2, MapPin, Cloud, CloudOff } from 'lucide-react';
 import DriveBackupModal from '../components/DriveBackupModal';
+import { sameBranchName } from '../lib/branchAliases';
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   draft: { label: '작성중', className: 'status-draft' },
@@ -30,6 +31,7 @@ export default function ArchivePage() {
   const [filterAuthor, setFilterAuthor] = useState('');
   const [filterStatus, setFilterStatus] = useState('approved');
   const [filterCategory, setFilterCategory] = useState('');
+  const [sortMode, setSortMode] = useState<'upload' | 'outingDate'>('upload');
   const [searchText, setSearchText] = useState('');
 
   // 외근 보고서에서 외근 일자 추출
@@ -122,11 +124,22 @@ export default function ArchivePage() {
   // 'all'은 전체
   if (filterStatus && statusTab === 'all') filtered = filtered.filter((d) => d.status === filterStatus);
   if (filterMonth) filtered = filtered.filter((d) => d.created_at.startsWith(filterMonth));
-  if (filterBranch) filtered = filtered.filter((d) => d.branch === filterBranch);
+  if (filterBranch) filtered = filtered.filter((d) => sameBranchName(d.branch, filterBranch));
   if (filterDept) filtered = filtered.filter((d) => d.department === filterDept);
   if (filterAuthor) filtered = filtered.filter((d) => d.author_name?.includes(filterAuthor));
   if (filterCategory) filtered = filtered.filter((d) => getDocCategory(d.title) === filterCategory);
   if (searchText) filtered = filtered.filter((d) => d.title.includes(searchText) || d.author_name?.includes(searchText));
+
+  filtered = [...filtered].sort((a, b) => {
+    if (sortMode === 'outingDate') {
+      const aOuting = a.title.includes('외근') ? extractOutingDate(a.content) : null;
+      const bOuting = b.title.includes('외근') ? extractOutingDate(b.content) : null;
+      if (aOuting && bOuting && aOuting !== bOuting) return bOuting.localeCompare(aOuting);
+      if (aOuting && !bOuting) return -1;
+      if (!aOuting && bOuting) return 1;
+    }
+    return b.created_at.localeCompare(a.created_at);
+  });
 
   // 월 목록
   const months = [...new Set(documents.map((d) => d.created_at.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
@@ -143,7 +156,7 @@ export default function ArchivePage() {
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   // 필터 변경 시 1페이지로 리셋
-  useEffect(() => { setPage(1); }, [statusTab, filterMonth, filterBranch, filterDept, filterAuthor, filterCategory, searchText]);
+  useEffect(() => { setPage(1); }, [statusTab, filterMonth, filterBranch, filterDept, filterAuthor, filterCategory, sortMode, searchText]);
 
   const resetFilters = () => {
     setFilterMonth('');
@@ -210,6 +223,24 @@ export default function ArchivePage() {
 
       {/* 필터 */}
       <div className="archive-filters">
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 8 }}>
+          <button
+            type="button"
+            className={`btn btn-sm ${sortMode === 'upload' ? 'btn-primary' : ''}`}
+            style={sortMode !== 'upload' ? { border: '1px solid #dadce0', background: '#fff' } : {}}
+            onClick={() => setSortMode('upload')}
+          >
+            업로드 순
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${sortMode === 'outingDate' ? 'btn-primary' : ''}`}
+            style={sortMode !== 'outingDate' ? { border: '1px solid #dadce0', background: '#fff' } : {}}
+            onClick={() => setSortMode('outingDate')}
+          >
+            일정최근 순
+          </button>
+        </div>
         <div className="archive-filter-row">
           <div className="archive-filter-item">
             <Select size="sm" options={monthOpts} value={filterMonth ? { value: filterMonth, label: filterMonth } : null} onChange={(o: any) => setFilterMonth(o?.value || '')} placeholder="전체 기간" isClearable />
@@ -257,7 +288,8 @@ export default function ArchivePage() {
       {/* 문서 목록 - 월별 그룹 + 페이지네이션 */}
       {(() => {
         const pagedGrouped = paged.reduce<Record<string, Document[]>>((acc, d) => {
-          const m = d.created_at.slice(0, 7);
+          const outingDate = sortMode === 'outingDate' && d.title.includes('외근') ? extractOutingDate(d.content) : null;
+          const m = (outingDate || d.created_at).slice(0, 7);
           if (!acc[m]) acc[m] = [];
           acc[m].push(d);
           return acc;

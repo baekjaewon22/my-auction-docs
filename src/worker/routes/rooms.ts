@@ -1,23 +1,24 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { normalizeBranchName } from '../lib/branchAliases';
 
 const rooms = new Hono<AuthEnv>();
 rooms.use('*', authMiddleware);
 
 // 지사별 회의실 구성 (프론트와 동일)
 const ROOM_CONFIG: Record<string, string[]> = {
-  '의정부': ['1회의실', '2회의실'],
-  '서초': ['1회의실', '2회의실'],
-  '대전': ['1회의실'],
-  '부산': ['1회의실', '2회의실', '3회의실'],
+  '의정부본사': ['1회의실', '2회의실'],
+  '서초지사': ['1회의실', '2회의실'],
+  '대전지사': ['1회의실'],
+  '부산지사': ['1회의실', '2회의실', '3회의실'],
 };
 
 const VALID_BRANCHES = Object.keys(ROOM_CONFIG);
 const TIME_REGEX = /^(?:0[9]|1[0-7]):(?:00|30)$|^18:00$/;
 
-function isValidBranch(b: string) { return VALID_BRANCHES.includes(b); }
-function isValidRoom(branch: string, room: string) { return (ROOM_CONFIG[branch] || []).includes(room); }
+function isValidBranch(b: string) { return VALID_BRANCHES.includes(normalizeBranchName(b)); }
+function isValidRoom(branch: string, room: string) { return (ROOM_CONFIG[normalizeBranchName(branch)] || []).includes(room); }
 // KST 기준 YYYY-MM-DD (Workers는 UTC로 돌기 때문에 +9h 보정)
 function todayKST(offsetDays = 0) {
   const ms = Date.now() + 9 * 3600 * 1000 + offsetDays * 86400 * 1000;
@@ -37,7 +38,8 @@ rooms.get('/config', (c) => c.json({ config: ROOM_CONFIG }));
 rooms.get('/reservations', async (c) => {
   const db = c.env.DB;
   const { branch, date, from, to, room, include_cancelled } = c.req.query();
-  if (!branch || !isValidBranch(branch)) return c.json({ error: '지사 선택 오류' }, 400);
+  const normalizedBranch = normalizeBranchName(branch);
+  if (!normalizedBranch || !isValidBranch(normalizedBranch)) return c.json({ error: '지사 선택 오류' }, 400);
 
   let query = `
     SELECT r.id, r.user_id, r.branch, r.room_name, r.reservation_date, r.start_time, r.end_time,
@@ -48,7 +50,7 @@ rooms.get('/reservations', async (c) => {
     LEFT JOIN users u ON u.id = r.user_id
     WHERE r.branch = ?
   `;
-  const params: any[] = [branch];
+  const params: any[] = [normalizedBranch];
   if (!include_cancelled) { query += " AND r.status = 'active'"; }
   if (room) { query += ' AND r.room_name = ?'; params.push(room); }
   if (date) { query += ' AND r.reservation_date = ?'; params.push(date); }
@@ -65,9 +67,10 @@ rooms.post('/reservations', async (c) => {
   const user = c.get('user');
   const { branch, room_name, reservation_date, start_time, end_time, title, note } =
     await c.req.json<{ branch: string; room_name: string; reservation_date: string; start_time: string; end_time: string; title?: string; note?: string }>();
+  const normalizedBranch = normalizeBranchName(branch);
 
-  if (!isValidBranch(branch)) return c.json({ error: '지사 선택 오류' }, 400);
-  if (!isValidRoom(branch, room_name)) return c.json({ error: '회의실 선택 오류' }, 400);
+  if (!isValidBranch(normalizedBranch)) return c.json({ error: '지사 선택 오류' }, 400);
+  if (!isValidRoom(normalizedBranch, room_name)) return c.json({ error: '회의실 선택 오류' }, 400);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(reservation_date)) return c.json({ error: '날짜 형식 오류' }, 400);
   if (!TIME_REGEX.test(start_time) || !TIME_REGEX.test(end_time)) return c.json({ error: '시간은 30분 단위로만 설정 가능합니다.' }, 400);
   if (start_time >= end_time) return c.json({ error: '종료시간이 시작시간보다 빨라야 합니다.' }, 400);
@@ -85,14 +88,14 @@ rooms.post('/reservations', async (c) => {
     `SELECT id FROM room_reservations
      WHERE branch = ? AND room_name = ? AND reservation_date = ? AND status = 'active'
        AND ? < end_time AND start_time < ? LIMIT 1`
-  ).bind(branch, room_name, reservation_date, start_time, end_time).first();
+  ).bind(normalizedBranch, room_name, reservation_date, start_time, end_time).first();
   if (overlap) return c.json({ error: '해당 시간대에 이미 예약이 있습니다.' }, 409);
 
   const id = crypto.randomUUID();
   await db.prepare(
     `INSERT INTO room_reservations (id, user_id, branch, room_name, reservation_date, start_time, end_time, title, note)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, user.sub, branch, room_name, reservation_date, start_time, end_time, title || '', note || '').run();
+  ).bind(id, user.sub, normalizedBranch, room_name, reservation_date, start_time, end_time, title || '', note || '').run();
   return c.json({ success: true, id });
 });
 

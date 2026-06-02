@@ -30,7 +30,7 @@ function monthRange(ym: string): { start: string; end: string } {
 const JEONG_MINHO_ID = '2b6b3606-e425-4361-a115-9283cfef842f';
 const CONSULTANT_FILTER = `
   u.role NOT IN ('master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst', 'support', 'resigned')
-  AND u.branch != '본사 관리'
+  AND REPLACE(u.branch, ' ', '') != '본사관리'
   AND (u.department IS NULL OR u.department NOT IN ('명도팀', '지원팀'))
   AND u.id != ?
   AND u.login_type != 'freelancer-old'

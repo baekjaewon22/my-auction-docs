@@ -6,6 +6,7 @@ import { ROLE_LABELS } from '../types';
 import { useBranches } from '../hooks/useBranches';
 import type { Role } from '../types';
 import Select from '../components/Select';
+import { isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import {
   BookOpenCheck, ChevronLeft, ChevronRight, CalendarDays, TrendingDown, TrendingUp, AlertTriangle,
   ArrowDownCircle, Plus, X, Pencil, RotateCcw, Users as UsersIcon
@@ -39,6 +40,10 @@ const AUDIT_ACTION_TONE: Record<string, ChipTone> = {
   memo_update: 'mute',
   memo_delete: 'danger',
 };
+
+function isRestrictedBranchForAccountingAsst(branch: unknown): boolean {
+  return isRestrictedAccountingBranch(branch);
+}
 
 function formatCurrency(n: number): string {
   return n.toLocaleString('ko-KR') + '원';
@@ -177,7 +182,10 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
   // 총무보조 급여 열람 제한 — 팀장·관리자급·이사·대표자
   const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
   const isRestrictedForViewer = (u: User | null) =>
-    currentUser?.role === 'accountant_asst' && !!u && RESTRICTED_ROLES_FOR_ASST.includes(u.role as string);
+    currentUser?.role === 'accountant_asst' && (
+      isRestrictedBranchForAccountingAsst(currentUser?.branch) ||
+      (!!u && (!sameBranchName(u.branch, currentUser?.branch) || RESTRICTED_ROLES_FOR_ASST.includes(u.role as string)))
+    );
 
   const isAccountantRole = ['master', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
 
@@ -596,12 +604,16 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
   const calculatedStandardSales = Math.round((Number(salaryInput) || 0) * 1.3 * 4);
 
   // 필터
-  const filteredMembers = filterBranch ? users.filter(u => u.branch === filterBranch) : users;
+  const filteredMembers = filterBranch ? users.filter(u => sameBranchName(u.branch, filterBranch)) : users;
   const memberOpts = filteredMembers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` }));
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
   const filteredStaffUsers = users.filter(u =>
     (u.name.includes(searchTerm) || u.department?.includes(searchTerm) || u.branch?.includes(searchTerm))
-    && !(currentUser?.role === 'accountant_asst' && RESTRICTED_ROLES_FOR_ASST.includes(u.role as string))
+    && !(currentUser?.role === 'accountant_asst' && (
+      isRestrictedBranchForAccountingAsst(currentUser?.branch) ||
+      !sameBranchName(u.branch, currentUser?.branch) ||
+      RESTRICTED_ROLES_FOR_ASST.includes(u.role as string)
+    ))
   );
   const getAccountForUser = (userId: string) => accounts.find(a => a.user_id === userId);
 
@@ -805,7 +817,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
     setPeriodMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
   };
   const showPeriodNav = ['sales', 'card', 'bank', 'cardSettlement', 'auditlog'].includes(mainTab);
-  const cardBranchOptions = Array.from(new Set([...BRANCHES, '본사 관리', '기타']));
+  const cardBranchOptions = Array.from(new Set([...BRANCHES, '본사관리', '기타']));
 
   return (
     <div className="page">
@@ -1446,7 +1458,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
             <div style={{ minWidth: 180 }}>
               {(() => {
                 const filteredUsers = cardFilterBranch
-                  ? users.filter(u => u.branch === cardFilterBranch)
+                  ? users.filter(u => sameBranchName(u.branch, cardFilterBranch))
                   : users;
                 const opts = [{ value: '', label: '전체 담당자' }, ...filteredUsers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` }))];
                 return (
@@ -1484,7 +1496,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                   <tbody>
                     {previewRows.slice(0, 30).map((r, i) => (
                       <tr key={i} className={i % 2 === 1 ? 'stripe' : ''}>
-                        <td style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{r.card_number ? '****' + r.card_number.slice(-4) : <span className="acc-amount-neg">없음</span>}</td>
+                        <td style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{r.card_number ? String(r.card_number).replace(/\D/g, '').slice(-4) : <span className="acc-amount-neg">없음</span>}</td>
                         <td>{r.transaction_date}</td>
                         <td>
                           <input
@@ -1619,14 +1631,14 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                 {cardTxns.map((t: any, i: number) => {
                   const amt = Number(t.amount || 0);
                   const isRefund = amt < 0;
-                  const canEditHeadOfficeCard = canModify && (t.category || '') === '본사 관리';
+                  const canEditHeadOfficeCard = canModify && normalizeBranchName(t.category) === '본사관리';
                   const isEditingCard = editingCardId === t.id;
                   return (
                   <tr key={t.id} style={{ background: i % 2 === 1 ? '#fafbfc' : undefined, boxShadow: isRefund ? 'inset 3px 0 0 #15803d' : undefined }}>
                     {canApprove && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={cardSelected.has(t.id)} onChange={() => toggleCardSelect(t.id)} /></td>}
                     <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{t.transaction_date}</td>
                     <td style={{ fontSize: '0.72rem', fontFamily: 'monospace', color: '#64748b' }}>
-                      {t.card_number ? '****' + String(t.card_number).slice(-4) : '-'}
+                      {t.card_number ? String(t.card_number).replace(/\D/g, '').slice(-4) : '-'}
                     </td>
                     <td>
                       {t.user_name

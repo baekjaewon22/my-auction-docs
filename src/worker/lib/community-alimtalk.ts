@@ -87,7 +87,7 @@ export async function evictionQuoteRecipients(db: D1Database): Promise<string[]>
         AND (
           u.department = '명도팀'
           OR t.name = '명도팀'
-          OR (u.branch = '의정부' AND u.position_title = '지사장')
+          OR (REPLACE(u.branch, ' ', '') IN ('의정부', '의정부본사') AND u.position_title = '지사장')
         )
     `).bind().all<{ phone: string }>();
     return (rows.results || []).map(r => r.phone).filter(Boolean);

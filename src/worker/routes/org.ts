@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv, OrgNode } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { normalizeBranchName } from '../lib/branchAliases';
 
 const org = new Hono<AuthEnv>();
 org.use('*', authMiddleware);
@@ -70,6 +71,7 @@ org.put('/sync', requireRole('master', 'ceo', 'admin'), async (c) => {
     }
 
     // 조직도는 지사/부서만 설정, 보직(position_title)은 건드리지 않음
+    branch = normalizeBranchName(branch);
     await db.prepare(
       "UPDATE users SET department = ?, branch = ?, updated_at = datetime('now') WHERE id = ?"
     ).bind(department, branch, n.user_id).run();

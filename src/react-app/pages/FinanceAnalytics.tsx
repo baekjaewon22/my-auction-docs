@@ -14,6 +14,50 @@ function fmtWon(n: number) {
   return n.toLocaleString();
 }
 
+type ExpenseCategoryRow = {
+  category: string;
+  total: number;
+  count?: number;
+};
+
+const EXPENSE_MAJOR_ORDER = ['인건비', '세금', '사무실', '통신/시스템', '광고/영업', '차량/출장', '식대/복리', '비품/소모품', '기타'];
+
+function getExpenseMajorCategory(category: unknown) {
+  const text = String(category || '').trim();
+  if (!text) return '기타';
+  if (/인건비|급여|직원급여|실적급여|퇴직금|4대보험|보험료/.test(text)) return '인건비';
+  if (/세금|부가세|소득세|주민세|법인세|지방세|등록면허세|자동차세|원천세/.test(text)) return '세금';
+  if (/사무실|임대료|관리비|전기|수도|가스|인테리어|보증금|권리금/.test(text)) return '사무실';
+  if (/통신|전화|인터넷|팩스|대표번호|서버|호스팅|홈페이지|채널톡|앱|문자|SMS|Adobe|전자계약/.test(text)) return '통신/시스템';
+  if (/광고|영업|지지옥션|전자민원|DM|홍보|마케팅|브리핑/.test(text)) return '광고/영업';
+  if (/차량|유류|주유|주차|하이패스|출장|숙소|항공|교통/.test(text)) return '차량/출장';
+  if (/식대|식비|회식|복리|간식|커피|음료|복지/.test(text)) return '식대/복리';
+  if (/비품|문구|소모품|명함|A4|용지|프린터|복사기|렌탈|정수기|공기청정기|파쇄기|카드단말기|사무기기/.test(text)) return '비품/소모품';
+  return '기타';
+}
+
+function groupExpensesByMajor(rows: ExpenseCategoryRow[]) {
+  const map = new Map<string, { name: string; value: number; count: number; details: ExpenseCategoryRow[] }>();
+  rows.forEach((row) => {
+    const major = getExpenseMajorCategory(row.category);
+    const current = map.get(major) || { name: major, value: 0, count: 0, details: [] };
+    current.value += Number(row.total || 0);
+    current.count += Number(row.count || 0);
+    current.details.push(row);
+    map.set(major, current);
+  });
+  return [...map.values()]
+    .map((group) => ({
+      ...group,
+      details: group.details.sort((a, b) => Number(b.total || 0) - Number(a.total || 0)).slice(0, 4),
+    }))
+    .filter((group) => group.value > 0)
+    .sort((a, b) => {
+      const orderDiff = EXPENSE_MAJOR_ORDER.indexOf(a.name) - EXPENSE_MAJOR_ORDER.indexOf(b.name);
+      return orderDiff !== 0 ? orderDiff : b.value - a.value;
+    });
+}
+
 export default function FinanceAnalytics() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -31,6 +75,8 @@ export default function FinanceAnalytics() {
   if (!data) return <div className="page"><div className="empty-state">데이터를 불러올 수 없습니다.</div></div>;
 
   const { salesByMonth, salesByType, salesByUser, salesByBranch, receivables, cardByCategory, spendingAlerts, ratios } = data;
+  const expenseMajorCategories = groupExpensesByMajor(cardByCategory as ExpenseCategoryRow[]);
+  const expenseMajorTotal = expenseMajorCategories.reduce((sum, row) => sum + row.value, 0);
 
   // 월별 손익 차트 데이터
   const monthlyPL = (data.months as string[]).map(m => {
@@ -183,15 +229,34 @@ export default function FinanceAnalytics() {
 
         {/* 통합 지출 카테고리 */}
         <div className="card" style={{ padding: '16px 20px' }}>
-          <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem', color: '#1a1a2e' }}><CreditCard size={16} style={{ verticalAlign: 'middle' }} /> 통합 지출 유형</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <PieChart>
-              <Pie data={(cardByCategory as any[]).map(c => ({ name: c.category, value: c.total }))} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={50} outerRadius={90} label={({ name, percent }: any) => `${name} ${((percent || 0) * 100).toFixed(0)}%`} labelLine={false} fontSize={11}>
-                {(cardByCategory as any[]).map((_: any, i: number) => <Cell key={i} fill={COLORS[(i + 3) % COLORS.length]} />)}
-              </Pie>
-              <Tooltip formatter={(v: any) => fmtWon(Number(v) || 0)} />
-            </PieChart>
-          </ResponsiveContainer>
+          <h3 style={{ margin: '0 0 12px', fontSize: '0.9rem', color: '#1a1a2e' }}><CreditCard size={16} style={{ verticalAlign: 'middle' }} /> 통합 지출 대분류</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, alignItems: 'center' }}>
+            <ResponsiveContainer width="100%" height={250}>
+              <PieChart>
+                <Pie data={expenseMajorCategories} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={52} outerRadius={88} label={({ percent }: any) => `${((percent || 0) * 100).toFixed(0)}%`} labelLine={false} fontSize={11}>
+                  {expenseMajorCategories.map((_: any, i: number) => <Cell key={i} fill={COLORS[(i + 3) % COLORS.length]} />)}
+                </Pie>
+                <Tooltip formatter={(v: any, _: any, item: any) => [`${fmtWon(Number(v) || 0)}원`, item?.payload?.name || '지출']} />
+              </PieChart>
+            </ResponsiveContainer>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7, minWidth: 0 }}>
+              {expenseMajorCategories.map((row, i) => {
+                const pct = expenseMajorTotal > 0 ? Math.round((row.value / expenseMajorTotal) * 100) : 0;
+                return (
+                  <div key={row.name} style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 4, background: COLORS[(i + 3) % COLORS.length], flexShrink: 0 }} />
+                      <span style={{ fontWeight: 700, color: '#202124', minWidth: 72 }}>{row.name}</span>
+                      <span style={{ color: '#5f6368', marginLeft: 'auto', whiteSpace: 'nowrap' }}>{fmtWon(row.value)}원 · {pct}%</span>
+                    </div>
+                    <div style={{ marginLeft: 16, marginTop: 2, color: '#80868b', fontSize: '0.7rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {row.details.map(d => d.category).join(', ')}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         {/* 지사별 매출 */}

@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { LeaveRequest, User } from '../types';
 import Select from '../components/Select';
 import {
   CalendarCheck, Plus, X, CheckCircle, XCircle, AlertTriangle,
-  Calculator, Calendar, FileText, ExternalLink, Eye
+  Calculator, Calendar, Eye
 } from 'lucide-react';
 
 type FormLeaveType = '연차' | '반차' | '시간차' | '특별휴가';
@@ -79,9 +78,14 @@ function displayLeaveType(type: string): string {
   return type === '월차' ? '연차' : type;
 }
 
+function halfDayTimeRange(period?: string): string {
+  if (period === '오전') return '09:00~13:00';
+  if (period === '오후') return '14:00~18:00';
+  return '';
+}
+
 export default function Leave() {
   const { user } = useAuthStore();
-  const navigate = useNavigate();
   const [balance, setBalance] = useState<any>(null);
   const [requests, setRequests] = useState<LeaveRequest[]>([]);
   const [pendingRequests, setPendingRequests] = useState<LeaveRequest[]>([]);
@@ -95,6 +99,7 @@ export default function Leave() {
   const [formType, setFormType] = useState<FormLeaveType>('연차');
   const [formStartDate, setFormStartDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [formEndDate, setFormEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [halfDayPeriod, setHalfDayPeriod] = useState<'오전' | '오후'>('오전');
   const [, setFormReason] = useState('');
   const [formUserId, setFormUserId] = useState('');
   const [formUserBalance, setFormUserBalance] = useState<any>(null);
@@ -214,26 +219,6 @@ export default function Leave() {
 
   useEffect(() => { load(); }, []);
 
-  // 템플릿 바로가기: 템플릿으로 새 문서 생성 후 편집 페이지로 이동
-  const handleTemplateShortcut = async (templateId: string, title: string) => {
-    try {
-      const res = await api.documents.create({ title, template_id: templateId });
-      if (res.document?.id) {
-        navigate('/documents/' + res.document.id);
-      } else {
-        alert('문서 생성에 실패했습니다.');
-      }
-    } catch (err: any) { alert(err.message); }
-  };
-
-  // 템플릿 매칭
-  const [templates, setTemplates] = useState<{ id: string; title: string }[]>([]);
-  useEffect(() => {
-    api.templates.list().then(res => setTemplates(res.templates)).catch(() => {});
-  }, []);
-  const annualTemplate = templates.find(t => (t.title.includes('연차') || t.title.includes('월차')) && !t.title.includes('반차') && !t.title.includes('특별'));
-  const halfDayTemplate = templates.find(t => t.title.includes('반차'));
-
   const handleSubmit = async () => {
     const requestUserId = canRequestForOthers && formUserId ? formUserId : undefined;
     // 특별휴가만 사유 검증
@@ -338,6 +323,7 @@ export default function Leave() {
         start_date: formStartDate,
         end_date: formType === '반차' || formType === '시간차' ? formStartDate : formEndDate,
         hours: formType === '시간차' ? formHours : 8,
+        half_day_period: formType === '반차' ? halfDayPeriod : '',
         reason,
       });
       setShowForm(false);
@@ -409,6 +395,13 @@ export default function Leave() {
     const start = new Date(formStartDate);
     const end = new Date(formEndDate);
     return Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1) * 8;
+  };
+
+  const formatLeavePeriod = (req: LeaveRequest): string => {
+    const dateText = req.start_date === req.end_date ? req.start_date : `${req.start_date} ~ ${req.end_date}`;
+    if (req.leave_type !== '반차' || !req.half_day_period) return dateText;
+    const timeRange = halfDayTimeRange(req.half_day_period);
+    return `${dateText} ${req.half_day_period}${timeRange ? ` (${timeRange})` : ''}`;
   };
 
   if (loading) return <div className="page-loading">로딩중...</div>;
@@ -537,7 +530,7 @@ export default function Leave() {
                       return (
                         <div key={req.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', background: '#fafafa', borderRadius: 8, fontSize: '0.82rem' }}>
                           <span style={{ background: getTypeColor(req.leave_type), color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.72rem', fontWeight: 600 }}>{displayLeaveType(req.leave_type)}</span>
-                          <span style={{ color: '#202124' }}>{req.start_date}{req.start_date !== req.end_date ? ` ~ ${req.end_date}` : ''}</span>
+                          <span style={{ color: '#202124' }}>{formatLeavePeriod(req)}</span>
                           <span style={{ color: '#5f6368' }}>({formatLeaveHours(requestHours(req))})</span>
                           <span style={{ background: st.bg, color: st.color, padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem', fontWeight: 600 }}>{st.label}</span>
                           {req.reason && <span style={{ color: '#9aa0a6', fontSize: '0.75rem', flex: 1, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{req.reason}</span>}
@@ -800,6 +793,32 @@ export default function Leave() {
                 </div>
               )}
 
+              {formType === '반차' && (
+                <div style={{ marginBottom: 16 }}>
+                  <label className="form-label">반차 구분</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    {(['오전', '오후'] as const).map((period) => (
+                      <button
+                        key={period}
+                        type="button"
+                        onClick={() => setHalfDayPeriod(period)}
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          border: halfDayPeriod === period ? '2px solid #e65100' : '1px solid #dadce0',
+                          background: halfDayPeriod === period ? '#fff3e0' : '#fff',
+                          color: halfDayPeriod === period ? '#e65100' : '#202124',
+                          fontWeight: halfDayPeriod === period ? 700 : 500,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {period} 반차 ({halfDayTimeRange(period)})
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* 날짜 */}
               {(() => {
                 const isSummer = formType === '특별휴가' && specialSubtype === '여름휴가';
@@ -847,24 +866,6 @@ export default function Leave() {
       {/* 내 신청 내역 */}
       {tab === 'my' && (
         <div>
-          {/* 템플릿 바로가기 버튼 */}
-          <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-            <button className="btn"
-              onClick={() => annualTemplate
-                ? handleTemplateShortcut(annualTemplate.id, annualTemplate.title)
-                : navigate('/templates')}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, border: '1px solid #1a73e8', color: '#1a73e8', background: '#eff6ff' }}>
-              <FileText size={15} /> 연차휴가신청서 작성 <ExternalLink size={12} />
-            </button>
-            <button className="btn"
-              onClick={() => halfDayTemplate
-                ? handleTemplateShortcut(halfDayTemplate.id, halfDayTemplate.title)
-                : navigate('/templates')}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, border: '1px solid #e65100', color: '#e65100', background: '#fff8f0' }}>
-              <FileText size={15} /> 반차신청서 작성 <ExternalLink size={12} />
-            </button>
-          </div>
-
           {requests.length === 0 ? (
             <div className="card" style={{ padding: '40px 20px', textAlign: 'center', color: '#9aa0a6' }}>
               휴가 신청 내역이 없습니다.
@@ -884,7 +885,7 @@ export default function Leave() {
                           <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: '0.72rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>무급</span>
                         )}
                         <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
-                          {req.start_date === req.end_date ? req.start_date : `${req.start_date} ~ ${req.end_date}`}
+                          {formatLeavePeriod(req)}
                         </span>
                         <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>({formatLeaveHours(requestHours(req))})</span>
                       </div>
@@ -936,7 +937,7 @@ export default function Leave() {
                           <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: '0.72rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>무급</span>
                         )}
                         <span style={{ fontSize: '0.85rem' }}>
-                          {req.start_date === req.end_date ? req.start_date : `${req.start_date} ~ ${req.end_date}`}
+                          {formatLeavePeriod(req)}
                         </span>
                         <span style={{ fontSize: '0.8rem', color: '#5f6368' }}>({formatLeaveHours(requestHours(req))})</span>
                       </div>
@@ -1008,11 +1009,11 @@ export default function Leave() {
         const dupSet = new Set<string>();
         const counter = new Map<string, number>();
         manageAll.forEach(r => {
-          const k = `${r.user_id}|${displayLeaveType(r.leave_type)}|${r.start_date}|${requestHours(r)}`;
+          const k = `${r.user_id}|${displayLeaveType(r.leave_type)}|${r.start_date}|${r.half_day_period || ''}|${requestHours(r)}`;
           counter.set(k, (counter.get(k) || 0) + 1);
         });
         counter.forEach((cnt, k) => { if (cnt >= 2) dupSet.add(k); });
-        const isDup = (r: any) => dupSet.has(`${r.user_id}|${displayLeaveType(r.leave_type)}|${r.start_date}|${requestHours(r)}`);
+        const isDup = (r: any) => dupSet.has(`${r.user_id}|${displayLeaveType(r.leave_type)}|${r.start_date}|${r.half_day_period || ''}|${requestHours(r)}`);
 
         const RESTRICTED_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
         let list = manageAll;
@@ -1074,7 +1075,7 @@ export default function Leave() {
                       </td>
                       <td style={{ whiteSpace: 'nowrap', fontSize: '0.78rem', color: '#5f6368' }}>{req.branch}{req.department ? ' / ' + req.department : ''}</td>
                       <td><span style={{ color: typeColors[req.leave_type] || '#5f6368', fontWeight: 600 }}>{displayLeaveType(req.leave_type)}</span></td>
-                      <td style={{ whiteSpace: 'nowrap' }}>{req.start_date}{req.end_date !== req.start_date ? ' ~ ' + req.end_date : ''}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{formatLeavePeriod(req)}</td>
                       <td>{formatLeaveHours(requestHours(req))}</td>
                       <td>
                         <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: statusLabels[req.status]?.bg, color: statusLabels[req.status]?.color }}>
@@ -1089,7 +1090,7 @@ export default function Leave() {
                       <td>
                         <button className="btn btn-sm btn-danger" style={{ fontSize: '0.72rem', padding: '2px 8px' }}
                           onClick={async () => {
-                            if (!confirm(`${req.user_name} ${displayLeaveType(req.leave_type)} ${req.start_date} (${formatLeaveHours(requestHours(req))}) 삭제하시겠습니까?${req.status === 'approved' ? '\n승인된 건이므로 차감된 연차가 복원됩니다.' : ''}`)) return;
+                            if (!confirm(`${req.user_name} ${displayLeaveType(req.leave_type)} ${formatLeavePeriod(req)} (${formatLeaveHours(requestHours(req))}) 삭제하시겠습니까?${req.status === 'approved' ? '\n승인된 건이므로 차감된 연차가 복원됩니다.' : ''}`)) return;
                             try { await api.leave.deleteRequest(req.id); load(); }
                             catch (err: any) { alert(err.message); }
                           }}>삭제</button>

@@ -81,6 +81,16 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     .find((c) => c.main === bidPropertyMain)?.details
     .map((detail) => ({ value: detail, label: detail })) || [];
 
+  // 미팅
+  const [meetingType, setMeetingType] = useState('브리핑');
+  const [meetingEtc, setMeetingEtc] = useState('');
+  const [meetingPlace, setMeetingPlace] = useState('');
+  const [meetingClient, setMeetingClient] = useState('');
+  const [meetingCaseYear, setMeetingCaseYear] = useState('2026');
+  const [meetingCaseNo, setMeetingCaseNo] = useState('');
+  const [meetingItemNo, setMeetingItemNo] = useState('');
+  const [meetingInternal, setMeetingInternal] = useState(false); // 회사 미팅 — 외근 X, 외근보고서 매칭 제외
+
   useEffect(() => {
     const suggested = Number(bidSuggestedPrice.replace(/[^0-9]/g, ''));
     const actual = Number(bidPrice.replace(/[^0-9]/g, ''));
@@ -94,15 +104,8 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   // [3-1] 현장출근 자동 활성화: 입찰/미팅/임장 09:00 시작 → 자동 체크 (대리입찰 제외)
   useEffect(() => {
     const isFieldType = ['입찰', '미팅', '임장'].includes(activityType);
-    if (isFieldType && timeFrom === '09:00') {
-      // 대리입찰이면 비활성화
-      if (activityType === '입찰' && bidProxy) {
-        setFieldCheckIn(false);
-      } else {
-        setFieldCheckIn(true);
-      }
-    }
-  }, [timeFrom, activityType, bidProxy]);
+    setFieldCheckIn(isFieldType && timeFrom === '09:00' && !(activityType === '입찰' && bidProxy) && !companion && !meetingInternal);
+  }, [timeFrom, activityType, bidProxy, companion, meetingInternal]);
 
   // 업무 유형 변경 시: 사무/개인은 현장출퇴근 불필요 → 해제
   useEffect(() => {
@@ -115,14 +118,8 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   // [3-2] 현장퇴근 자동 활성화: 입찰/미팅/임장 18:00 종결 → 자동 체크
   useEffect(() => {
     const isFieldType = ['입찰', '미팅', '임장'].includes(activityType);
-    if (isFieldType && timeTo === '18:00') {
-      if (activityType === '입찰' && bidProxy) {
-        setFieldCheckOut(false);
-      } else {
-        setFieldCheckOut(true);
-      }
-    }
-  }, [timeTo, activityType, bidProxy]);
+    setFieldCheckOut(isFieldType && timeTo === '18:00' && !(activityType === '입찰' && bidProxy) && !companion && !meetingInternal);
+  }, [timeTo, activityType, bidProxy, companion, meetingInternal]);
 
   // 대리입찰 체크 시 현장출퇴근 해제
   useEffect(() => {
@@ -176,16 +173,6 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     return () => clearTimeout(timer);
   }, [inspYear, inspCaseNo, inspCourt, activityType, companion]);
 
-  // 미팅
-  const [meetingType, setMeetingType] = useState('브리핑');
-  const [meetingEtc, setMeetingEtc] = useState('');
-  const [meetingPlace, setMeetingPlace] = useState('');
-  const [meetingClient, setMeetingClient] = useState('');
-  const [meetingCaseYear, setMeetingCaseYear] = useState('2026');
-  const [meetingCaseNo, setMeetingCaseNo] = useState('');
-  const [meetingItemNo, setMeetingItemNo] = useState('');
-  const [meetingInternal, setMeetingInternal] = useState(false); // 회사 미팅 — 외근 X, 외근보고서 매칭 제외
-
   // 사무
   const [officeType, setOfficeType] = useState('고객관리');
   const [officeEtc, setOfficeEtc] = useState('');
@@ -216,11 +203,15 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
       return null;
     }
 
+    const isFieldType = ['입찰', '미팅', '임장'].includes(activityType);
+    const isFieldExcluded = (activityType === '입찰' && bidProxy) || companion || meetingInternal;
+    const normalizedFieldCheckIn = isFieldType && !isFieldExcluded && timeFrom === '09:00';
+    const normalizedFieldCheckOut = isFieldType && !isFieldExcluded && timeTo === '18:00';
     let data: Record<string, unknown> = {
       timeFrom: activityType === '입찰' && bidProxy ? '' : timeFrom,
       timeTo: activityType === '입찰' && bidProxy ? '' : timeTo,
-      fieldCheckIn,
-      fieldCheckOut,
+      fieldCheckIn: normalizedFieldCheckIn,
+      fieldCheckOut: normalizedFieldCheckOut,
     };
     let subtype = '';
     let label = '';
@@ -263,7 +254,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
         break;
     }
 
-    return { activityType, timeFrom, timeTo, fieldCheckIn, fieldCheckOut, data, subtype, label };
+    return { activityType, timeFrom, timeTo, fieldCheckIn: normalizedFieldCheckIn, fieldCheckOut: normalizedFieldCheckOut, data, subtype, label };
   };
 
   // 리스트에 추가
@@ -295,6 +286,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
 
   const isProxyBid = activityType === '입찰' && bidProxy;
   const supportsCompanion = activityType === '임장' || activityType === '미팅';
+  const supportsFieldCheck = ['입찰', '미팅', '임장'].includes(activityType);
 
   // 전체 등록
   const handleSubmitAll = async () => {
@@ -390,7 +382,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
           )}
 
           {/* 현장출근/퇴근 */}
-          {activityType !== '개인' && !isProxyBid && !companion && (
+          {supportsFieldCheck && !isProxyBid && !companion && !meetingInternal && (
             <div className="form-group">
               <div className="field-check-group">
                 <label className={`field-check-label ${fieldCheckIn ? 'checked' : ''}`}>

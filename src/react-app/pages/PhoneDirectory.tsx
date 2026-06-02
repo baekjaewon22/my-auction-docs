@@ -3,8 +3,9 @@ import { Download, Phone, Printer } from 'lucide-react';
 import { api } from '../api';
 import type { User } from '../types';
 import { ROLE_LABELS } from '../types';
+import { CANONICAL_BRANCHES, normalizeBranchName } from '../lib/branchAliases';
 
-const BRANCH_ORDER = ['의정부', '서초', '대전', '부산', '본사 관리'];
+const BRANCH_ORDER = [...CANONICAL_BRANCHES];
 const POSITION_ORDER = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '사무장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴', 'PD'];
 const TEST_ACCOUNT_KEYWORDS = ['test', '테스트', 'dummy', 'sample', 'example', '임시'];
 const SYSTEM_ACCOUNT_KEYWORDS = ['system', '시스템', 'administrator', '관리자계정', '어드민'];
@@ -57,7 +58,7 @@ export default function PhoneDirectory() {
 
     const branchMap = new Map<string, Map<string, User[]>>();
     activeUsers.forEach((user) => {
-      const branch = user.branch || '미지정';
+      const branch = normalizeBranchName(user.branch) || '미지정';
       const department = user.department || user.team_name || '미지정';
       if (!branchMap.has(branch)) branchMap.set(branch, new Map());
       const deptMap = branchMap.get(branch)!;

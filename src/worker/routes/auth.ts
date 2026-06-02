@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv, User } from '../types';
 import { createToken, hashPassword, verifyPassword, authMiddleware } from '../middleware/auth';
 import { sendAlimtalkByTemplate, normalizePhone } from '../alimtalk';
+import { normalizeBranchName } from '../lib/branchAliases';
 
 const auth = new Hono<AuthEnv>();
 
@@ -28,7 +29,7 @@ auth.post('/register', async (c) => {
 
   await db.prepare(
     'INSERT INTO users (id, email, password_hash, name, phone, role, branch, department, login_type, approved, hire_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, email, password_hash, name, phone, 'member', branch || '', '', login_type || 'employee', 0, '2026-03-01').run();
+  ).bind(id, email, password_hash, name, phone, 'member', normalizeBranchName(branch), '', login_type || 'employee', 0, '2026-03-01').run();
 
   const typeLabel = login_type === 'freelancer' ? '프리랜서' : '일반';
   return c.json({ message: `${typeLabel} 회원가입이 완료되었습니다. 관리자 승인 후 로그인할 수 있습니다.` }, 201);

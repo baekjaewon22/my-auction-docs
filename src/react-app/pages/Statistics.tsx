@@ -14,6 +14,7 @@ import type { SalesRecord } from '../types';
 import Select from '../components/Select';
 import { useBranches } from '../hooks/useBranches';
 import ComprehensiveAnalysis from '../components/ComprehensiveAnalysis';
+import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 interface Member {
   id: string; name: string; role: string; branch: string; department: string; login_type?: string;
@@ -36,7 +37,7 @@ type BidAnalysisStatRow = {
 };
 
 // 본사관리 인원 판별 (실적 통계 제외 대상)
-const isHQStaff = (m: Member) => m.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(m.role);
+const isHQStaff = (m: Member) => normalizeBranchName(m.branch) === '본사관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(m.role);
 
 function parseCurrency(val: string): number {
   return Number((val || '').replace(/[^0-9]/g, '')) || 0;
@@ -116,12 +117,12 @@ export default function Statistics() {
   const [filterMonthEnd, setFilterMonthEnd] = useState('');
   const [salesRecords, setSalesRecords] = useState<SalesRecord[]>([]);
   const isDirector = user?.role === 'director';
-  const isSalesVisible = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || (user?.role === 'admin' && user?.branch === '의정부') || isDirector;
+  const isSalesVisible = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || (user?.role === 'admin' && isHeadOfficeBranch(user?.branch)) || isDirector;
   const tabs = isDirector
     ? ['매출/환불', '종합분석']
     : (isSalesVisible ? ['입찰 분석', '브리핑 분석', '근태 분석', '이상 감지', '매출/환불', '종합분석'] : ['입찰 분석', '브리핑 분석', '근태 분석', '이상 감지', '종합분석']);
 
-  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || (user?.role === 'admin' && user?.branch === '의정부');
+  const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || (user?.role === 'admin' && isHeadOfficeBranch(user?.branch));
 
   useEffect(() => {
     const statsFrom = filterMonth ? `${filterMonth}-01` : undefined;
@@ -142,14 +143,16 @@ export default function Statistics() {
   }, [filterMonth, filterMonthEnd, filterBranch, filterDept, filterUser]);
 
   // Available branches/depts/users for filters — 지사 목록은 DB 기준
-  const branchNames = branches.map((b: any) => typeof b === 'string' ? b : b.name).filter((b: string) => b !== '본사 관리');
+  const branchNames = Array.from(new Set(
+    branches.map((b: any) => normalizeBranchName(typeof b === 'string' ? b : b.name)).filter((b: string) => b && b !== '본사관리')
+  ));
   const filteredDepts = [...new Set(
-    members.filter((m) => !filterBranch || m.branch === filterBranch).map((m) => m.department).filter(Boolean)
+    members.filter((m) => !filterBranch || sameBranchName(m.branch, filterBranch)).map((m) => m.department).filter(Boolean)
   )].sort();
   const filteredUsers = members.filter((m) =>
     m.role !== 'master' &&
-    branchNames.includes(m.branch) &&
-    (!filterBranch || m.branch === filterBranch) &&
+    branchNames.includes(normalizeBranchName(m.branch)) &&
+    (!filterBranch || sameBranchName(m.branch, filterBranch)) &&
     (!filterDept || m.department === filterDept)
   );
 
@@ -164,8 +167,8 @@ export default function Statistics() {
   // Apply filters
   const filteredMembers = members.filter((m) =>
     m.role !== 'master' &&
-    branchNames.includes(m.branch) &&
-    (!filterBranch || m.branch === filterBranch) &&
+    branchNames.includes(normalizeBranchName(m.branch)) &&
+    (!filterBranch || sameBranchName(m.branch, filterBranch)) &&
     (!filterDept || m.department === filterDept) &&
     (!filterUser || m.id === filterUser)
   );
@@ -177,8 +180,8 @@ export default function Statistics() {
       if (m < filterMonth || m > end) return false;
     }
     if (filterUser) return e.user_id === filterUser;
-    if (filterDept) return e.department === filterDept && (!filterBranch || e.branch === filterBranch);
-    if (filterBranch) return e.branch === filterBranch;
+    if (filterDept) return e.department === filterDept && (!filterBranch || sameBranchName(e.branch, filterBranch));
+    if (filterBranch) return sameBranchName(e.branch, filterBranch);
     return true;
   });
   const filteredBidAnalysisEntries = bidAnalysisEntries.filter((e) => {
@@ -188,8 +191,8 @@ export default function Statistics() {
       if (m < filterMonth || m > end) return false;
     }
     if (filterUser) return e.user_id === filterUser;
-    if (filterDept) return e.department === filterDept && (!filterBranch || e.branch === filterBranch);
-    if (filterBranch) return e.branch === filterBranch;
+    if (filterDept) return e.department === filterDept && (!filterBranch || sameBranchName(e.branch, filterBranch));
+    if (filterBranch) return sameBranchName(e.branch, filterBranch);
     return true;
   });
 
@@ -295,11 +298,11 @@ export default function Statistics() {
       </div>
 
       <div className="stats-content">
-        {tabs[tab] === '입찰 분석' && <BidAnalysis entries={filteredBidAnalysisEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={bidAnalysisEntries.filter(e => branchNames.includes(e.branch))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
+        {tabs[tab] === '입찰 분석' && <BidAnalysis entries={filteredBidAnalysisEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={bidAnalysisEntries.filter(e => branchNames.includes(normalizeBranchName(e.branch)))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(normalizeBranchName(m.branch)) && !isHQStaff(m))} />}
         {tabs[tab] === '브리핑 분석' && <BriefingAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
-        {tabs[tab] === '근태 분석' && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(e.branch) && !isCompanionEntry(e))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(m.branch) && !isHQStaff(m))} />}
+        {tabs[tab] === '근태 분석' && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(normalizeBranchName(e.branch)) && !isCompanionEntry(e))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(normalizeBranchName(m.branch)) && !isHQStaff(m))} />}
         {tabs[tab] === '이상 감지' && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m) && m.role !== 'freelancer' && (m as any).login_type !== 'freelancer')} />}
-        {tabs[tab] === '매출/환불' && <SalesAnalysis records={isDirector ? salesRecords.filter(r => { const eb = r.attribution_branch || r.branch; return eb === '대전' || eb === '부산' || r.user_id === user?.id; }) : salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
+        {tabs[tab] === '매출/환불' && <SalesAnalysis records={isDirector ? salesRecords.filter(r => { const eb = normalizeBranchName(r.attribution_branch || r.branch); return eb === '대전지사' || eb === '부산지사' || r.user_id === user?.id; }) : salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
         {tabs[tab] === '종합분석' && <ComprehensiveAnalysis filterBranch={filterBranch} filterDept={filterDept} filterUser={filterUser} filterMonth={filterMonth} filterMonthEnd={filterMonthEnd} />}
       </div>
     </div>
@@ -401,7 +404,7 @@ function BidAnalysis({ entries, members, viewLevel, allEntries, allMembers }: {
             {/* 지사별 개별 카드 */}
             <div className="stats-chart-row">
               {branchList.map((b) => {
-                const bEntries = allEntries.filter((e) => e.activity_type === '입찰' && e.branch === b);
+                const bEntries = allEntries.filter((e) => e.activity_type === '입찰' && sameBranchName(e.branch, b));
                 const s = calcBidStats(bEntries);
                 const bPie = [
                   { name: '낙찰', value: s.win },
@@ -591,14 +594,14 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
             <div className="stats-chart-row">
               {branchList.map((b) => (
                 <div key={b} className="stats-chart-half">
-                  {renderPie(b + ' 지사', allEntries.filter((e) => e.branch === b), '#1a73e8')}
+                  {renderPie(b + ' 지사', allEntries.filter((e) => sameBranchName(e.branch, b)), '#1a73e8')}
                 </div>
               ))}
             </div>
             {/* 스택바 좌우 비교 (지사 전체 합산) */}
             <div className="stats-chart-row">
               {branchList.map((b) => {
-                const be = allEntries.filter((e) => e.branch === b);
+                const be = allEntries.filter((e) => sameBranchName(e.branch, b));
                 const barData = [{
                   name: b + ' 지사',
                   입찰: be.filter((e) => e.activity_type === '입찰').length,
@@ -886,7 +889,7 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
   });
 
   // 5. 일지 미작성
-  const HOLIDAYS = new Set(['2026-05-25']);
+  const HOLIDAYS = new Set(['2026-05-25', '2026-06-03']);
   const today = new Date();
   const last30: string[] = [];
   for (let i = 0; i < 30; i++) {
@@ -1223,7 +1226,7 @@ function SalesAnalysis({ records, viewLevel }: {
   records.forEach(r => {
     const key = groupBy === 'person' ? (r.user_name || r.user_id)
       : groupBy === 'department' ? (r.department || '미지정')
-      : ((r.attribution_branch || r.branch) || '미지정');
+      : (normalizeBranchName(r.attribution_branch || r.branch) || '미지정');
     if (!grouped[key]) grouped[key] = { confirmed: 0, refunded: 0, pending: 0, count: 0 };
     grouped[key].count++;
     if (r.status === 'confirmed') grouped[key].confirmed += toSupply(r.amount);
@@ -1265,13 +1268,13 @@ function SalesAnalysis({ records, viewLevel }: {
 
       {/* 지사별 매출 카테고리 원형그래프 */}
       {(() => {
-        const branchOrder = ['의정부', '서초', '대전', '부산'];
+        const branchOrder = ['의정부본사', '서초지사', '대전지사', '부산지사'];
         const typeColors: Record<string, string> = {
           '계약': '#1a73e8', '낙찰': '#7c4dff', '중개': '#188038',
           '권리분석보증서': '#e65100', '매수신청대리': '#d93025', '기타': '#9aa0a6',
         };
         const branchPies = branchOrder.map(branch => {
-          const branchConfirmed = confirmed.filter(r => (r.attribution_branch || r.branch) === branch);
+          const branchConfirmed = confirmed.filter(r => sameBranchName(r.attribution_branch || r.branch, branch));
           const typeMap: Record<string, number> = {};
           branchConfirmed.forEach(r => {
             const t = r.type || '기타';

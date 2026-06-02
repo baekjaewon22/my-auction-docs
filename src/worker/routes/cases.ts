@@ -7,6 +7,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const cases = new Hono<AuthEnv>();
 
@@ -160,7 +161,7 @@ cases.get('/consultants', async (c) => {
     FROM users u
     LEFT JOIN user_accounting ua ON ua.user_id = u.id
     WHERE ${roleFilter}
-      AND u.branch != '본사 관리'
+      AND REPLACE(u.branch, ' ', '') != '본사관리'
       AND (u.department IS NULL OR u.department NOT IN ('명도팀','지원팀'))
       AND u.id != ?
       AND u.login_type != 'freelancer-old'
@@ -370,11 +371,11 @@ cases.get('/', requireRole(...CASES_VIEW_ROLES), async (c) => {
   if (user.role === 'manager') {
     query += ` AND (consultant_user_id = ? OR (consultant_branch = ? AND consultant_department = ?))`;
     params.push(user.sub, user.branch, user.department);
-  } else if (user.role === 'admin' && user.branch !== '의정부') {
+  } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ` AND consultant_branch = ?`;
     params.push(user.branch);
   } else if (user.role === 'director') {
-    query += ` AND (consultant_branch IN ('대전','부산') OR consultant_user_id = ?)`;
+    query += ` AND (consultant_branch IN ('대전', '대전지사', '부산', '부산지사') OR consultant_user_id = ?)`;
     params.push(user.sub);
   } else if (user.role === 'member' || user.role === 'support') {
     // 일반 컨설턴트: 본인이 컨설턴트로 매칭됐거나 담당자(manager_user_id)인 사건만
@@ -419,13 +420,13 @@ cases.get('/:id', requireRole(...CASES_VIEW_ROLES), async (c) => {
 
   // 권한 체크 — 컨설턴트 기준
   if (user.role === 'manager') {
-    if (r.consultant_user_id !== user.sub && !(r.consultant_branch === user.branch && r.consultant_department === user.department)) {
+    if (r.consultant_user_id !== user.sub && !(sameBranchName(r.consultant_branch, user.branch) && r.consultant_department === user.department)) {
       return c.json({ error: '권한 없음' }, 403);
     }
-  } else if (user.role === 'admin' && user.branch !== '의정부') {
-    if (r.consultant_branch !== user.branch) return c.json({ error: '권한 없음' }, 403);
+  } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
+    if (!sameBranchName(r.consultant_branch, user.branch)) return c.json({ error: '권한 없음' }, 403);
   } else if (user.role === 'director') {
-    if (!['대전', '부산'].includes(r.consultant_branch) && r.consultant_user_id !== user.sub) {
+    if (!['대전지사', '부산지사'].includes(normalizeBranchName(r.consultant_branch)) && r.consultant_user_id !== user.sub) {
       return c.json({ error: '권한 없음' }, 403);
     }
   } else if (user.role === 'member' || user.role === 'support') {
@@ -526,7 +527,7 @@ cases.delete('/:id', requireRole(...CASES_DELETE_ROLES), async (c) => {
   const id = c.req.param('id');
   const reason = c.req.query('reason') || '';
 
-  if (user.role === 'admin' && user.branch !== '의정부') {
+  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     return c.json({ error: '삭제 권한이 없습니다.' }, 403);
   }
 
@@ -699,7 +700,7 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
       ineligible++;
       continue;
     }
-    const isHQ = u.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(u.role);
+    const isHQ = normalizeBranchName(u.branch) === '본사관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(u.role);
     if (isHQ) {
       details.push({ user_id: userId, user_name: userName, bonus, status: 'ineligible', reason: '본사관리' });
       ineligible++;

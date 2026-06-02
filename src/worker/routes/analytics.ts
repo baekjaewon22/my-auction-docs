@@ -68,7 +68,7 @@ function buildExpenseSourceSql(includeSessionLedger: boolean) {
       COALESCE(
         NULLIF(ct.usage_category, ''),
         CASE
-          WHEN ct.category IN ('의정부', '의정부본사', '서초', '대전', '부산', '본사', '본사관리', '강남', '강남지사') THEN NULL
+          WHEN ct.category IN ('의정부', '의정부본사', '서초', '서초지사', '대전', '대전지사', '부산', '부산지사', '본사', '본사관리', '본사 관리', '강남', '강남지사') THEN NULL
           ELSE NULLIF(ct.category, '')
         END,
         '카드사용내역'

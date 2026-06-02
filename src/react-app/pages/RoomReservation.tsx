@@ -4,35 +4,35 @@ import { api } from '../api';
 import { useAuthStore } from '../store';
 
 const ROOM_CONFIG: Record<string, string[]> = {
-  '의정부': ['1회의실', '2회의실'],
-  '서초': ['1회의실', '2회의실'],
-  '대전': ['1회의실'],
-  '부산': ['1회의실', '2회의실', '3회의실'],
+  '의정부본사': ['1회의실', '2회의실'],
+  '서초지사': ['1회의실', '2회의실'],
+  '대전지사': ['1회의실'],
+  '부산지사': ['1회의실', '2회의실', '3회의실'],
 };
 
 const BRANCH_META: Record<string, { subtitle: string; code: string; gradient: string; accent: string; glow: string }> = {
-  '의정부': {
+  '의정부본사': {
     subtitle: 'Headquarters',
     code: 'HQ',
     gradient: 'linear-gradient(135deg, #eff6ff 0%, #dbeafe 55%, #bfdbfe 100%)',
     accent: '#3b82f6',
     glow: 'rgba(59, 130, 246, 0.22)',
   },
-  '서초': {
+  '서초지사': {
     subtitle: 'Seoul Branch',
     code: 'SC',
     gradient: 'linear-gradient(135deg, #eef2ff 0%, #e0e7ff 55%, #c7d2fe 100%)',
     accent: '#6366f1',
     glow: 'rgba(99, 102, 241, 0.22)',
   },
-  '대전': {
+  '대전지사': {
     subtitle: 'Daejeon Branch',
     code: 'DJ',
     gradient: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 55%, #bae6fd 100%)',
     accent: '#0ea5e9',
     glow: 'rgba(14, 165, 233, 0.22)',
   },
-  '부산': {
+  '부산지사': {
     subtitle: 'Busan Branch',
     code: 'BS',
     gradient: 'linear-gradient(135deg, #f0fdfa 0%, #ccfbf1 55%, #99f6e4 100%)',

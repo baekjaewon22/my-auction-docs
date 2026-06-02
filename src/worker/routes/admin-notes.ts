@@ -5,6 +5,7 @@ import { sendCommunityCommentAlimtalk, sendCommunityNoteCreatedAlimtalk } from '
 import { recheckAlertsAfterEntryDelete, recheckAlertsForJournalEntry } from '../lib/journal-alerts';
 import { articleObjectKey, ensureArticlePdfTable, safePdfFileName, sha256Hex } from '../lib/article-pdfs';
 import { ensureBidAnalysisTable, makeBidDedupeKey, normalizeAmount, normalizeBidResult } from '../lib/bid-analysis';
+import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const ADMIN_ROLES: Role[] = ['master', 'ceo', 'cc_ref', 'admin'];
 const NOTE_CATEGORIES = ['community', 'notice', 'article_news', 'briefing_schedule', 'eviction_quote', 'legal_support'] as const;
@@ -121,8 +122,8 @@ function canReadNote(note: any, viewer: any, viewerInfo: { branch?: string | nul
   if (role === 'master' || note.author_id === viewer.sub) return true;
   const v = note.visibility || 'all';
   return v === 'all' ||
-    (v === 'branch' && note.author_branch === viewerInfo?.branch) ||
-    (v === 'department' && note.author_branch === viewerInfo?.branch && note.author_department === viewerInfo?.department) ||
+    (v === 'branch' && sameBranchName(note.author_branch, viewerInfo?.branch)) ||
+    (v === 'department' && sameBranchName(note.author_branch, viewerInfo?.branch) && note.author_department === viewerInfo?.department) ||
     (v.startsWith('team:') && v === 'team:' + viewerInfo?.department) ||
     (v.startsWith('user:') && v === 'user:' + viewer.sub);
 }
@@ -517,7 +518,7 @@ adminNotes.get('/briefing-autofill', async (c) => {
 
   const assignee = await db.prepare('SELECT id, branch FROM users WHERE id = ? AND approved = 1').bind(assigneeId).first<{ id: string; branch: string }>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
-  if ((profile?.role || viewer.role) === 'admin' && assignee.branch !== profile?.branch) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
+  if ((profile?.role || viewer.role) === 'admin' && !sameBranchName(assignee.branch, profile?.branch)) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
 
   let row: any = null;
   if (caseNumber) {
@@ -736,7 +737,7 @@ adminNotes.get('/bid-analysis', async (c) => {
   const pageSize = Math.min(100, Math.max(1, Number(c.req.query('page_size') || 20) || 20));
   const from = String(c.req.query('from') || '').trim();
   const to = String(c.req.query('to') || '').trim();
-  const branch = String(c.req.query('branch') || '').trim();
+  const branch = normalizeBranchName(c.req.query('branch') || '');
   const assignee = String(c.req.query('assignee') || '').trim();
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -1147,7 +1148,7 @@ adminNotes.post('/', async (c) => {
       'SELECT id, name, branch, department, approved FROM users WHERE id = ?'
     ).bind(assignee_id).first<{ id: string; name: string; branch: string; department: string; approved: number }>();
     if (!assignee || assignee.approved !== 1) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
-    if (role === 'admin' && assignee.branch !== profile?.branch) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
+    if (role === 'admin' && !sameBranchName(assignee.branch, profile?.branch)) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
 
     finalTitle = `${target_date} ${assignee.name} 브리핑자료 제출`;
     finalContent = makeBriefingContent({

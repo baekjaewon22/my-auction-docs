@@ -11,6 +11,9 @@ import {
 } from '../lib/approval-alerts';
 import { dispatchApprovalAlerts } from '../lib/approval-alerts-dispatcher';
 import { recheckAlertsAfterDocumentChange } from '../lib/journal-alerts';
+import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
+
+const LEAVE_REQUEST_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
 
 // 결재선 자동 계산: 조직도를 위로 탐색하여 승인자 목록 반환
 async function buildApprovalChain(db: D1Database, authorId: string): Promise<string[]> {
@@ -121,10 +124,10 @@ documents.get('/', async (c) => {
     params.push(user.sub);
   } else if (user.role === 'director') {
     // 총괄이사: 본인 + 대전/부산 지사 — 타인 draft 제외
-    conditions.push("(d.author_id = ? OR d.branch IN ('대전', '부산'))");
+    conditions.push("(d.author_id = ? OR d.branch IN ('대전', '대전지사', '부산', '부산지사'))");
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(user.sub, user.sub);
-  } else if (user.role === 'admin' && user.branch === '의정부') {
+  } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람 — 타인 draft 제외
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(user.sub);
@@ -201,11 +204,11 @@ documents.get('/:id', async (c) => {
   if (user.role === 'member' && doc.author_id !== user.sub) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
-  if (user.role === 'manager' && doc.author_id !== user.sub && (doc.branch !== user.branch || doc.department !== user.department)) {
+  if (user.role === 'manager' && doc.author_id !== user.sub && (!sameBranchName(doc.branch, user.branch) || doc.department !== user.department)) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
   // 의정부 관리자는 타지사 열람 가능, 기타 관리자는 본인 지사만
-  if (user.role === 'admin' && user.branch !== '의정부' && doc.branch !== user.branch && doc.author_id !== user.sub) {
+  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch) && !sameBranchName(doc.branch, user.branch) && doc.author_id !== user.sub) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
@@ -219,6 +222,9 @@ documents.post('/', async (c) => {
     title: string; content?: string; template_id?: string;
   }>();
   if (!title) return c.json({ error: '문서 제목은 필수입니다.' }, 400);
+  if (template_id && LEAVE_REQUEST_TEMPLATE_IDS.has(template_id)) {
+    return c.json({ error: '연차/반차/특별휴가 신청은 연차관리에서 신청하세요.' }, 400);
+  }
 
   const db = c.env.DB;
   const id = crypto.randomUUID();
@@ -440,7 +446,14 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
       const headStep = await db.prepare(
         "SELECT id, approver_id FROM approval_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order ASC LIMIT 1"
       ).bind(id).first<{ id: string; approver_id: string }>();
-      if (!headStep) return c.json({ error: '승인 대기 중인 단계가 없습니다.' }, 400);
+      if (!headStep) {
+        const pendingCount = await db.prepare(
+          "SELECT COUNT(*) as cnt FROM approval_steps WHERE document_id = ? AND status = 'pending'"
+        ).bind(id).first<{ cnt: number }>();
+        if (pendingCount && pendingCount.cnt > 0) {
+          return c.json({ error: '승인 대기 중인 단계가 없습니다.' }, 400);
+        }
+      } else {
       await db.prepare(
         "UPDATE approval_steps SET status = 'approved', signed_at = datetime('now'), comment = ? WHERE id = ?"
       ).bind('proxy:' + user.sub, headStep.id).run();
@@ -472,6 +485,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
           ).bind(crypto.randomUUID(), id, headStep.approver_id, approverInfo.saved_signature, 'proxy-by:' + user.sub).run();
         }
       }
+      }
     } else {
       return c.json({ error: '현재 승인 차례가 아니거나 결재선에 포함되지 않았습니다.' }, 403);
     }
@@ -499,6 +513,26 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
   const allDone = !remaining || remaining.cnt === 0;
 
   if (allDone) {
+    await db.prepare(`
+      INSERT OR IGNORE INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent)
+      SELECT 'ceo-stamp-' || s.document_id || '-' || s.approver_id,
+             s.document_id,
+             s.approver_id,
+             '/LNCstemp.png',
+             'auto-finalize',
+             'auto-finalize'
+      FROM approval_steps s
+      JOIN users u ON u.id = s.approver_id
+      WHERE s.document_id = ?
+        AND s.status = 'approved'
+        AND u.role = 'ceo'
+        AND NOT EXISTS (
+          SELECT 1 FROM signatures sig
+          WHERE sig.document_id = s.document_id
+            AND sig.signature_data = '/LNCstemp.png'
+        )
+    `).bind(id).run();
+
     // 전체 승인 완료
     await db.prepare("UPDATE documents SET status = 'approved', updated_at = datetime('now') WHERE id = ?").bind(id).run();
     await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')

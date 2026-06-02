@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { branchAliases, isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const accounting = new Hono<AuthEnv>();
 accounting.use('*', authMiddleware);
@@ -18,10 +19,7 @@ const CARD_SETTLEMENT_KEYWORDS = [
 
 // GET /api/accounting/session2/reports - 확정 저장된 session2 원천/분류/원장 출력 조회
 function reportBranchPatterns(branch: string) {
-  const compact = branch.replace(/\s+/g, '');
-  if (!compact) return [];
-  if (compact === '의정부본사' || compact === '의정부') return ['의정부본사', '의정부'];
-  return [compact];
+  return branchAliases(branch);
 }
 
 function pushReportBranchWhere(where: string[], binds: any[], column: string, branch: string) {
@@ -31,23 +29,30 @@ function pushReportBranchWhere(where: string[], binds: any[], column: string, br
   patterns.forEach((pattern) => binds.push(`%${pattern}%`));
 }
 
-function compactBranchName(value: unknown): string {
-  return String(value || '').replace(/\s+/g, '').trim();
-}
-
 function isRestrictedBranchForAsst(branch: unknown): boolean {
-  const compact = compactBranchName(branch);
-  return compact === '의정부' || compact === '의정부본사';
+  return isRestrictedAccountingBranch(branch);
 }
 
 function getScopedAccountingReportBranch(user: any, requestedBranch: string): string | null {
   if (user?.role === 'accountant_asst') {
     const assignedBranch = String(user?.branch || '').trim();
     if (!assignedBranch || isRestrictedBranchForAsst(assignedBranch)) return null;
-    return assignedBranch;
+    return normalizeBranchName(assignedBranch);
   }
-  if (PROFIT_LOSS_EXTRA_USER_IDS.includes(String(user?.sub || ''))) return String(user?.branch || '').trim();
+  if (PROFIT_LOSS_EXTRA_USER_IDS.includes(String(user?.sub || ''))) return normalizeBranchName(user?.branch);
   return requestedBranch;
+}
+
+function getCompletedPreviousMonthKst(): string {
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  kst.setUTCDate(1);
+  kst.setUTCMonth(kst.getUTCMonth() - 1);
+  return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function pickDefaultReportMonth(availableMonths: string[]): string {
+  const completedPreviousMonth = getCompletedPreviousMonthKst();
+  return availableMonths.find((item) => item <= completedPreviousMonth) || availableMonths[0] || '';
 }
 
 function canAccessProfitLossReport(user: any) {
@@ -76,6 +81,284 @@ function canAccessLaborCostReport(user: any) {
     || user?.role === 'ceo'
     || user?.role === 'accountant'
     || LABOR_COST_EXTRA_USER_IDS.includes(String(user?.sub || ''));
+}
+
+function compactAccountingText(value: unknown): string {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function matchAccountingText(row: any): string {
+  return [
+    row.category,
+    row.item,
+    row.memo,
+    row.description,
+    row.merchant_name,
+  ].map(compactAccountingText).join(' ');
+}
+
+function makeProfitLossLine(label: string) {
+  return { label, count: 0, amount: 0, average: 0, corporate: 0, other: 0, note: '' };
+}
+
+function addProfitLossLine(map: Map<string, any>, label: string, amount: number, note = '') {
+  const line = map.get(label) || makeProfitLossLine(label);
+  line.count += 1;
+  line.amount += amount;
+  line.corporate += amount;
+  line.average = line.count ? Math.round(line.amount / line.count) : 0;
+  if (note && !line.note.includes(note)) {
+    line.note = [line.note, note].filter(Boolean).join(' / ');
+  }
+  map.set(label, line);
+}
+
+function addProfitLossSummaryLine(map: Map<string, any>, label: string, row: any, amount: number) {
+  const key = compactAccountingText(label) || '기타';
+  const line = map.get(key) || {
+    label: key,
+    category: compactAccountingText(row.category),
+    item: compactAccountingText(row.item),
+    count: 0,
+    amount: 0,
+  };
+  line.count += 1;
+  line.amount += amount;
+  if (!line.category && row.category) line.category = compactAccountingText(row.category);
+  if (!line.item && row.item) line.item = compactAccountingText(row.item);
+  map.set(key, line);
+}
+
+function addProfitLossBranchLine(map: Map<string, any>, row: any, kind: 'income' | 'expense', amount: number) {
+  const branch = compactAccountingText(row.branch) || '미지정';
+  const line = map.get(branch) || { branch, income: 0, expense: 0, profit: 0 };
+  if (kind === 'income') line.income += amount;
+  else line.expense += amount;
+  line.profit = line.income - line.expense;
+  map.set(branch, line);
+}
+
+function classifyProfitLossIncome(row: any): string {
+  const text = matchAccountingText(row);
+  if (/낙찰|수수료/.test(text)) return '낙찰수수료';
+  if (/매수.*신청|신청.*대리/.test(text)) return '매수신청대리';
+  if (/현장.*분석/.test(text)) return '현장분석계약';
+  if (/권리.*의뢰/.test(text)) return '권리분석의뢰';
+  if (/권리.*완료/.test(text)) return '권리분석완료';
+  if (/중개|NPL/i.test(text)) return '중개 수수료(NPL)';
+  if (/컨설|계약/.test(text)) return '컨설팅계약';
+  return '기타 수입';
+}
+
+function classifyProfitLossExpense(row: any): { section: string; label: string; note?: string } {
+  const text = matchAccountingText(row);
+  if (/실적|급여|인건비|포상|직원/.test(text)) return { section: 'A. 인건비,세금', label: '컨설턴트 실적급여' };
+  if (/부가세|vat/i.test(text)) return { section: 'A. 인건비,세금', label: '부가세', note: '법인매출의 10%' };
+  if (/소득세|원천|사업소득/.test(text)) return { section: 'A. 인건비,세금', label: '소득세', note: '사업소득세' };
+  if (/매수.*신청|신청.*대리/.test(text)) return { section: 'A. 인건비,세금', label: '매수신청대리' };
+  if (/임대|월세|렌트비/.test(text)) return { section: 'B. 사무실관련', label: '임대료' };
+  if (/관리비/.test(text)) return { section: 'B. 사무실관련', label: '관리비' };
+  if (/통신|인터넷|전화|LG/i.test(text)) return { section: 'C. 통신료', label: 'LG인터넷전화', note: '유선전화, 인터넷' };
+  if (/네이버|naver/i.test(text)) return { section: 'E. 영업비', label: '키워드광고 -네이버' };
+  if (/다음|카카오|daum|kakao/i.test(text)) return { section: 'E. 영업비', label: '키워드광고 -다음' };
+  if (/구글|google/i.test(text)) return { section: 'E. 영업비', label: '키워드광고 -구글' };
+  if (/애플|apple/i.test(text)) return { section: 'E. 영업비', label: '키워드광고 -애플' };
+  if (/DM|우편요금지원/.test(text)) return { section: 'E. 영업비', label: 'DM 우편요금지원' };
+  if (/지지옥션/.test(text)) return { section: 'E. 영업비', label: '지지옥션연장결제' };
+  if (/광고|키워드/.test(text)) return { section: 'E. 영업비', label: '키워드광고 -기타' };
+  if (/복사|프린터|렌탈/.test(text)) return { section: 'F. 기타 고정비', label: '복사기,프린터렌탈' };
+  if (/식대|식비|식사/.test(text)) return { section: 'F. 기타 고정비', label: '식대' };
+  if (/정수기/.test(text)) return { section: 'F. 기타 고정비', label: '정수기렌탈' };
+  if (/A4|용지/.test(text)) return { section: 'F. 기타 고정비', label: 'A4용지' };
+  if (/비품|문구|명함|녹차/.test(text)) return { section: 'G. 기타 잡비', label: '비품', note: '문구류,녹차,비품,명함인쇄 등' };
+  if (/우편|등기|반송/.test(text)) return { section: 'G. 기타 잡비', label: '등기우편 등 기타비용', note: '등기우편' };
+  if (/사무기기|기기/.test(text)) return { section: 'G. 기타 잡비', label: '사무기기' };
+  return { section: 'G. 기타 잡비', label: compactAccountingText(row.item || row.category) || '기타 잡비' };
+}
+
+function buildProfitLossStatement(rows: any[], month: string, branch: string | null) {
+  const incomeOrder = ['컨설팅계약', '현장분석계약', '권리분석의뢰', '권리분석완료', '낙찰수수료', '매수신청대리', '중개 수수료(NPL)', '기타 수입'];
+  const sectionOrder = ['A. 인건비,세금', 'B. 사무실관련', 'C. 통신료', 'E. 영업비', 'F. 기타 고정비', 'G. 기타 잡비'];
+  const defaultExpenseLines: Record<string, string[]> = {
+    'A. 인건비,세금': ['컨설턴트 실적급여', '부가세', '소득세', '매수신청대리'],
+    'B. 사무실관련': ['임대료', '관리비'],
+    'C. 통신료': ['LG인터넷전화'],
+    'E. 영업비': ['키워드광고 -네이버', '키워드광고 -다음', '키워드광고 -구글', '키워드광고 -애플', 'DM 우편요금지원', '지지옥션연장결제'],
+    'F. 기타 고정비': ['복사기,프린터렌탈', '식대', '정수기렌탈', 'A4용지'],
+    'G. 기타 잡비': ['비품', '등기우편 등 기타비용', '사무기기'],
+  };
+  const incomeMap = new Map<string, any>();
+  const expenseMaps = new Map<string, Map<string, any>>();
+  const expenseCategoryMap = new Map<string, any>();
+  const branchSummaryMap = new Map<string, any>();
+  incomeOrder.forEach((label) => incomeMap.set(label, makeProfitLossLine(label)));
+  sectionOrder.forEach((section) => {
+    const map = new Map<string, any>();
+    (defaultExpenseLines[section] || []).forEach((label) => map.set(label, makeProfitLossLine(label)));
+    expenseMaps.set(section, map);
+  });
+
+  for (const row of rows) {
+    const amount = Math.abs(Number(row.amount || 0));
+    if (!amount) continue;
+    if (row.ledger_type === 'expense_refund') {
+      const expense = classifyProfitLossExpense(row);
+      const map = expenseMaps.get(expense.section) || new Map<string, any>();
+      addProfitLossLine(map, expense.label, -amount, expense.note || '');
+      expenseMaps.set(expense.section, map);
+      addProfitLossSummaryLine(expenseCategoryMap, expense.section.startsWith('G.') ? '기타 잡비' : expense.label, row, -amount);
+      addProfitLossBranchLine(branchSummaryMap, row, 'expense', -amount);
+      continue;
+    }
+    const isIncome = row.ledger_type === 'sales' || row.direction === 'income';
+    if (isIncome) {
+      addProfitLossLine(incomeMap, classifyProfitLossIncome(row), amount, compactAccountingText(row.memo || row.description));
+      addProfitLossBranchLine(branchSummaryMap, row, 'income', amount);
+    } else {
+      const expense = classifyProfitLossExpense(row);
+      const map = expenseMaps.get(expense.section) || new Map<string, any>();
+      addProfitLossLine(map, expense.label, amount, expense.note || compactAccountingText(row.description || row.memo));
+      expenseMaps.set(expense.section, map);
+      addProfitLossSummaryLine(expenseCategoryMap, expense.section.startsWith('G.') ? '기타 잡비' : expense.label, row, amount);
+      addProfitLossBranchLine(branchSummaryMap, row, 'expense', amount);
+    }
+  }
+
+  const incomeRows = incomeOrder.map((label) => incomeMap.get(label) || makeProfitLossLine(label));
+  const incomeTotal = incomeRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  const expenseSections = sectionOrder.map((section) => {
+    let lines = Array.from((expenseMaps.get(section) || new Map()).values());
+    const total = lines.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    if (section.startsWith('G.')) {
+      const miscLine = makeProfitLossLine('기타 잡비');
+      miscLine.count = lines.reduce((sum, row) => sum + Number(row.count || 0), 0);
+      miscLine.amount = total;
+      miscLine.corporate = total;
+      miscLine.average = miscLine.count ? Math.round(total / miscLine.count) : 0;
+      miscLine.note = '기타 잡비 합계';
+      lines = [miscLine];
+    }
+    return {
+      title: section,
+      total,
+      rows: lines,
+    };
+  });
+  const expenseTotal = expenseSections.reduce((sum, section) => sum + Number(section.total || 0), 0);
+  const laborTotal = Number(expenseSections.find((section) => section.title.startsWith('A.'))?.total || 0);
+  const profit = incomeTotal - expenseTotal;
+  const expenseCategorySummary = Array.from(expenseCategoryMap.values())
+    .filter((row) => Number(row.amount || 0) !== 0)
+    .sort((a, b) => Math.abs(Number(b.amount || 0)) - Math.abs(Number(a.amount || 0)));
+  const branchSummary = Array.from(branchSummaryMap.values())
+    .filter((row) => Number(row.income || 0) || Number(row.expense || 0))
+    .sort((a, b) => String(a.branch || '').localeCompare(String(b.branch || ''), 'ko'));
+  return {
+    month,
+    branch: branch || '전체',
+    title: `${month || '전체'} ${branch || '전체'} 손익결산`,
+    incomeRows,
+    incomeTotal,
+    branchSummary,
+    expenseSections,
+    expenseCategorySummary,
+    expenseTotal,
+    nonLaborExpenseTotal: expenseTotal - laborTotal,
+    profit,
+    finalProfit: profit,
+  };
+}
+
+function payrollPeriodLabels(month: string): string[] {
+  const match = month.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return [month];
+  const year = match[1];
+  const monthNumber = Number(match[2]);
+  return Array.from(new Set([
+    month,
+    `${year}년 ${monthNumber}월`,
+    `${year}년 ${String(monthNumber).padStart(2, '0')}월`,
+  ]));
+}
+
+function payrollMoney(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const parsed = Number(String(value || '').replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function payrollSaveAdjustmentAmount(rawData: unknown): number {
+  if (!rawData) return 0;
+  try {
+    const data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData as any;
+    const extraPay = payrollMoney(data?.extraPay);
+    const extraDeduction = payrollMoney(data?.extraDeduction);
+    const commExtras = Array.isArray(data?.commExtras)
+      ? data.commExtras.reduce((sum: number, item: any) => sum + payrollMoney(item?.amount), 0)
+      : 0;
+    const commDeductions = Array.isArray(data?.commDeductions)
+      ? data.commDeductions.reduce((sum: number, item: any) => sum + payrollMoney(item?.amount), 0)
+      : 0;
+    return extraPay + commExtras - extraDeduction - commDeductions;
+  } catch {
+    return 0;
+  }
+}
+
+async function payrollLaborRowsForProfitLoss(db: D1Database, month: string, branch: string | null) {
+  if (!/^\d{4}-\d{2}$/.test(month)) return [];
+  const labels = payrollPeriodLabels(month);
+  while (labels.length < 3) labels.push(labels[0] || month);
+  const where = [
+    `COALESCE(u.approved, 1) = 1`,
+    `COALESCE(u.role, '') != 'resigned'`,
+    `COALESCE(ua.pay_type, 'salary') = 'salary'`,
+    `(COALESCE(ua.salary, 0) > 0 OR COALESCE(ua.position_allowance, 0) > 0 OR ps.data IS NOT NULL)`,
+  ];
+  const binds: any[] = [...labels.slice(0, 3)];
+  if (branch) pushReportBranchWhere(where, binds, 'u.branch', branch);
+  const result = await db.prepare(`
+    SELECT
+      u.id AS user_id,
+      u.name AS user_name,
+      u.branch,
+      COALESCE(ua.salary, 0) AS salary,
+      COALESCE(ua.position_allowance, 0) AS position_allowance,
+      ps.data AS save_data
+    FROM users u
+    JOIN user_accounting ua ON ua.user_id = u.id
+    LEFT JOIN payroll_saves ps ON ps.user_id = u.id AND ps.period IN (?, ?, ?)
+    WHERE ${where.join(' AND ')}
+    ORDER BY u.branch ASC, u.name ASC
+  `).bind(...binds).all<any>();
+  const seen = new Set<string>();
+  return (result.results || []).flatMap((row: any) => {
+    if (seen.has(row.user_id)) return [];
+    seen.add(row.user_id);
+    const basePay = Number(row.salary || 0) + Number(row.position_allowance || 0);
+    const adjustment = payrollSaveAdjustmentAmount(row.save_data);
+    const amount = Math.round(basePay + adjustment);
+    if (!amount) return [];
+    return [{
+      id: `payroll:${month}:${row.user_id}`,
+      ledger_type: 'expense',
+      entry_date: `${month}-01`,
+      branch: compactAccountingText(row.branch) || '미지정',
+      owner_name: compactAccountingText(row.user_name),
+      category: '인건비',
+      item: '직원급여',
+      amount,
+      direction: 'expense',
+      memo: adjustment ? `급여정산 조정 ${adjustment.toLocaleString('ko-KR')}원 포함` : '급여정산 기본급/직급수당',
+      source_type: 'payroll',
+      transaction_at: `${month}-01`,
+      merchant_name: compactAccountingText(row.user_name),
+      description: `급여정산 ${month}`,
+      card_last4: '',
+      ledger_policy: '급여정산',
+      duplicate_status: 'unique',
+    }];
+  });
 }
 
 async function ensureAccountingRuleTables(db: D1Database): Promise<void> {
@@ -118,7 +401,11 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
   if (reportType === 'profit-loss' && !canAccessProfitLossReport(user)) {
     return c.json({ error: 'Permission denied.' }, 403);
   }
-  const month = String(c.req.query('month') || '').slice(0, 7);
+  if (reportType === 'tax' && user?.role === 'accountant_asst') {
+    return c.json({ error: '총무보조는 세무자료를 열람할 수 없습니다.' }, 403);
+  }
+  const requestedMonth = String(c.req.query('month') || '').trim();
+  let month = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth.slice(0, 7) : '';
   const branch = getScopedAccountingReportBranch(user, String(c.req.query('branch') || '').trim());
   if ((user?.role === 'accountant_asst' || PROFIT_LOSS_EXTRA_USER_IDS.includes(String(user?.sub || ''))) && !branch) {
     return c.json({ error: 'Assigned branch is required.' }, 403);
@@ -162,6 +449,14 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
   const bookMonths = bookMonthBinds.length
     ? await bookMonthsStatement.bind(...bookMonthBinds).all<{ month: string }>()
     : await bookMonthsStatement.all<{ month: string }>();
+  const availableMonths = Array.from(new Set([
+    ...(months.results || []).map((row) => row.month).filter(Boolean),
+    ...(bookMonths.results || []).map((row) => row.month).filter(Boolean),
+  ])).sort().reverse();
+  if (requestedMonth === 'latest' || !requestedMonth) {
+    month = pickDefaultReportMonth(availableMonths);
+  }
+
   const latestImport = await db.prepare(`
     SELECT
       b.id,
@@ -197,6 +492,18 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
   if (isReconciliationReport) {
     if (reportType === 'check-card') where.push(`sr.source_type = 'checkCard'`);
     if (reportType === 'check-card') where.push(`ri.status = 'reviewed'`);
+    if (reportType === 'audit') {
+      where.push(`(
+        COALESCE(ri.duplicate_status, '') NOT IN ('unique', 'refund_offset', 'forced_unique')
+        OR (
+          le.id IS NULL
+          AND COALESCE(ri.ledger_policy, '') NOT LIKE '%대체%'
+          AND COALESCE(ri.ledger_policy, '') NOT LIKE '%증빙%'
+        )
+        OR COALESCE(NULLIF(sr.transaction_at, ''), '') = ''
+        OR COALESCE(sr.amount, 0) = 0
+      )`);
+    }
     sql = `
       SELECT
         ri.id,
@@ -217,6 +524,50 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
         ri.ledger_policy,
         ri.duplicate_status,
         ri.status,
+        CASE
+          WHEN COALESCE(NULLIF(sr.transaction_at, ''), '') = '' THEN '일자 누락'
+          WHEN COALESCE(sr.amount, 0) = 0 THEN '금액 확인'
+          WHEN COALESCE(ri.duplicate_status, '') = 'duplicate' THEN '중복 의심'
+          WHEN COALESCE(ri.duplicate_status, '') NOT IN ('unique', 'refund_offset', 'forced_unique') THEN '중복상태 확인'
+          WHEN le.id IS NULL THEN '원장 미반영'
+          ELSE ''
+        END AS review_reason,
+        COALESCE((
+          SELECT
+            sr2.transaction_at || ' / ' ||
+            sr2.source_type || ' / ' ||
+            CAST(ABS(sr2.amount) AS TEXT) || ' / ' ||
+            COALESCE(NULLIF(sr2.merchant_name, ''), NULLIF(sr2.description, ''), sr2.source_key) ||
+            ' / 키:' || sr2.source_key ||
+            CASE
+              WHEN COALESCE(le2.ledger_type, '') != '' THEN ' / 원장:' || le2.ledger_type
+              WHEN COALESCE(ri2.status, '') != '' THEN ' / 상태:' || ri2.status
+              ELSE ''
+            END
+          FROM accounting_source_rows sr2
+          JOIN accounting_reconciliation_items ri2 ON ri2.source_row_id = sr2.id
+          LEFT JOIN accounting_ledger_entries le2 ON le2.source_row_id = sr2.id
+          WHERE sr2.id != sr.id
+            AND (
+              (COALESCE(ri.duplicate_group_key, '') != '' AND COALESCE(ri2.duplicate_group_key, '') = COALESCE(ri.duplicate_group_key, ''))
+              OR (
+                sr2.transaction_at = sr.transaction_at
+              AND ABS(sr2.amount) = ABS(sr.amount)
+              AND COALESCE(NULLIF(sr2.merchant_name, ''), NULLIF(sr2.description, '')) = COALESCE(NULLIF(sr.merchant_name, ''), NULLIF(sr.description, ''))
+              )
+              OR (
+                sr2.transaction_at = sr.transaction_at
+                AND ABS(sr2.amount) = ABS(sr.amount)
+                AND COALESCE(sr2.card_last4, '') = COALESCE(sr.card_last4, '')
+              )
+            )
+          ORDER BY CASE WHEN le2.id IS NOT NULL THEN 0 ELSE 1 END, sr2.created_at DESC
+          LIMIT 1
+        ), CASE
+          WHEN COALESCE(ri.duplicate_status, '') = 'duplicate'
+            THEN '비교상대 없음 / 중복키:' || COALESCE(NULLIF(ri.duplicate_group_key, ''), sr.source_key)
+          ELSE ''
+        END) AS duplicate_match,
         COALESCE(le.entry_date, sr.transaction_at) AS entry_date
       FROM accounting_reconciliation_items ri
       JOIN accounting_source_rows sr ON sr.id = ri.source_row_id
@@ -330,7 +681,7 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
       .sort((a: any, b: any) => String(b.entry_date || b.transaction_at || '').localeCompare(String(a.entry_date || a.transaction_at || '')))
       .slice(0, 2000);
 
-    if (['expense', 'profit-loss', 'tax'].includes(reportType)) {
+    if (false && ['expense', 'profit-loss', 'tax'].includes(reportType)) {
       const cardWhere: string[] = [`COALESCE(ct.transaction_date, '') <> ''`];
       const cardBinds: any[] = [];
       if (month) {
@@ -338,7 +689,7 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
         cardBinds.push(`${month}%`, `${month.replace('-', '.')}%`);
       }
       if (branch) {
-        pushReportBranchWhere(cardWhere, cardBinds, `COALESCE(NULLIF(ct.branch, ''), ct.category, '')`, branch);
+        pushReportBranchWhere(cardWhere, cardBinds, `COALESCE(NULLIF(ct.branch, ''), ct.category, '')`, branch || '');
       }
       if (reportType === 'tax') {
         cardWhere.push(`(
@@ -382,7 +733,53 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
         .slice(0, 2000);
     }
   }
-  const summary = rows.reduce((acc: any, row: any) => {
+  if (reportType === 'profit-loss' && month) {
+    const payrollRows = await payrollLaborRowsForProfitLoss(db, month, branch);
+    if (payrollRows.length) {
+      rows = [...rows, ...payrollRows]
+        .sort((a: any, b: any) => String(b.entry_date || b.transaction_at || '').localeCompare(String(a.entry_date || a.transaction_at || '')))
+        .slice(0, 2000);
+    }
+  }
+  const summaryRows = rows;
+  const profitLossStatement = reportType === 'profit-loss'
+    ? buildProfitLossStatement(summaryRows, month, branch)
+    : null;
+  if (reportType === 'profit-loss') {
+    const grouped = new Map<string, any>();
+    for (const row of summaryRows) {
+      const branchKey = String(row.branch || '미지정').trim() || '미지정';
+      const current = grouped.get(branchKey) || {
+        id: `profit-loss:${branchKey}`,
+        branch: branchKey,
+        income_total: 0,
+        gross_expense_total: 0,
+        refund_total: 0,
+        expense_total: 0,
+        net_profit: 0,
+        row_count: 0,
+      };
+      const amount = Math.abs(Number(row.amount || 0));
+      const isExpenseRefund = row.ledger_type === 'expense_refund';
+      const isIncome = !isExpenseRefund && (row.ledger_type === 'sales' || row.direction === 'income');
+      if (isExpenseRefund) {
+        current.refund_total += amount;
+        current.expense_total -= amount;
+      } else if (isIncome) {
+        current.income_total += amount;
+      } else {
+        current.gross_expense_total += amount;
+        current.expense_total += amount;
+      }
+      current.row_count += 1;
+      current.net_profit = current.income_total - current.expense_total;
+      grouped.set(branchKey, current);
+    }
+    rows = Array.from(grouped.values())
+      .sort((a, b) => Number(b.net_profit || 0) - Number(a.net_profit || 0) || String(a.branch).localeCompare(String(b.branch), 'ko'));
+  }
+
+  const summary = summaryRows.reduce((acc: any, row: any) => {
     const amount = Math.abs(Number(row.amount || 0));
     const isExpenseRefund = row.ledger_type === 'expense_refund';
     const isIncome = !isExpenseRefund && (row.ledger_type === 'sales' || row.direction === 'income');
@@ -403,11 +800,9 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
   return c.json({
     rows,
     summary,
-    months: Array.from(new Set([
-      ...(months.results || []).map((row) => row.month).filter(Boolean),
-      ...(bookMonths.results || []).map((row) => row.month).filter(Boolean),
-    ])).sort().reverse(),
+    months: availableMonths,
     latest_import: latestImport || null,
+    profit_loss_statement: profitLossStatement,
   });
 });
 
@@ -466,6 +861,104 @@ accounting.put('/session2/forecast-adjustments', async (c) => {
   `).bind(id, month, branch || '전체', JSON.stringify(rows), user?.sub || '').run();
 
   return c.json({ success: true, rows });
+});
+
+accounting.post('/session2/ledger-row', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  await ensureAccountingSession2Tables(db);
+  const payload = normalizeLedgerPayload(await c.req.json<Session2LedgerPayload>());
+  if (!payload.entry_date) return c.json({ error: '일자를 입력해주세요.' }, 400);
+  if (!payload.amount) return c.json({ error: '금액을 입력해주세요.' }, 400);
+
+  const batchHash = 'manual-session2-ledger';
+  const batch = await db.prepare('SELECT id FROM accounting_import_batches WHERE source_type = ? AND file_hash = ?')
+    .bind('session2', batchHash)
+    .first<{ id: string }>();
+  const batchId = batch?.id || crypto.randomUUID();
+  if (!batch) {
+    await db.prepare(`
+      INSERT INTO accounting_import_batches (id, source_type, file_name, file_hash, row_count, status, uploaded_by, confirmed_at, confirmed_by, notes)
+      VALUES (?, 'session2', '수기 입력', ?, 0, 'confirmed', ?, datetime('now', '+9 hours'), ?, '지출/거래 원장 수기 입력')
+    `).bind(batchId, batchHash, user?.sub || '', user?.sub || '').run();
+  }
+
+  const sourceId = crypto.randomUUID();
+  const reconId = crypto.randomUUID();
+  const ledgerId = crypto.randomUUID();
+  const sourceKey = `manual:${ledgerId}`;
+  const sourceAmount = payload.ledger_type === 'expense' ? payload.amount : -payload.amount;
+  await db.prepare(`
+    INSERT INTO accounting_source_rows
+      (id, batch_id, source_type, row_index, source_key, transaction_at, amount, direction, merchant_name, description, card_last4, balance, raw_json)
+    VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+  `).bind(sourceId, batchId, payload.source_type, sourceKey, payload.entry_date, sourceAmount, payload.direction, payload.merchant_name, payload.description || payload.memo, payload.card_last4, JSON.stringify({ manual: true, created_by: user?.sub || '' })).run();
+  await db.prepare(`
+    INSERT INTO accounting_reconciliation_items
+      (id, source_row_id, linked_sales_record_id, branch, owner_name, category, item, memo,
+       duplicate_group_key, duplicate_status, ledger_policy, status, reviewed_by, reviewed_at)
+    VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, 'unique', ?, 'reviewed', ?, datetime('now', '+9 hours'))
+  `).bind(reconId, sourceId, payload.branch, payload.owner_name, payload.category, payload.item, payload.memo, sourceKey, payload.ledger_policy, user?.sub || '').run();
+  await db.prepare(`
+    INSERT INTO accounting_ledger_entries
+      (id, reconciliation_id, source_row_id, ledger_type, entry_date, branch, owner_name, category, item, amount, direction, memo, status, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?)
+  `).bind(ledgerId, reconId, sourceId, payload.ledger_type, payload.entry_date, payload.branch, payload.owner_name, payload.category, payload.item, payload.amount, payload.direction, payload.memo, user?.sub || '').run();
+  return c.json({ success: true, id: ledgerId }, 201);
+});
+
+accounting.put('/session2/ledger-row/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  await ensureAccountingSession2Tables(db);
+  const id = c.req.param('id');
+  const current = await db.prepare(`
+    SELECT id, source_row_id, reconciliation_id
+    FROM accounting_ledger_entries
+    WHERE id = ?
+  `).bind(id).first<any>();
+  if (!current) return c.json({ error: '원장 행을 찾을 수 없습니다.' }, 404);
+
+  const payload = normalizeLedgerPayload(await c.req.json<Session2LedgerPayload>());
+  if (!payload.entry_date) return c.json({ error: '일자를 입력해주세요.' }, 400);
+  if (!payload.amount) return c.json({ error: '금액을 입력해주세요.' }, 400);
+  const sourceAmount = payload.ledger_type === 'expense' ? payload.amount : -payload.amount;
+
+  await db.prepare(`
+    UPDATE accounting_source_rows
+    SET source_type = ?, transaction_at = ?, amount = ?, direction = ?, merchant_name = ?, description = ?, card_last4 = ?, updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+  `).bind(payload.source_type, payload.entry_date, sourceAmount, payload.direction, payload.merchant_name, payload.description || payload.memo, payload.card_last4, current.source_row_id).run();
+  await db.prepare(`
+    UPDATE accounting_reconciliation_items
+    SET branch = ?, owner_name = ?, category = ?, item = ?, memo = ?, ledger_policy = ?,
+        status = 'reviewed', reviewed_by = ?, reviewed_at = datetime('now', '+9 hours'), updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+  `).bind(payload.branch, payload.owner_name, payload.category, payload.item, payload.memo, payload.ledger_policy, user?.sub || '', current.reconciliation_id).run();
+  await db.prepare(`
+    UPDATE accounting_ledger_entries
+    SET ledger_type = ?, entry_date = ?, branch = ?, owner_name = ?, category = ?, item = ?,
+        amount = ?, direction = ?, memo = ?, status = 'confirmed', updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+  `).bind(payload.ledger_type, payload.entry_date, payload.branch, payload.owner_name, payload.category, payload.item, payload.amount, payload.direction, payload.memo, id).run();
+  return c.json({ success: true });
+});
+
+accounting.delete('/session2/ledger-row/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const db = c.env.DB;
+  await ensureAccountingSession2Tables(db);
+  const id = c.req.param('id');
+  const current = await db.prepare(`
+    SELECT id, source_row_id, reconciliation_id
+    FROM accounting_ledger_entries
+    WHERE id = ?
+  `).bind(id).first<{ id: string; source_row_id: string; reconciliation_id: string }>();
+  if (!current) return c.json({ error: '원장 행을 찾을 수 없습니다.' }, 404);
+
+  await db.prepare('DELETE FROM accounting_ledger_entries WHERE id = ?').bind(id).run();
+  await db.prepare('DELETE FROM accounting_reconciliation_items WHERE id = ?').bind(current.reconciliation_id).run();
+  await db.prepare('DELETE FROM accounting_source_rows WHERE id = ?').bind(current.source_row_id).run();
+  return c.json({ success: true });
 });
 
 // POST /api/accounting/session2/commit - session1 분류 결과를 원천/분류/원장 테이블에 저장
@@ -546,7 +1039,7 @@ accounting.post('/session2/commit', requireRole(...ACCOUNTING_ROLES), async (c) 
     }
 
     const duplicateStatus = row.duplicate ? 'duplicate' : row.duplicate_status || 'unique';
-    const complete = !!row.complete && !row.duplicate;
+    const complete = !row.duplicate;
     const reconciliationStatus = complete ? 'reviewed' : 'draft';
     const ledgerPolicy = String(row.ledger_policy || 'pending');
     const reconciliationId = crypto.randomUUID();
@@ -599,11 +1092,6 @@ accounting.post('/session2/commit', requireRole(...ACCOUNTING_ROLES), async (c) 
     }
     reconciliationUpserted += 1;
 
-    if (!complete) {
-      await db.prepare('DELETE FROM accounting_ledger_entries WHERE source_row_id = ?').bind(finalSourceId).run();
-      ledgerSkipped += 1;
-      continue;
-    }
     const ledgerType = normalizeLedgerType(ledgerPolicy, row.category || '', direction);
     if (ledgerType === 'evidence') {
       await db.prepare('DELETE FROM accounting_ledger_entries WHERE source_row_id = ?').bind(finalSourceId).run();
@@ -870,6 +1358,50 @@ type Session2RowInput = {
   duplicate?: boolean;
 };
 
+type Session2LedgerPayload = {
+  entry_date?: string;
+  branch?: string;
+  owner_name?: string;
+  category?: string;
+  item?: string;
+  amount?: number;
+  memo?: string;
+  description?: string;
+  merchant_name?: string;
+  card_last4?: string;
+  ledger_policy?: string;
+  source_type?: 'bank' | 'checkCard';
+  ledger_type?: 'expense' | 'expense_refund' | 'sales';
+};
+
+function normalizeLedgerDate(value: unknown): string {
+  return String(value || '').trim().slice(0, 10);
+}
+
+function normalizeLedgerAmount(value: unknown): number {
+  return Math.abs(Math.round(Number(value || 0)));
+}
+
+function normalizeLedgerPayload(body: Session2LedgerPayload) {
+  const ledgerType = body.ledger_type === 'expense_refund' || body.ledger_type === 'sales' ? body.ledger_type : 'expense';
+  return {
+    entry_date: normalizeLedgerDate(body.entry_date),
+    branch: String(body.branch || '').trim() === '전체' ? '' : String(body.branch || '').trim(),
+    owner_name: String(body.owner_name || '').trim(),
+    category: String(body.category || '').trim(),
+    item: String(body.item || '').trim(),
+    amount: normalizeLedgerAmount(body.amount),
+    memo: String(body.memo || '').trim(),
+    description: String(body.description || '').trim(),
+    merchant_name: String(body.merchant_name || '').trim(),
+    card_last4: String(body.card_last4 || '').replace(/\D/g, '').slice(-4),
+    ledger_policy: String(body.ledger_policy || '지출원장').trim(),
+    source_type: body.source_type === 'checkCard' ? 'checkCard' : 'bank',
+    ledger_type: ledgerType,
+    direction: ledgerType === 'sales' || ledgerType === 'expense_refund' ? 'income' : 'expense',
+  };
+}
+
 // 총무보조(accountant_asst) 열람·수정 제한 — 팀장·관리자급·이사·대표자는 총무담당만
 const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
 async function canAccessUserAccounting(db: D1Database, viewer: any, targetUserId: string): Promise<boolean> {
@@ -877,7 +1409,7 @@ async function canAccessUserAccounting(db: D1Database, viewer: any, targetUserId
   if (isRestrictedBranchForAsst(viewer.branch)) return false;
   const target = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(targetUserId).first<any>();
   if (!target) return true;
-  if (compactBranchName(target.branch) !== compactBranchName(viewer.branch)) return false;
+  if (!sameBranchName(target.branch, viewer.branch)) return false;
   return !RESTRICTED_ROLES_FOR_ASST.includes(target.role);
 }
 
@@ -896,7 +1428,7 @@ accounting.get('/', requireRole(...ACCOUNTING_ROLES), async (c) => {
   if (viewer.role === 'accountant_asst') {
     accounts = isRestrictedBranchForAsst(viewer.branch)
       ? []
-      : accounts.filter((a: any) => compactBranchName(a.branch) === compactBranchName(viewer.branch) && !RESTRICTED_ROLES_FOR_ASST.includes(a.role));
+      : accounts.filter((a: any) => sameBranchName(a.branch, viewer.branch) && !RESTRICTED_ROLES_FOR_ASST.includes(a.role));
   }
   return c.json({ accounts });
 });

@@ -198,3 +198,6 @@ worker-configuration.d.ts
 !.env.example
 .dev.vars*
 !.dev.vars.example
+
+### Local import artifacts ###
+tmp-expense-classification/

@@ -18,8 +18,9 @@ const CATEGORY_ICONS: Record<string, typeof CalendarDays> = {
 const CATEGORY_ORDER = ['근태/휴가', '인사/채용', '경비/비용', '업무/보고'];
 const FAV_KEY = 'myauction_fav_templates';
 const FAV_VER_KEY = 'myauction_fav_ver';
-const FAV_VERSION = '2'; // 버전 올리면 기존 사용자에게도 새 즐겨찾기 추가
-const DEFAULT_FAVS = ['tpl-work-008', 'tpl-att-001', 'tpl-att-002', 'tpl-att-003', 'tpl-work-002', 'tpl-work-007'];
+const FAV_VERSION = '3'; // 버전 올리면 기존 사용자에게도 새 즐겨찾기 추가
+const DEFAULT_FAVS = ['tpl-work-008', 'tpl-att-003', 'tpl-work-002', 'tpl-work-007'];
+const HIDDEN_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
 
 function getFavorites(): string[] {
   try {
@@ -27,12 +28,12 @@ function getFavorites(): string[] {
     if (ver < FAV_VERSION) {
       // 기존 즐겨찾기에 새 항목만 추가
       const existing = JSON.parse(localStorage.getItem(FAV_KEY) || '[]') as string[];
-      const merged = [...new Set([...DEFAULT_FAVS, ...existing])];
+      const merged = [...new Set([...DEFAULT_FAVS, ...existing])].filter(id => !HIDDEN_TEMPLATE_IDS.has(id));
       localStorage.setItem(FAV_KEY, JSON.stringify(merged));
       localStorage.setItem(FAV_VER_KEY, FAV_VERSION);
       return merged;
     }
-    return JSON.parse(localStorage.getItem(FAV_KEY) || '[]');
+    return (JSON.parse(localStorage.getItem(FAV_KEY) || '[]') as string[]).filter(id => !HIDDEN_TEMPLATE_IDS.has(id));
   } catch { return [...DEFAULT_FAVS]; }
 }
 
@@ -60,7 +61,7 @@ export default function TemplateList() {
   const load = () => {
     setLoading(true);
     api.templates.list().then((res) => {
-      setTemplates(res.templates);
+      setTemplates(res.templates.filter(t => !HIDDEN_TEMPLATE_IDS.has(t.id)));
       // highlight 파라미터가 있으면 해당 템플릿의 카테고리로 자동 필터
       if (highlightId) {
         const t = res.templates.find(tp => tp.id === highlightId);

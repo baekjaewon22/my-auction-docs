@@ -258,6 +258,10 @@ function MemberCard({ m, onClick }: { m: CompMember; onClick: () => void }) {
         </>
       ) : (
         <>
+          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '6px 8px', marginBottom: 6 }}>
+            <div style={{ fontSize: 10, color: '#5f6368' }}>해당 월 매출</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: '#c2410c' }}>{fmtKRW(m.sales.confirmed)}</div>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
             <div style={{ background: '#e8f0fe', borderRadius: 8, padding: '6px 8px' }}>
               <div style={{ fontSize: 10, color: '#5f6368' }}>입찰률</div>
@@ -320,7 +324,11 @@ function PersonalDashboard({ member: m, benchmarks }: { member: CompMember; benc
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10, color: '#3c4043', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             <Target size={13} strokeWidth={2.2} /> 입찰 성과
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, fontSize: 11 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, fontSize: 11 }}>
+            <div style={{ background: '#fff', border: '1px solid #fed7aa', borderRadius: 10, padding: 10 }}>
+              <div style={{ color: '#5f6368' }}>해당 월 매출</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#c2410c' }}>{fmtKRW(m.sales.confirmed)}</div>
+            </div>
             <div style={{ background: '#fff', border: '1px solid #d2e3fc', borderRadius: 10, padding: 10 }}>
               <div style={{ color: '#5f6368' }}>등록 입찰</div>
               <div style={{ fontSize: 20, fontWeight: 800, color: '#1a73e8' }}>{m.activity.입찰}건</div>

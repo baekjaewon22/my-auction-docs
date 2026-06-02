@@ -8,9 +8,11 @@ import Select from '../components/Select';
 import BusinessIncomeTab from '../components/BusinessIncomeTab';
 import EmployeeBonusTab from '../components/EmployeeBonusTab';
 import { Receipt, Camera } from 'lucide-react';
+import { isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
 function truncMoney(n: number): number { return Math.trunc(Number(n) || 0); }
+function vatSupplyAmount(n: number): number { return Math.round((Number(n) || 0) * 10 / 11); }
 function toMoneyDisplay(val: string): string {
   const num = val.replace(/[^0-9]/g, '');
   return num ? Number(num).toLocaleString('ko-KR') : '';
@@ -19,23 +21,18 @@ function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
 }
 
-function compactBranchName(value: unknown): string {
-  return String(value || '').replace(/\s+/g, '').trim();
-}
-
 function isRestrictedBranchForAccountingAsst(branch: unknown): boolean {
-  const compact = compactBranchName(branch);
-  return compact === '의정부' || compact === '의정부본사';
+  return isRestrictedAccountingBranch(branch);
 }
 
 type PayrollTab = 'payroll' | 'summary' | 'branch' | 'business_income' | 'employee_bonus';
 
 const PAYROLL_BRANCH_SELECTOR = [
-  { label: '의정부 본사', value: '의정부', meta: '본사 정산' },
-  { label: '서초지사', value: '서초', meta: '지사 정산' },
-  { label: '대전지사', value: '대전', meta: '지사 정산' },
-  { label: '부산지사', value: '부산', meta: '지사 정산' },
-  { label: '본사관리', value: '본사 관리', meta: '관리 조직' },
+  { label: '의정부본사', value: '의정부본사', meta: '본사 정산' },
+  { label: '서초지사', value: '서초지사', meta: '지사 정산' },
+  { label: '대전지사', value: '대전지사', meta: '지사 정산' },
+  { label: '부산지사', value: '부산지사', meta: '지사 정산' },
+  { label: '본사관리', value: '본사관리', meta: '관리 조직' },
   { label: '전체', value: '', meta: '전체 지사' },
 ];
 
@@ -85,7 +82,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
   useEffect(() => {
     if (currentUser?.role !== 'accountant_asst') return;
-    const branch = currentUser.branch || '';
+    const branch = normalizeBranchName(currentUser.branch) || currentUser.branch || '';
     setFilterBranch(isRestrictedBranchForAccountingAsst(branch) ? '__blocked__' : branch);
     setSelectedUserId('');
     setData(null);
@@ -95,7 +92,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
     if (!requireBranchSelection) return;
     const branchParam = searchParams.get('branch');
     if (branchParam === null) return;
-    const nextBranch = branchParam === '__all' ? '' : branchParam;
+    const nextBranch = branchParam === '__all' ? '' : normalizeBranchName(branchParam) || branchParam;
     setFilterBranch(nextBranch);
     setSelectedUserId('');
     setData(null);
@@ -221,7 +218,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const effectiveFilterBranch = currentRole === 'accountant_asst'
     ? (isRestrictedBranchForAccountingAsst(currentUser?.branch) ? '__blocked__' : (currentUser?.branch || '__blocked__'))
     : filterBranch;
-  const branchFiltered = (effectiveFilterBranch ? users.filter(u => u.branch === effectiveFilterBranch) : users)
+  const branchFiltered = (effectiveFilterBranch ? users.filter(u => sameBranchName(u.branch, effectiveFilterBranch)) : users)
     .filter(u => u.role !== 'master')
     .filter(u => currentRole !== 'accountant_asst' || !RESTRICTED_ROLES_FOR_ASST.includes(u.role as string));
   const activeUsers = branchFiltered.filter(u => (u.role as string) !== 'resigned');
@@ -239,7 +236,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   ]));
   const branchOpts = branchOptionValues.map(b => ({ value: b, label: b }));
   const visibleBranchCards = currentRole === 'accountant_asst'
-    ? PAYROLL_BRANCH_SELECTOR.filter((item) => item.value && item.value === currentUser?.branch && !isRestrictedBranchForAccountingAsst(item.value))
+    ? PAYROLL_BRANCH_SELECTOR.filter((item) => item.value && sameBranchName(item.value, currentUser?.branch) && !isRestrictedBranchForAccountingAsst(item.value))
     : PAYROLL_BRANCH_SELECTOR;
 
   const s = data?.summary;
@@ -322,9 +319,9 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         {currentUser?.role !== 'accountant_asst' && <button className={`filter-btn ${tab === 'branch' ? 'active' : ''}`} onClick={() => setTab('branch')}>
           지사별 합산
         </button>}
-        <button className={`filter-btn ${tab === 'business_income' ? 'active' : ''}`} onClick={() => setTab('business_income')}>
+        {currentUser?.role !== 'accountant_asst' && <button className={`filter-btn ${tab === 'business_income' ? 'active' : ''}`} onClick={() => setTab('business_income')}>
           사업소득신고
-        </button>
+        </button>}
         <button className={`filter-btn ${tab === 'employee_bonus' ? 'active' : ''}`} onClick={() => setTab('employee_bonus')}>
           정직원 성과금내역
         </button>
@@ -452,8 +449,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
                   // 일반 매출 (매수신청대리 제외)
                   const normalRecords = (data.records || []).filter((r: any) => r.type !== '매수신청대리');
-                  const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || truncMoney(r.amount / 1.1)), 0);
-                  const normalRefundSupply = truncMoney((data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + truncMoney(r.amount / 1.1), 0));
+                  const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || vatSupplyAmount(r.amount)), 0);
+                  const normalRefundSupply = (data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + vatSupplyAmount(r.amount), 0);
                   const netNormalSales = normalSupply - normalRefundSupply;
                   const commissionAmount = truncMoney(netNormalSales * rate / 100);
 
@@ -462,7 +459,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                   // 담당자 지급 = amount/1.1 - cost (원천세는 전체 소득 합산 시 3.3% 적용)
                   const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
                   const proxyIncome = proxyRecords.reduce((sum: number, r: any) => {
-                    const payrollAmount = truncMoney((r.amount || 0) / 1.1) - (r.proxy_cost || 0);
+                    const payrollAmount = vatSupplyAmount(r.amount || 0) - (r.proxy_cost || 0);
                     return sum + Math.max(payrollAmount, 0);
                   }, 0);
 
@@ -972,8 +969,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           {data.accounting.pay_type === 'commission' && (() => {
             const rate = data.accounting.commission_rate || 0;
             const normalRecords = (data.records || []).filter((r: any) => r.type !== '매수신청대리');
-            const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || truncMoney(r.amount / 1.1)), 0);
-            const normalRefundSupply = truncMoney((data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + truncMoney(r.amount / 1.1), 0));
+            const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || vatSupplyAmount(r.amount)), 0);
+            const normalRefundSupply = (data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + vatSupplyAmount(r.amount), 0);
             const netSales = normalSupply - normalRefundSupply;
             const commAmt = truncMoney(netSales * rate / 100);
             const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
@@ -1332,7 +1329,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         <div className="empty-state">담당자를 선택하면 급여정산 내역이 표시됩니다.</div>
       )}
 
-      {tab === 'business_income' && <BusinessIncomeTab month={selectedMonth} />}
+      {tab === 'business_income' && currentUser?.role !== 'accountant_asst' && <BusinessIncomeTab month={selectedMonth} />}
       {tab === 'employee_bonus' && <EmployeeBonusTab month={selectedMonth} users={filteredUsers} />}
     </div>
   );

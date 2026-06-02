@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { ensureBidAnalysisTable } from '../lib/bid-analysis';
+import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const comprehensive = new Hono<AuthEnv>();
 comprehensive.use('*', authMiddleware);
@@ -178,7 +179,7 @@ function generateDiagnosis(m: any, breakdown: any, maxByKey: Record<string, numb
 comprehensive.get('/', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  const branch = c.req.query('branch') || '';
+  const branch = normalizeBranchName(c.req.query('branch') || '');
   const department = c.req.query('department') || '';
   const userIdParam = c.req.query('user_id') || '';
   const month = c.req.query('month') || ''; // YYYY-MM
@@ -187,7 +188,7 @@ comprehensive.get('/', async (c) => {
   // 권한 정책
   const role = user.role;
   const isViewer = ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(role);
-  const isHQAdmin = role === 'admin' && user.branch === '의정부';
+  const isHQAdmin = role === 'admin' && isHeadOfficeBranch(user.branch);
   const isDirector = role === 'director';
   const canSeeAll = isViewer || isHQAdmin;
   const canSeeBranch = canSeeAll || (role === 'admin');
@@ -200,9 +201,9 @@ comprehensive.get('/', async (c) => {
     // 일반 직원이 다른 사람 조회 시도
     const target = await db.prepare('SELECT branch, department FROM users WHERE id = ?').bind(scopedUserId).first<any>();
     if (!target) return c.json({ error: '대상을 찾을 수 없습니다.' }, 404);
-    if (role === 'admin' && target.branch !== user.branch) return c.json({ error: '권한 없음' }, 403);
-    if (role === 'manager' && (target.branch !== user.branch || target.department !== user.department)) return c.json({ error: '권한 없음' }, 403);
-    if (role === 'director' && !['대전', '부산'].includes(target.branch) && target.id !== user.sub) return c.json({ error: '권한 없음' }, 403);
+    if (role === 'admin' && !sameBranchName(target.branch, user.branch)) return c.json({ error: '권한 없음' }, 403);
+    if (role === 'manager' && (!sameBranchName(target.branch, user.branch) || target.department !== user.department)) return c.json({ error: '권한 없음' }, 403);
+    if (role === 'director' && !['대전지사', '부산지사'].includes(normalizeBranchName(target.branch)) && target.id !== user.sub) return c.json({ error: '권한 없음' }, 403);
   }
 
   // 기간 결정 — month 미지정 시 현재 달
@@ -233,7 +234,7 @@ comprehensive.get('/', async (c) => {
     FROM users u
     LEFT JOIN user_accounting ua ON ua.user_id = u.id
     WHERE u.role NOT IN ('master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst', 'support', 'resigned')
-      AND u.branch != '본사 관리'
+      AND REPLACE(u.branch, ' ', '') != '본사관리'
       AND (u.department IS NULL OR u.department NOT IN ('명도팀', '지원팀'))
       AND u.id != ?
       AND u.login_type != 'freelancer-old'
@@ -245,9 +246,9 @@ comprehensive.get('/', async (c) => {
   } else {
     if (branch) { memberQuery += ' AND u.branch = ?'; params.push(branch); }
     if (department) { memberQuery += ' AND u.department = ?'; params.push(department); }
-    if (isDirector) { memberQuery += " AND (u.branch IN ('대전','부산') OR u.id = ?)"; params.push(user.sub); }
-    else if (role === 'admin' && user.branch !== '의정부') { memberQuery += ' AND u.branch = ?'; params.push(user.branch); }
-    else if (role === 'manager') { memberQuery += ' AND u.branch = ? AND u.department = ?'; params.push(user.branch, user.department); }
+    if (isDirector) { memberQuery += " AND (u.branch IN ('대전', '대전지사', '부산', '부산지사') OR u.id = ?)"; params.push(user.sub); }
+    else if (role === 'admin' && !isHeadOfficeBranch(user.branch)) { memberQuery += ' AND u.branch = ?'; params.push(normalizeBranchName(user.branch)); }
+    else if (role === 'manager') { memberQuery += ' AND u.branch = ? AND u.department = ?'; params.push(normalizeBranchName(user.branch), user.department); }
   }
   const membersRes = await db.prepare(memberQuery).bind(...params).all<any>();
   const members = membersRes.results || [];

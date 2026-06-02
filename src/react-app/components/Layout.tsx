@@ -3,6 +3,7 @@ import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store';
 import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
+import { isHeadOfficeBranch, isRestrictedAccountingBranch } from '../lib/branchAliases';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
@@ -21,13 +22,8 @@ function shouldShowDiagnosisBox(pathname: string): boolean {
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 
-function compactBranchName(value: unknown): string {
-  return String(value || '').replace(/\s+/g, '').trim();
-}
-
 function isRestrictedAccountingAsstBranch(branch: unknown): boolean {
-  const compact = compactBranchName(branch);
-  return compact === '의정부' || compact === '의정부본사';
+  return isRestrictedAccountingBranch(branch);
 }
 
 export default function Layout() {
@@ -52,7 +48,10 @@ export default function Layout() {
   const navTo = (path: string) => { navigate(path); setMobileOpen(false); };
 
   useEffect(() => {
-    if (location.pathname.startsWith('/accounting-session1')) {
+    if (
+      location.pathname.startsWith('/accounting-session1') ||
+      location.pathname.startsWith('/accounting-session2/reports')
+    ) {
       setCollapsed(true);
     }
   }, [location.pathname]);
@@ -68,10 +67,11 @@ export default function Layout() {
   const canViewFreelancerBids = isFreelancer || (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role));
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
   const canPayroll = (canAccounting && !isRestrictedAsst) || PAYROLL_EXTRA_IDS.includes(user?.id || '');
+  const canManagementSupport = canAccounting || canPayroll || (!isFreelancer && !isSupport && role === 'admin');
   // 회계분석은 총무보조 제외 (cc_ref도 제외)
   const canFinanceAnalytics = !isFreelancer && !isSupport && (
     ['master', 'ceo', 'accountant'].includes(role) ||
-    (role === 'admin' && user?.branch === '의정부')
+    (role === 'admin' && isHeadOfficeBranch(user?.branch))
   );
   const isAccountingOnly = !isFreelancer && ['accountant', 'accountant_asst'].includes(role);
   const isDirector = role === 'director';
@@ -223,7 +223,7 @@ export default function Layout() {
             <MessageSquare size={18} /> {!collapsed && '카카오 발송내역'}
           </Link>
         )}
-        {(canAccounting || canPayroll) && (
+        {canManagementSupport && (
           <>
             <div className="nav-divider" />
             {!collapsed && <span className="nav-label">회계</span>}

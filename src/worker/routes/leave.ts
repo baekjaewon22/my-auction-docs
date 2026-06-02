@@ -2,17 +2,119 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
+import { isHeadOfficeBranch } from '../lib/branchAliases';
 
 const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
 
 // ───── 헬퍼 ─────
 const HOURS_PER_DAY = 8;
+const HALF_DAY_PERIODS = new Set(['오전', '오후']);
 
 function normalizeLeaveType(type: string): '연차' | '반차' | '시간차' | '특별휴가' {
   if (type === '월차') return '연차';
   if (type === '반차' || type === '시간차' || type === '특별휴가') return type;
   return '연차';
+}
+
+async function ensureLeaveRequestSchema(db: D1Database): Promise<void> {
+  const columns = await db.prepare('PRAGMA table_info(leave_requests)').all<{ name: string }>();
+  const names = new Set((columns.results || []).map((c) => c.name));
+  if (!names.has('half_day_period')) {
+    await db.prepare("ALTER TABLE leave_requests ADD COLUMN half_day_period TEXT NOT NULL DEFAULT ''").run();
+  }
+}
+
+function normalizeHalfDayPeriod(leaveType: string, value: unknown): '' | '오전' | '오후' {
+  if (leaveType !== '반차') return '';
+  const period = String(value || '').trim();
+  return HALF_DAY_PERIODS.has(period) ? period as '오전' | '오후' : '';
+}
+
+function leaveTypeForMessage(leaveType: string, halfDayPeriod?: string): string {
+  return leaveType === '반차' && halfDayPeriod ? `반차(${halfDayPeriod})` : leaveType;
+}
+
+function halfDayTimeRange(period?: string): string {
+  if (period === '오전') return '09:00~13:00';
+  if (period === '오후') return '14:00~18:00';
+  return '';
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatLeavePeriodForDoc(req: any): string {
+  const dateText = req.start_date === req.end_date ? req.start_date : `${req.start_date} ~ ${req.end_date}`;
+  if (req.leave_type !== '반차' || !req.half_day_period) return dateText;
+  const timeRange = halfDayTimeRange(req.half_day_period);
+  return `${dateText} ${req.half_day_period}${timeRange ? ` (${timeRange})` : ''}`;
+}
+
+function buildLeaveArchiveContent(req: any, reqUser: any, approverName: string): string {
+  const leaveType = leaveTypeForMessage(req.leave_type, req.half_day_period);
+  const period = formatLeavePeriodForDoc(req);
+  const hours = Number(req.hours || req.days * HOURS_PER_DAY || 0);
+  return `
+    <section data-source="leave_request" data-leave-request-id="${req.id}">
+      <!-- leave_request_id:${req.id} -->
+      <h1 style="text-align:center;">휴가 신청서</h1>
+      <table style="width:100%; border-collapse:collapse; margin-top:16px;">
+        <tbody>
+          <tr><th style="border:1px solid #ddd; padding:8px; width:120px;">성명</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(reqUser?.name || req.user_name || '')}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">지사/부서</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(`${req.branch || ''}${req.department ? ' / ' + req.department : ''}`)}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">휴가 유형</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(leaveType)}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">휴가 기간</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(period)}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">차감 시간</th><td style="border:1px solid #ddd; padding:8px;">${hours}시간</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">신청 사유</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(req.reason || '-')}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">승인자</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(approverName || '-')}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">승인일</th><td style="border:1px solid #ddd; padding:8px;">${new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10)}</td></tr>
+        </tbody>
+      </table>
+    </section>
+  `;
+}
+
+async function createLeaveArchiveDocument(db: D1Database, req: any, approver: any): Promise<string | null> {
+  const existing = await db.prepare(
+    "SELECT id FROM documents WHERE instr(content, ?) > 0 LIMIT 1"
+  ).bind(`leave_request_id:${req.id}`).first<{ id: string }>();
+  if (existing?.id) return existing.id;
+
+  const reqUser = await db.prepare('SELECT name, team_id FROM users WHERE id = ?').bind(req.user_id).first<any>();
+  const leaveType = leaveTypeForMessage(req.leave_type, req.half_day_period);
+  const title = `${leaveType} 신청서 - ${reqUser?.name || req.user_name || ''} (${formatLeavePeriodForDoc(req)})`;
+  const docId = crypto.randomUUID();
+  await db.prepare(`
+    INSERT INTO documents (id, title, content, template_id, author_id, team_id, branch, department, status, created_at, updated_at)
+    VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'approved', datetime('now'), datetime('now'))
+  `).bind(
+    docId, title, buildLeaveArchiveContent(req, reqUser, approver?.name || ''), req.user_id,
+    reqUser?.team_id || null, req.branch || '', req.department || '',
+  ).run();
+  await db.prepare(
+    'INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)'
+  ).bind(crypto.randomUUID(), docId, approver?.sub || approver?.id || req.approved_by || req.user_id, 'approved', '연차관리 승인으로 문서보관함에 자동 보관되었습니다.').run();
+  return docId;
+}
+
+async function cancelLeaveArchiveDocument(db: D1Database, req: any, actor: any, reason: string): Promise<void> {
+  const existing = await db.prepare(
+    "SELECT id FROM documents WHERE instr(content, ?) > 0 AND cancelled = 0 LIMIT 1"
+  ).bind(`leave_request_id:${req.id}`).first<{ id: string }>();
+  if (!existing?.id) return;
+  await db.prepare(
+    "UPDATE documents SET cancelled = 1, cancel_requested = 0, cancel_reason = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(reason, existing.id).run();
+  await db.prepare(
+    'INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)'
+  ).bind(crypto.randomUUID(), existing.id, actor?.sub || actor?.id || req.user_id, 'cancelled', reason).run();
 }
 
 function hoursToDays(hours: number): number {
@@ -180,7 +282,7 @@ leave.get('/', requireRole('master', 'ceo', 'admin', 'manager', 'accountant', 'a
     FROM annual_leave al LEFT JOIN users u ON al.user_id = u.id WHERE u.login_type != 'freelancer' AND u.role != 'freelancer'`;
   const params: string[] = [];
 
-  if (user.role === 'admin' && user.branch !== '의정부') {
+  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ' AND u.branch = ?';
     params.push(user.branch);
   } else if (user.role === 'manager') {
@@ -439,6 +541,7 @@ leave.post('/reinit-all', requireRole('master'), async (c) => {
 leave.post('/request', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureLeaveRequestSchema(db);
   const body = await c.req.json<{
     leave_type: '연차' | '월차' | '반차' | '시간차' | '특별휴가';
     start_date: string;
@@ -446,8 +549,13 @@ leave.post('/request', async (c) => {
     hours?: number;
     reason: string;
     user_id?: string;
+    half_day_period?: string;
   }>();
   const requestedLeaveType = normalizeLeaveType(body.leave_type);
+  const halfDayPeriod = normalizeHalfDayPeriod(requestedLeaveType, body.half_day_period);
+  if (requestedLeaveType === '반차' && !halfDayPeriod) {
+    return c.json({ error: '반차는 오전/오후를 선택해야 합니다.' }, 400);
+  }
   const targetUserId = user.role === 'master' && body.user_id ? body.user_id : user.sub;
   if (body.user_id && body.user_id !== user.sub && user.role !== 'master') {
     return c.json({ error: '다른 직원의 휴가는 마스터만 대신 신청할 수 있습니다.' }, 403);
@@ -476,9 +584,13 @@ leave.post('/request', async (c) => {
   const days = hoursToDays(deductHours);
 
   // [중복 방지] 같은 user + 같은 날짜 + 같은 타입의 미취소 신청이 이미 있으면 차단
-  const existingDup = await db.prepare(
-    "SELECT id, status FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
-  ).bind(targetUserId, requestedLeaveType, body.start_date, body.end_date).first<any>();
+  const existingDup = requestedLeaveType === '반차'
+    ? await db.prepare(
+      "SELECT id, status FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND half_day_period = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
+    ).bind(targetUserId, requestedLeaveType, body.start_date, body.end_date, halfDayPeriod).first<any>()
+    : await db.prepare(
+      "SELECT id, status FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
+    ).bind(targetUserId, requestedLeaveType, body.start_date, body.end_date).first<any>();
   if (existingDup) {
     const statusLabel = existingDup.status === 'approved' ? '승인됨' : existingDup.status === 'pending' ? '대기 중' : '취소 요청 중';
     return c.json({ error: `동일 날짜·유형의 휴가가 이미 ${statusLabel}입니다. 중복 신청은 불가합니다.` }, 400);
@@ -488,10 +600,23 @@ leave.post('/request', async (c) => {
   if (requestedLeaveType === '특별휴가') {
     const id = crypto.randomUUID();
     await db.prepare(`INSERT INTO leave_requests
-      (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
-        deductHours, days, body.reason || '', targetUser.branch || '', targetUser.department || '').run();
+        deductHours, days, body.reason || '', targetUser.branch || '', targetUser.department || '', halfDayPeriod).run();
+
+    const admins = await db.prepare(
+      "SELECT phone FROM users WHERE role IN ('master', 'ceo', 'admin', 'accountant') AND approved = 1 AND phone != ''"
+    ).all<{ phone: string }>();
+    const phones = (admins.results || []).map(r => r.phone).filter(Boolean);
+    if (phones.length > 0) {
+      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
+        { user_name: targetUser.name, leave_type: leaveTypeForMessage(requestedLeaveType, halfDayPeriod), start_date: body.start_date, end_date: body.end_date, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
+        phones,
+      ).catch(() => {}));
+    }
+
     return c.json({ success: true, id });
   }
 
@@ -500,10 +625,10 @@ leave.post('/request', async (c) => {
 
   const id = crypto.randomUUID();
   await db.prepare(`INSERT INTO leave_requests
-    (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
-      deductHours, days, body.reason, targetUser.branch || '', targetUser.department || '').run();
+      deductHours, days, body.reason, targetUser.branch || '', targetUser.department || '', halfDayPeriod).run();
 
   // 알림톡: 관리자/총무에게 LEAVE_REQUEST
   const admins = await db.prepare(
@@ -513,7 +638,7 @@ leave.post('/request', async (c) => {
   if (phones.length > 0) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
-      { user_name: targetUser.name, leave_type: requestedLeaveType, start_date: body.start_date, end_date: body.end_date, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
+      { user_name: targetUser.name, leave_type: leaveTypeForMessage(requestedLeaveType, halfDayPeriod), start_date: body.start_date, end_date: body.end_date, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
       phones,
     ).catch(() => {}));
   }
@@ -525,6 +650,7 @@ leave.post('/request', async (c) => {
 leave.get('/requests', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureLeaveRequestSchema(db);
   const status = c.req.query('status') || '';
   const month = c.req.query('month') || '';
   const filterUserId = c.req.query('user_id') || '';
@@ -545,7 +671,7 @@ leave.get('/requests', async (c) => {
   } else if (user.role === 'manager') {
     query += ' AND lr.branch = ? AND lr.department = ?';
     params.push(user.branch, user.department);
-  } else if (user.role === 'admin' && user.branch !== '의정부') {
+  } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ' AND lr.branch = ?';
     params.push(user.branch);
   }
@@ -570,6 +696,7 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
   const requestId = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureLeaveRequestSchema(db);
 
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
@@ -612,12 +739,15 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
     }
   }
 
+  await createLeaveArchiveDocument(db, { ...req, status: 'approved', approved_by: user.sub }, user)
+    .catch((err) => console.error('[leave archive auto-create]', err));
+
   // 알림톡: 신청자에게 LEAVE_APPROVED
   const reqUser2 = await db.prepare('SELECT name, phone FROM users WHERE id = ?').bind(req.user_id).first<{ name: string; phone: string }>();
   if (reqUser2?.phone) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'LEAVE_APPROVED',
-      { user_name: reqUser2.name, status: '승인', leave_type: req.leave_type, start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
+      { user_name: reqUser2.name, status: '승인', leave_type: leaveTypeForMessage(req.leave_type, req.half_day_period), start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
       [reqUser2.phone],
     ).catch(() => {}));
   }
@@ -629,6 +759,7 @@ leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'admin', 'manage
   const requestId = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureLeaveRequestSchema(db);
   const { reason } = await c.req.json<{ reason: string }>();
 
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
@@ -644,7 +775,7 @@ leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'admin', 'manage
   if (reqUser?.phone) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'LEAVE_APPROVED',
-      { user_name: reqUser.name, status: '반려', leave_type: req.leave_type, start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
+      { user_name: reqUser.name, status: '반려', leave_type: leaveTypeForMessage(req.leave_type, req.half_day_period), start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
       [reqUser.phone],
     ).catch(() => {}));
   }
@@ -674,6 +805,8 @@ leave.post('/requests/:id/cancel', async (c) => {
       await db.prepare("UPDATE leave_requests SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
         .bind(requestId).run();
       await reinitUserLeave(db, req.user_id);
+      await cancelLeaveArchiveDocument(db, req, user, '연차관리에서 휴가 신청이 취소되었습니다.')
+        .catch((err) => console.error('[leave archive auto-cancel]', err));
     } else {
       // 일반 유저: 취소요청 상태로 변경 (관리자 확인 필요)
       await db.prepare("UPDATE leave_requests SET status = 'cancel_requested', updated_at = datetime('now') WHERE id = ?")
@@ -701,6 +834,8 @@ leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'admin',
     .bind(requestId).run();
 
   await reinitUserLeave(db, req.user_id);
+  await cancelLeaveArchiveDocument(db, req, c.get('user'), '연차관리에서 휴가 취소 요청이 승인되었습니다.')
+    .catch((err) => console.error('[leave archive auto-cancel-approve]', err));
 
   return c.json({ success: true });
 });
@@ -755,7 +890,7 @@ leave.get('/alerts', requireRole('master', 'ceo', 'admin', 'manager'), async (c)
   if (user.role === 'manager') {
     query += ' AND u.branch = ? AND u.department = ?';
     params.push(user.branch, user.department);
-  } else if (user.role === 'admin' && user.branch !== '의정부') {
+  } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ' AND u.branch = ?';
     params.push(user.branch);
   }
@@ -811,6 +946,8 @@ leave.delete('/requests/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'a
 
   await db.prepare('DELETE FROM leave_requests WHERE id = ?').bind(id).run();
   await reinitUserLeave(db, req.user_id);
+  await cancelLeaveArchiveDocument(db, req, c.get('user'), '연차관리에서 휴가 신청이 삭제되었습니다.')
+    .catch((err) => console.error('[leave archive auto-cancel-delete]', err));
   return c.json({ success: true });
 });
 

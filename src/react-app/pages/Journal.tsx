@@ -11,6 +11,7 @@ import { Plus, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, 
 import DatePicker, { registerLocale } from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { ko } from 'date-fns/locale';
+import { CANONICAL_BRANCHES, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const koCustom = {
   ...ko,
@@ -114,17 +115,19 @@ export default function Journal() {
 
   const openForm = (date: string) => { setFormDate(date); setShowForm(true); };
 
-  const branches = [...new Set(members.map((m) => m.branch).filter(Boolean))].filter(b => b !== '본사 관리').sort((a, b) => {
-    if (a === '의정부') return -1;
-    if (b === '의정부') return 1;
-    return a.localeCompare(b);
-  });
+  const branches = [...new Set(members.map((m) => normalizeBranchName(m.branch)).filter(Boolean))]
+    .filter(b => b !== '본사관리')
+    .sort((a, b) => {
+      const ai = CANONICAL_BRANCHES.indexOf(a as any);
+      const bi = CANONICAL_BRANCHES.indexOf(b as any);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi) || a.localeCompare(b);
+    });
   if (branches.length === 0 && members.length > 0) branches.push('');
 
-  const currentBranch = isCeoPlus ? branches[activeBranch] : (user?.branch || '');
+  const currentBranch = isCeoPlus ? branches[activeBranch] : (normalizeBranchName(user?.branch) || user?.branch || '');
   const HIDDEN_DEPTS = ['명도팀', '지원팀'];
   const getAssignableMembers = (branch: string) => members.filter((m) =>
-    (m.branch === branch || (!branch && !m.branch))
+    (sameBranchName(m.branch, branch) || (!branch && !m.branch))
     && m.login_type !== 'freelancer'
     && m.role !== 'resigned'
     && !HIDDEN_DEPTS.includes(m.department)
@@ -133,7 +136,7 @@ export default function Journal() {
   const renderBranchView = (branch: string) => {
     const HIDDEN_DEPTS = ['명도팀', '지원팀'];
     const branchMembers = members.filter((m) =>
-      (m.branch === branch || (!branch && !m.branch))
+      (sameBranchName(m.branch, branch) || (!branch && !m.branch))
       && m.login_type !== 'freelancer'
       && m.role !== 'resigned'
       && !HIDDEN_DEPTS.includes(m.department)
@@ -326,10 +329,10 @@ export default function Journal() {
             </div>
             <div style={{ display: 'flex', gap: 4 }}>
               {(() => {
-                const hBranch = isCeoPlus && branches.length > 1 ? branches[historyBranch] : (user?.branch || '');
+                const hBranch = isCeoPlus && branches.length > 1 ? branches[historyBranch] : (normalizeBranchName(user?.branch) || user?.branch || '');
                 const HIDDEN_DEPTS = ['명도팀', '지원팀'];
                 const depts = [...new Set(
-                  members.filter(m => m.branch === hBranch && m.department && !HIDDEN_DEPTS.includes(m.department)).map(m => m.department)
+                  members.filter(m => sameBranchName(m.branch, hBranch) && m.department && !HIDDEN_DEPTS.includes(m.department)).map(m => m.department)
                 )].sort();
                 return (
                   <>
@@ -361,9 +364,9 @@ export default function Journal() {
           </div>
 
           {(() => {
-            const hBranch = isCeoPlus && branches.length > 1 ? branches[historyBranch] : (user?.branch || '');
+            const hBranch = isCeoPlus && branches.length > 1 ? branches[historyBranch] : (normalizeBranchName(user?.branch) || user?.branch || '');
             const canSeeAll = user?.role === 'master';
-            let deptMembers = members.filter(m => m.branch === hBranch && (historyDept === '' || m.department === historyDept) && m.role !== 'resigned');
+            let deptMembers = members.filter(m => sameBranchName(m.branch, hBranch) && (historyDept === '' || m.department === historyDept) && m.role !== 'resigned');
 
             const [year, month] = historyMonth.split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();

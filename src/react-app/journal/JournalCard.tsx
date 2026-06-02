@@ -55,6 +55,18 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     return Math.max(Math.round(winningPrice * 0.01), 2_200_000);
   };
 
+  const isFieldActivityType = (activityType: string) => activityType === '입찰' || activityType === '임장' || activityType === '미팅';
+
+  const normalizeFieldChecks = (activityType: string, data: Record<string, any>) => {
+    const isExcluded = !!data.companion || !!data.bidProxy || !!data.internalMeeting;
+    const isFieldType = isFieldActivityType(activityType);
+    return {
+      ...data,
+      fieldCheckIn: isFieldType && !isExcluded && data.timeFrom === '09:00',
+      fieldCheckOut: isFieldType && !isExcluded && data.timeTo === '18:00',
+    };
+  };
+
   const hasFieldCheck = entries.some((e) => {
     const d = parseData(e.data);
     return d.fieldCheckIn || d.fieldCheckOut || d.briefingSubmit || d.companion;
@@ -78,9 +90,10 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     try {
       // 사건번호 변경 시 activity_subtype도 갱신
       const { __assigneeId, ...rawDataToSave } = editData;
+      const dataToSaveBase = normalizeFieldChecks(entry.activity_type, rawDataToSave);
       const dataToSave = rawDataToSave.companion
         ? { ...rawDataToSave, companionPerson: rawDataToSave.client || rawDataToSave.companionPerson || '', fieldCheckIn: false, fieldCheckOut: false }
-        : rawDataToSave;
+        : dataToSaveBase;
       const updatePayload: { data: Record<string, any>; activity_subtype?: string; bid_field_only?: boolean; user_id?: string } = { data: dataToSave };
       if (editData.caseNo && (entry.activity_type === '입찰' || entry.activity_type === '임장')) {
         updatePayload.activity_subtype = editData.caseNo;
@@ -162,7 +175,11 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
   };
 
   const ed = (key: string) => editData[key] || '';
-  const setEd = (key: string, val: any) => setEditData(prev => ({ ...prev, [key]: val }));
+  const setEd = (key: string, val: any) => setEditData(prev => {
+    const editingEntry = entries.find((entry) => entry.id === editingId);
+    const next = { ...prev, [key]: val };
+    return editingEntry ? normalizeFieldChecks(editingEntry.activity_type, next) : next;
+  });
 
   // 읽기 모드에서 값 표시
   const showVal = (val: string, unit?: string) => {
@@ -351,7 +368,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                             <div className="journal-edit-row"><label>{ed('companion') ? '담당자' : '고객명'}</label><input value={ed('client')} onChange={(e) => setEd('client', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>장소</label><input value={ed('place')} onChange={(e) => setEd('place', e.target.value)} /></div>
-                            {!ed('companion') && <FieldCheckEdit ed={ed} setEd={setEd} />}
+                            {!ed('companion') && isFieldActivityType(entry.activity_type) && <FieldCheckEdit ed={ed} setEd={setEd} />}
                           </div>
                         ) : (
                           <>
@@ -397,7 +414,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                                 {ed('internalMeeting') ? '✓ 회사 미팅 (외근 X)' : '회사 미팅'}
                               </button>
                             </div>
-                            {!ed('companion') && <FieldCheckEdit ed={ed} setEd={setEd} />}
+                            {!ed('companion') && isFieldActivityType(entry.activity_type) && <FieldCheckEdit ed={ed} setEd={setEd} />}
                           </div>
                         ) : (
                           <>
@@ -416,7 +433,6 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <div className="journal-edit-form">
                             <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>유형</label><input value={ed('officeType')} onChange={(e) => setEd('officeType', e.target.value)} /></div>
-                            <FieldCheckEdit ed={ed} setEd={setEd} />
                           </div>
                         ) : (
                           <>

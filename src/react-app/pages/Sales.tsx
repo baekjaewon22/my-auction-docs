@@ -9,6 +9,7 @@ import {
   DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity, ChevronDown, ChevronUp, Trash2
 } from 'lucide-react';
 import type { JournalEntry } from '../journal/types';
+import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const TYPE_OPTIONS = [
   { value: '계약', label: '계약' },
@@ -103,7 +104,7 @@ export default function Sales() {
   const [showBranchSummary, setShowBranchSummary] = useState(false);
   const [filterBranch, setFilterBranch] = useState(() => {
     // 총괄이사는 대전 디폴트
-    if (currentUser?.role === 'director') return '대전';
+    if (currentUser?.role === 'director') return '대전지사';
     return '';
   });
   const [branchDefaultApplied, setBranchDefaultApplied] = useState(false);
@@ -118,15 +119,15 @@ export default function Sales() {
       setFilterBranch(prev => {
         if (prev) return prev; // 사용자 수동 선택 우선
         const branches = (res.branches || '').split(',').filter(Boolean);
-        if (branches.length > 0) return branches[0];
-        if (currentUser.branch) return currentUser.branch;
+        if (branches.length > 0) return normalizeBranchName(branches[0]);
+        if (currentUser.branch) return normalizeBranchName(currentUser.branch);
         return prev;
       });
       setBranchDefaultApplied(true);
     }).catch(() => {
       setFilterBranch(prev => {
         if (prev) return prev;
-        if (currentUser.branch) return currentUser.branch;
+        if (currentUser.branch) return normalizeBranchName(currentUser.branch);
         return prev;
       });
       setBranchDefaultApplied(true);
@@ -446,7 +447,7 @@ export default function Sales() {
   }, [salesTab, auditMonth, auditAction, auditActor, canViewAuditLog]);
 
   const resignedWithSales = new Set(records.filter(r => r.user_id).map(r => r.user_id));
-  const filteredMembers = (filterBranch ? members.filter(m => m.branch === filterBranch) : members)
+  const filteredMembers = (filterBranch ? members.filter(m => sameBranchName(m.branch, filterBranch)) : members)
     .filter(m => m.role !== 'master')
     .filter(m => (m.role as string) !== 'resigned' || resignedWithSales.has(m.id));
   const memberOpts = filteredMembers.map(m => ({ value: m.id, label: `${m.name} (${m.department})${(m.role as string) === 'resigned' ? ' [퇴사]' : ''}` }));
@@ -455,7 +456,7 @@ export default function Sales() {
   // 지사 + 유형 + 담당자 + 상태 필터 적용된 records
   // 지사 집계는 attribution_branch(매출 귀속 지사)가 있으면 그걸 우선 사용
   const effectiveBranch = (r: SalesRecord) => r.attribution_branch || r.branch;
-  let branchRecords = filterBranch ? records.filter(r => effectiveBranch(r) === filterBranch) : records;
+  let branchRecords = filterBranch ? records.filter(r => sameBranchName(effectiveBranch(r), filterBranch)) : records;
   if (filterUser) branchRecords = branchRecords.filter(r => r.user_id === filterUser);
   if (filterType) branchRecords = branchRecords.filter(r => r.type === filterType);
   if (filterStatus === 'confirm_waiting') branchRecords = branchRecords.filter(r => CONFIRM_WAITING_STATUSES.includes(r.status));
@@ -678,8 +679,8 @@ export default function Sales() {
         {/* 총괄이사: 대전/부산만 선택 */}
         {isDirector && (
           <div style={{ minWidth: 120 }}>
-            <Select size="sm" options={[{ value: '', label: '대전/부산' }, { value: '대전', label: '대전' }, { value: '부산', label: '부산' }]}
-              value={[{ value: '대전', label: '대전' }, { value: '부산', label: '부산' }].find(o => o.value === filterBranch) || { value: '', label: '대전/부산' }}
+            <Select size="sm" options={[{ value: '', label: '대전/부산' }, { value: '대전지사', label: '대전지사' }, { value: '부산지사', label: '부산지사' }]}
+              value={[{ value: '대전지사', label: '대전지사' }, { value: '부산지사', label: '부산지사' }].find(o => o.value === filterBranch) || { value: '', label: '대전/부산' }}
               onChange={(o: any) => { setFilterBranch(o?.value || ''); setFilterUser(''); }} placeholder="지사" isClearable />
           </div>
         )}
@@ -754,7 +755,7 @@ export default function Sales() {
         // 지사+담당자 필터 적용된 계약자 목록
         let userSales = allRecords;
         let userJournals = activityEntries;
-        if (activityBranch) { userSales = userSales.filter(r => r.branch === activityBranch); userJournals = userJournals.filter(e => e.branch === activityBranch); }
+        if (activityBranch) { userSales = userSales.filter(r => sameBranchName(r.branch, activityBranch)); userJournals = userJournals.filter(e => sameBranchName(e.branch, activityBranch)); }
         if (activityUser) { userSales = userSales.filter(r => r.user_id === activityUser); userJournals = userJournals.filter(e => e.user_id === activityUser); }
         // 검색 필터
         const sq = searchQuery.toLowerCase();
@@ -852,7 +853,7 @@ export default function Sales() {
               <div style={{ minWidth: 260 }}>
                 <label className="form-label">담당자</label>
                 {(() => {
-                  const opts = activityBranch ? memberOpts.filter(o => members.find(m => m.id === o.value && m.branch === activityBranch)) : memberOpts;
+                  const opts = activityBranch ? memberOpts.filter(o => members.find(m => m.id === o.value && sameBranchName(m.branch, activityBranch))) : memberOpts;
                   return (
                     <Select options={[{ value: '', label: '전체 담당자' }, ...opts]}
                       value={opts.find(o => o.value === activityUser) || { value: '', label: '전체 담당자' }}
@@ -916,7 +917,7 @@ export default function Sales() {
         // 검색/지사 필터
         const filtered = scopedCases.filter((r: any) => {
           if (filterUser && r.consultant_user_id !== filterUser) return false;
-          if (filterBranch && r.consultant_branch !== filterBranch) return false;
+          if (filterBranch && !sameBranchName(r.consultant_branch, filterBranch)) return false;
           if (searchQuery) {
             const q = searchQuery.toLowerCase();
             const hay = `${r.consultant_name || ''} ${r.client_name || ''} ${r.manager_name || ''} ${r.external_id || ''}`.toLowerCase();
@@ -1048,7 +1049,7 @@ export default function Sales() {
                 </thead>
                 <tbody>
                   <tr><td>A</td><td>날짜</td><td>환불일자(환불건만 사용)</td></tr>
-                  <tr><td>B</td><td>지사</td><td>본사→의정부, 강남지사→서초, 대전→대전, 부산→부산</td></tr>
+                  <tr><td>B</td><td>지사</td><td>본사→의정부본사, 강남지사→서초지사, 대전→대전지사, 부산→부산지사</td></tr>
                   <tr><td>C</td><td>담당자</td><td>이름으로 사용자 매칭</td></tr>
                   <tr><td>D</td><td>고객명</td><td>입금자명 매칭에 사용</td></tr>
                   <tr><td>E</td><td>전화번호</td><td>고객 전화번호</td></tr>

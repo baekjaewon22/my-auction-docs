@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv, User } from '../types';
 import { authMiddleware, requireRole, hashPassword } from '../middleware/auth';
 import { sendAlimtalkByTemplate } from '../alimtalk';
+import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const users = new Hono<AuthEnv>();
 users.use('*', authMiddleware);
@@ -16,7 +17,7 @@ users.get('/', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_a
 
   if (user.role === 'accountant' || user.role === 'accountant_asst') {
     // 총무: 전체 열람 가능 (회계 관리 목적)
-  } else if (user.role === 'admin' && user.branch === '의정부') {
+  } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람 가능
   } else if (user.role === 'admin') {
     query += ' AND branch = ?';
@@ -102,7 +103,7 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   if (!existing) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
   // 관리자는 본인 지사 사용자만 수정 가능
-  if (currentUser.role === 'admin' && existing.branch !== currentUser.branch) {
+  if (currentUser.role === 'admin' && !sameBranchName(existing.branch, currentUser.branch)) {
     return c.json({ error: '본인 지사 사용자만 수정할 수 있습니다.' }, 403);
   }
 
@@ -126,7 +127,7 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
 
   await db.prepare(
     "UPDATE users SET role = ?, branch = ?, department = ?, updated_at = datetime('now') WHERE id = ?"
-  ).bind(newRole, branch ?? existing.branch, department ?? existing.department, id).run();
+  ).bind(newRole, branch !== undefined ? normalizeBranchName(branch) : existing.branch, department ?? existing.department, id).run();
 
   return c.json({ success: true });
 });
@@ -230,7 +231,7 @@ users.delete('/:id', requireRole('master', 'ceo', 'admin'), async (c) => {
   if (!target) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
   // 관리자는 본인 지사 사용자만 삭제 가능
-  if (currentUser.role === 'admin' && target.branch !== currentUser.branch) {
+  if (currentUser.role === 'admin' && !sameBranchName(target.branch, currentUser.branch)) {
     return c.json({ error: '본인 지사 사용자만 삭제할 수 있습니다.' }, 403);
   }
 
@@ -270,7 +271,7 @@ users.put('/:id', async (c) => {
 
   // admin의 지사/부서/보직 변경은 대표(ceo/master)만 가능
   if (existing.role === 'admin') {
-    const changingProfile = (branch !== undefined && branch !== existing.branch) ||
+    const changingProfile = (branch !== undefined && !sameBranchName(branch, existing.branch)) ||
       (department !== undefined && department !== existing.department) ||
       (position_title !== undefined && position_title !== existing.position_title);
     if (changingProfile && currentUser.role !== 'master' && currentUser.role !== 'ceo') {
@@ -282,7 +283,7 @@ users.put('/:id', async (c) => {
 
   await db.prepare(
     "UPDATE users SET phone = ?, branch = ?, department = ?, position_title = ?, password_hash = ?, api_key = ?, updated_at = datetime('now') WHERE id = ?"
-  ).bind(phone ?? existing.phone, branch ?? existing.branch, department ?? existing.department, position_title ?? existing.position_title, newHash, api_key ?? (existing as any).api_key ?? '', id).run();
+  ).bind(phone ?? existing.phone, branch !== undefined ? normalizeBranchName(branch) : existing.branch, department ?? existing.department, position_title ?? existing.position_title, newHash, api_key ?? (existing as any).api_key ?? '', id).run();
 
   return c.json({ success: true });
 });
@@ -329,8 +330,9 @@ users.put('/:id/alimtalk-settings', async (c) => {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
   const { branches } = await c.req.json<{ branches: string }>();
+  const normalizedBranches = (branches || '').split(',').map(normalizeBranchName).filter(Boolean).join(',');
   await c.env.DB.prepare("UPDATE users SET alimtalk_branches = ?, updated_at = datetime('now') WHERE id = ?")
-    .bind(branches || '', id).run();
+    .bind(normalizedBranches, id).run();
   return c.json({ success: true });
 });
 

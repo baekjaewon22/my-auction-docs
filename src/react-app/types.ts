@@ -237,6 +237,7 @@ export interface LeaveRequest {
   user_id: string;
   user_name?: string;
   leave_type: LeaveRequestType;
+  half_day_period?: '오전' | '오후' | '';
   start_date: string;
   end_date: string;
   hours: number;

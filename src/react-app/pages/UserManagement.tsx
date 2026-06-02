@@ -7,6 +7,7 @@ import { useBranches } from '../hooks/useBranches';
 import type { Role } from '../types';
 import Select, { toOptions } from '../components/Select';
 import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingUp, AlertTriangle, ArrowDownCircle, KeyRound } from 'lucide-react';
+import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 import { useDepartments } from '../hooks/useDepartments';
 const ROLE_OPTS = [...VISIBLE_ROLES, 'resigned' as const].map((v) => ({ value: v, label: ROLE_LABELS[v] }));
@@ -57,7 +58,7 @@ export default function UserManagement() {
   const [converting, setConverting] = useState(false);
   // 알림톡 수신 설정
   const [alimBranches, setAlimBranches] = useState<Set<string>>(new Set());
-  const ALIM_BRANCHES = ['의정부', '서초', '대전', '부산'];
+  const ALIM_BRANCHES = ['의정부본사', '서초지사', '대전지사', '부산지사'];
 
   const hierarchy: Record<string, number> = { master: 1, ceo: 2, cc_ref: 2, admin: 3, accountant: 3, accountant_asst: 4, manager: 4, member: 5 };
   const myLevel = hierarchy[currentUser?.role || ''] || 99;
@@ -160,7 +161,7 @@ export default function UserManagement() {
     // 알림톡 설정 로드
     try {
       const alimRes = await api.users.getAlimtalkSettings(u.id);
-      setAlimBranches(new Set(alimRes.branches ? alimRes.branches.split(',') : []));
+      setAlimBranches(new Set(alimRes.branches ? alimRes.branches.split(',').map(normalizeBranchName).filter(Boolean) : []));
     } catch { setAlimBranches(new Set()); }
     if (!canViewAccounting) return;
     // 총무보조 제한 대상: 회계 정보 로드 생략
@@ -757,7 +758,7 @@ export default function UserManagement() {
                 const q = userSearchTerm.toLowerCase();
                 return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) || (u.branch || '').toLowerCase().includes(q) || (u.department || '').toLowerCase().includes(q) || (u.position_title || '').toLowerCase().includes(q);
               }).map((u) => {
-                const isSameBranch = currentUser?.role !== 'admin' || u.branch === currentUser?.branch;
+                const isSameBranch = currentUser?.role !== 'admin' || sameBranchName(u.branch, currentUser?.branch);
                 const canEdit = availableRoles.length > 0 && u.id !== currentUser?.id && isSameBranch;
                 const targetLevel = hierarchy[u.role] || 99;
                 const isHigher = targetLevel < myLevel || (targetLevel === myLevel && u.role !== 'cc_ref');

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Calendar, FileSignature, RefreshCw, Search, TrendingUp, Users } from 'lucide-react';
 import { api } from '../api';
+import { normalizeBranchName } from '../lib/branchAliases';
 
 type TrackerUser = {
   user_id: string;
@@ -25,7 +26,7 @@ function fmtMonthLabel(month: string) {
   return `${y}년 ${m}월`;
 }
 
-const BRANCH_ORDER = ['의정부', '서초', '본사', '부천', '미지정'];
+const BRANCH_ORDER = ['의정부본사', '서초지사', '대전지사', '부산지사', '본사관리', '미지정'];
 
 function fmt(n: number) {
   return n.toLocaleString('ko-KR');
@@ -87,7 +88,7 @@ export default function ContractTracker() {
   const grouped = useMemo(() => {
     const byBranch: Record<string, Record<string, TrackerUser[]>> = {};
     for (const u of users) {
-      const b = u.branch || '미지정';
+      const b = normalizeBranchName(u.branch) || '미지정';
       const d = u.department || '(부서 없음)';
       if (!byBranch[b]) byBranch[b] = {};
       if (!byBranch[b][d]) byBranch[b][d] = [];
@@ -204,7 +205,7 @@ export default function ContractTracker() {
                         return (
                           <div key={u.user_id} className={`ct-card ${empty ? 'empty' : ''}`}>
                             <div className="ct-card-head">
-                              <span className="ct-card-branch">{u.branch}</span>
+                              <span className="ct-card-branch">{normalizeBranchName(u.branch) || u.branch}</span>
                               {u.department && <span className="ct-card-dept"> · {u.department}</span>}
                             </div>
                             <div className="ct-card-name">

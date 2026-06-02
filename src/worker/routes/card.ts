@@ -1,14 +1,15 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { normalizeBranchName } from '../lib/branchAliases';
 
 const card = new Hono<AuthEnv>();
 card.use('*', authMiddleware);
 
 // cc_ref 제외 (회계장부 카드내역 열람 제한)
-const ACCOUNTING_ROLES = ['master', 'ceo', 'accountant', 'accountant_asst'] as const;
-const EDIT_ROLES = ['master', 'ceo', 'accountant', 'accountant_asst'] as const;
-const DELETE_ROLES = ['master', 'ceo', 'accountant'] as const; // 삭제는 보조 제외
+const ACCOUNTING_ROLES = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'] as const;
+const EDIT_ROLES = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'] as const;
+const DELETE_ROLES = ['master', 'ceo', 'admin', 'accountant'] as const; // 삭제는 보조 제외
 const PAYROLL_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const CARD_CANCEL_PATTERN = /(취소|승인취소|매출취소|사용취소|부분취소|환불|반품)/;
 const CARD_USAGE_ITEMS: Record<string, string[]> = {
@@ -145,6 +146,7 @@ card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
     const numOnly = rawCard.replace(/[^0-9]/g, '');
     // 뒤 4자리로 매칭 (5525-76**-****-5900 → 5900)
     const last4 = numOnly.length >= 4 ? numOnly.slice(-4) : numOnly;
+    const storedCardNumber = last4;
     const match = last4 ? (last4Map[last4] || null) : null;
     const userId = match?.user_id ?? null;
     const branch = match?.branch || '';
@@ -182,7 +184,7 @@ card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
          )
        LIMIT 1`
     ).bind(
-      row.card_number || rawCard,
+      storedCardNumber,
       transactionDate,
       description,
       merchantName,
@@ -202,7 +204,7 @@ card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
       INSERT INTO card_transactions (id, card_number, user_id, branch, category, merchant_name, transaction_date, amount, description, usage_category, usage_item, is_cancellation, source_text, upload_batch, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+9 hours'))
     `).bind(
-      id, row.card_number || rawCard, userId, branch, category,
+      id, storedCardNumber, userId, branch, category,
       merchantName, transactionDate,
       amount, description, usageCategory || '', usageItem, isCancellation ? 1 : 0, sourceText, batchId
     ).run();
@@ -229,7 +231,8 @@ card.get('/last-upload', requireRole(...ACCOUNTING_ROLES), async (c) => {
 card.get('/transactions', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const db = c.env.DB;
   await ensureCardTransactionColumns(db);
-  const { month, branch, user_id } = c.req.query();
+  const { month, user_id } = c.req.query();
+  const branch = normalizeBranchName(c.req.query('branch') || '');
 
   let query = `
     SELECT ct.*, u.name as user_name, u.department as user_department
@@ -260,7 +263,7 @@ card.put('/transaction/:id', requireRole(...EDIT_ROLES), async (c) => {
   const body = await c.req.json<{ merchant_name?: string; description?: string; usage_category?: string; usage_item?: string }>();
   const existing = await db.prepare('SELECT id, category FROM card_transactions WHERE id = ?').bind(id).first<{ id: string; category: string }>();
   if (!existing) return c.json({ error: '카드내역을 찾을 수 없습니다.' }, 404);
-  if ((existing.category || '') !== '본사 관리') return c.json({ error: '본사 관리 카드내역만 수정할 수 있습니다.' }, 403);
+  if (normalizeBranchName(existing.category) !== '본사관리') return c.json({ error: '본사 관리 카드내역만 수정할 수 있습니다.' }, 403);
 
   const usageCategory = CARD_USAGE_CATEGORIES.includes(body.usage_category as any) ? body.usage_category : '';
   const usageItem = String(body.usage_item || '').trim().slice(0, 120);

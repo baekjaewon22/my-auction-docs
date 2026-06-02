@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { calculateCaseAllowance } from './cases';
+import { isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -10,6 +11,7 @@ import { calculateCaseAllowance } from './cases';
 const CONTRACT_AWARD_TIERS = [300_000, 200_000, 100_000];
 const CONTRACT_AWARD_MIN_COUNT = 10;
 const truncMoney = (value: number): number => Math.trunc(Number(value) || 0);
+const vatSupplyAmount = (amount: number): number => Math.round((Number(amount) || 0) * 10 / 11);
 function contractCustomerKey(r: any): string {
   const phone = String(r.client_phone || '').replace(/\D/g, '');
   const name = String(r.client_name || '').trim().toLowerCase();
@@ -89,20 +91,15 @@ const requirePayrollAccess = async (c: any, next: any) => {
 
 // 총무보조(accountant_asst) 열람 제한 — 팀장·관리자급·이사·대표자 정산은 총무담당만 접근 가능
 const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
-function compactBranchName(value: unknown): string {
-  return String(value || '').replace(/\s+/g, '').trim();
-}
-
 function isRestrictedBranchForAsst(branch: unknown): boolean {
-  const compact = compactBranchName(branch);
-  return compact === '의정부' || compact === '의정부본사';
+  return isRestrictedAccountingBranch(branch);
 }
 
 function getAsstScopedBranch(viewer: any): string | null {
   if (viewer?.role !== 'accountant_asst') return '';
   const branch = String(viewer?.branch || '').trim();
   if (!branch || isRestrictedBranchForAsst(branch)) return null;
-  return branch;
+  return normalizeBranchName(branch);
 }
 
 async function canAccessUserPayroll(db: D1Database, viewer: any, targetUserId: string): Promise<boolean> {
@@ -110,7 +107,7 @@ async function canAccessUserPayroll(db: D1Database, viewer: any, targetUserId: s
   if (isRestrictedBranchForAsst(viewer.branch)) return false;
   const target = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(targetUserId).first<any>();
   if (!target) return true;
-  if (compactBranchName(target.branch) !== compactBranchName(viewer.branch)) return false;
+  if (!sameBranchName(target.branch, viewer.branch)) return false;
   return !RESTRICTED_ROLES_FOR_ASST.includes(target.role);
 }
 
@@ -228,7 +225,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const unpaidLeaveDeduction = salary > 0 ? truncMoney((salary / 209) * unpaidLeaveHours) : 0;
 
   // 본사관리 인원은 실적 기반 성과금 없음
-  const isHQ = user.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
+  const isHQ = normalizeBranchName(user.branch) === '본사관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
 
   // 성과금: 2개월 일반매출(공급가액) + 안건 수당(amount 그대로) 합산 (급여제만)
   // 매수신청대리는 대리비용을 제3자에게 지급하므로 업무성과 산정에서 차감
@@ -245,7 +242,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   let bonus = 0;
   // 일반매출 (부가세 분리 대상) — 매수신청대리는 대리비용 차감 후 환산
   let bonusRegularRaw = totalSalesEffective;                          // 일반 원본 (effective)
-  let bonusRegularSupply = truncMoney(totalSalesEffective / 1.1);     // 일반 공급가액
+  let bonusRegularSupply = vatSupplyAmount(totalSalesEffective);      // 일반 공급가액
   let bonusRegularVat = totalSalesEffective - bonusRegularSupply;     // 일반 부가세
   // 안건 수당 (부가세 X) — cases 테이블 등급별 산정
   let bonusCaseAllowance = 0;
@@ -267,7 +264,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     bonusRegularRaw = bonusConfirmed
       .filter((r: any) => !isCaseAllowanceSalesRow(r))
       .reduce((sum: number, r: any) => sum + proxyEffectiveRaw(r), 0);
-    bonusRegularSupply = truncMoney(bonusRegularRaw / 1.1);
+    bonusRegularSupply = vatSupplyAmount(bonusRegularRaw);
     bonusRegularVat = bonusRegularRaw - bonusRegularSupply;
 
     // 안건 수당: cases 테이블에서 직접 등급 성과금 계산 (트리거 INSERT 여부 무관)
@@ -300,7 +297,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
   // 부가세 분리
   const recordsWithVat = confirmedRecords.map((r: any) => {
-    const supply = truncMoney(r.amount / 1.1);
+    const supply = vatSupplyAmount(r.amount);
     const vat = r.amount - supply;
     return { ...r, supply_amount: supply, vat_amount: vat };
   });
@@ -318,7 +315,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       : r.deposit_date ? r.deposit_date : r.contract_date;
     return sd && sd < monthStart;
   }).map((r: any) => {
-    const supply = truncMoney(r.amount / 1.1);
+    const supply = vatSupplyAmount(r.amount);
     let recovery = 0;
     if (isCommission) {
       const comm = truncMoney(supply * effectiveRate / 100);
@@ -352,8 +349,8 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     summary: {
       contract_count: contractCount,
       total_sales: totalSales,
-      total_supply: truncMoney(totalSales / 1.1),
-      total_vat: totalSales - truncMoney(totalSales / 1.1),
+      total_supply: vatSupplyAmount(totalSales),
+      total_vat: totalSales - vatSupplyAmount(totalSales),
       total_refund: totalRefund,
       net_sales: totalSales - totalRefund,
       standard_sales: standardSales,
@@ -385,7 +382,7 @@ payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
   if (scopedBranch === null) {
     return c.json({ error: '총무보조는 의정부 본사 및 종합 지표를 열람할 수 없습니다.' }, 403);
   }
-  const filterBranch = viewer?.role === 'accountant_asst' ? scopedBranch : (c.req.query('branch') || '');
+  const filterBranch = viewer?.role === 'accountant_asst' ? scopedBranch : normalizeBranchName(c.req.query('branch') || '');
   const db = c.env.DB;
 
   // 조건
@@ -534,6 +531,9 @@ payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
 payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   const db = c.env.DB;
   const viewer = c.get('user');
+  if (viewer?.role === 'accountant_asst') {
+    return c.json({ error: '총무보조는 세무자료를 열람할 수 없습니다.' }, 403);
+  }
   const scopedBranch = getAsstScopedBranch(viewer);
   if (scopedBranch === null) {
     return c.json({ error: '총무보조는 의정부 본사 및 종합 지표를 열람할 수 없습니다.' }, 403);
@@ -562,7 +562,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       LEFT JOIN user_accounting ua ON ua.user_id = u.id
       WHERE u.approved = 1
         AND u.role IN ('member', 'manager', 'resigned')
-        AND u.branch != '본사 관리'
+        AND REPLACE(u.branch, ' ', '') != '본사관리'
         AND u.department != '명도팀'
         ${branchFilterSql}
       ORDER BY u.branch, u.department, u.name
@@ -615,10 +615,10 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       } else if (r.type === '매수신청대리') {
         // amount = 매출 gross (VAT 포함), proxy_cost = 대리비용
         // 담당자 지급 = (매출 - 부가세) - 대리비용 = amount/1.1 - cost
-        const payrollAmount = truncMoney((r.amount || 0) / 1.1) - (r.proxy_cost || 0);
+        const payrollAmount = vatSupplyAmount(r.amount || 0) - (r.proxy_cost || 0);
         proxyIncome += Math.max(payrollAmount, 0);
       } else {
-        normalSupply += truncMoney((r.amount || 0) / 1.1);
+        normalSupply += vatSupplyAmount(r.amount || 0);
       }
     }
 
@@ -678,7 +678,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       branch: u.branch, department: u.department,
       is_ad_hoc: false, is_overridden: false, note: '',
     };
-  }).concat(viewer?.role === 'accountant_asst' ? [] : adHocList.map((ov: any) => ({
+  }).concat(adHocList.map((ov: any) => ({
     id: ov.id, user_id: null, name: ov.name,
     ssn: ov.ssn || '', address: ov.address || '',
     amount: Number(ov.amount), tax: Number(ov.tax), net_amount: Number(ov.net_amount),
@@ -711,13 +711,7 @@ payroll.put('/reports/business-income/save', requireRole(...ACCOUNTING_ROLES), a
   if (!body.month || !/^\d{4}-\d{2}$/.test(body.month)) return c.json({ error: 'month 형식 오류' }, 400);
   const isAdHoc = body.is_ad_hoc || !body.user_id;
   if (user?.role === 'accountant_asst') {
-    const scopedBranch = getAsstScopedBranch(user);
-    if (scopedBranch === null || isAdHoc || !body.user_id) {
-      return c.json({ error: '총무보조는 본인 지사 자동 산정 항목만 수정할 수 있습니다.' }, 403);
-    }
-    if (!(await canAccessUserPayroll(db, user, body.user_id))) {
-      return c.json({ error: '총무보조는 본인 지사 항목만 수정할 수 있습니다.' }, 403);
-    }
+    return c.json({ error: '총무보조는 세무자료를 수정할 수 없습니다.' }, 403);
   }
 
   // 기존 entry 찾기

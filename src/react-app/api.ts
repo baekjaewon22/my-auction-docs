@@ -228,7 +228,7 @@ export const api = {
     update: (userId: string, data: { total_days?: number; used_days?: number; monthly_days?: number; monthly_used?: number; leave_type?: string }) =>
       request('/leave/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
     // 휴가 신청
-    createRequest: (data: { leave_type: string; start_date: string; end_date: string; hours?: number; reason: string; user_id?: string }) =>
+    createRequest: (data: { leave_type: string; start_date: string; end_date: string; hours?: number; reason: string; user_id?: string; half_day_period?: '오전' | '오후' | '' }) =>
       request('/leave/request', { method: 'POST', body: JSON.stringify(data) }),
     listRequests: (params?: { status?: string; month?: string; user_id?: string }) =>
       request<{ requests: any[] }>('/leave/requests' + (params ? '?' + new URLSearchParams(params as any).toString() : '')),
@@ -578,6 +578,17 @@ export const api = {
       request<{ success: boolean; already_revoked?: boolean }>('/service-tokens/' + id + '/revoke', { method: 'POST' }),
   },
 
+  system: {
+    holidays: (year?: string) =>
+      request<{ holidays: any[] }>('/system/holidays' + (year ? '?year=' + encodeURIComponent(year) : '')),
+    createHoliday: (data: Record<string, unknown>) =>
+      request<{ holiday: any }>('/system/holidays', { method: 'POST', body: JSON.stringify(data) }),
+    updateHoliday: (id: string, data: Record<string, unknown>) =>
+      request<{ holiday: any }>('/system/holidays/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteHoliday: (id: string) =>
+      request<{ success: boolean }>('/system/holidays/' + id, { method: 'DELETE' }),
+  },
+
   links: {
     myOutdoorEntries: (forDocId?: string) => {
       const q = forDocId ? '?for_doc_id=' + encodeURIComponent(forDocId) : '';
@@ -612,6 +623,20 @@ export const api = {
     resolveReview: (id: string, journalEntryIds: string[]) =>
       request<{ success: boolean; action: string; linked_count?: number }>('/links/review/' + id + '/resolve', {
         method: 'POST', body: JSON.stringify({ journal_entry_ids: journalEntryIds })
+      }),
+    requestOutdoorExemption: (data: { journal_entry_ids: string[]; reason_type: string; reason_detail: string }) =>
+      request<{ success: boolean; requested: number; skipped: number }>('/links/outdoor-exemptions', {
+        method: 'POST', body: JSON.stringify(data)
+      }),
+    outdoorExemptions: (status: 'pending' | 'approved' | 'rejected' | 'mine' = 'pending') =>
+      request<{ items: any[] }>('/links/outdoor-exemptions?status=' + status),
+    approveOutdoorExemption: (id: string, comment?: string) =>
+      request<{ success: boolean }>('/links/outdoor-exemptions/' + id + '/approve', {
+        method: 'POST', body: JSON.stringify({ comment })
+      }),
+    rejectOutdoorExemption: (id: string, comment: string) =>
+      request<{ success: boolean }>('/links/outdoor-exemptions/' + id + '/reject', {
+        method: 'POST', body: JSON.stringify({ comment })
       }),
   },
 
@@ -705,13 +730,19 @@ export const api = {
       request<{ success: boolean; sales_id: string; settlement_amount: number; fee_amount: number; settlement_date: string }>('/accounting/card-settlements/' + id + '/confirm', { method: 'POST', body: JSON.stringify(data) }),
     commitSession2: (data: { batch_hash: string; file_name?: string; rows: any[] }) =>
       request<{ success: boolean; batch_id: string; source_inserted: number; source_skipped: number; reconciliation_upserted: number; ledger_inserted: number; ledger_skipped: number }>('/accounting/session2/commit', { method: 'POST', body: JSON.stringify(data) }),
+    createSession2LedgerRow: (data: Record<string, unknown>) =>
+      request<{ success: boolean; id: string }>('/accounting/session2/ledger-row', { method: 'POST', body: JSON.stringify(data) }),
+    updateSession2LedgerRow: (id: string, data: Record<string, unknown>) =>
+      request<{ success: boolean }>('/accounting/session2/ledger-row/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteSession2LedgerRow: (id: string) =>
+      request<{ success: boolean }>('/accounting/session2/ledger-row/' + id, { method: 'DELETE' }),
     session2Report: (params: { report_type: string; month?: string; branch?: string }) => {
       const query = new URLSearchParams();
       query.set('report_type', params.report_type);
       if (params.month) query.set('month', params.month);
       if (params.branch) query.set('branch', params.branch);
-      return request<{ rows: any[]; summary: any; months: string[]; latest_import?: any }>('/accounting/session2/reports?' + query.toString());
-    },
+        return request<{ rows: any[]; summary: any; months: string[]; latest_import?: any; profit_loss_statement?: any }>('/accounting/session2/reports?' + query.toString());
+      },
     forecastAdjustments: (params: { month: string; branch?: string }) => {
       const query = new URLSearchParams();
       query.set('month', params.month);

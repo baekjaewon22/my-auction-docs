@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { normalizeBranchName } from '../lib/branchAliases';
 
 const departments = new Hono<AuthEnv>();
 
@@ -25,7 +26,7 @@ departments.post('/', authMiddleware, requireRole('master', 'ceo', 'admin'), asy
   const order = (maxOrder?.m || 0) + 1;
 
   await db.prepare('INSERT INTO departments (id, name, branch, sort_order) VALUES (?, ?, ?, ?)')
-    .bind(id, name, branch || '', order).run();
+    .bind(id, name, normalizeBranchName(branch), order).run();
 
   return c.json({ department: { id, name } }, 201);
 });
@@ -40,7 +41,7 @@ departments.put('/:id', authMiddleware, requireRole('master', 'ceo', 'admin'), a
   if (!existing) return c.json({ error: '팀을 찾을 수 없습니다.' }, 404);
 
   await db.prepare('UPDATE departments SET name = ?, branch = ?, sort_order = ? WHERE id = ?')
-    .bind(name || existing.name, branch ?? existing.branch, sort_order ?? existing.sort_order, id).run();
+    .bind(name || existing.name, branch !== undefined ? normalizeBranchName(branch) : existing.branch, sort_order ?? existing.sort_order, id).run();
 
   return c.json({ success: true });
 });

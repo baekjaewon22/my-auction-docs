@@ -28,6 +28,7 @@ import LeavePage from './pages/Leave';
 import PropertyReport from './pages/PropertyReport';
 import FinanceAnalytics from './pages/FinanceAnalytics';
 import ManagementSupport from './pages/ManagementSupport';
+import HolidaySettings from './pages/HolidaySettings';
 import {
   AccountingAuditReport,
   AccountingBankUpload,
@@ -172,6 +173,22 @@ function ManagementSupportRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function ManagementSupportHomeRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'];
+  if (!user || (!allowed.includes(user.role) && !PAYROLL_EXTRA_IDS.includes(user.id))) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
+function HolidaySettingsRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'admin', 'accountant'];
+  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
 function ProfitLossReportRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
@@ -190,6 +207,13 @@ function LaborCostReportRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant'];
   if (!user || (!allowed.includes(user.role) && !LABOR_COST_EXTRA_IDS.includes(user.id))) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function TaxMaterialsRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'ceo', 'accountant'];
+  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -343,9 +367,9 @@ export default function App() {
           <Route
             path="payroll-business-income"
             element={
-              <PayrollRoute>
+              <TaxMaterialsRoute>
                 <Payroll initialTab="business_income" />
-              </PayrollRoute>
+              </TaxMaterialsRoute>
             }
           />
           <Route
@@ -391,9 +415,17 @@ export default function App() {
           <Route
             path="management-support"
             element={
-              <ManagementSupportRoute>
+              <ManagementSupportHomeRoute>
                 <ManagementSupport />
-              </ManagementSupportRoute>
+              </ManagementSupportHomeRoute>
+            }
+          />
+          <Route
+            path="management-support/holidays"
+            element={
+              <HolidaySettingsRoute>
+                <HolidaySettings />
+              </HolidaySettingsRoute>
             }
           />
           <Route
@@ -511,9 +543,9 @@ export default function App() {
           <Route
             path="accounting-session2/reports/tax"
             element={
-              <ManagementSupportRoute>
+              <TaxMaterialsRoute>
                 <AccountingTaxReport />
-              </ManagementSupportRoute>
+              </TaxMaterialsRoute>
             }
           />
           <Route

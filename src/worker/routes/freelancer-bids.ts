@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { ensureBidAnalysisTable, normalizeAmount, normalizeBidResult, upsertBidAnalysisEntry } from '../lib/bid-analysis';
+import { normalizeBranchName } from '../lib/branchAliases';
 
 const KST_NOW_SQL = "datetime('now', '+9 hours')";
 
@@ -141,7 +142,7 @@ freelancerBids.get('/', async (c) => {
   const db = c.env.DB;
   await ensureFreelancerBidTable(db);
 
-  const branch = String(c.req.query('branch') || '').trim();
+  const branch = normalizeBranchName(c.req.query('branch') || '');
   const assignee = String(c.req.query('assignee') || '').trim();
   const params: unknown[] = [];
   const where: string[] = [];

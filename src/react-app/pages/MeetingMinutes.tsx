@@ -4,6 +4,7 @@ import { useAuthStore } from '../store';
 import { Upload, FileText, Trash2, Eye, Download, Plus, X, ArrowLeft, Share2, FileUp, StickyNote } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Select from '../components/Select';
+import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 interface MinuteItem {
   id: string;
@@ -240,8 +241,8 @@ export default function MeetingMinutes() {
   const selectedShareOptions = shareableMembers
     .filter(m => shareTargets.includes(m.id))
     .map(m => ({ value: m.id, label: `${m.name} (${m.branch || '-'} · ${m.department || '-'})` }));
-  const branchGroups = [...new Set(shareableMembers.map(m => m.branch).filter(Boolean))];
-  const departmentGroups = [...new Set(shareableMembers.map(m => `${m.branch || '-'}|||${m.department || '-'}`))];
+  const branchGroups = [...new Set(shareableMembers.map(m => normalizeBranchName(m.branch)).filter(Boolean))];
+  const departmentGroups = [...new Set(shareableMembers.map(m => `${normalizeBranchName(m.branch) || '-'}|||${m.department || '-'}`))];
   const addShareTargets = (ids: string[]) => setShareTargets(prev => [...new Set([...prev, ...ids])]);
   const openShareModal = (item: MinuteItem) => {
     setSharingId(item.id);
@@ -253,7 +254,7 @@ export default function MeetingMinutes() {
       <button type="button" className="btn btn-sm" onClick={() => setShareTargets([])}>선택 해제</button>
       <select className="form-input" defaultValue="" onChange={(e) => {
         const branch = e.target.value;
-        if (branch) addShareTargets(shareableMembers.filter(m => m.branch === branch).map(m => m.id));
+        if (branch) addShareTargets(shareableMembers.filter(m => sameBranchName(m.branch, branch)).map(m => m.id));
         e.target.value = '';
       }} style={{ width: 150, height: 32, padding: '4px 8px', fontSize: '0.78rem' }}>
         <option value="">지사별 추가</option>
@@ -263,7 +264,7 @@ export default function MeetingMinutes() {
         const value = e.target.value;
         if (value) {
           const [branch, department] = value.split('|||');
-          addShareTargets(shareableMembers.filter(m => (m.branch || '-') === branch && (m.department || '-') === department).map(m => m.id));
+          addShareTargets(shareableMembers.filter(m => (normalizeBranchName(m.branch) || '-') === branch && (m.department || '-') === department).map(m => m.id));
         }
         e.target.value = '';
       }} style={{ width: 190, height: 32, padding: '4px 8px', fontSize: '0.78rem' }}>

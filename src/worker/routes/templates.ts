@@ -4,13 +4,14 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 
 const templates = new Hono<AuthEnv>();
 templates.use('*', authMiddleware);
+const HIDDEN_TEMPLATE_IDS = ['tpl-att-001', 'tpl-att-002', 'tpl-att-011'];
 
 // GET /api/templates
 templates.get('/', async (c) => {
   const db = c.env.DB;
   const result = await db.prepare(
-    'SELECT * FROM templates WHERE is_active = 1 ORDER BY created_at DESC'
-  ).all<Template>();
+    `SELECT * FROM templates WHERE is_active = 1 AND id NOT IN (${HIDDEN_TEMPLATE_IDS.map(() => '?').join(',')}) ORDER BY created_at DESC`
+  ).bind(...HIDDEN_TEMPLATE_IDS).all<Template>();
 
   return c.json({ templates: result.results });
 });
