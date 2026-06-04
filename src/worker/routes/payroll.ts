@@ -12,6 +12,66 @@ const CONTRACT_AWARD_TIERS = [300_000, 200_000, 100_000];
 const CONTRACT_AWARD_MIN_COUNT = 10;
 const truncMoney = (value: number): number => Math.trunc(Number(value) || 0);
 const vatSupplyAmount = (amount: number): number => Math.round((Number(amount) || 0) * 10 / 11);
+
+function parsePayrollPeriodMonth(value: string): string {
+  const text = String(value || '').trim();
+  const iso = text.match(/^(\d{4})-(\d{2})$/);
+  if (iso) return `${iso[1]}-${iso[2]}`;
+  const ko = text.match(/^(\d{4})년\s*(\d{1,2})월$/);
+  if (ko) return `${ko[1]}-${String(Number(ko[2])).padStart(2, '0')}`;
+  return '';
+}
+
+function payrollPeriodLabel(month: string): string {
+  const [year, monthText] = month.split('-');
+  return `${Number(year)}년 ${Number(monthText)}월`;
+}
+
+function isPayrollPaidMonth(month: string): boolean {
+  const parsed = parsePayrollPeriodMonth(month);
+  if (!parsed) return false;
+  const [yearText, monthText] = parsed.split('-');
+  let year = Number(yearText);
+  let paymentMonth = Number(monthText) + 1;
+  if (paymentMonth === 13) {
+    year += 1;
+    paymentMonth = 1;
+  }
+
+  const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const nowKey = nowKst.getUTCFullYear() * 10000 + (nowKst.getUTCMonth() + 1) * 100 + nowKst.getUTCDate();
+  const paidKey = year * 10000 + paymentMonth * 100 + 5;
+  return nowKey >= paidKey;
+}
+
+function parsePayrollSaveData(raw: unknown): Record<string, any> {
+  try {
+    const parsed = JSON.parse(String(raw || '{}'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function buildPayrollSnapshot(response: Record<string, any>, saveData: Record<string, any>, extra: { period: string; month: string }) {
+  return {
+    version: 1,
+    saved_at: new Date().toISOString(),
+    period: extra.period,
+    month: extra.month,
+    response,
+    caseAllowance: saveData.caseAllowance || null,
+    manual: {
+      deduction: saveData.deduction ?? '0',
+      extraPay: saveData.extraPay ?? '0',
+      extraLabel: saveData.extraLabel ?? '',
+      extraDeduction: saveData.extraDeduction ?? '0',
+      extraDeductionLabel: saveData.extraDeductionLabel ?? '',
+      commExtras: Array.isArray(saveData.commExtras) ? saveData.commExtras : [],
+      commDeductions: Array.isArray(saveData.commDeductions) ? saveData.commDeductions : [],
+    },
+  };
+}
 function contractCustomerKey(r: any): string {
   const phone = String(r.client_phone || '').replace(/\D/g, '');
   const name = String(r.client_name || '').trim().toLowerCase();
@@ -111,6 +171,18 @@ async function canAccessUserPayroll(db: D1Database, viewer: any, targetUserId: s
   return !RESTRICTED_ROLES_FOR_ASST.includes(target.role);
 }
 
+export async function lockPaidPayrollSaves(db: D1Database): Promise<{ scanned: number; locked: number }> {
+  const rows = await db.prepare('SELECT user_id, period FROM payroll_saves WHERE locked = 0').all<any>();
+  let locked = 0;
+  for (const row of (rows.results || [])) {
+    if (!isPayrollPaidMonth(row.period)) continue;
+    const result = await db.prepare('UPDATE payroll_saves SET locked = 1 WHERE user_id = ? AND period = ? AND locked = 0')
+      .bind(row.user_id, row.period).run();
+    locked += result.meta?.changes || 0;
+  }
+  return { scanned: rows.results?.length || 0, locked };
+}
+
 // GET /api/payroll/:userId?month=YYYY-MM
 // 급여제: 1개월 정산 + 성과금은 2개월 기준
 // 비율제: 1개월 정산
@@ -127,6 +199,11 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const [yearStr, monthStr] = month.split('-');
   const y = Number(yearStr);
   const m = Number(monthStr);
+  if (!/^\d{4}-\d{2}$/.test(month) || !Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) {
+    return c.json({ error: 'month는 YYYY-MM 형식이어야 합니다.' }, 400);
+  }
+  const periodLabel = payrollPeriodLabel(month);
+  const isPaidPeriod = isPayrollPaidMonth(month);
 
   // 1개월 구간 (급여/비율 공통)
   const monthStart = `${month}-01`;
@@ -143,9 +220,48 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   ).bind(userId).first<any>();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
-  const accounting = await db.prepare(
+  const savedPayroll = await db.prepare('SELECT * FROM payroll_saves WHERE user_id = ? AND period = ?').bind(userId, periodLabel).first<any>();
+  const savedPayrollData = parsePayrollSaveData(savedPayroll?.data);
+  if (savedPayroll && isPaidPeriod && !savedPayroll.locked) {
+    await db.prepare("UPDATE payroll_saves SET locked = 1 WHERE user_id = ? AND period = ?").bind(userId, periodLabel).run();
+    savedPayroll.locked = 1;
+  }
+  const shouldUseSavedSnapshot = !!savedPayroll && (savedPayroll.locked || isPaidPeriod);
+  const savedSnapshot = savedPayrollData.payroll_snapshot;
+  if (shouldUseSavedSnapshot && savedSnapshot?.response) {
+    return c.json({
+      ...savedSnapshot.response,
+      is_paid_period: isPaidPeriod,
+      is_snapshot: true,
+      payroll_snapshot: {
+        caseAllowance: savedSnapshot.caseAllowance || null,
+        manual: savedSnapshot.manual || null,
+        saved_at: savedSnapshot.saved_at || savedPayroll.updated_at || savedPayroll.created_at,
+      },
+      payroll_save: {
+        locked: !!savedPayroll.locked,
+        pay_type: savedPayroll.pay_type,
+        saved_at: savedSnapshot.saved_at || savedPayroll.updated_at || savedPayroll.created_at,
+      },
+    });
+  }
+
+  let accounting = await db.prepare(
     'SELECT salary, standard_sales, grade, position_allowance, pay_type, commission_rate FROM user_accounting WHERE user_id = ?'
   ).bind(userId).first<any>();
+  accounting = {
+    salary: 0,
+    standard_sales: 0,
+    grade: '',
+    position_allowance: 0,
+    pay_type: 'salary',
+    commission_rate: 0,
+    ...(accounting || {}),
+  };
+
+  if (shouldUseSavedSnapshot && savedPayroll?.pay_type) {
+    accounting.pay_type = savedPayroll.pay_type;
+  }
 
   // 2026년 1~2월은 전원 프리랜서(비율 50%) — 강제 적용
   // 예외: commission_rate_overrides 테이블에 유저별 월별 예외 비율 저장 가능
@@ -332,7 +448,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     ? await calcContractAwardForUser(db, userId, bonusPeriodStart, bonusPeriodEnd)
     : { rank: null, count: 0, award: 0, total_amount: 0 };
 
-  return c.json({
+  const payrollResponse = {
     user,
     accounting: isJanFeb2026
       ? { ...(accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0 }), pay_type: 'commission', commission_rate: effectiveRate }
@@ -342,9 +458,16 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     month,
     period_start: monthStart,
     period_end: monthEnd,
-    period_label: `${y}년 ${m}월`,
+    period_label: periodLabel,
     bonus_period_label: isPayoutMonth ? `${y}년 ${bonusPeriodStartMonth}~${bonusPeriodEndMonth}월` : null,
     is_payout_month: isPayoutMonth,
+    is_paid_period: isPaidPeriod,
+    is_snapshot: false,
+    payroll_save: savedPayroll ? {
+      locked: !!savedPayroll.locked,
+      pay_type: savedPayroll.pay_type,
+      saved_at: savedPayroll.updated_at || savedPayroll.created_at,
+    } : null,
     records: recordsWithVat,
     refunded_records: refundedRecords,
     refund_recoveries: refundRecoveries,
@@ -374,7 +497,23 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       unpaid_leave_deduction: unpaidLeaveDeduction,
       company_profit: totalSales - totalRefund - salary - positionAllowance - bonus + unpaidLeaveDeduction,
     },
-  });
+  };
+
+  if (shouldUseSavedSnapshot && savedPayroll && !savedPayrollData.payroll_snapshot) {
+    const nextData = {
+      ...savedPayrollData,
+      payroll_snapshot: buildPayrollSnapshot(payrollResponse, savedPayrollData, { period: periodLabel, month }),
+    };
+    await db.prepare('UPDATE payroll_saves SET data = ?, locked = 1 WHERE user_id = ? AND period = ?')
+      .bind(JSON.stringify(nextData), userId, periodLabel).run();
+    payrollResponse.payroll_save = {
+      locked: true,
+      pay_type: savedPayroll.pay_type,
+      saved_at: new Date().toISOString(),
+    };
+  }
+
+  return c.json(payrollResponse);
 });
 
 // GET /api/payroll/branch-summary?month=YYYY-MM&branch=xxx — 지사별 합산
@@ -492,18 +631,25 @@ payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
   if (!(await canAccessUserPayroll(db, user, user_id))) {
     return c.json({ error: '해당 직원의 정산 정보 저장 권한이 없습니다.' }, 403);
   }
+  if (isPayrollPaidMonth(period)) {
+    return c.json({ error: '지급일(익월 5일)이 지난 급여정산은 수정할 수 없습니다.' }, 400);
+  }
 
   // 잠금 체크: 익달 5일 이후면 수정 불가
   const existing = await db.prepare('SELECT locked FROM payroll_saves WHERE user_id = ? AND period = ?').bind(user_id, period).first<any>();
   if (existing?.locked) return c.json({ error: '해당 기간 정산은 잠금 상태입니다. (익달 5일 이후 수정 불가)' }, 400);
 
   const id = crypto.randomUUID();
+  const normalizedData = {
+    ...saveData,
+    payroll_snapshot: (saveData as any).payroll_snapshot || null,
+  };
   await db.prepare(`
     INSERT INTO payroll_saves (id, user_id, period, pay_type, data, created_by)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, period) DO UPDATE SET
       data = excluded.data, pay_type = excluded.pay_type, updated_at = datetime('now')
-  `).bind(id, user_id, period, pay_type, JSON.stringify(saveData), user.sub).run();
+  `).bind(id, user_id, period, pay_type, JSON.stringify(normalizedData), user.sub).run();
 
   return c.json({ success: true });
 });
@@ -511,18 +657,8 @@ payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
 // POST /api/payroll/lock — 자동 잠금 (cron 또는 수동)
 payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
   const db = c.env.DB;
-  // 현재 달 기준: 전달 정산을 잠금 (5일 이후)
-  const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST
-  if (now.getUTCDate() < 5) return c.json({ message: '아직 5일 전입니다.' });
-
-  const prevMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() - 1, 1);
-  const periodPattern = `${prevMonth.getUTCFullYear()}-${String(prevMonth.getUTCMonth() + 1).padStart(2, '0')}%`;
-
-  const result = await db.prepare(
-    "UPDATE payroll_saves SET locked = 1 WHERE period LIKE ? AND locked = 0"
-  ).bind(periodPattern).run();
-
-  return c.json({ success: true, locked: result.meta?.changes || 0 });
+  const result = await lockPaidPayrollSaves(db);
+  return c.json({ success: true, ...result });
 });
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -543,6 +679,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   }
   const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
   const [y, m] = month.split('-').map(Number);
+  const periodLabel = payrollPeriodLabel(month);
   const monthStart = `${month}-01`;
   const lastDay = new Date(y, m, 0).getDate();
   const monthEnd = `${month}-${String(lastDay).padStart(2, '0')}`;
@@ -575,10 +712,11 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       SELECT u.id, u.name, u.branch, u.department, ua.commission_rate, ua.ssn, ua.address
       FROM user_accounting ua
       JOIN users u ON u.id = ua.user_id
-      WHERE ua.pay_type = 'commission' AND u.approved = 1 AND u.role != 'resigned'
+      LEFT JOIN payroll_saves ps ON ps.user_id = u.id AND ps.period = ?
+      WHERE (ua.pay_type = 'commission' OR ps.pay_type = 'commission') AND u.approved = 1 AND u.role != 'resigned'
         ${branchFilterSql}
       ORDER BY u.branch, u.department, u.name
-    `).bind(...branchFilterBinds).all<any>();
+    `).bind(periodLabel, ...branchFilterBinds).all<any>();
   }
 
   // commission_rate_overrides 일괄 조회 (해당 월)
@@ -712,6 +850,9 @@ payroll.put('/reports/business-income/save', requireRole(...ACCOUNTING_ROLES), a
   }>();
 
   if (!body.month || !/^\d{4}-\d{2}$/.test(body.month)) return c.json({ error: 'month 형식 오류' }, 400);
+  if (isPayrollPaidMonth(body.month)) {
+    return c.json({ error: '지급일(익월 5일)이 지난 사업소득 정산은 수정할 수 없습니다.' }, 400);
+  }
   const isAdHoc = body.is_ad_hoc || !body.user_id;
   if (user?.role === 'accountant_asst') {
     return c.json({ error: '총무보조는 세무자료를 수정할 수 없습니다.' }, 403);
@@ -748,6 +889,10 @@ payroll.delete('/reports/business-income/:id', requireRole(...ACCOUNTING_ROLES),
     return c.json({ error: '총무보조는 사업소득 항목을 삭제할 수 없습니다.' }, 403);
   }
   const id = c.req.param('id');
+  const existing = await c.env.DB.prepare('SELECT month FROM business_income_entries WHERE id = ?').bind(id).first<any>();
+  if (existing?.month && isPayrollPaidMonth(existing.month)) {
+    return c.json({ error: '지급일(익월 5일)이 지난 사업소득 정산은 삭제할 수 없습니다.' }, 400);
+  }
   await c.env.DB.prepare('DELETE FROM business_income_entries WHERE id = ?').bind(id).run();
   return c.json({ success: true });
 });

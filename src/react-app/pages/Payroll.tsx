@@ -115,13 +115,15 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       setExtraDeductionLabel('');
       setCommExtras([]);
       setCommDeductions([]);
-      setIsLocked(false);
+      setIsLocked(!!res.payroll_save?.locked || !!res.is_paid_period);
       // 저장 데이터 로드
       const period = res.period_label || selectedMonth;
+      let snapshotCaseAllowance = res.payroll_snapshot?.caseAllowance || null;
       try {
         const saveRes = await api.payroll.getSave(selectedUserId, period);
         if (saveRes.save) {
           const sd = JSON.parse(saveRes.save.data || '{}');
+          snapshotCaseAllowance = sd.payroll_snapshot?.caseAllowance || snapshotCaseAllowance;
           setDeduction(sd.deduction ?? '0');
           setExtraPay(sd.extraPay ?? '0');
           setExtraLabel(sd.extraLabel ?? '');
@@ -129,13 +131,15 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           setExtraDeductionLabel(sd.extraDeductionLabel ?? '');
           setCommExtras(Array.isArray(sd.commExtras) ? sd.commExtras : []);
           setCommDeductions(Array.isArray(sd.commDeductions) ? sd.commDeductions : []);
-          setIsLocked(!!saveRes.save.locked);
+          setIsLocked(!!saveRes.save.locked || !!res.is_paid_period);
         }
       } catch { /* 저장 없음 */ }
 
       // 안건 수당 — 짝수월에만 (예: 4월 → 3~4월 합계)
       try {
-        if (res.is_payout_month) {
+        if (snapshotCaseAllowance) {
+          setCaseAllowance(snapshotCaseAllowance);
+        } else if (res.is_payout_month) {
           const [y, mStr] = selectedMonth.split('-');
           const m = parseInt(mStr, 10);
           const mdPeriod = `${y}-${String(m - 1).padStart(2, '0')}_${String(m).padStart(2, '0')}`;
@@ -163,11 +167,23 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
     setSaving(true);
     try {
       const period = data.period_label || selectedMonth;
+      const manualData = { deduction, extraPay, extraLabel, extraDeduction, extraDeductionLabel, commExtras, commDeductions, caseAllowance };
       await api.payroll.save({
         user_id: selectedUserId,
         period,
         pay_type: data.accounting?.pay_type || 'salary',
-        data: { deduction, extraPay, extraLabel, extraDeduction, extraDeductionLabel, commExtras, commDeductions },
+        data: {
+          ...manualData,
+          payroll_snapshot: {
+            version: 1,
+            saved_at: new Date().toISOString(),
+            period,
+            month: selectedMonth,
+            response: data,
+            caseAllowance,
+            manual: manualData,
+          },
+        },
       });
       alert('저장되었습니다.');
     } catch (err: any) { alert(err.message); }

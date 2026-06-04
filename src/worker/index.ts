@@ -16,7 +16,7 @@ import minutes from './routes/minutes';
 import commissions from './routes/commissions';
 import accounting from './routes/accounting';
 import salesRoute from './routes/sales';
-import payrollRoute from './routes/payroll';
+import payrollRoute, { lockPaidPayrollSaves } from './routes/payroll';
 import cardRoute from './routes/card';
 import analyticsRoute from './routes/analytics';
 import comprehensiveRoute from './routes/analytics-comprehensive';
@@ -416,6 +416,10 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
         (r) => console.log('[cron analytics-daily] done', r),
         (err) => console.error('[cron analytics-daily] error', err),
       ),
+    ));
+    ctx.waitUntil(lockPaidPayrollSaves(env.DB).then(
+      (r) => { if (r.locked > 0) console.log('[cron payroll-lock] done', r); },
+      (err) => console.error('[cron payroll-lock] error', err),
     ));
     ctx.waitUntil(cleanupExpiredArticlePdfs(env, 100).then(
       (r) => { if (r.scanned > 0) console.log('[cron article-pdf-cleanup] done', r); },
