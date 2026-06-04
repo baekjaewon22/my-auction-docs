@@ -1367,17 +1367,14 @@ export default function Dashboard() {
   );
 }
 
-// 외근 여부 판정: 회사 밖 활동인지
+// 외근보고서 제출 대상 판정: 사무/개인은 제외, 외출성 일지는 대상
 function isOutdoorEntry(entry: JournalEntry): boolean {
   try {
-    const d = JSON.parse(entry.data);
-    if (d.companion) return false;
-    // 임장: 항상 외근
-    if (entry.activity_type === '임장') return true;
-    // 미팅: 회사 미팅(internalMeeting)은 제외, 그 외는 외근
+    const d = JSON.parse(entry.data || '{}');
+    if (entry.activity_type === '사무' || entry.activity_type === '개인') return false;
+    if (entry.activity_type === '입찰') return !d.bidProxy && !d.bidCancelled;
     if (entry.activity_type === '미팅') return !d.internalMeeting;
-    // 입찰: 현장출근 + 대리입찰 아닌 경우
-    if (entry.activity_type === '입찰' && (d.fieldCheckIn || d.fieldCheckOut) && !d.bidProxy && !d.bidCancelled) return true;
+    if (entry.activity_type === '임장') return true;
   } catch { /* */ }
   return false;
 }

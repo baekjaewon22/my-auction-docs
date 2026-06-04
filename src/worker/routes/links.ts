@@ -31,15 +31,15 @@ async function ensureOutdoorExemptionTable(db: D1Database): Promise<void> {
 }
 
 // ─────────────────────────────────────────────────────────
-// 외근 판정 (Dashboard.tsx isOutdoorEntry와 동일 룰)
+// 외근보고서 제출 대상 판정 (Dashboard.tsx isOutdoorEntry와 동일 룰)
 // ─────────────────────────────────────────────────────────
 function isOutdoorEntry(activityType: string, dataJson: string): boolean {
   try {
-    const d = JSON.parse(dataJson);
-    if (d.companion) return false;
-    if (activityType === '임장') return true;
+    const d = JSON.parse(dataJson || '{}');
+    if (activityType === '사무' || activityType === '개인') return false;
+    if (activityType === '입찰') return !d.bidProxy && !d.bidCancelled;
     if (activityType === '미팅') return !d.internalMeeting;
-    if (activityType === '입찰' && (d.fieldCheckIn || d.fieldCheckOut) && !d.bidProxy && !d.bidCancelled) return true;
+    if (activityType === '임장') return true;
   } catch { /* */ }
   return false;
 }
