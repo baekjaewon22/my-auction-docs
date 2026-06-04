@@ -319,7 +319,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
       const [txRes, sumRes, lastRes] = await Promise.all([
         api.card.transactions({ month: cardMonth, branch: cardFilterBranch || undefined, user_id: cardFilterUser || undefined }),
         api.card.summary(cardMonth),
-        api.card.lastUpload().catch(() => null),
+        api.card.lastUpload(cardMonth).catch(() => null),
       ]);
       setCardTxns(txRes.transactions || []);
       setCardSummary(sumRes);

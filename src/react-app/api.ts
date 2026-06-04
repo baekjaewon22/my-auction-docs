@@ -569,8 +569,8 @@ export const api = {
       request<{ success: boolean; count: number }>('/card/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
     rematch: () =>
       request<{ success: boolean; total: number; updated: number }>('/card/rematch', { method: 'POST' }),
-    lastUpload: () =>
-      request<{ last_upload: string | null; count: number; batch_id: string | null }>('/card/last-upload'),
+    lastUpload: (month?: string) =>
+      request<{ last_upload: string | null; count: number; batch_id: string | null }>('/card/last-upload' + (month ? '?month=' + encodeURIComponent(month) : '')),
   },
 
   serviceTokens: {

@@ -217,13 +217,30 @@ card.post('/upload', requireRole(...EDIT_ROLES), async (c) => {
 // GET /api/card/last-upload — 가장 최근 업로드 정보 (날짜 + 건수)
 card.get('/last-upload', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const db = c.env.DB;
+  const month = c.req.query('month') || '';
+  const where = ["upload_batch IS NOT NULL", "upload_batch != ''"];
+  const params: any[] = [];
+  if (month) {
+    where.push('(transaction_date LIKE ? OR transaction_date LIKE ?)');
+    params.push(month + '%', month.replace('-', '.') + '%');
+  }
   const latest = await db.prepare(
-    "SELECT created_at, upload_batch FROM card_transactions WHERE upload_batch IS NOT NULL AND upload_batch != '' ORDER BY created_at DESC LIMIT 1"
-  ).first<{ created_at: string; upload_batch: string }>();
+    `SELECT created_at, upload_batch
+     FROM card_transactions
+     WHERE ${where.join(' AND ')}
+     ORDER BY created_at DESC
+     LIMIT 1`
+  ).bind(...params).first<{ created_at: string; upload_batch: string }>();
   if (!latest) return c.json({ last_upload: null, count: 0, batch_id: null });
+
+  // A single import can be saved as multiple batches when the user retries or splits a large file.
+  // Show the latest upload session instead of only the final small batch.
   const cnt = await db.prepare(
-    'SELECT COUNT(*) as c FROM card_transactions WHERE upload_batch = ?'
-  ).bind(latest.upload_batch).first<{ c: number }>();
+    `SELECT COUNT(*) as c
+     FROM card_transactions
+     WHERE ${where.join(' AND ')}
+       AND created_at >= datetime(?, '-10 minutes')`
+  ).bind(...params, latest.created_at).first<{ c: number }>();
   return c.json({ last_upload: latest.created_at, count: cnt?.c || 0, batch_id: latest.upload_batch });
 });
 
