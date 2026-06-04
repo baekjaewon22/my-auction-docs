@@ -12,6 +12,7 @@ import {
 import { dispatchApprovalAlerts } from '../lib/approval-alerts-dispatcher';
 import { recheckAlertsAfterDocumentChange } from '../lib/journal-alerts';
 import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
+import { applyBranchApprovalOverride } from '../lib/branch-approval-overrides';
 
 const LEAVE_REQUEST_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
 
@@ -23,7 +24,7 @@ async function buildApprovalChain(db: D1Database, authorId: string): Promise<str
   ).bind(authorId).first<OrgNode>();
   if (!userNode) return [];
 
-  const author = await db.prepare('SELECT role FROM users WHERE id = ?').bind(authorId).first<{ role: string }>();
+  const author = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(authorId).first<{ role: string; branch: string }>();
   if (!author) return [];
 
   // 2) 위로 올라가며 승인자 수집 (본인 제외)
@@ -49,6 +50,9 @@ async function buildApprovalChain(db: D1Database, authorId: string): Promise<str
   }
 
   // 3) 최상위급(tier <= 2)이고 chain이 비었으면 → CC 승인자 사용
+  const overrideResult = await applyBranchApprovalOverride(db, chain, authorId, author.branch);
+  chain.splice(0, chain.length, ...overrideResult.chain);
+
   if (chain.length === 0 && userNode.tier <= 2) {
     const ccList = await db.prepare(
       'SELECT cc_user_id FROM approval_cc'

@@ -120,6 +120,9 @@ export default function OrgChart() {
   const [ccList, setCcList] = useState<(ApprovalCC & { cc_user_name: string; cc_user_email: string })[]>([]);
   const [showCcModal, setShowCcModal] = useState(false);
   const [ccSearch, setCcSearch] = useState('');
+  const [showBranchApproverModal, setShowBranchApproverModal] = useState(false);
+  const [branchApprovers, setBranchApprovers] = useState<Record<string, string>>({});
+  const [savingBranchApprovers, setSavingBranchApprovers] = useState(false);
 
   const canEdit = currentUser && ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser.role);
 
@@ -152,6 +155,15 @@ export default function OrgChart() {
     try {
       const ccRes = await api.org.ccList();
       setCcList(ccRes.ccList || []);
+    } catch { /* */ }
+
+    try {
+      const branchApproverRes = await api.org.branchApprovers();
+      const map: Record<string, string> = {};
+      (branchApproverRes.overrides || []).forEach((row: any) => {
+        if (row.branch && row.approver_id) map[row.branch] = row.approver_id;
+      });
+      setBranchApprovers(map);
     } catch { /* */ }
 
     setLoading(false);
@@ -330,6 +342,24 @@ export default function OrgChart() {
   );
 
   // 모바일: 접기/펼치기 토글
+  const branchApproverCandidates = users.filter((u) =>
+    ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant'].includes(u.role)
+  );
+  const saveBranchApprovers = async () => {
+    setSavingBranchApprovers(true);
+    try {
+      await api.org.saveBranchApprovers(branchList.map((branch) => ({
+        branch,
+        approver_id: branchApprovers[branch] || null,
+      })));
+      setShowBranchApproverModal(false);
+    } catch (e: any) {
+      alert(e.message || '지사 승인자 설정 저장 실패');
+    } finally {
+      setSavingBranchApprovers(false);
+    }
+  };
+
   const toggleCollapse = (id: string) => {
     setCollapsedNodes(prev => {
       const next = new Set(prev);
@@ -542,6 +572,9 @@ export default function OrgChart() {
               <button className="btn btn-sm" onClick={() => setShowCcModal(true)}>
                 <Shield size={13} /> CC 설정
               </button>
+              <button className="btn btn-sm" onClick={() => setShowBranchApproverModal(true)}>
+                <Shield size={13} /> 지사 승인자 설정
+              </button>
               <button className="btn btn-sm" onClick={startEditTiers}><Settings size={13} /> 등급 설정</button>
               {addingTo === 'root' ? (
                 <div className="oc-add-form" style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -643,6 +676,52 @@ export default function OrgChart() {
 
             <div className="modal-actions" style={{ marginTop: 12 }}>
               <button className="btn" onClick={() => setShowCcModal(false)}>닫기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBranchApproverModal && (
+        <div className="modal-overlay" onClick={() => setShowBranchApproverModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
+            <h3><Shield size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} />지사 승인자 설정</h3>
+            <p style={{ fontSize: '0.72rem', color: '#666', margin: '4px 0 12px', lineHeight: 1.5 }}>
+              조직도 소속은 변경하지 않고, 선택한 지사의 문서 결재선 마지막에 상위승인자를 추가합니다.
+            </p>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {branchList.map((branch) => {
+                const selectedUser = users.find((u) => u.id === branchApprovers[branch]);
+                const options = [
+                  { value: '', label: '설정 없음' },
+                  ...branchApproverCandidates.map((u) => ({
+                    value: u.id,
+                    label: `${u.name} (${u.position_title || ROLE_LABELS[u.role as Role] || u.role}${u.branch ? ` · ${u.branch}` : ''})`,
+                  })),
+                ];
+                return (
+                  <div key={branch} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 8, alignItems: 'center' }}>
+                    <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#334155' }}>{branch}</div>
+                    <Select
+                      size="sm"
+                      options={options}
+                      value={
+                        selectedUser
+                          ? options.find((o) => o.value === selectedUser.id) || { value: selectedUser.id, label: selectedUser.name }
+                          : options[0]
+                      }
+                      onChange={(o: any) => setBranchApprovers(prev => ({ ...prev, [branch]: o?.value || '' }))}
+                      isClearable
+                      isSearchable
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="modal-actions" style={{ marginTop: 14 }}>
+              <button className="btn" onClick={() => setShowBranchApproverModal(false)}>취소</button>
+              <button className="btn btn-primary" onClick={saveBranchApprovers} disabled={savingBranchApprovers}>
+                {savingBranchApprovers ? '저장 중...' : '저장'}
+              </button>
             </div>
           </div>
         </div>

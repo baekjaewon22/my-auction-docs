@@ -198,6 +198,10 @@ export const api = {
       request<{ success: boolean; count: number }>('/org/sync', { method: 'PUT', body: JSON.stringify({ nodes }) }),
     chain: (userId: string) =>
       request<{ chain: { user_id: string; name: string; tier: number; label: string }[]; type: string }>('/org/chain/' + userId),
+    branchApprovers: () =>
+      request<{ overrides: Array<{ id: string; branch: string; approver_id: string; approver_name: string; approver_email: string; approver_role: string; approver_title: string }> }>('/org/branch-approvers'),
+    saveBranchApprovers: (overrides: Array<{ branch: string; approver_id?: string | null }>) =>
+      request<{ success: boolean }>('/org/branch-approvers', { method: 'PUT', body: JSON.stringify({ overrides }) }),
     ccList: () => request<{ ccList: (import('./types').ApprovalCC & { cc_user_name: string; cc_user_email: string })[] }>('/org/cc'),
     ccAdd: (cc_user_id: string) =>
       request<{ success: boolean; id: string }>('/org/cc', { method: 'POST', body: JSON.stringify({ cc_user_id }) }),

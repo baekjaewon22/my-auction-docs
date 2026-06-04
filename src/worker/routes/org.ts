@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv, OrgNode } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { normalizeBranchName } from '../lib/branchAliases';
+import { applyBranchApprovalOverride, ensureBranchApprovalOverridesTable } from '../lib/branch-approval-overrides';
 
 const org = new Hono<AuthEnv>();
 org.use('*', authMiddleware);
@@ -103,6 +104,61 @@ org.delete('/node/:id', requireRole('master', 'ceo', 'admin'), async (c) => {
 });
 
 // GET /api/org/chain/:userId — 특정 유저의 결재선 계산
+org.get('/branch-approvers', async (c) => {
+  const db = c.env.DB;
+  await ensureBranchApprovalOverridesTable(db);
+  const result = await db.prepare(`
+    SELECT bao.*, u.name as approver_name, u.email as approver_email, u.role as approver_role, u.position_title as approver_title
+    FROM branch_approval_overrides bao
+    JOIN users u ON u.id = bao.approver_id
+    ORDER BY bao.branch
+  `).all();
+  return c.json({ overrides: result.results || [] });
+});
+
+org.put('/branch-approvers', requireRole('master', 'ceo'), async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  await ensureBranchApprovalOverridesTable(db);
+  const { overrides } = await c.req.json<{ overrides: Array<{ branch: string; approver_id?: string | null }> }>();
+  const rows = Array.isArray(overrides) ? overrides : [];
+
+  for (const row of rows) {
+    const branch = normalizeBranchName(row.branch);
+    const approverId = String(row.approver_id || '').trim();
+    if (!branch) continue;
+
+    if (!approverId) {
+      await db.prepare('DELETE FROM branch_approval_overrides WHERE branch = ?').bind(branch).run();
+      continue;
+    }
+
+    const approver = await db.prepare(`
+      SELECT id
+      FROM users
+      WHERE id = ? AND approved = 1 AND role != 'resigned'
+      LIMIT 1
+    `).bind(approverId).first<{ id: string }>();
+    if (!approver) continue;
+
+    const existing = await db.prepare('SELECT id FROM branch_approval_overrides WHERE branch = ?').bind(branch).first<{ id: string }>();
+    if (existing) {
+      await db.prepare(`
+        UPDATE branch_approval_overrides
+        SET approver_id = ?, updated_at = datetime('now', '+9 hours')
+        WHERE branch = ?
+      `).bind(approverId, branch).run();
+    } else {
+      await db.prepare(`
+        INSERT INTO branch_approval_overrides (id, branch, approver_id, created_by)
+        VALUES (?, ?, ?, ?)
+      `).bind(crypto.randomUUID(), branch, approverId, user.sub).run();
+    }
+  }
+
+  return c.json({ success: true });
+});
+
 org.get('/chain/:userId', async (c) => {
   const userId = c.req.param('userId');
   const db = c.env.DB;
@@ -117,6 +173,7 @@ org.get('/chain/:userId', async (c) => {
   }
 
   // 2) 위로 올라가며 승인자 수집 (본인 제외, 최대 2단계)
+  const chainOwner = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(userId).first<{ role: string; branch: string }>();
   const chain: { user_id: string; name: string; tier: number; label: string }[] = [];
   let currentParentId = userNode.parent_id;
   let steps = 0;
@@ -140,13 +197,32 @@ org.get('/chain/:userId', async (c) => {
     }
 
     // 팀장(manager)은 1단계만
-    const user = await db.prepare('SELECT role FROM users WHERE id = ?').bind(userId).first<{ role: string }>();
-    if (user && user.role === 'manager') break;
+    if (chainOwner?.role === 'manager') break;
 
     currentParentId = parentNode.parent_id;
   }
 
   // 3) 최상위급(지사장/본부장 등)이고 chain이 비었거나 위에 대표뿐이면 → CC 사용
+  const overrideResult = await applyBranchApprovalOverride(
+    db,
+    chain.map((item) => item.user_id),
+    userId,
+    chainOwner?.branch,
+  );
+  if (overrideResult.addedApproverId) {
+    const overrideUser = await db.prepare('SELECT name, position_title FROM users WHERE id = ?')
+      .bind(overrideResult.addedApproverId).first<{ name: string; position_title: string }>();
+    const overrideItem = {
+      user_id: overrideResult.addedApproverId,
+      name: overrideUser?.name || '상위승인자',
+      tier: 0,
+      label: overrideUser?.position_title || '지사 상위승인자',
+    };
+    const existingById = new Map(chain.map((item) => [item.user_id, item]));
+    const orderedChain = overrideResult.chain.map((id) => existingById.get(id) || (id === overrideResult.addedApproverId ? overrideItem : null)).filter(Boolean) as typeof chain;
+    chain.splice(0, chain.length, ...orderedChain);
+  }
+
   if (chain.length === 0 || (userNode.tier <= 2 && !currentParentId)) {
     const ccList = await db.prepare(
       'SELECT ac.*, u.name as cc_user_name FROM approval_cc ac JOIN users u ON ac.cc_user_id = u.id'
