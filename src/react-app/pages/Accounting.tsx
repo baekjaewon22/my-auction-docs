@@ -170,6 +170,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
   // canApprove: 최종승인만 (총무담당만, 보조 불가)
   const canModify = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
+  const canDeleteCard = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
   const canViewAuditLog = currentUser?.role === 'master' || currentUser?.role === 'accountant';
 
   // ━━ 활동 이력 ━━
@@ -215,6 +216,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
   const toggleCardSelect = (id: string) => setCardSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const handleCardBulkDelete = async () => {
     if (cardSelected.size === 0) return;
+    if (!canDeleteCard) { alert('신용카드 내역 삭제 권한이 없습니다.'); return; }
     if (!confirm(`${cardSelected.size}건을 삭제하시겠습니까?`)) return;
     try { await api.card.bulkDelete([...cardSelected]); setCardSelected(new Set()); loadCard(); } catch (err: any) { alert(err.message); }
   };
@@ -1421,12 +1423,13 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
               {cardTxns.length > 0 && <span>총 <strong>{cardTxns.length}</strong>건</span>}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              {canModify && cardTxns.length > 0 && (
+              {canDeleteCard && cardTxns.length > 0 && (
                 <button className="btn btn-sm btn-danger" style={{ fontSize: '0.75rem' }} onClick={async () => {
                   const scope = cardMonth ? `${cardMonth} 월` : '전체';
                   if (!confirm(`${scope} 신용카드 내역 ${cardTxns.length}건을 모두 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return;
                   try {
-                    for (const t of cardTxns) await api.card.deleteTransaction(t.id);
+                    await api.card.bulkDelete(cardTxns.map((t: any) => t.id));
+                    setCardSelected(new Set());
                     loadCard();
                   } catch (err: any) { alert(err.message); }
                 }}>전체 삭제 ({cardTxns.length}건)</button>
@@ -1608,7 +1611,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
             <table className="data-table" style={{ fontSize: '0.82rem' }}>
               <thead>
                 <tr>
-                  {canApprove && <th style={{ width: 32 }}><input type="checkbox" checked={cardSelected.size > 0 && cardSelected.size === cardTxns.length} onChange={() => { if (cardSelected.size === cardTxns.length) setCardSelected(new Set()); else setCardSelected(new Set(cardTxns.map((t: any) => t.id))); }} /></th>}
+                  {canDeleteCard && <th style={{ width: 32 }}><input type="checkbox" checked={cardSelected.size > 0 && cardSelected.size === cardTxns.length} onChange={() => { if (cardSelected.size === cardTxns.length) setCardSelected(new Set()); else setCardSelected(new Set(cardTxns.map((t: any) => t.id))); }} /></th>}
                   <th style={{ width: '10%' }}>일자</th>
                   <th style={{ width: '12%' }}>카드번호</th>
                   <th style={{ width: '12%' }}>담당자</th>
@@ -1620,7 +1623,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                   <th style={{ width: '12%' }}>비고</th>
                   {canModify && <th style={{ width: '5%' }}></th>}
                 </tr>
-                {cardSelected.size > 0 && canApprove && (
+                {cardSelected.size > 0 && canDeleteCard && (
                   <tr><td colSpan={canModify ? 12 : 11} style={{ background: '#fef2f2', borderLeft: '3px solid #b91c1c', padding: '6px 12px' }}>
                     <button className="btn btn-sm btn-danger" onClick={handleCardBulkDelete}>{cardSelected.size}건 선택 삭제</button>
                     <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => setCardSelected(new Set())}>선택 해제</button>
@@ -1635,7 +1638,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                   const isEditingCard = editingCardId === t.id;
                   return (
                   <tr key={t.id} style={{ background: i % 2 === 1 ? '#fafbfc' : undefined, boxShadow: isRefund ? 'inset 3px 0 0 #15803d' : undefined }}>
-                    {canApprove && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={cardSelected.has(t.id)} onChange={() => toggleCardSelect(t.id)} /></td>}
+                    {canDeleteCard && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={cardSelected.has(t.id)} onChange={() => toggleCardSelect(t.id)} /></td>}
                     <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{t.transaction_date}</td>
                     <td style={{ fontSize: '0.72rem', fontFamily: 'monospace', color: '#64748b' }}>
                       {t.card_number ? String(t.card_number).replace(/\D/g, '').slice(-4) : '-'}
@@ -1719,15 +1722,17 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                                 수정
                               </button>
                             )}
-                            <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', padding: 2, borderRadius: 4, transition: 'color 0.15s' }}
+                            {canDeleteCard && (
+                              <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', padding: 2, borderRadius: 4, transition: 'color 0.15s' }}
                               onMouseEnter={(e) => (e.currentTarget.style.color = '#b91c1c')}
                               onMouseLeave={(e) => (e.currentTarget.style.color = '#cbd5e1')}
                               onClick={async () => {
                                 if (!confirm('이 건을 삭제하시겠습니까?')) return;
                                 try { await api.card.deleteTransaction(t.id); loadCard(); } catch (err: any) { alert(err.message); }
                               }} title="삭제">
-                              <X size={14} />
-                            </button>
+                                <X size={14} />
+                              </button>
+                            )}
                           </>
                         )}
                       </td>
@@ -1736,7 +1741,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                   );
                 })}
                 {cardTxns.length === 0 && (
-                  <tr><td colSpan={canApprove ? (canModify ? 12 : 11) : (canModify ? 10 : 9)} style={{ textAlign: 'center', color: '#94a3b8', padding: 40 }}>
+                  <tr><td colSpan={canDeleteCard ? (canModify ? 12 : 11) : (canModify ? 10 : 9)} style={{ textAlign: 'center', color: '#94a3b8', padding: 40 }}>
                     {cardMonth ? `${cardMonth} 카드사용 내역이 없습니다.` : '카드사용 내역이 없습니다. 엑셀을 업로드하세요.'}
                   </td></tr>
                 )}
