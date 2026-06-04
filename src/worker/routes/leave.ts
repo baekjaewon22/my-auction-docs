@@ -354,6 +354,7 @@ leave.get('/user/:userId', requireRole('master', 'ceo', 'admin', 'accountant', '
     return c.json({ error: '해당 직원의 연차·급여 정보 열람 권한이 없습니다.' }, 403);
   }
 
+  await reinitUserLeave(db, userId);
   const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
   const userInfo = await db.prepare('SELECT hire_date, created_at, name FROM users WHERE id = ?').bind(userId).first<any>();
   const accounting = await db.prepare('SELECT salary FROM user_accounting WHERE user_id = ?').bind(userId).first<any>();
