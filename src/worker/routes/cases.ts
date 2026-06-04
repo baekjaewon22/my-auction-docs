@@ -11,6 +11,16 @@ import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/
 
 const cases = new Hono<AuthEnv>();
 
+const CASE_ALLOWANCE_EXCLUDED_NAMES = new Set(['임태율', '서정수', '진성헌']);
+
+function normalizeCaseAllowanceName(name: unknown): string {
+  return String(name || '').replace(/["'\s]/g, '').trim();
+}
+
+export function isCaseAllowanceExcludedName(name: unknown): boolean {
+  return CASE_ALLOWANCE_EXCLUDED_NAMES.has(normalizeCaseAllowanceName(name));
+}
+
 async function ensureCaseHiddenTable(db: D1Database): Promise<void> {
   await db.prepare(`
     CREATE TABLE IF NOT EXISTS case_hidden (
@@ -558,28 +568,35 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
   // 명도성과금은 컨설턴트(consultant) 귀속
   // 조정 금액: 정액제 -150,000원 / 실비제 ÷1.1 (부가세 제외)
   const result = await db.prepare(`
-    SELECT consultant_user_id, consultant_name, consultant_position,
-      consultant_branch, consultant_department,
+    SELECT c.consultant_user_id, c.consultant_name, c.consultant_position,
+      c.consultant_branch, c.consultant_department,
+      MAX(u.name) as consultant_user_name,
       COUNT(*) as cnt,
-      COALESCE(SUM(fee_amount), 0) as total_fee_raw,
+      COALESCE(SUM(c.fee_amount), 0) as total_fee_raw,
       COALESCE(SUM(
         CASE
-          WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-          ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER)
+          WHEN c.fee_type = 'fixed' THEN MAX(0, c.fee_amount - 150000)
+          ELSE CAST(c.fee_amount * 1.0 / 1.1 AS INTEGER)
         END
       ), 0) as total_fee_adjusted
-    FROM cases
-    WHERE bimonthly_period = ? AND consultant_name IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
-    GROUP BY consultant_user_id, consultant_name
+    FROM cases c
+    LEFT JOIN users u ON u.id = c.consultant_user_id
+    WHERE c.bimonthly_period = ? AND c.consultant_name IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = c.external_id)
+    GROUP BY c.consultant_user_id, c.consultant_name
     ORDER BY total_fee_adjusted DESC
   `).bind(period).all<any>();
 
-  const summary = (result.results || []).map((r: any) => ({
-    ...r,
-    total_fee: r.total_fee_adjusted, // 호환: 기존 클라이언트가 total_fee 사용
-    bonus: calculateCaseAllowance(r.total_fee_adjusted),
-  }));
+  const summary = (result.results || []).map((r: any) => {
+    const excluded = isCaseAllowanceExcludedName(r.consultant_name) || isCaseAllowanceExcludedName(r.consultant_user_name);
+    return {
+      ...r,
+      total_fee: r.total_fee_adjusted, // 호환: 기존 클라이언트가 total_fee 사용
+      bonus: excluded ? 0 : calculateCaseAllowance(r.total_fee_adjusted),
+      case_allowance_excluded: excluded,
+      case_allowance_exclusion_reason: excluded ? '안건수당 포상 제외 대상' : null,
+    };
+  });
 
   return c.json({
     period,
@@ -611,6 +628,8 @@ cases.get('/bonus/me', async (c) => {
       AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
   `).bind(period, user.sub).first<any>();
 
+  const userInfo = await db.prepare('SELECT name FROM users WHERE id = ?').bind(user.sub).first<any>();
+  const excluded = isCaseAllowanceExcludedName(userInfo?.name || user.name);
   const adjusted = result?.total_fee_adjusted || 0;
   return c.json({
     period,
@@ -619,7 +638,9 @@ cases.get('/bonus/me', async (c) => {
     total_fee_adjusted: adjusted,
     total_fee: adjusted, // 호환
     case_count: result?.cnt || 0,
-    bonus: calculateCaseAllowance(adjusted),
+    bonus: excluded ? 0 : calculateCaseAllowance(adjusted),
+    case_allowance_excluded: excluded,
+    case_allowance_exclusion_reason: excluded ? '안건수당 포상 제외 대상' : null,
   });
 });
 
@@ -658,20 +679,22 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
 
   // 컨설턴트별 합계 (조정 금액 기준)
   const summaryRes = await db.prepare(`
-    SELECT consultant_user_id, consultant_name,
-      consultant_branch, consultant_department,
+    SELECT c.consultant_user_id, c.consultant_name,
+      c.consultant_branch, c.consultant_department,
+      MAX(u.name) as consultant_user_name,
       COUNT(*) as cnt,
       COALESCE(SUM(
         CASE
-          WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-          ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER)
+          WHEN c.fee_type = 'fixed' THEN MAX(0, c.fee_amount - 150000)
+          ELSE CAST(c.fee_amount * 1.0 / 1.1 AS INTEGER)
         END
       ), 0) as total_fee_adjusted
-    FROM cases
-    WHERE bimonthly_period = ?
-      AND consultant_user_id IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
-    GROUP BY consultant_user_id
+    FROM cases c
+    LEFT JOIN users u ON u.id = c.consultant_user_id
+    WHERE c.bimonthly_period = ?
+      AND c.consultant_user_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = c.external_id)
+    GROUP BY c.consultant_user_id
   `).bind(period).all<any>();
 
   let inserted = 0, skipped = 0, ineligible = 0;
@@ -680,6 +703,11 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
   for (const r of (summaryRes.results || [])) {
     const userId = r.consultant_user_id;
     const userName = r.consultant_name || '';
+    if (isCaseAllowanceExcludedName(userName) || isCaseAllowanceExcludedName(r.consultant_user_name)) {
+      details.push({ user_id: userId, user_name: userName || r.consultant_user_name || '', bonus: 0, status: 'ineligible', reason: '안건수당 포상 제외 대상' });
+      ineligible++;
+      continue;
+    }
     const bonus = calculateCaseAllowance(r.total_fee_adjusted);
     if (bonus <= 0) {
       details.push({ user_id: userId, user_name: userName, bonus: 0, status: 'ineligible', reason: '등급 미달' });
@@ -697,6 +725,11 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
     `).bind(userId).first<any>();
     if (!u) {
       details.push({ user_id: userId, user_name: userName, bonus, status: 'ineligible', reason: '사용자 없음' });
+      ineligible++;
+      continue;
+    }
+    if (isCaseAllowanceExcludedName(u.name)) {
+      details.push({ user_id: userId, user_name: u.name || userName, bonus: 0, status: 'ineligible', reason: '안건수당 포상 제외 대상' });
       ineligible++;
       continue;
     }

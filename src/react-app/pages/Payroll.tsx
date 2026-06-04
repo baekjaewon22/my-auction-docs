@@ -61,8 +61,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const [commDeductions, setCommDeductions] = useState<{ label: string; amount: string; isFood?: boolean; skipTax?: boolean }[]>([]);
   const [isLocked, setIsLocked] = useState(false);
   const [saving, setSaving] = useState(false);
-  // 안건 수당 (외부 사건 수신 — 2개월 단위 짝수월에만 지급, 정액-15만/실비÷1.1 조정 후 등급 산정)
-  const [caseAllowance, setCaseAllowance] = useState<{ total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; period_label: string } | null>(null);
+  // 안건 수당 (외부 사건 수신 — 2개월 단위 짝수월에만 지급)
+  const [caseAllowance, setCaseAllowance] = useState<{ total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; period_label: string; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null } | null>(null);
 
   // 지사별 합산
   const [branchData, setBranchData] = useState<any[]>([]);
@@ -147,6 +147,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
             case_count: mine?.cnt || 0,
             bonus: mine?.bonus || 0,
             period_label: bonusRes.period_label,
+            case_allowance_excluded: !!mine?.case_allowance_excluded,
+            case_allowance_exclusion_reason: mine?.case_allowance_exclusion_reason || null,
           });
         } else {
           setCaseAllowance(null);
@@ -575,29 +577,31 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                           </div>
                           <div className="payroll-bonus-box">
                             <div className="payroll-bonus-row">
-                              <span>사건 수</span>
+                              <span>갯수</span>
                               <span className="num">{caseAllowance.case_count}건</span>
                             </div>
                             <div className="payroll-bonus-row">
-                              <span>수임료 원본 합계</span>
+                              <span>원본 합계</span>
                               <span className="num" style={{ color: '#9aa0a6' }}>{fmtWon(caseAllowance.total_fee_raw)}</span>
                             </div>
                             <div className="payroll-bonus-row">
-                              <span>조정 후 매출 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(정액 −15만 / 실비 ÷1.1)</span></span>
-                              <span className="num" style={{ fontWeight: 600 }}>{fmtWon(caseAllowance.total_fee_adjusted)}</span>
+                              <span>안건 수당</span>
+                              <span className="num" style={{ fontWeight: 600, color: caseAllowance.case_allowance_excluded ? '#d93025' : '#188038' }}>
+                                {caseAllowance.case_allowance_excluded ? '포상 제외' : `+${fmtWon(caseAllowance.bonus)}`}
+                              </span>
                             </div>
-                            <div className="payroll-bonus-row">
-                              <span>등급 수당 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(부가세 없음)</span></span>
-                              <span className="num" style={{ fontWeight: 600, color: '#188038' }}>+{fmtWon(caseAllowance.bonus)}</span>
-                            </div>
-                            <div className="payroll-bonus-row" style={{ color: '#d93025', fontSize: '0.85rem' }}>
-                              <span>　└ 원천세 (3.3%)</span>
-                              <span className="num">−{fmtWon(truncMoney(caseAllowance.bonus * 0.033))}</span>
-                            </div>
-                            <div className="payroll-bonus-row total">
-                              <span>안건 수당 실수령</span>
-                              <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(caseAllowance.bonus - truncMoney(caseAllowance.bonus * 0.033))}</span>
-                            </div>
+                            {!caseAllowance.case_allowance_excluded && (
+                              <>
+                                <div className="payroll-bonus-row" style={{ color: '#d93025', fontSize: '0.85rem' }}>
+                                  <span>　└ 원천세 (3.3%)</span>
+                                  <span className="num">−{fmtWon(truncMoney(caseAllowance.bonus * 0.033))}</span>
+                                </div>
+                                <div className="payroll-bonus-row total">
+                                  <span>안건 수당 실수령</span>
+                                  <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(caseAllowance.bonus - truncMoney(caseAllowance.bonus * 0.033))}</span>
+                                </div>
+                              </>
+                            )}
                           </div>
                         </>
                       )}
@@ -830,20 +834,18 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 </div>
                 <div className="payroll-bonus-box">
                   <div className="payroll-bonus-row">
-                    <span>사건 수</span>
+                    <span>갯수</span>
                     <span className="num">{caseAllowance.case_count}건</span>
                   </div>
                   <div className="payroll-bonus-row">
-                    <span>수임료 원본 합계</span>
+                    <span>원본 합계</span>
                     <span className="num" style={{ color: '#9aa0a6' }}>{fmtWon(caseAllowance.total_fee_raw)}</span>
-                  </div>
-                  <div className="payroll-bonus-row">
-                    <span>조정 후 매출 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(정액 −15만 / 실비 ÷1.1)</span></span>
-                    <span className="num" style={{ fontWeight: 600 }}>{fmtWon(caseAllowance.total_fee_adjusted)}</span>
                   </div>
                   <div className="payroll-bonus-row total">
                     <span>안건 수당</span>
-                    <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(caseAllowance.bonus)}</span>
+                    <span className="num accent" style={{ color: caseAllowance.case_allowance_excluded ? '#d93025' : '#188038' }}>
+                      {caseAllowance.case_allowance_excluded ? '포상 제외' : `+${fmtWon(caseAllowance.bonus)}`}
+                    </span>
                   </div>
                 </div>
               </>

@@ -42,6 +42,8 @@ interface BonusSummaryRow {
   total_fee_raw: number;
   total_fee_adjusted: number;
   bonus: number;
+  case_allowance_excluded?: boolean;
+  case_allowance_exclusion_reason?: string | null;
 }
 
 const fmtKRW = (n: number) => n.toLocaleString('ko-KR') + '원';
@@ -318,9 +320,7 @@ export default function Cases() {
               </tbody>
             </table>
             <div style={{ marginTop: 6, fontSize: 11, color: '#5f6368' }}>
-              ※ 구간별이 아닌 <strong>조정 후 총 금액 기준</strong> 단계 산정.<br />
-              ※ 조정 산식 — 정액제: 수임료 −150,000원 / 실비제: 수임료 ÷ 1.1 (부가세 제외)<br />
-              ※ 예: 정액 700만 → 685만 → 30만원 / 실비 700만 → 636만 → 30만원
+              ※ 구간별이 아닌 총 금액 기준 단계 산정.
             </div>
           </details>
 
@@ -335,9 +335,8 @@ export default function Cases() {
                   <tr>
                     <th>컨설턴트 (성과금 귀속)</th>
                     <th>지사 / 팀</th>
-                    <th style={{ textAlign: 'right' }}>사건 수</th>
-                    <th style={{ textAlign: 'right' }}>수임료(원본)</th>
-                    <th style={{ textAlign: 'right' }}>조정 후 (성과금기준)</th>
+                    <th style={{ textAlign: 'right' }}>갯수</th>
+                    <th style={{ textAlign: 'right' }}>원본 합계</th>
                     <th style={{ textAlign: 'right' }}>성과금</th>
                   </tr>
                 </thead>
@@ -352,15 +351,15 @@ export default function Cases() {
                       <td style={{ fontSize: 12, color: '#5f6368' }}>{b.consultant_branch || '-'} {b.consultant_department ? '· ' + b.consultant_department : ''}</td>
                       <td style={{ textAlign: 'right' }}>{b.cnt}건</td>
                       <td style={{ textAlign: 'right', color: '#5f6368' }}>{fmtKRW(b.total_fee_raw || b.total_fee)}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtKRW(b.total_fee_adjusted || b.total_fee)}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 700, color: '#188038' }}>+{fmtKRW(b.bonus)}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700, color: b.case_allowance_excluded ? '#d93025' : '#188038' }}>
+                        {b.case_allowance_excluded ? '포상 제외' : `+${fmtKRW(b.bonus)}`}
+                      </td>
                     </tr>
                   ))}
                   <tr style={{ background: '#f8f9fa', fontWeight: 700 }}>
                     <td colSpan={2}>합계</td>
                     <td style={{ textAlign: 'right' }}>{bonus.reduce((s, b) => s + b.cnt, 0)}건</td>
                     <td style={{ textAlign: 'right', color: '#5f6368' }}>{fmtKRW(bonus.reduce((s, b) => s + (b.total_fee_raw || b.total_fee), 0))}</td>
-                    <td style={{ textAlign: 'right' }}>{fmtKRW(bonus.reduce((s, b) => s + (b.total_fee_adjusted || b.total_fee), 0))}</td>
                     <td style={{ textAlign: 'right', color: '#188038' }}>+{fmtKRW(bonus.reduce((s, b) => s + b.bonus, 0))}</td>
                   </tr>
                 </tbody>

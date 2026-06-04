@@ -825,8 +825,8 @@ export const api = {
     detail: (id: string) => request<{ case: any }>(`/cases/${id}`),
     update: (id: string, data: { registered_at?: string; consultant_name?: string | null; consultant_position?: string | null; manager_username?: string; manager_name?: string; client_name?: string; fee_type?: 'fixed' | 'actual'; fee_amount?: number }) =>
       request<{ success: boolean; case: any }>(`/cases/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    bonusSummary: (period: string) => request<{ period: string; period_label: string; summary: Array<{ consultant_user_id: string | null; consultant_name: string; consultant_position: string | null; consultant_branch: string | null; consultant_department: string | null; cnt: number; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; bonus: number }> }>(`/cases/bonus/summary?period=${period}`),
-    bonusMe: (period: string) => request<{ period: string; period_label: string; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number }>(`/cases/bonus/me?period=${period}`),
+    bonusSummary: (period: string) => request<{ period: string; period_label: string; summary: Array<{ consultant_user_id: string | null; consultant_name: string; consultant_position: string | null; consultant_branch: string | null; consultant_department: string | null; cnt: number; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; bonus: number; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null }> }>(`/cases/bonus/summary?period=${period}`),
+    bonusMe: (period: string) => request<{ period: string; period_label: string; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null }>(`/cases/bonus/me?period=${period}`),
     delete: (id: string, reason?: string) =>
       request<{ success: boolean }>(`/cases/${id}${reason ? '?reason=' + encodeURIComponent(reason) : ''}`, { method: 'DELETE' }),
     finalizeBonus: (period: string) =>

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
-import { calculateCaseAllowance } from './cases';
+import { calculateCaseAllowance, isCaseAllowanceExcludedName } from './cases';
 import { isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 // ───── 계약포상 (신설) ─────
@@ -226,6 +226,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
   // 본사관리 인원은 실적 기반 성과금 없음
   const isHQ = normalizeBranchName(user.branch) === '본사관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
+  const isCaseAllowanceExcluded = isCaseAllowanceExcludedName(user.name);
 
   // 성과금: 2개월 일반매출(공급가액) + 안건 수당(amount 그대로) 합산 (급여제만)
   // 매수신청대리는 대리비용을 제3자에게 지급하므로 업무성과 산정에서 차감
@@ -269,15 +270,17 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
     // 안건 수당: cases 테이블에서 직접 등급 성과금 계산 (트리거 INSERT 여부 무관)
     const periodKey = `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}_${String(bonusPeriodEndMonth).padStart(2, '0')}`;
-    const caseAllowanceCases = await db.prepare(`
-      SELECT COALESCE(SUM(
-        CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-             ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER) END
-      ), 0) as total_fee_adjusted
-      FROM cases
-      WHERE consultant_user_id = ? AND bimonthly_period = ?
-    `).bind(userId, periodKey).first<any>();
-    bonusCaseAllowance = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
+    if (!isCaseAllowanceExcluded) {
+      const caseAllowanceCases = await db.prepare(`
+        SELECT COALESCE(SUM(
+          CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
+               ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER) END
+        ), 0) as total_fee_adjusted
+        FROM cases
+        WHERE consultant_user_id = ? AND bimonthly_period = ?
+      `).bind(userId, periodKey).first<any>();
+      bonusCaseAllowance = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
+    }
 
     bonusTotalSalesRaw = bonusRegularRaw + bonusCaseAllowance;
     bonusTotalSales = bonusRegularSupply + bonusCaseAllowance;  // 산정 기준
@@ -625,7 +628,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
     // 안건 수당: 짝수월 정산 시 cases 직접 조회로 등급 성과금 자동 합산
     // (commission rate 미적용, 부가세 없음, 33% 세금만 차감)
     let caseAllowanceIncome = 0;
-    if (m % 2 === 0) {
+    if (m % 2 === 0 && !isCaseAllowanceExcludedName(u.name)) {
       const m1 = m - 1;
       const m2 = m;
       const periodKey = `${y}-${String(m1).padStart(2, '0')}_${String(m2).padStart(2, '0')}`;
