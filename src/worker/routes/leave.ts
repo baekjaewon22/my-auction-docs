@@ -277,6 +277,25 @@ leave.get('/', requireRole('master', 'ceo', 'admin', 'manager', 'accountant', 'a
   const user = c.get('user');
   const db = c.env.DB;
 
+  let visibleUsersQuery = "SELECT id FROM users WHERE approved = 1 AND role != 'resigned' AND login_type != 'freelancer' AND role != 'freelancer'";
+  const visibleUserParams: string[] = [];
+
+  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
+    visibleUsersQuery += ' AND branch = ?';
+    visibleUserParams.push(user.branch);
+  } else if (user.role === 'manager') {
+    visibleUsersQuery += ' AND branch = ? AND department = ?';
+    visibleUserParams.push(user.branch, user.department);
+  }
+
+  const visibleUsersStmt = db.prepare(visibleUsersQuery);
+  const visibleUsersResult = visibleUserParams.length > 0
+    ? await visibleUsersStmt.bind(...visibleUserParams).all<{ id: string }>()
+    : await visibleUsersStmt.all<{ id: string }>();
+  for (const row of (visibleUsersResult.results || [])) {
+    await reinitUserLeave(db, row.id);
+  }
+
   let query = `SELECT al.*, u.name as user_name, u.branch, u.department, u.role as user_role,
     u.hire_date, u.created_at as user_created_at
     FROM annual_leave al LEFT JOIN users u ON al.user_id = u.id WHERE u.login_type != 'freelancer' AND u.role != 'freelancer'`;
