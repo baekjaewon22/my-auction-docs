@@ -83,6 +83,13 @@ function compact(value: unknown): string {
   return String(value ?? '').trim().replace(/\s+/g, '').toLowerCase();
 }
 
+function caseNumberWithItem(caseNumber: unknown, itemNo: unknown): string {
+  const base = String(caseNumber ?? '').trim();
+  const item = String(itemNo ?? '').trim().replace(/[^\d]/g, '');
+  if (!base || !item || /\(\s*\d+\s*\)$/.test(base)) return base;
+  return `${base}(${item})`;
+}
+
 export function makeBidDedupeKey(input: Pick<BidAnalysisInput, 'bid_datetime' | 'case_number' | 'client_name' | 'assignee_name' | 'source_type' | 'source_id'>): string {
   if (input.source_type === 'freelancer' && input.source_id) return `freelancer|${input.source_id}`;
   const date = String(input.bid_datetime || '').slice(0, 10);
@@ -152,11 +159,12 @@ export async function upsertBidAnalysisFromJournal(db: D1Database, entry: {
   let data: any = {};
   try { data = JSON.parse(entry.data || '{}'); } catch { data = {}; }
   const bidResult = data.bidCancelled ? '취하/변경' : data.bidWon ? '낙찰' : '실패';
+  await deleteBidAnalysisForJournal(db, entry.id);
   await upsertBidAnalysisEntry(db, {
     bid_datetime: `${entry.target_date}${data.timeFrom ? ` ${data.timeFrom}` : ''}`,
     assignee_name: entry.user_name || '',
     branch_name: entry.branch || '',
-    case_number: data.caseNo || entry.activity_subtype || '',
+    case_number: caseNumberWithItem(data.caseNo || entry.activity_subtype || '', data.itemNo || data.item_no),
     property_type: data.propertyType || '',
     suggested_bid_price: normalizeAmount(data.suggestedPrice),
     actual_bid_price: normalizeAmount(data.bidPrice),

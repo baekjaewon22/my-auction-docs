@@ -8,7 +8,7 @@ import Select from '../components/Select';
 import BusinessIncomeTab from '../components/BusinessIncomeTab';
 import EmployeeBonusTab from '../components/EmployeeBonusTab';
 import { Receipt, Camera } from 'lucide-react';
-import { isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
 function truncMoney(n: number): number { return Math.trunc(Number(n) || 0); }
@@ -19,10 +19,6 @@ function toMoneyDisplay(val: string): string {
 }
 function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
-}
-
-function isRestrictedBranchForAccountingAsst(branch: unknown): boolean {
-  return isRestrictedAccountingBranch(branch);
 }
 
 type PayrollTab = 'payroll' | 'summary' | 'branch' | 'business_income' | 'employee_bonus';
@@ -81,14 +77,6 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   }, [initialTab]);
 
   useEffect(() => {
-    if (currentUser?.role !== 'accountant_asst') return;
-    const branch = normalizeBranchName(currentUser.branch) || currentUser.branch || '';
-    setFilterBranch(isRestrictedBranchForAccountingAsst(branch) ? '__blocked__' : branch);
-    setSelectedUserId('');
-    setData(null);
-  }, [currentUser?.branch, currentUser?.role]);
-
-  useEffect(() => {
     if (!requireBranchSelection) return;
     const branchParam = searchParams.get('branch');
     if (branchParam === null) return;
@@ -115,7 +103,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       setExtraDeductionLabel('');
       setCommExtras([]);
       setCommDeductions([]);
-      setIsLocked(!!res.payroll_save?.locked || !!res.is_paid_period);
+      setIsLocked(!!res.payroll_save?.locked);
       // 저장 데이터 로드
       const period = res.period_label || selectedMonth;
       let snapshotCaseAllowance = res.payroll_snapshot?.caseAllowance || null;
@@ -131,7 +119,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           setExtraDeductionLabel(sd.extraDeductionLabel ?? '');
           setCommExtras(Array.isArray(sd.commExtras) ? sd.commExtras : []);
           setCommDeductions(Array.isArray(sd.commDeductions) ? sd.commDeductions : []);
-          setIsLocked(!!saveRes.save.locked || !!res.is_paid_period);
+          setIsLocked(!!saveRes.save.locked);
         }
       } catch { /* 저장 없음 */ }
 
@@ -190,12 +178,36 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
     finally { setSaving(false); }
   };
 
+  const handleLockPayroll = async () => {
+    if (!data || !selectedUserId) return;
+    const period = data.period_label || selectedMonth;
+    if (!confirm('이 급여정산을 확정하시겠습니까? 확정 후에는 수정할 수 없습니다.')) return;
+    try {
+      await api.payroll.lock({ user_id: selectedUserId, period });
+      setIsLocked(true);
+      alert('급여정산이 확정되었습니다.');
+      await loadPayroll();
+    } catch (err: any) { alert(err.message); }
+  };
+
+  const handleUnlockPayroll = async () => {
+    if (!data || !selectedUserId) return;
+    const period = data.period_label || selectedMonth;
+    if (!confirm('이 급여정산의 확정을 취소하시겠습니까?')) return;
+    try {
+      await api.payroll.unlock({ user_id: selectedUserId, period });
+      setIsLocked(false);
+      alert('확정취소되었습니다.');
+      await loadPayroll();
+    } catch (err: any) { alert(err.message); }
+  };
+
   useEffect(() => { if (selectedUserId) loadPayroll(); }, [selectedUserId, selectedMonth]);
 
   const loadBranch = async () => {
     setBranchLoading(true);
     try {
-      const res = await api.payroll.branchSummary(selectedMonth, currentUser?.role === 'accountant_asst' ? filterBranch : undefined);
+      const res = await api.payroll.branchSummary(selectedMonth, filterBranch || undefined);
       setBranchData(res.branches || []);
     } catch { setBranchData([]); }
     finally { setBranchLoading(false); }
@@ -231,14 +243,9 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
   // 지사 필터 적용 (퇴사자는 퇴사월 이전 정산월에서만 표시)
   // 총무보조(accountant_asst)는 팀장·관리자급·이사·대표자 열람 제한
-  const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
-  const currentRole = (currentUser?.role || '') as string;
-  const effectiveFilterBranch = currentRole === 'accountant_asst'
-    ? (isRestrictedBranchForAccountingAsst(currentUser?.branch) ? '__blocked__' : (currentUser?.branch || '__blocked__'))
-    : filterBranch;
+  const effectiveFilterBranch = filterBranch;
   const branchFiltered = (effectiveFilterBranch ? users.filter(u => sameBranchName(u.branch, effectiveFilterBranch)) : users)
-    .filter(u => u.role !== 'master')
-    .filter(u => currentRole !== 'accountant_asst' || !RESTRICTED_ROLES_FOR_ASST.includes(u.role as string));
+    .filter(u => u.role !== 'master');
   const activeUsers = branchFiltered.filter(u => (u.role as string) !== 'resigned');
   const resignedUsers = branchFiltered.filter(u => {
     if ((u.role as string) !== 'resigned') return false;
@@ -253,9 +260,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
     ...PAYROLL_BRANCH_SELECTOR.map(item => item.value).filter(Boolean),
   ]));
   const branchOpts = branchOptionValues.map(b => ({ value: b, label: b }));
-  const visibleBranchCards = currentRole === 'accountant_asst'
-    ? PAYROLL_BRANCH_SELECTOR.filter((item) => item.value && sameBranchName(item.value, currentUser?.branch) && !isRestrictedBranchForAccountingAsst(item.value))
-    : PAYROLL_BRANCH_SELECTOR;
+  const visibleBranchCards = PAYROLL_BRANCH_SELECTOR;
 
   const s = data?.summary;
 
@@ -305,13 +310,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
       {/* 필터 */}
       <div className="payroll-control-panel">
-        {currentRole !== 'accountant_asst' && <div style={{ minWidth: 120 }}>
+        <div style={{ minWidth: 120 }}>
           <label className="form-label">지사</label>
           <Select size="sm" options={[{ value: '', label: '전체 지사' }, ...branchOpts]}
             value={branchOpts.find(o => o.value === filterBranch) || { value: '', label: '전체 지사' }}
             onChange={(o: any) => { setFilterBranch(o?.value || ''); setSelectedUserId(''); setData(null); }}
             placeholder="지사" isClearable />
-        </div>}
+        </div>
         <div style={{ minWidth: 260 }}>
           <label className="form-label">담당자</label>
           <Select options={userOpts}
@@ -331,13 +336,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         <button className={`filter-btn ${tab === 'payroll' ? 'active' : ''}`} onClick={() => setTab('payroll')}>
           급여정산
         </button>
-        {data && currentUser?.role !== 'accountant_asst' && <button className={`filter-btn ${tab === 'summary' ? 'active' : ''}`} onClick={() => setTab('summary')}>
+        {data && <button className={`filter-btn ${tab === 'summary' ? 'active' : ''}`} onClick={() => setTab('summary')}>
           회사이익 및 매출정리
         </button>}
-        {currentUser?.role !== 'accountant_asst' && <button className={`filter-btn ${tab === 'branch' ? 'active' : ''}`} onClick={() => setTab('branch')}>
+        {<button className={`filter-btn ${tab === 'branch' ? 'active' : ''}`} onClick={() => setTab('branch')}>
           지사별 합산
         </button>}
-        {currentUser?.role !== 'accountant_asst' && <button className={`filter-btn ${tab === 'business_income' ? 'active' : ''}`} onClick={() => setTab('business_income')}>
+        {<button className={`filter-btn ${tab === 'business_income' ? 'active' : ''}`} onClick={() => setTab('business_income')}>
           사업소득신고
         </button>}
         <button className={`filter-btn ${tab === 'employee_bonus' ? 'active' : ''}`} onClick={() => setTab('employee_bonus')}>
@@ -1031,6 +1036,11 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           {/* 수동 입력 (PNG 영역 밖) */}
           <div className="card" style={{ marginTop: 20, padding: 20, maxWidth: 800 }}>
             <h3 style={{ margin: '0 0 14px', fontSize: '0.95rem', color: '#3c4043' }}>회계 입력란</h3>
+            {isLocked && ['master', 'accountant'].includes(currentUser?.role || '') && (
+              <div style={{ marginBottom: 10, textAlign: 'center' }}>
+                <button className="btn btn-sm" onClick={handleUnlockPayroll}>확정취소</button>
+              </div>
+            )}
             {isLocked ? (
               <div style={{ padding: 16, background: '#f5f5f5', borderRadius: 8, color: '#9aa0a6', textAlign: 'center' }}>잠금 상태 — 수정 불가</div>
             ) : (
@@ -1168,6 +1178,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button className="btn btn-primary" onClick={handleSavePayroll} disabled={saving}>{saving ? '저장중...' : '정산 저장'}</button>
+                  <button className="btn btn-success" onClick={handleLockPayroll}>확정</button>
                 </div>
                 <div style={{ marginTop: 10, fontSize: '0.78rem', color: '#9aa0a6' }}>
                   {data.accounting.pay_type === 'commission'
@@ -1347,7 +1358,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         <div className="empty-state">담당자를 선택하면 급여정산 내역이 표시됩니다.</div>
       )}
 
-      {tab === 'business_income' && currentUser?.role !== 'accountant_asst' && <BusinessIncomeTab month={selectedMonth} />}
+      {tab === 'business_income' && <BusinessIncomeTab month={selectedMonth} />}
       {tab === 'employee_bonus' && <EmployeeBonusTab month={selectedMonth} users={filteredUsers} />}
     </div>
   );

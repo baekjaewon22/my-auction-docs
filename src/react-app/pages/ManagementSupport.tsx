@@ -101,8 +101,9 @@ export default function ManagementSupport() {
     if (item.to === '/finance-analytics') return ['master', 'ceo', 'accountant'].includes(role);
     if (item.to === '/management-support/holidays') return ['master', 'ceo', 'admin', 'accountant'].includes(role);
     if (item.to === '/accounting-staff') return !isAsst;
-    if (item.to === '/payroll-business-income') return ['master', 'ceo', 'accountant'].includes(role);
-    if (item.to === '/payroll' || item.to.startsWith('/accounting-session2/reports')) {
+    if (item.to === '/payroll-business-income') return ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
+    if (item.to === '/payroll') return ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
+    if (item.to.startsWith('/accounting-session2/reports')) {
       return !asstRestricted;
     }
     return true;

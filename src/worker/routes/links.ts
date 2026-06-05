@@ -60,6 +60,110 @@ function dayDiff(a: string, b: string): number {
   return Math.round((new Date(a).getTime() - new Date(b).getTime()) / 86400000);
 }
 
+function normalizeDocText(value: string): string {
+  return (value || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function dateNeedles(date: string): string[] {
+  const [year, monthRaw, dayRaw] = date.split('-');
+  const month = String(Number(monthRaw));
+  const day = String(Number(dayRaw));
+  const yy = year.slice(2);
+  return [
+    `${year}-${monthRaw}-${dayRaw}`,
+    `${year}.${monthRaw}.${dayRaw}`,
+    `${year}. ${month}. ${day}`,
+    `${year}\uB144 ${month}\uC6D4 ${day}\uC77C`,
+    `${year} \uB144 ${month} \uC6D4 ${day} \uC77C`,
+    `${yy}\uB144 ${month}\uC6D4 ${day}\uC77C`,
+    `${yy} \uB144 ${month} \uC6D4 ${day} \uC77C`,
+  ];
+}
+
+function docMentionsOutdoorEntry(doc: { title?: string | null; content?: string | null }, entry: { target_date: string; data: string }): boolean {
+  const haystack = normalizeDocText(`${doc.title || ''} ${doc.content || ''}`);
+  if (!dateNeedles(entry.target_date).some((needle) => haystack.includes(needle))) return false;
+
+  let parsed: any = {};
+  try { parsed = JSON.parse(entry.data || '{}'); } catch { /* ignore */ }
+
+  const timeKeys = [parsed.timeFrom, parsed.timeTo]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean);
+  if (timeKeys.length > 0 && timeKeys.every((key) => haystack.includes(key))) return true;
+
+  const strongKeys = [parsed.caseNo, parsed.court, parsed.client, parsed.place]
+    .map((v) => String(v || '').trim())
+    .filter((v) => v.length >= 2);
+
+  if (strongKeys.length === 0) return true;
+  return strongKeys.some((key) => haystack.includes(key));
+}
+
+async function loadImplicitOutdoorEntryIds(db: D1Database, options: { userId?: string; since?: string; excludeDocId?: string } = {}): Promise<Set<string>> {
+  const entryParams: any[] = [];
+  let entryWhere = "WHERE activity_type IN ('입찰','임장','미팅')";
+  if (options.userId) {
+    entryWhere += ' AND user_id = ?';
+    entryParams.push(options.userId);
+  }
+  if (options.since) {
+    entryWhere += ' AND target_date >= ?';
+    entryParams.push(options.since);
+  }
+
+  const entriesRes = await db.prepare(`
+    SELECT id, user_id, target_date, activity_type, data
+    FROM journal_entries
+    ${entryWhere}
+  `).bind(...entryParams).all();
+  const entries = ((entriesRes.results || []) as Array<{ id: string; user_id: string; target_date: string; activity_type: string; data: string }>)
+    .filter((entry) => isOutdoorEntry(entry.activity_type, entry.data));
+
+  if (entries.length === 0) return new Set();
+
+  const docParams: any[] = [];
+  let docWhere = `
+    WHERE template_id = 'tpl-work-007'
+      AND status IN ('submitted','approved')
+      AND COALESCE(cancelled, 0) = 0
+  `;
+  if (options.userId) {
+    docWhere += ' AND author_id = ?';
+    docParams.push(options.userId);
+  }
+  if (options.excludeDocId) {
+    docWhere += ' AND id <> ?';
+    docParams.push(options.excludeDocId);
+  }
+
+  const docsRes = await db.prepare(`
+    SELECT id, author_id, title, content
+    FROM documents
+    ${docWhere}
+  `).bind(...docParams).all();
+  const docs = (docsRes.results || []) as Array<{ id: string; author_id: string; title: string; content: string }>;
+  const docsByAuthor = new Map<string, typeof docs>();
+  for (const doc of docs) {
+    const list = docsByAuthor.get(doc.author_id) || [];
+    list.push(doc);
+    docsByAuthor.set(doc.author_id, list);
+  }
+
+  const implicit = new Set<string>();
+  for (const entry of entries) {
+    const authorDocs = docsByAuthor.get(entry.user_id) || [];
+    if (authorDocs.some((doc) => docMentionsOutdoorEntry(doc, entry))) {
+      implicit.add(entry.id);
+    }
+  }
+  return implicit;
+}
+
 // ─────────────────────────────────────────────────────────
 // POST /api/links/backfill-outdoor — 외근보고서 ↔ 일지 link backfill
 // body: { dryRun: boolean (default true) }
@@ -330,6 +434,8 @@ links.get('/my-outdoor-entries', async (c) => {
   }
 
   // 응답 가공
+  const implicitLinkedToOther = await loadImplicitOutdoorEntryIds(db, { userId: user.sub, excludeDocId: forDocId });
+
   const items = outdoorEntries.map((e) => {
     let parsed: any = {};
     try { parsed = JSON.parse(e.data); } catch { /* */ }
@@ -345,7 +451,7 @@ links.get('/my-outdoor-entries', async (c) => {
       case_no: parsed.caseNo || '',
       client: parsed.client || '',
       court: parsed.court || '',
-      linked_to_other_doc: otherDoc || null,
+      linked_to_other_doc: otherDoc || (implicitLinkedToOther.has(e.id) ? '__implicit_existing_report__' : null),
       linked_to_current_doc: linkedToCurrent.has(e.id),
     };
   });
@@ -726,10 +832,14 @@ links.get('/effective-entry-ids', async (c) => {
   const exemptionResult = exemptionParams.length > 0
     ? await db.prepare(exemptionQuery).bind(...exemptionParams).all()
     : await db.prepare(exemptionQuery).all();
+  const implicitEntryIds = linkType === 'outdoor'
+    ? await loadImplicitOutdoorEntryIds(db, { since })
+    : new Set<string>();
 
   const ids = Array.from(new Set([
     ...(result.results || []).map((r: any) => r.journal_entry_id as string),
     ...(exemptionResult.results || []).map((r: any) => r.journal_entry_id as string),
+    ...implicitEntryIds,
   ]));
   return c.json({ entry_ids: ids });
 });

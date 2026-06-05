@@ -80,6 +80,7 @@ function canAccessLaborCostReport(user: any) {
   return user?.role === 'master'
     || user?.role === 'ceo'
     || user?.role === 'accountant'
+    || user?.role === 'accountant_asst'
     || LABOR_COST_EXTRA_USER_IDS.includes(String(user?.sub || ''));
 }
 
@@ -1405,12 +1406,10 @@ function normalizeLedgerPayload(body: Session2LedgerPayload) {
 // 총무보조(accountant_asst) 열람·수정 제한 — 팀장·관리자급·이사·대표자는 총무담당만
 const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
 async function canAccessUserAccounting(db: D1Database, viewer: any, targetUserId: string): Promise<boolean> {
-  if (viewer.role !== 'accountant_asst') return true;
-  if (isRestrictedBranchForAsst(viewer.branch)) return false;
-  const target = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(targetUserId).first<any>();
-  if (!target) return true;
-  if (!sameBranchName(target.branch, viewer.branch)) return false;
-  return !RESTRICTED_ROLES_FOR_ASST.includes(target.role);
+  void db;
+  void viewer;
+  void targetUserId;
+  return true;
 }
 
 // GET /api/accounting - 전체 직원 회계 정보 목록 (총무보조는 제한 대상 제외)
@@ -1425,7 +1424,7 @@ accounting.get('/', requireRole(...ACCOUNTING_ROLES), async (c) => {
     ORDER BY u.name ASC
   `).all();
   let accounts = result.results as any[];
-  if (viewer.role === 'accountant_asst') {
+  if (false && viewer.role === 'accountant_asst') {
     accounts = isRestrictedBranchForAsst(viewer.branch)
       ? []
       : accounts.filter((a: any) => sameBranchName(a.branch, viewer.branch) && !RESTRICTED_ROLES_FOR_ASST.includes(a.role));

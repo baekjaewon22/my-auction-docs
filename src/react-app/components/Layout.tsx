@@ -66,7 +66,7 @@ export default function Layout() {
   const canViewBidHistory = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canViewFreelancerBids = isFreelancer || (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role));
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
-  const canPayroll = (canAccounting && !isRestrictedAsst) || PAYROLL_EXTRA_IDS.includes(user?.id || '');
+  const canPayroll = canAccounting || PAYROLL_EXTRA_IDS.includes(user?.id || '');
   const canManagementSupport = canAccounting || canPayroll || (!isFreelancer && !isSupport && role === 'admin');
   // 회계분석은 총무보조 제외 (cc_ref도 제외)
   const canFinanceAnalytics = !isFreelancer && !isSupport && (

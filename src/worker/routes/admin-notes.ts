@@ -54,10 +54,22 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
       FOREIGN KEY (note_id) REFERENCES admin_notes(id) ON DELETE CASCADE
     )
   `).run();
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS admin_note_view_logs (
+      id TEXT PRIMARY KEY,
+      note_id TEXT NOT NULL,
+      viewer_id TEXT NOT NULL,
+      viewed_date TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now', '+9 hours')),
+      FOREIGN KEY (note_id) REFERENCES admin_notes(id) ON DELETE CASCADE
+    )
+  `).run();
+  await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_note_view_logs_daily ON admin_note_view_logs(note_id, viewer_id, viewed_date)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_category ON admin_notes(category)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_legal_subcategory ON admin_notes(legal_subcategory)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_journal_entry ON admin_notes(journal_entry_id)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_attachments_note ON admin_note_attachments(note_id)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_view_logs_note ON admin_note_view_logs(note_id)').run();
   await ensureArticlePdfTable(db);
 }
 
@@ -1058,8 +1070,14 @@ adminNotes.get('/:id', async (c) => {
   if (!canReadNote(note, viewer, viewerInfo, role)) return c.json({ error: '열람 권한이 없습니다.' }, 403);
 
   if (shouldTrackView) {
-    await db.prepare('UPDATE admin_notes SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?').bind(id).run();
-    note.view_count = Number(note.view_count || 0) + 1;
+    const viewLog = await db.prepare(`
+      INSERT OR IGNORE INTO admin_note_view_logs (id, note_id, viewer_id, viewed_date)
+      VALUES (?, ?, ?, date('now', '+9 hours'))
+    `).bind(crypto.randomUUID(), id, viewer.sub).run();
+    if ((viewLog.meta?.changes || 0) > 0) {
+      await db.prepare('UPDATE admin_notes SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?').bind(id).run();
+      note.view_count = Number(note.view_count || 0) + 1;
+    }
   }
 
   const comments = await db.prepare(

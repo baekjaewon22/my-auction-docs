@@ -303,6 +303,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">물건번호</span>{showVal(d.itemNo)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.bidder)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">물건종류</span>{showVal(d.propertyType)}</div>
@@ -365,6 +366,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                             <CompanionEdit ed={ed} setEditData={setEditData} editData={editData} />
                             <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>물건번호</label><input value={ed('itemNo')} onChange={(e) => setEd('itemNo', e.target.value.replace(/[^0-9]/g, ''))} /></div>
                             <div className="journal-edit-row"><label>{ed('companion') ? '담당자' : '고객명'}</label><input value={ed('client')} onChange={(e) => setEd('client', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>장소</label><input value={ed('place')} onChange={(e) => setEd('place', e.target.value)} /></div>
@@ -374,6 +376,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">물건번호</span>{showVal(d.itemNo)}</div>
                             {d.client && <div className="journal-detail-row"><span className="journal-detail-label">{d.companion ? '담당자' : '고객명'}</span>{showVal(d.client)}</div>}
                             {d.court && <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>
@@ -555,6 +558,7 @@ function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd
     <div className="journal-edit-form">
       <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
       <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
+      <div className="journal-edit-row"><label>물건번호</label><input value={ed('itemNo')} onChange={(e) => setEd('itemNo', e.target.value.replace(/[^0-9]/g, ''))} /></div>
       <div className="journal-edit-row"><label>고객명</label><input value={ed('bidder')} onChange={(e) => setEd('bidder', e.target.value)} /></div>
       <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
       <div className="journal-edit-row">

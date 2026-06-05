@@ -18,7 +18,7 @@ function truncMoney(n: number): number { return Math.trunc(Number(n) || 0); }
 
 export default function BusinessIncomeTab({ month }: { month: string }) {
   const currentUser = useAuthStore((state) => state.user);
-  const isAccountingAsst = currentUser?.role === 'accountant_asst';
+  const canEditBusinessIncome = ['master', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   const [loading, setLoading] = useState(false);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [dirty, setDirty] = useState<Set<string>>(new Set());
@@ -43,7 +43,7 @@ export default function BusinessIncomeTab({ month }: { month: string }) {
     try { const res = await api.payroll.businessIncomePool(); setPool(res.pool || []); }
     catch { /* ignore */ }
   };
-  useEffect(() => { if (!isAccountingAsst) loadPool(); }, [isAccountingAsst]);
+  useEffect(() => { loadPool(); }, []);
 
   const updateEntry = (idx: number, patch: Partial<Entry>) => {
     setEntries(prev => prev.map((e, i) => {
@@ -275,7 +275,7 @@ export default function BusinessIncomeTab({ month }: { month: string }) {
           <button className="btn btn-sm" onClick={exportExcel} disabled={loading || entries.length === 0} title="월별 사업소득신고 엑셀 다운로드">
             <Download size={13} /> 엑셀 저장
           </button>
-          {!isAccountingAsst && <div className="bi-addmenu-wrap">
+          {canEditBusinessIncome && <div className="bi-addmenu-wrap">
             <button className="btn btn-sm" onClick={() => setPoolMenuOpen(v => !v)}>
               <Plus size={13} /> 인원 추가 ▾
             </button>
@@ -375,7 +375,7 @@ export default function BusinessIncomeTab({ month }: { month: string }) {
                       : <span className="bi-badge auto">자동</span>}
                   </td>
                   <td>
-                    {!isAccountingAsst && <button className="bi-delete-btn" onClick={() => removeEntry(idx)} title="삭제"><Trash2 size={12} /></button>}
+                    {canEditBusinessIncome && <button className="bi-delete-btn" onClick={() => removeEntry(idx)} title="삭제"><Trash2 size={12} /></button>}
                   </td>
                 </tr>
               ))}

@@ -678,7 +678,10 @@ export const api = {
       request<{ save: any }>('/payroll/save/' + userId + '?period=' + encodeURIComponent(period)),
     save: (data: { user_id: string; period: string; pay_type: string; data: Record<string, unknown> }) =>
       request('/payroll/save', { method: 'POST', body: JSON.stringify(data) }),
-    lock: () => request('/payroll/lock', { method: 'POST' }),
+    lock: (data?: { user_id?: string; period?: string }) =>
+      request('/payroll/lock', { method: 'POST', body: JSON.stringify(data || {}) }),
+    unlock: (data: { user_id: string; period: string }) =>
+      request('/payroll/unlock', { method: 'POST', body: JSON.stringify(data) }),
     businessIncome: (month: string) =>
       request<{
         month: string;

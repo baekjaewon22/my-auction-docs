@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { calculateCaseAllowance, isCaseAllowanceExcludedName } from './cases';
-import { isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { normalizeBranchName } from '../lib/branchAliases';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -150,37 +150,21 @@ const requirePayrollAccess = async (c: any, next: any) => {
 };
 
 // 총무보조(accountant_asst) 열람 제한 — 팀장·관리자급·이사·대표자 정산은 총무담당만 접근 가능
-const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
-function isRestrictedBranchForAsst(branch: unknown): boolean {
-  return isRestrictedAccountingBranch(branch);
-}
-
 function getAsstScopedBranch(viewer: any): string | null {
-  if (viewer?.role !== 'accountant_asst') return '';
-  const branch = String(viewer?.branch || '').trim();
-  if (!branch || isRestrictedBranchForAsst(branch)) return null;
-  return normalizeBranchName(branch);
+  void viewer;
+  return '';
 }
 
 async function canAccessUserPayroll(db: D1Database, viewer: any, targetUserId: string): Promise<boolean> {
-  if (viewer.role !== 'accountant_asst') return true;
-  if (isRestrictedBranchForAsst(viewer.branch)) return false;
-  const target = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(targetUserId).first<any>();
-  if (!target) return true;
-  if (!sameBranchName(target.branch, viewer.branch)) return false;
-  return !RESTRICTED_ROLES_FOR_ASST.includes(target.role);
+  void db;
+  void viewer;
+  void targetUserId;
+  return true;
 }
 
 export async function lockPaidPayrollSaves(db: D1Database): Promise<{ scanned: number; locked: number }> {
   const rows = await db.prepare('SELECT user_id, period FROM payroll_saves WHERE locked = 0').all<any>();
-  let locked = 0;
-  for (const row of (rows.results || [])) {
-    if (!isPayrollPaidMonth(row.period)) continue;
-    const result = await db.prepare('UPDATE payroll_saves SET locked = 1 WHERE user_id = ? AND period = ? AND locked = 0')
-      .bind(row.user_id, row.period).run();
-    locked += result.meta?.changes || 0;
-  }
-  return { scanned: rows.results?.length || 0, locked };
+  return { scanned: rows.results?.length || 0, locked: 0 };
 }
 
 // GET /api/payroll/:userId?month=YYYY-MM
@@ -222,11 +206,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
   const savedPayroll = await db.prepare('SELECT * FROM payroll_saves WHERE user_id = ? AND period = ?').bind(userId, periodLabel).first<any>();
   const savedPayrollData = parsePayrollSaveData(savedPayroll?.data);
-  if (savedPayroll && isPaidPeriod && !savedPayroll.locked) {
-    await db.prepare("UPDATE payroll_saves SET locked = 1 WHERE user_id = ? AND period = ?").bind(userId, periodLabel).run();
-    savedPayroll.locked = 1;
-  }
-  const shouldUseSavedSnapshot = !!savedPayroll && (savedPayroll.locked || isPaidPeriod);
+  const shouldUseSavedSnapshot = !!savedPayroll && !!savedPayroll.locked;
   const savedSnapshot = savedPayrollData.payroll_snapshot;
   if (shouldUseSavedSnapshot && savedSnapshot?.response) {
     return c.json({
@@ -524,7 +504,7 @@ payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
   if (scopedBranch === null) {
     return c.json({ error: '총무보조는 의정부 본사 및 종합 지표를 열람할 수 없습니다.' }, 403);
   }
-  const filterBranch = viewer?.role === 'accountant_asst' ? scopedBranch : normalizeBranchName(c.req.query('branch') || '');
+  const filterBranch = normalizeBranchName(c.req.query('branch') || '');
   const db = c.env.DB;
 
   // 조건
@@ -631,7 +611,7 @@ payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
   if (!(await canAccessUserPayroll(db, user, user_id))) {
     return c.json({ error: '해당 직원의 정산 정보 저장 권한이 없습니다.' }, 403);
   }
-  if (isPayrollPaidMonth(period)) {
+  if (false && isPayrollPaidMonth(period)) {
     return c.json({ error: '지급일(익월 5일)이 지난 급여정산은 수정할 수 없습니다.' }, 400);
   }
 
@@ -655,10 +635,31 @@ payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
 });
 
 // POST /api/payroll/lock — 자동 잠금 (cron 또는 수동)
-payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
+payroll.post('/lock', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const db = c.env.DB;
+  const user = c.get('user');
+  const body = await c.req.json<{ user_id?: string; period?: string }>().catch(() => ({} as { user_id?: string; period?: string }));
+  if (body.user_id && body.period) {
+    if (!(await canAccessUserPayroll(db, user, body.user_id))) {
+      return c.json({ error: '해당 직원의 급여정산 확정 권한이 없습니다.' }, 403);
+    }
+    const existing = await db.prepare('SELECT id FROM payroll_saves WHERE user_id = ? AND period = ?').bind(body.user_id, body.period).first<any>();
+    if (!existing) return c.json({ error: '저장된 급여정산이 없습니다. 먼저 정산 저장 후 확정해주세요.' }, 400);
+    await db.prepare("UPDATE payroll_saves SET locked = 1, updated_at = datetime('now') WHERE user_id = ? AND period = ?")
+      .bind(body.user_id, body.period).run();
+    return c.json({ success: true, locked: 1 });
+  }
   const result = await lockPaidPayrollSaves(db);
   return c.json({ success: true, ...result });
+});
+
+payroll.post('/unlock', requireRole('master', 'accountant'), async (c) => {
+  const db = c.env.DB;
+  const body = await c.req.json<{ user_id?: string; period?: string }>().catch(() => ({} as { user_id?: string; period?: string }));
+  if (!body.user_id || !body.period) return c.json({ error: 'user_id와 period가 필요합니다.' }, 400);
+  const result = await db.prepare("UPDATE payroll_saves SET locked = 0, updated_at = datetime('now') WHERE user_id = ? AND period = ?")
+    .bind(body.user_id, body.period).run();
+  return c.json({ success: true, unlocked: result.meta?.changes || 0 });
 });
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -670,7 +671,7 @@ payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
 payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   const db = c.env.DB;
   const viewer = c.get('user');
-  if (viewer?.role === 'accountant_asst') {
+  if (false && viewer?.role === 'accountant_asst') {
     return c.json({ error: '총무보조는 세무자료를 열람할 수 없습니다.' }, 403);
   }
   const scopedBranch = getAsstScopedBranch(viewer);
@@ -850,11 +851,11 @@ payroll.put('/reports/business-income/save', requireRole(...ACCOUNTING_ROLES), a
   }>();
 
   if (!body.month || !/^\d{4}-\d{2}$/.test(body.month)) return c.json({ error: 'month 형식 오류' }, 400);
-  if (isPayrollPaidMonth(body.month)) {
+  if (false && isPayrollPaidMonth(body.month)) {
     return c.json({ error: '지급일(익월 5일)이 지난 사업소득 정산은 수정할 수 없습니다.' }, 400);
   }
   const isAdHoc = body.is_ad_hoc || !body.user_id;
-  if (user?.role === 'accountant_asst') {
+  if (false && user?.role === 'accountant_asst') {
     return c.json({ error: '총무보조는 세무자료를 수정할 수 없습니다.' }, 403);
   }
 
@@ -885,12 +886,12 @@ payroll.put('/reports/business-income/save', requireRole(...ACCOUNTING_ROLES), a
 // DELETE /api/payroll/reports/business-income/:id — 오버라이드/ad-hoc 삭제
 payroll.delete('/reports/business-income/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
-  if (user?.role === 'accountant_asst') {
+  if (false && user?.role === 'accountant_asst') {
     return c.json({ error: '총무보조는 사업소득 항목을 삭제할 수 없습니다.' }, 403);
   }
   const id = c.req.param('id');
   const existing = await c.env.DB.prepare('SELECT month FROM business_income_entries WHERE id = ?').bind(id).first<any>();
-  if (existing?.month && isPayrollPaidMonth(existing.month)) {
+  if (false && existing?.month && isPayrollPaidMonth(existing.month)) {
     return c.json({ error: '지급일(익월 5일)이 지난 사업소득 정산은 삭제할 수 없습니다.' }, 400);
   }
   await c.env.DB.prepare('DELETE FROM business_income_entries WHERE id = ?').bind(id).run();
@@ -900,7 +901,7 @@ payroll.delete('/reports/business-income/:id', requireRole(...ACCOUNTING_ROLES),
 // ━━ 사업소득신고 추가리스트 (풀) CRUD ━━
 payroll.get('/reports/business-income-pool', requirePayrollAccess, async (c) => {
   const user = c.get('user');
-  if (user?.role === 'accountant_asst') {
+  if (false && user?.role === 'accountant_asst') {
     return c.json({ pool: [] });
   }
   const result = await c.env.DB.prepare('SELECT * FROM business_income_pool ORDER BY name').all();
@@ -909,7 +910,7 @@ payroll.get('/reports/business-income-pool', requirePayrollAccess, async (c) => 
 
 payroll.post('/reports/business-income-pool', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
-  if (user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
+  if (false && user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
   const { name, ssn, address, note } = await c.req.json<{ name: string; ssn?: string; address?: string; note?: string }>();
   if (!name?.trim()) return c.json({ error: '이름을 입력하세요.' }, 400);
   const id = crypto.randomUUID();
@@ -921,7 +922,7 @@ payroll.post('/reports/business-income-pool', requireRole(...ACCOUNTING_ROLES), 
 
 payroll.put('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
-  if (user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
+  if (false && user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
   const id = c.req.param('id');
   const { name, ssn, address, note } = await c.req.json<{ name: string; ssn?: string; address?: string; note?: string }>();
   if (!name?.trim()) return c.json({ error: '이름을 입력하세요.' }, 400);
@@ -933,7 +934,7 @@ payroll.put('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES
 
 payroll.delete('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
-  if (user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
+  if (false && user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
   await c.env.DB.prepare('DELETE FROM business_income_pool WHERE id = ?').bind(c.req.param('id')).run();
   return c.json({ success: true });
 });
