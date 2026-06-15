@@ -4794,21 +4794,12 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 .dashboard-notice-line strong {
-  flex: 0 0 auto;
-  max-width: 34%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--gray-900);
-  font-size: 0.88rem;
-}
-
-.dashboard-notice-line span {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--gray-600);
-  font-size: 0.8rem;
+  color: var(--gray-900);
+  font-size: 0.88rem;
 }
 
 .dashboard-notice-line time {
@@ -10282,6 +10273,16 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   font-size: 0.86rem;
   font-weight: 800;
   white-space: nowrap;
+}
+
+.legal-auction-no-case {
+  align-items: center;
+  color: var(--gray-700);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.82rem;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 @media (max-width: 720px) {

@@ -258,6 +258,23 @@ app.post('/api/_test-slack-accounting-checklist', async (c) => {
   return c.json({ success: true, ...result });
 });
 
+app.post('/api/_test-slack-room-reservation', async (c) => {
+  const token = c.req.query('token') || '';
+  const expectedTokens = [
+    (c.env as any).SLACK_ACCOUNTING_MANUAL_TOKEN,
+    (c.env as any).SLACK_ACCOUNTING_TEST_TOKEN,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+  if (!expectedTokens.includes(token)) return c.json({ error: '권한 없음' }, 403);
+
+  try {
+    const { sendRoomReservationSlackTest } = await import('./lib/room-reservation-slack');
+    const result = await sendRoomReservationSlackTest(c.env as any);
+    return c.json({ success: true, ...result });
+  } catch (err: any) {
+    return c.json({ success: false, error: err?.message || String(err) }, 500);
+  }
+});
+
 // 법률지원/명도견적 알림톡 수동 재발송. ALIMTALK_MANUAL_TOKEN secret과 query token이 일치해야 실행된다.
 app.post('/api/_manual-community-alimtalk-resend', async (c) => {
   const token = c.req.query('token') || '';

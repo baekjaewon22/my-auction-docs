@@ -8,6 +8,7 @@ import type { Role } from '../types';
 import { Users, Plus, Trash2, Settings, UserMinus, Pencil, Shield, ChevronRight, ChevronDown } from 'lucide-react';
 import Select from '../components/Select';
 import { useDepartments } from '../hooks/useDepartments';
+import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 const STORAGE_KEY = 'myauction_org_tree';
 const TIER_KEY = 'myauction_org_tiers';
@@ -691,12 +692,13 @@ export default function OrgChart() {
             <div style={{ display: 'grid', gap: 8 }}>
               {branchList.map((branch) => {
                 const selectedUser = users.find((u) => u.id === branchApprovers[branch]);
+                const candidateOptions = groupUserOptions(
+                  branchApproverCandidates,
+                  (u) => ` (${u.position_title || ROLE_LABELS[u.role as Role] || u.role}${u.branch ? ` · ${u.branch}` : ''})`,
+                );
                 const options = [
                   { value: '', label: '설정 없음' },
-                  ...branchApproverCandidates.map((u) => ({
-                    value: u.id,
-                    label: `${u.name} (${u.position_title || ROLE_LABELS[u.role as Role] || u.role}${u.branch ? ` · ${u.branch}` : ''})`,
-                  })),
+                  ...candidateOptions,
                 ];
                 return (
                   <div key={branch} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 8, alignItems: 'center' }}>
@@ -706,7 +708,7 @@ export default function OrgChart() {
                       options={options}
                       value={
                         selectedUser
-                          ? options.find((o) => o.value === selectedUser.id) || { value: selectedUser.id, label: selectedUser.name }
+                          ? findUserOption(candidateOptions, selectedUser.id) || { value: selectedUser.id, label: selectedUser.name }
                           : options[0]
                       }
                       onChange={(o: any) => setBranchApprovers(prev => ({ ...prev, [branch]: o?.value || '' }))}

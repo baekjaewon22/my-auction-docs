@@ -5,6 +5,7 @@ import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import { api } from '../api';
 import { Trash2, CheckCircle, XCircle, MapPin, Pencil, Save, X, Trophy } from 'lucide-react';
+import { groupUserOptions } from '../lib/userSelectOptions';
 
 interface Props {
   entries: JournalEntry[];
@@ -22,6 +23,10 @@ interface Props {
 }
 
 export default function JournalCard({ entries, userName, userRole, positionTitle, date, readonly, currentUserRole, onDelete, onToggleComplete, onUpdate, assignableMembers = [], canReassign = false }: Props) {
+  const assignableGroups = groupUserOptions(
+    assignableMembers,
+    m => `${m.position_title ? ` · ${m.position_title}` : ''}${m.department ? ` · ${m.department}` : ''}`,
+  );
   // 시간순 정렬
   const sortedEntries = [...entries].sort((a, b) => {
     try {
@@ -285,10 +290,12 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       <div className="journal-edit-row">
                         <label>담당자</label>
                         <select value={ed('__assigneeId')} onChange={(e) => setEd('__assigneeId', e.target.value)}>
-                          {assignableMembers.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name}{m.position_title ? ` · ${m.position_title}` : ''}{m.department ? ` · ${m.department}` : ''}
-                            </option>
+                          {assignableGroups.map((group) => (
+                            <optgroup key={group.label} label={group.label}>
+                              {group.options.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </optgroup>
                           ))}
                         </select>
                       </div>

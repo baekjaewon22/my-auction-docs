@@ -36,7 +36,7 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
       if (isPayoutMonth) {
         try {
           const period = `${year}-${String(monthNumber - 1).padStart(2, '0')}_${String(monthNumber).padStart(2, '0')}`;
-          const bonusRes = await api.cases.bonusSummary(period);
+          const bonusRes = await api.cases.bonusSummary(period, { salary_only_month: month });
           caseAllowanceByUser = Object.fromEntries(
             (bonusRes.summary || []).map((item: any) => [item.consultant_user_id, item.bonus || 0])
           );

@@ -3,6 +3,7 @@ import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 
 const sales = new Hono<AuthEnv>();
 sales.use('*', authMiddleware);
@@ -140,15 +141,14 @@ sales.get('/', async (c) => {
     }
   } else if (role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     // 일반 관리자: 본인 지사 (+ 예외 사용자에겐 추가 지사 허용)
-    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
-    if (extra.length > 0) {
-      const allBranches = [user.branch, ...extra];
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 1) {
       const placeholders = allBranches.map(() => '?').join(',');
       conditions.push(`(sr.branch IN (${placeholders}) OR sr.attribution_branch IN (${placeholders}))`);
       params.push(...allBranches, ...allBranches);
     } else {
       conditions.push('sr.branch = ?');
-      params.push(user.branch);
+      params.push(allBranches[0] || user.branch);
     }
   }
 
@@ -363,15 +363,14 @@ sales.get('/missing-documents', async (c) => {
     query += " AND (sr.user_id = ? OR sr.branch IN ('대전', '대전지사', '부산', '부산지사') OR sr.attribution_branch IN ('대전', '대전지사', '부산', '부산지사'))";
     params.push(user.sub);
   } else if (role === 'admin' && !isHeadOfficeBranch(user.branch)) {
-    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
-    if (extra.length > 0) {
-      const allBranches = [user.branch, ...extra];
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 1) {
       const placeholders = allBranches.map(() => '?').join(',');
       query += ` AND (sr.branch IN (${placeholders}) OR sr.attribution_branch IN (${placeholders}))`;
       params.push(...allBranches, ...allBranches);
     } else {
       query += ' AND sr.branch = ?';
-      params.push(user.branch);
+      params.push(allBranches[0] || user.branch);
     }
   }
   query += ' ORDER BY u.branch, u.department, u.name, sr.contract_date DESC';
@@ -887,15 +886,14 @@ sales.get('/dashboard/pending', async (c) => {
   const params: any[] = [];
 
   if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
-    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
-    if (extra.length > 0) {
-      const allBranches = [user.branch, ...extra];
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 1) {
       const placeholders = allBranches.map(() => '?').join(',');
       query += ` AND sr.branch IN (${placeholders})`;
       params.push(...allBranches);
     } else {
       query += ' AND sr.branch = ?';
-      params.push(user.branch);
+      params.push(allBranches[0] || user.branch);
     }
   }
 
@@ -1038,15 +1036,14 @@ sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'
 
   // 관리자 지사 제한
   if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
-    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
-    if (extra.length > 0) {
-      const allBranches = [user.branch, ...extra];
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 1) {
       const placeholders = allBranches.map(() => '?').join(',');
       query += ` AND sr.branch IN (${placeholders})`;
       params.push(...allBranches);
     } else {
       query += ' AND sr.branch = ?';
-      params.push(user.branch);
+      params.push(allBranches[0] || user.branch);
     }
   }
 

@@ -13,6 +13,10 @@ declare namespace Cloudflare {
 		ENVIRONMENT: "development" | "staging" | "production";
 		/** Space-separated origins allowed to embed admin pages, e.g. https://all-for-one.example.com */
 		ALL_FOR_ONE_FRAME_ANCESTORS?: string;
+		/** Slack incoming webhook for room reservation notifications */
+		SLACK_ROOM_RESERVATION_WEBHOOK_URL?: string;
+		/** Shared Slack incoming webhook fallback */
+		SLACK_WEBHOOK_URL?: string;
 		/** NCP SENS 알림톡 (시크릿으로 등록) */
 		NCP_ACCESS_KEY: string;
 		NCP_SECRET_KEY: string;

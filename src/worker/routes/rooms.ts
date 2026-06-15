@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { normalizeBranchName } from '../lib/branchAliases';
+import { sendRoomReservationSlackNotification } from '../lib/room-reservation-slack';
 
 const rooms = new Hono<AuthEnv>();
 rooms.use('*', authMiddleware);
@@ -96,6 +97,21 @@ rooms.post('/reservations', async (c) => {
     `INSERT INTO room_reservations (id, user_id, branch, room_name, reservation_date, start_time, end_time, title, note)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(id, user.sub, normalizedBranch, room_name, reservation_date, start_time, end_time, title || '', note || '').run();
+
+  c.executionCtx.waitUntil(
+    sendRoomReservationSlackNotification(c.env as unknown as Record<string, unknown>, {
+      reservationId: id,
+      user,
+      branch: normalizedBranch,
+      roomName: room_name,
+      reservationDate: reservation_date,
+      startTime: start_time,
+      endTime: end_time,
+      title,
+      note,
+    }).catch((err) => console.error('[room reservation slack] error', err)),
+  );
+
   return c.json({ success: true, id });
 });
 

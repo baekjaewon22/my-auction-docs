@@ -168,6 +168,30 @@ async function loadImplicitOutdoorEntryIds(db: D1Database, options: { userId?: s
 // POST /api/links/backfill-outdoor — 외근보고서 ↔ 일지 link backfill
 // body: { dryRun: boolean (default true) }
 // ─────────────────────────────────────────────────────────
+async function loadApprovedOutdoorExemptionEntryIds(db: D1Database, options: { userId?: string; since?: string } = {}): Promise<Set<string>> {
+  await ensureOutdoorExemptionTable(db);
+
+  const params: any[] = [];
+  let where = "WHERE ore.status = 'approved'";
+  if (options.userId) {
+    where += ' AND je.user_id = ?';
+    params.push(options.userId);
+  }
+  if (options.since) {
+    where += ' AND je.target_date >= ?';
+    params.push(options.since);
+  }
+
+  const result = await db.prepare(`
+    SELECT ore.journal_entry_id
+    FROM outdoor_report_exemptions ore
+    JOIN journal_entries je ON je.id = ore.journal_entry_id
+    ${where}
+  `).bind(...params).all();
+
+  return new Set((result.results || []).map((r: any) => r.journal_entry_id as string));
+}
+
 links.post('/backfill-outdoor', requireRole(...REVIEW_ROLES), async (c) => {
   const db = c.env.DB;
   const user = c.get('user');
@@ -194,11 +218,13 @@ links.post('/backfill-outdoor', requireRole(...REVIEW_ROLES), async (c) => {
     ORDER BY target_date ASC
   `).all();
   const allEntries = (entriesRes.results || []) as Array<{ id: string; user_id: string; target_date: string; activity_type: string; data: string }>;
+  const exemptedEntries = await loadApprovedOutdoorExemptionEntryIds(db);
 
   // 3. 외근 entries만 필터 + 사용자별 그룹
   const entriesByUser: Record<string, Array<{ id: string; target_date: string; activity_type: string }>> = {};
   for (const e of allEntries) {
     if (!isOutdoorEntry(e.activity_type, e.data)) continue;
+    if (exemptedEntries.has(e.id)) continue;
     if (!entriesByUser[e.user_id]) entriesByUser[e.user_id] = [];
     entriesByUser[e.user_id].push({ id: e.id, target_date: e.target_date, activity_type: e.activity_type });
   }
@@ -434,7 +460,8 @@ links.get('/my-outdoor-entries', async (c) => {
   }
 
   // 응답 가공
-  const implicitLinkedToOther = await loadImplicitOutdoorEntryIds(db, { userId: user.sub, excludeDocId: forDocId });
+  const implicitLinkedToOther = await loadImplicitOutdoorEntryIds(db, { userId: user.sub, since: sixtyDaysAgo, excludeDocId: forDocId });
+  const approvedExemptions = await loadApprovedOutdoorExemptionEntryIds(db, { userId: user.sub, since: sixtyDaysAgo });
 
   const items = outdoorEntries.map((e) => {
     let parsed: any = {};
@@ -451,7 +478,7 @@ links.get('/my-outdoor-entries', async (c) => {
       case_no: parsed.caseNo || '',
       client: parsed.client || '',
       court: parsed.court || '',
-      linked_to_other_doc: otherDoc || (implicitLinkedToOther.has(e.id) ? '__implicit_existing_report__' : null),
+      linked_to_other_doc: otherDoc || (implicitLinkedToOther.has(e.id) ? '__implicit_existing_report__' : approvedExemptions.has(e.id) ? '__approved_exemption__' : null),
       linked_to_current_doc: linkedToCurrent.has(e.id),
     };
   });
@@ -569,14 +596,27 @@ links.get('/review-queue', requireRole(...REVIEW_ROLES), async (c) => {
   }
 
   const entryMap: Record<string, any> = {};
+  const exemptedEntryIds = new Set<string>();
   if (allEntryIds.size > 0) {
     const ids = Array.from(allEntryIds);
     const placeholders = ids.map(() => '?').join(',');
+    await ensureOutdoorExemptionTable(db);
+    const exemptionRes = await db.prepare(`
+      SELECT journal_entry_id
+      FROM outdoor_report_exemptions
+      WHERE status = 'approved'
+        AND journal_entry_id IN (${placeholders})
+    `).bind(...ids).all();
+    for (const row of (exemptionRes.results || []) as Array<{ journal_entry_id: string }>) {
+      exemptedEntryIds.add(row.journal_entry_id);
+    }
+
     const eRes = await db.prepare(`
       SELECT id, target_date, activity_type, activity_subtype, data, user_id
       FROM journal_entries WHERE id IN (${placeholders})
     `).bind(...ids).all();
     for (const e of (eRes.results || []) as any[]) {
+      if (exemptedEntryIds.has(e.id)) continue;
       let parsed: any = {};
       try { parsed = JSON.parse(e.data); } catch { /* */ }
       entryMap[e.id] = {
@@ -593,6 +633,10 @@ links.get('/review-queue', requireRole(...REVIEW_ROLES), async (c) => {
   const items = candidates.map((cand) => {
     let entryIds: string[] = [];
     try { entryIds = JSON.parse(cand.candidate_journal_entry_ids); } catch { /* */ }
+    const visibleCandidates = entryIds
+      .filter((eid) => !exemptedEntryIds.has(eid))
+      .map((eid) => entryMap[eid])
+      .filter(Boolean);
     return {
       id: cand.id,
       document_id: cand.document_id,
@@ -604,10 +648,10 @@ links.get('/review-queue', requireRole(...REVIEW_ROLES), async (c) => {
       match_tier: cand.match_tier,
       body_outing_text: cand.document_outing_date_text,
       body_outing_parsed: cand.document_outing_date_parsed,
-      candidates: entryIds.map((eid) => entryMap[eid]).filter(Boolean),
+      candidates: visibleCandidates,
       created_at: cand.created_at,
     };
-  });
+  }).filter((item) => item.candidates.length > 0);
 
   return c.json({ items });
 });

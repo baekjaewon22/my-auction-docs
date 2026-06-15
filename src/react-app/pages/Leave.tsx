@@ -7,6 +7,7 @@ import {
   CalendarCheck, Plus, X, CheckCircle, XCircle, AlertTriangle,
   Calculator, Calendar, Eye
 } from 'lucide-react';
+import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 type FormLeaveType = '연차' | '반차' | '시간차' | '특별휴가';
 
@@ -123,7 +124,7 @@ export default function Leave() {
   const [rejectReason, setRejectReason] = useState('');
 
   const role = user?.role || 'member';
-  const isApprover = ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(role);
+  const isApprover = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(role);
   const canViewSensitive = ['master', 'ceo', 'cc_ref'].includes(role);
   const canViewOthers = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canViewHourly = ['master', 'ceo', 'admin'].includes(role);
@@ -132,6 +133,7 @@ export default function Leave() {
 
   // 담당자 열람 기능
   const [members, setMembers] = useState<User[]>([]);
+  const memberOptions = groupUserOptions(members, m => ` (${m.department || m.branch || ''})`);
   const [viewUserId, setViewUserId] = useState<string | null>(null);
   const [viewBalance, setViewBalance] = useState<any>(null);
   const [viewRequests, setViewRequests] = useState<LeaveRequest[]>([]);
@@ -414,8 +416,8 @@ export default function Leave() {
           {canViewOthers && (
             <div style={{ minWidth: 200 }}>
               <Select
-                options={[{ value: '', label: '내 연차' }, ...members.map(m => ({ value: m.id, label: `${m.name} (${m.department || m.branch || ''})` }))]}
-                value={viewUserId ? { value: viewUserId, label: members.find(m => m.id === viewUserId)?.name || '' } : { value: '', label: '내 연차' }}
+                options={[{ value: '', label: '내 연차' }, ...memberOptions]}
+                value={viewUserId ? findUserOption(memberOptions, viewUserId) : { value: '', label: '내 연차' }}
                 onChange={(o: any) => {
                   const id = o?.value || null;
                   setViewUserId(id);
@@ -647,10 +649,10 @@ export default function Leave() {
                   <Select
                     options={[
                       { value: '', label: '본인' },
-                      ...members.map(m => ({ value: m.id, label: `${m.name} (${m.department || m.branch || ''})` })),
+                      ...memberOptions,
                     ]}
                     value={formUserId
-                      ? { value: formUserId, label: members.find(m => m.id === formUserId)?.name || '' }
+                      ? findUserOption(memberOptions, formUserId)
                       : { value: '', label: '본인' }}
                     onChange={async (opt) => {
                       const nextUserId = opt?.value || '';
@@ -1135,6 +1137,7 @@ function RefundCalc() {
     } catch (err: any) { alert(err.message); }
     finally { setLoading(false); }
   };
+  const refundGroups = groupUserOptions(members, m => ` (${m.department || m.branch || ''})`);
 
   return (
     <div>
@@ -1150,8 +1153,12 @@ function RefundCalc() {
             <label className="form-label">대상자 선택</label>
             <select className="form-input" value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)} style={{ width: '100%' }}>
               <option value="">선택...</option>
-              {members.map((m: any) => (
-                <option key={m.id} value={m.id}>{m.name} ({m.department})</option>
+              {refundGroups.map(group => (
+                <optgroup key={group.label} label={group.label}>
+                  {group.options.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </div>

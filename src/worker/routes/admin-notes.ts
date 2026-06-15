@@ -1126,16 +1126,17 @@ adminNotes.post('/', async (c) => {
   await ensureAdminNoteExtensions(db);
   const {
     title, content, pinned, source_type, source_id, is_anonymous, visibility,
-    category: rawCategory, court, case_number, legal_subcategory, attachments,
+    category: rawCategory, court, case_number, no_case_number, legal_subcategory, attachments,
     assignee_id, target_date, item_no, client_name, lawsuit_cost_requested,
   } = await c.req.json();
   const category = normalizeCategory(rawCategory);
   const legalSubcategory = category === 'legal_support' ? normalizeLegalSubcategory(legal_subcategory) : null;
+  const legalAuctionCaseNumber = no_case_number ? '사건번호없음' : String(case_number || '').trim().replace(/\s+/g, '');
   if (category !== 'briefing_schedule' && (!title?.trim() || !content?.trim())) return c.json({ error: '제목과 내용을 입력하세요.' }, 400);
   if (category === 'eviction_quote' && (!court?.trim() || !case_number?.trim())) {
     return c.json({ error: '법원과 사건번호를 입력하세요.' }, 400);
   }
-  if (category === 'legal_support' && legalSubcategory === 'auction' && (!court?.trim() || !case_number?.trim())) {
+  if (category === 'legal_support' && legalSubcategory === 'auction' && (!court?.trim() || !legalAuctionCaseNumber)) {
     return c.json({ error: '경매 상담은 법원과 사건번호를 입력하세요.' }, 400);
   }
 
@@ -1231,7 +1232,7 @@ adminNotes.post('/', async (c) => {
     profile?.branch || '', profile?.department || '',
     category,
     category === 'eviction_quote' || category === 'briefing_schedule' || (category === 'legal_support' && legalSubcategory === 'auction') ? String(court || '').trim() : null,
-    category === 'eviction_quote' || category === 'briefing_schedule' || (category === 'legal_support' && legalSubcategory === 'auction') ? String(case_number || '').trim().replace(/\s+/g, '') : null,
+    category === 'eviction_quote' || category === 'briefing_schedule' ? String(case_number || '').trim().replace(/\s+/g, '') : (category === 'legal_support' && legalSubcategory === 'auction') ? legalAuctionCaseNumber : null,
     legalSubcategory,
     category === 'legal_support' && shouldTrackLawsuitCost(legalSubcategory) && lawsuit_cost_requested ? 1 : 0,
     category === 'briefing_schedule' ? assignee?.id : null,
@@ -1283,7 +1284,7 @@ adminNotes.put('/:id', async (c) => {
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);
   const id = c.req.param('id');
-  const { title, content, pinned, legal_subcategory, lawsuit_cost_requested, court, case_number } = await c.req.json();
+  const { title, content, pinned, legal_subcategory, lawsuit_cost_requested, court, case_number, no_case_number } = await c.req.json();
 
   const note = await db.prepare('SELECT * FROM admin_notes WHERE id = ?').bind(id).first<any>();
   if (!note) return c.json({ error: '노트를 찾을 수 없습니다.' }, 404);
@@ -1302,7 +1303,9 @@ adminNotes.put('/:id', async (c) => {
   if (note.category === 'legal_support' && nextLegalSubcategory === 'legal_terms' && !canCreateLegalTerms(role, profile?.department)) {
     return c.json({ error: '법률용어는 법률지원팀 및 관리자급 이상만 작성할 수 있습니다.' }, 403);
   }
-  if (note.category === 'legal_support' && nextLegalSubcategory === 'auction' && (!String(court || note.court || '').trim() || !String(case_number || note.case_number || '').trim())) {
+  const incomingCaseNumber = case_number !== undefined ? String(case_number || '').trim().replace(/\s+/g, '') : String(note.case_number || '').trim().replace(/\s+/g, '');
+  const nextAuctionCaseNumber = no_case_number ? '사건번호없음' : incomingCaseNumber;
+  if (note.category === 'legal_support' && nextLegalSubcategory === 'auction' && (!String(court || note.court || '').trim() || !nextAuctionCaseNumber)) {
     return c.json({ error: '경매 상담은 법원과 사건번호를 입력하세요.' }, 400);
   }
 
@@ -1316,7 +1319,7 @@ adminNotes.put('/:id', async (c) => {
     ? String(court || note.court || '').trim()
     : note.category === 'legal_support' ? null : note.court;
   const nextCaseNumber = note.category === 'legal_support' && nextLegalSubcategory === 'auction'
-    ? String(case_number || note.case_number || '').trim().replace(/\s+/g, '')
+    ? nextAuctionCaseNumber
     : note.category === 'legal_support' ? null : note.case_number;
 
   await db.prepare(

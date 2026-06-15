@@ -259,6 +259,7 @@ export default function UserManagement() {
         salary,
         grade: gradeInput,
         position_allowance: positionAllowance,
+        effective_month: new Date().toISOString().slice(0, 7),
       });
       const nextUser = { ...selectedUser, ...res.user, login_type: 'employee' as const };
       setSelectedUser(nextUser);

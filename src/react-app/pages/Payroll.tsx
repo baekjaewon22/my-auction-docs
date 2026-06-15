@@ -9,6 +9,7 @@ import BusinessIncomeTab from '../components/BusinessIncomeTab';
 import EmployeeBonusTab from '../components/EmployeeBonusTab';
 import { Receipt, Camera } from 'lucide-react';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
 function truncMoney(n: number): number { return Math.trunc(Number(n) || 0); }
@@ -131,7 +132,10 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           const [y, mStr] = selectedMonth.split('-');
           const m = parseInt(mStr, 10);
           const mdPeriod = `${y}-${String(m - 1).padStart(2, '0')}_${String(m).padStart(2, '0')}`;
-          const bonusRes = await api.cases.bonusSummary(mdPeriod);
+          const bonusRes = await api.cases.bonusSummary(
+            mdPeriod,
+            res.is_commission ? undefined : { salary_only_month: selectedMonth },
+          );
           const mine = bonusRes.summary.find((x: any) => x.consultant_user_id === selectedUserId);
           setCaseAllowance({
             total_fee_raw: mine?.total_fee_raw || 0,
@@ -254,7 +258,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
     return resignedMonth && selectedMonth < resignedMonth;
   });
   const filteredUsers = [...activeUsers, ...resignedUsers];
-  const userOpts = filteredUsers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''} · ${u.branch || ''})${(u.role as string) === 'resigned' ? ' [퇴사]' : ''}` }));
+  const userOpts = groupUserOptions(filteredUsers, u => ` (${u.department || ''} · ${u.branch || ''})`);
   const branchOptionValues = Array.from(new Set([
     ...BRANCHES,
     ...PAYROLL_BRANCH_SELECTOR.map(item => item.value).filter(Boolean),
@@ -320,7 +324,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         <div style={{ minWidth: 260 }}>
           <label className="form-label">담당자</label>
           <Select options={userOpts}
-            value={userOpts.find(o => o.value === selectedUserId) || null}
+            value={findUserOption(userOpts, selectedUserId)}
             onChange={(o: any) => setSelectedUserId(o?.value || '')}
             placeholder="담당자 선택" isSearchable />
         </div>

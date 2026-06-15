@@ -3,6 +3,7 @@ import type { AuthEnv, User } from '../types';
 import { authMiddleware, requireRole, hashPassword } from '../middleware/auth';
 import { sendAlimtalkByTemplate } from '../alimtalk';
 import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { currentKstMonth, ensurePayTypeHistoryTable, normalizeYearMonth, previousMonth } from '../lib/pay-type-history';
 
 const users = new Hono<AuthEnv>();
 users.use('*', authMiddleware);
@@ -141,10 +142,11 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
   const id = c.req.param('id');
   const currentUser = c.get('user');
   const db = c.env.DB;
-  const { salary, grade, position_allowance } = await c.req.json<{
+  const { salary, grade, position_allowance, effective_month } = await c.req.json<{
     salary?: number;
     grade?: string;
     position_allowance?: number;
+    effective_month?: string;
   }>();
 
   const target = await db.prepare('SELECT * FROM users WHERE id = ? AND approved = 1').bind(id).first<any>();
@@ -174,13 +176,34 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
     return c.json({ error: '유효하지 않은 직급입니다.' }, 400);
   }
 
-  const existingAccounting = await db.prepare('SELECT id FROM user_accounting WHERE user_id = ?').bind(id).first<any>();
+  const effectiveMonth = normalizeYearMonth(effective_month) || currentKstMonth();
+  const beforeMonth = previousMonth(effectiveMonth) || '1900-01';
+
+  await ensurePayTypeHistoryTable(db);
+  const existingAccounting = await db.prepare('SELECT * FROM user_accounting WHERE user_id = ?').bind(id).first<any>();
   const standardSales = Math.round(nextSalary * 1.3 * 4);
   const statements = [
     db.prepare("UPDATE users SET login_type = 'employee', updated_at = datetime('now') WHERE id = ?").bind(id),
   ];
 
   if (existingAccounting) {
+    statements.push(db.prepare(`
+      INSERT OR IGNORE INTO user_pay_type_history (
+        id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
+        grade, position_allowance, source, changed_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'before_employee_conversion', ?)
+    `).bind(
+      crypto.randomUUID(),
+      id,
+      beforeMonth,
+      existingAccounting.pay_type || 'commission',
+      Number(existingAccounting.commission_rate || 0),
+      Number(existingAccounting.salary || 0),
+      Number(existingAccounting.standard_sales || 0),
+      String(existingAccounting.grade || ''),
+      Number(existingAccounting.position_allowance || 0),
+      currentUser.sub || '',
+    ));
     statements.push(db.prepare(`
       UPDATE user_accounting
       SET salary = ?,
@@ -196,10 +219,37 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
     `).bind(nextSalary, standardSales, nextGrade, nextAllowance, id));
   } else {
     statements.push(db.prepare(`
+      INSERT OR IGNORE INTO user_pay_type_history (
+        id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
+        grade, position_allowance, source, changed_by
+      ) VALUES (?, ?, ?, 'commission', 50, 0, 0, '', 0, 'before_employee_conversion', ?)
+    `).bind(crypto.randomUUID(), id, beforeMonth, currentUser.sub || ''));
+    statements.push(db.prepare(`
       INSERT INTO user_accounting (id, user_id, salary, standard_sales, grade, position_allowance, pay_type, commission_rate, ssn, address)
       VALUES (?, ?, ?, ?, ?, ?, 'salary', 0, '', '')
     `).bind(crypto.randomUUID(), id, nextSalary, standardSales, nextGrade, nextAllowance));
   }
+
+  statements.push(db.prepare(`
+    INSERT OR REPLACE INTO user_pay_type_history (
+      id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
+      grade, position_allowance, source, changed_by
+    ) VALUES (
+      COALESCE((SELECT id FROM user_pay_type_history WHERE user_id = ? AND effective_month = ? AND source = 'employee_conversion'), ?),
+      ?, ?, 'salary', 0, ?, ?, ?, ?, 'employee_conversion', ?
+    )
+  `).bind(
+    id,
+    effectiveMonth,
+    crypto.randomUUID(),
+    id,
+    effectiveMonth,
+    nextSalary,
+    standardSales,
+    nextGrade,
+    nextAllowance,
+    currentUser.sub || '',
+  ));
 
   await db.batch(statements);
 
@@ -216,6 +266,7 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
       commission_rate: 0,
       ssn: '',
       address: '',
+      effective_month: effectiveMonth,
     },
   });
 });

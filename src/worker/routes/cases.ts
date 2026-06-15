@@ -7,6 +7,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { ensurePayTypeHistoryTable, payTypeAtMonthSql } from '../lib/pay-type-history';
 import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const cases = new Hono<AuthEnv>();
@@ -563,7 +564,12 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
   await ensureCaseHiddenTable(db);
   const period = c.req.query('period') || '';
+  const salaryOnlyMonth = c.req.query('salary_only_month') || '';
   if (!period) return c.json({ error: 'period is required (e.g. 2026-03_04)' }, 400);
+  if (salaryOnlyMonth) await ensurePayTypeHistoryTable(db);
+  const salaryOnlyFilter = salaryOnlyMonth
+    ? `AND ${payTypeAtMonthSql('c.consultant_user_id', "substr(c.registered_at, 1, 7)", 'ua.pay_type')} = 'salary'`
+    : '';
 
   // 명도성과금은 컨설턴트(consultant) 귀속
   // 조정 금액: 정액제 -150,000원 / 실비제 ÷1.1 (부가세 제외)
@@ -581,7 +587,9 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
       ), 0) as total_fee_adjusted
     FROM cases c
     LEFT JOIN users u ON u.id = c.consultant_user_id
+    LEFT JOIN user_accounting ua ON ua.user_id = c.consultant_user_id
     WHERE c.bimonthly_period = ? AND c.consultant_name IS NOT NULL
+      ${salaryOnlyFilter}
       AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = c.external_id)
     GROUP BY c.consultant_user_id, c.consultant_name
     ORDER BY total_fee_adjusted DESC

@@ -85,7 +85,7 @@ export const api = {
       request('/users/' + id, { method: 'DELETE' }),
     update: (id: string, data: { name?: string; password?: string; phone?: string; branch?: string; department?: string; position_title?: string }) =>
       request('/users/' + id, { method: 'PUT', body: JSON.stringify(data) }),
-    convertToEmployee: (id: string, data: { salary: number; grade?: string; position_allowance?: number }) =>
+    convertToEmployee: (id: string, data: { salary: number; grade?: string; position_allowance?: number; effective_month?: string }) =>
       request<{ success: boolean; user: import('./types').User; account: import('./types').UserAccounting }>(
         '/users/' + id + '/convert-to-employee',
         { method: 'PUT', body: JSON.stringify(data) },
@@ -332,7 +332,7 @@ export const api = {
       }
       return res.blob();
     },
-    create: (data: { title?: string; content?: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; legal_subcategory?: string; lawsuit_cost_requested?: boolean; attachments?: any[]; assignee_id?: string; target_date?: string; item_no?: string; client_name?: string }) =>
+    create: (data: { title?: string; content?: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; no_case_number?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean; attachments?: any[]; assignee_id?: string; target_date?: string; item_no?: string; client_name?: string }) =>
       request<{ success: boolean; id: string }>('/admin-notes', { method: 'POST', body: JSON.stringify(data) }),
     briefingAutofill: (params: { assignee_id: string; client_name?: string; case_number?: string }) => {
       const q = new URLSearchParams();
@@ -341,7 +341,7 @@ export const api = {
     },
     myAlerts: () =>
       request<{ alerts: Array<{ type: string; priority: number; label: string; note_id?: string; title: string; message: string; comment_count?: number; link: string; created_at: string }> }>('/admin-notes/my-alerts'),
-    update: (id: string, data: { title?: string; content?: string; pinned?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean; court?: string; case_number?: string }) =>
+    update: (id: string, data: { title?: string; content?: string; pinned?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean; court?: string; case_number?: string; no_case_number?: boolean }) =>
       request('/admin-notes/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request('/admin-notes/' + id, { method: 'DELETE' }),
     addComment: (noteId: string, content: string, is_anonymous?: boolean) =>
@@ -832,7 +832,11 @@ export const api = {
     detail: (id: string) => request<{ case: any }>(`/cases/${id}`),
     update: (id: string, data: { registered_at?: string; consultant_name?: string | null; consultant_position?: string | null; manager_username?: string; manager_name?: string; client_name?: string; fee_type?: 'fixed' | 'actual'; fee_amount?: number }) =>
       request<{ success: boolean; case: any }>(`/cases/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    bonusSummary: (period: string) => request<{ period: string; period_label: string; summary: Array<{ consultant_user_id: string | null; consultant_name: string; consultant_position: string | null; consultant_branch: string | null; consultant_department: string | null; cnt: number; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; bonus: number; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null }> }>(`/cases/bonus/summary?period=${period}`),
+    bonusSummary: (period: string, opts?: { salary_only_month?: string }) => {
+      const q = new URLSearchParams({ period });
+      if (opts?.salary_only_month) q.set('salary_only_month', opts.salary_only_month);
+      return request<{ period: string; period_label: string; summary: Array<{ consultant_user_id: string | null; consultant_name: string; consultant_position: string | null; consultant_branch: string | null; consultant_department: string | null; cnt: number; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; bonus: number; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null }> }>(`/cases/bonus/summary?${q.toString()}`);
+    },
     bonusMe: (period: string) => request<{ period: string; period_label: string; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null }>(`/cases/bonus/me?period=${period}`),
     delete: (id: string, reason?: string) =>
       request<{ success: boolean }>(`/cases/${id}${reason ? '?reason=' + encodeURIComponent(reason) : ''}`, { method: 'DELETE' }),

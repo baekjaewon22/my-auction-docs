@@ -1,11 +1,96 @@
 import { Hono } from 'hono';
 import type { AuthEnv, OrgNode } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
-import { normalizeBranchName } from '../lib/branchAliases';
+import { branchAliases, normalizeBranchName } from '../lib/branchAliases';
 import { applyBranchApprovalOverride, ensureBranchApprovalOverridesTable } from '../lib/branch-approval-overrides';
+import { recreateAlertsForDoc } from '../lib/approval-alerts';
+import { dispatchApprovalAlerts } from '../lib/approval-alerts-dispatcher';
 
 const org = new Hono<AuthEnv>();
 org.use('*', authMiddleware);
+
+async function backfillBranchApproverForSubmittedDocs(
+  db: D1Database,
+  branch: string,
+  approverId: string,
+): Promise<number> {
+  const aliases = branchAliases(branch);
+  const placeholders = aliases.map(() => '?').join(',');
+  const docsRes = await db.prepare(`
+    SELECT id, author_id
+    FROM documents
+    WHERE status = 'submitted'
+      AND COALESCE(cancelled, 0) = 0
+      AND branch IN (${placeholders})
+      AND author_id != ?
+      AND NOT EXISTS (
+        SELECT 1 FROM approval_steps s
+        WHERE s.document_id = documents.id
+          AND s.approver_id = ?
+      )
+  `).bind(...aliases, approverId, approverId).all<{ id: string; author_id: string }>();
+
+  let repaired = 0;
+  for (const doc of docsRes.results || []) {
+    const stepsRes = await db.prepare(`
+      SELECT s.step_order, s.approver_id, s.status, u.role
+      FROM approval_steps s
+      LEFT JOIN users u ON u.id = s.approver_id
+      WHERE s.document_id = ?
+      ORDER BY s.step_order ASC
+    `).bind(doc.id).all<{ step_order: number; approver_id: string; status: string; role: string }>();
+    const steps = stepsRes.results || [];
+    const topRoleIndex = steps.findIndex((step) => ['master', 'ceo', 'cc_ref'].includes(step.role || ''));
+    const insertOrder = topRoleIndex >= 0 ? steps[topRoleIndex].step_order : steps.length + 1;
+
+    await db.prepare(`
+      UPDATE approval_steps
+      SET step_order = step_order + 1
+      WHERE document_id = ? AND step_order >= ?
+    `).bind(doc.id, insertOrder).run();
+
+    await db.prepare(`
+      INSERT INTO approval_steps (id, document_id, step_order, approver_id, status, comment, signed_at)
+      VALUES (?, ?, ?, ?, 'pending', NULL, NULL)
+    `).bind(crypto.randomUUID(), doc.id, insertOrder, approverId).run();
+
+    const firstPending = await db.prepare(`
+      SELECT approver_id
+      FROM approval_steps
+      WHERE document_id = ? AND status = 'pending'
+      ORDER BY step_order ASC
+      LIMIT 1
+    `).bind(doc.id).first<{ approver_id: string }>();
+
+    const cycle = await db.prepare(`
+      SELECT COALESCE(MAX(cycle_no), 1) as cycle_no
+      FROM alert_approval_pending
+      WHERE document_id = ?
+    `).bind(doc.id).first<{ cycle_no: number }>();
+
+    if (firstPending?.approver_id) {
+      await db.prepare(`
+        UPDATE alert_approval_pending
+        SET status = 'cancelled',
+            acted_at = datetime('now'),
+            acted_action = 'superseded',
+            last_checked_at = datetime('now')
+        WHERE document_id = ?
+          AND cycle_no = ?
+          AND status = 'open'
+          AND my_status = 'need_approve'
+          AND approver_id != ?
+      `).bind(doc.id, cycle?.cycle_no || 1, firstPending.approver_id).run();
+    }
+
+    await recreateAlertsForDoc(db, doc.id).catch((err) => {
+      console.error('[branch approver backfill] recreate alerts failed', { docId: doc.id, err: String(err) });
+    });
+    repaired++;
+  }
+
+  return repaired;
+}
 
 // GET /api/org — 전체 조직도 노드 조회
 org.get('/', async (c) => {
@@ -122,6 +207,7 @@ org.put('/branch-approvers', requireRole('master', 'ceo'), async (c) => {
   await ensureBranchApprovalOverridesTable(db);
   const { overrides } = await c.req.json<{ overrides: Array<{ branch: string; approver_id?: string | null }> }>();
   const rows = Array.isArray(overrides) ? overrides : [];
+  let repairedDocuments = 0;
 
   for (const row of rows) {
     const branch = normalizeBranchName(row.branch);
@@ -154,9 +240,17 @@ org.put('/branch-approvers', requireRole('master', 'ceo'), async (c) => {
         VALUES (?, ?, ?, ?)
       `).bind(crypto.randomUUID(), branch, approverId, user.sub).run();
     }
+    repairedDocuments += await backfillBranchApproverForSubmittedDocs(db, branch, approverId);
   }
 
-  return c.json({ success: true });
+  if (repairedDocuments > 0) {
+    c.executionCtx.waitUntil(
+      dispatchApprovalAlerts(c.env as unknown as { DB: D1Database } & Record<string, unknown>)
+        .catch((err) => console.error('[branch approver backfill] dispatch failed', err))
+    );
+  }
+
+  return c.json({ success: true, repaired_documents: repairedDocuments });
 });
 
 org.get('/chain/:userId', async (c) => {

@@ -527,7 +527,6 @@ export default function Dashboard() {
   const newsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
   const NoticePanel = () => {
     const notice = noticeItems[0];
-    const preview = notice ? newsPreview(notice.content || '') : '';
     return (
       <section className="section dashboard-notice-section">
         <div className="dashboard-notice-panel">
@@ -541,7 +540,6 @@ export default function Dashboard() {
             <Link to={`/admin-notes?section=notice&note=${notice.id}`} className="dashboard-notice-item">
               <div className="dashboard-notice-line">
                 <strong>{notice.title}</strong>
-                {preview && <span>{preview.length > 90 ? preview.slice(0, 90) + '...' : preview}</span>}
                 <time>{newsDate(notice.updated_at || notice.created_at)}</time>
               </div>
             </Link>

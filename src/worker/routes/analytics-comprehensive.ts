@@ -7,7 +7,8 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { ensureBidAnalysisTable } from '../lib/bid-analysis';
-import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 
 const comprehensive = new Hono<AuthEnv>();
 comprehensive.use('*', authMiddleware);
@@ -193,6 +194,9 @@ comprehensive.get('/', async (c) => {
   const canSeeAll = isViewer || isHQAdmin;
   const canSeeBranch = canSeeAll || (role === 'admin');
   const canSeeTeam = canSeeBranch || role === 'manager';
+  const adminVisibleBranches = role === 'admin' && !isHQAdmin
+    ? await getAdminVisibleBranches(db, user)
+    : [];
 
   // 본인 외 조회 차단 처리
   let scopedUserId = userIdParam;
@@ -201,7 +205,7 @@ comprehensive.get('/', async (c) => {
     // 일반 직원이 다른 사람 조회 시도
     const target = await db.prepare('SELECT branch, department FROM users WHERE id = ?').bind(scopedUserId).first<any>();
     if (!target) return c.json({ error: '대상을 찾을 수 없습니다.' }, 404);
-    if (role === 'admin' && !sameBranchName(target.branch, user.branch)) return c.json({ error: '권한 없음' }, 403);
+    if (role === 'admin' && !isHQAdmin && !adminVisibleBranches.some((visibleBranch) => sameBranchName(target.branch, visibleBranch))) return c.json({ error: '권한 없음' }, 403);
     if (role === 'manager' && (!sameBranchName(target.branch, user.branch) || target.department !== user.department)) return c.json({ error: '권한 없음' }, 403);
     if (role === 'director' && !['대전지사', '부산지사'].includes(normalizeBranchName(target.branch)) && target.id !== user.sub) return c.json({ error: '권한 없음' }, 403);
   }
@@ -244,10 +248,26 @@ comprehensive.get('/', async (c) => {
     memberQuery += ' AND u.id = ?';
     params.push(scopedUserId);
   } else {
-    if (branch) { memberQuery += ' AND u.branch = ?'; params.push(branch); }
+    if (branch) {
+      const aliases = branchAliases(branch);
+      memberQuery += ` AND u.branch IN (${aliases.map(() => '?').join(',')})`;
+      params.push(...aliases);
+    }
     if (department) { memberQuery += ' AND u.department = ?'; params.push(department); }
     if (isDirector) { memberQuery += " AND (u.branch IN ('대전', '대전지사', '부산', '부산지사') OR u.id = ?)"; params.push(user.sub); }
-    else if (role === 'admin' && !isHeadOfficeBranch(user.branch)) { memberQuery += ' AND u.branch = ?'; params.push(normalizeBranchName(user.branch)); }
+    else if (role === 'admin' && !isHQAdmin) {
+      if (branch) {
+        if (!adminVisibleBranches.some((visibleBranch) => sameBranchName(branch, visibleBranch))) {
+          return c.json({ members: [], benchmarks: {}, metadata: { period_start: periodStart, period_end: periodEnd, member_count: 0 } });
+        }
+      } else if (adminVisibleBranches.length > 0) {
+        memberQuery += ` AND u.branch IN (${adminVisibleBranches.map(() => '?').join(',')})`;
+        params.push(...adminVisibleBranches);
+      } else {
+        memberQuery += ' AND u.branch = ?';
+        params.push(normalizeBranchName(user.branch));
+      }
+    }
     else if (role === 'manager') { memberQuery += ' AND u.branch = ? AND u.department = ?'; params.push(normalizeBranchName(user.branch), user.department); }
   }
   const membersRes = await db.prepare(memberQuery).bind(...params).all<any>();

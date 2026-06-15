@@ -3,6 +3,7 @@ import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { calculateCaseAllowance, isCaseAllowanceExcludedName } from './cases';
 import { normalizeBranchName } from '../lib/branchAliases';
+import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotForMonth, payTypeAtMonthSql, resolvePayTypeFromHistory } from '../lib/pay-type-history';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -93,6 +94,9 @@ function calculateContractCountFromRows(rows: any[]): number {
 async function calcContractAwardForUser(
   db: D1Database, userId: string, periodStart: string, periodEnd: string,
 ): Promise<{ rank: number | null; count: number; award: number; total_amount: number }> {
+  await ensurePayTypeHistoryTable(db);
+  const recordMonthExpr = "substr(COALESCE(NULLIF(sr.card_deposit_date, ''), NULLIF(sr.deposit_date, ''), sr.contract_date), 1, 7)";
+  const salaryMonthFilter = payTypeAtMonthSql('sr.user_id', recordMonthExpr, "'salary'");
   const result = await db.prepare(`
     SELECT user_id, user_name,
       SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as cnt,
@@ -108,6 +112,7 @@ async function calcContractAwardForUser(
       JOIN users u ON u.id = sr.user_id
       WHERE sr.type = '계약' AND sr.status = 'confirmed'
         AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
+        AND ${salaryMonthFilter} = 'salary'
         AND (
           (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
           OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
@@ -198,6 +203,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const bonusPeriodEndMonth = bonusPeriodStartMonth + 1;
   const bonusPeriodStart = `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}-01`;
   const bonusPeriodEnd = `${y}-${String(bonusPeriodEndMonth).padStart(2, '0')}-${new Date(y, bonusPeriodEndMonth, 0).getDate()}`;
+  const isPayoutMonth = m % 2 === 0;
 
   const user = await db.prepare(
     'SELECT id, name, branch, department, position_title, role FROM users WHERE id = ?'
@@ -239,6 +245,13 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     ...(accounting || {}),
   };
 
+  await ensurePayTypeHistoryTable(db);
+  const payTypeHistoryRows = await getPayTypeHistoryRows(db, userId);
+  if (!shouldUseSavedSnapshot) {
+    const monthSnapshot = await getPayTypeSnapshotForMonth(db, userId, month, accounting);
+    accounting = { ...accounting, ...monthSnapshot };
+  }
+
   if (shouldUseSavedSnapshot && savedPayroll?.pay_type) {
     accounting.pay_type = savedPayroll.pay_type;
   }
@@ -253,6 +266,9 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const effectiveRate = override?.commission_rate !== undefined
     ? override.commission_rate
     : (isJanFeb2026 ? 50 : (accounting?.commission_rate || 0));
+  const payTypeForMonth = (ym: string) => (
+    isJanFeb2026 ? 'commission' : resolvePayTypeFromHistory(payTypeHistoryRows, ym, accounting?.pay_type || 'salary')
+  );
 
   // 매출 조회: 1개월 기준 (카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date)
   const salesQuery = `
@@ -307,6 +323,12 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
   const salary = accounting?.salary || 0;
   const standardSales = accounting?.standard_sales || 0;
+  const bonusMonths = [
+    `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}`,
+    `${y}-${String(bonusPeriodEndMonth).padStart(2, '0')}`,
+  ];
+  const salaryBonusMonths = bonusMonths.filter((ym) => payTypeForMonth(ym) === 'salary');
+  const bonusStandardSales = isPayoutMonth ? Math.round(standardSales * (salaryBonusMonths.length / 2)) : standardSales;
   const positionAllowance = accounting?.position_allowance || 0;
 
   // 무급휴가 공제 계산: 해당 월 내 승인된 무급휴가(특별휴가-기타) 조회
@@ -348,13 +370,15 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   let bonusTotalSales = bonusRegularSupply;                  // 호환: 합계 = 일반공급가 + 안건 수당
   let bonusTotalVat = bonusRegularVat;                       // 호환: 부가세
   let bonusExcess = 0;
-  const isPayoutMonth = m % 2 === 0; // 짝수월 = 성과금 지급월
-
   if (!isCommission && !isHQ && isPayoutMonth) {
     // 2개월 매출 조회 (성과금 계산용)
     const bonusSalesResult = await db.prepare(salesQuery)
       .bind(userId, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd).all();
-    const bonusConfirmed = (bonusSalesResult.results as any[]).filter((r: any) => r.status === 'confirmed');
+    const bonusConfirmed = (bonusSalesResult.results as any[]).filter((r: any) => {
+      if (r.status !== 'confirmed') return false;
+      const ym = String(r.card_deposit_date || r.deposit_date || r.contract_date || '').slice(0, 7);
+      return ym && payTypeForMonth(ym) === 'salary';
+    });
     // sales_records의 안건 수당 자동 INSERT 건(type_detail '명도성과금' prefix — DB 레거시)은 일반매출 합산에서 제외
     // cases 직접 조회로 중복 방지. 매수신청대리는 대리비용 차감 후 effective amount로 합산.
     const isCaseAllowanceSalesRow = (r: any) => (r.type_detail || '').startsWith('명도성과금');
@@ -367,6 +391,8 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     // 안건 수당: cases 테이블에서 직접 등급 성과금 계산 (트리거 INSERT 여부 무관)
     const periodKey = `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}_${String(bonusPeriodEndMonth).padStart(2, '0')}`;
     if (!isCaseAllowanceExcluded) {
+      const salaryMonthPlaceholders = salaryBonusMonths.map(() => '?').join(', ');
+      const salaryMonthFilter = salaryMonthPlaceholders ? `AND substr(registered_at, 1, 7) IN (${salaryMonthPlaceholders})` : 'AND 1 = 0';
       const caseAllowanceCases = await db.prepare(`
         SELECT COALESCE(SUM(
           CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
@@ -374,14 +400,15 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
         ), 0) as total_fee_adjusted
         FROM cases
         WHERE consultant_user_id = ? AND bimonthly_period = ?
-      `).bind(userId, periodKey).first<any>();
+          ${salaryMonthFilter}
+      `).bind(userId, periodKey, ...salaryBonusMonths).first<any>();
       bonusCaseAllowance = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
     }
 
     bonusTotalSalesRaw = bonusRegularRaw + bonusCaseAllowance;
     bonusTotalSales = bonusRegularSupply + bonusCaseAllowance;  // 산정 기준
     bonusTotalVat = bonusRegularVat;
-    bonusExcess = Math.max(bonusTotalSales - standardSales, 0);
+    bonusExcess = Math.max(bonusTotalSales - bonusStandardSales, 0);
 
     if (bonusExcess > 0) {
       if (bonusExcess < 5010000) {
@@ -459,7 +486,9 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       total_vat: totalSales - vatSupplyAmount(totalSales),
       total_refund: totalRefund,
       net_sales: totalSales - totalRefund,
-      standard_sales: standardSales,
+      standard_sales: bonusStandardSales,
+      standard_sales_full_period: standardSales,
+      bonus_salary_months: salaryBonusMonths,
       bonus_regular_raw: bonusRegularRaw,            // 일반매출 원본(부가세 포함)
       bonus_regular_vat: bonusRegularVat,            // 일반매출 부가세
       bonus_regular_supply: bonusRegularSupply,      // 일반매출 공급가액
@@ -684,6 +713,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   const monthStart = `${month}-01`;
   const lastDay = new Date(y, m, 0).getDate();
   const monthEnd = `${month}-${String(lastDay).padStart(2, '0')}`;
+  await ensurePayTypeHistoryTable(db);
 
   // 2026-01·02 특별 규칙: 전원 비율제(기본 50%) 처리 (payroll 로직과 동일)
   const isJanFeb2026 = month === '2026-01' || month === '2026-02';
@@ -709,15 +739,16 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       ORDER BY u.branch, u.department, u.name
     `).bind(...branchFilterBinds).all<any>();
   } else {
+    const historyPayTypeSql = payTypeAtMonthSql('u.id', '?', 'ua.pay_type');
     usersResult = await db.prepare(`
       SELECT u.id, u.name, u.branch, u.department, ua.commission_rate, ua.ssn, ua.address
       FROM user_accounting ua
       JOIN users u ON u.id = ua.user_id
       LEFT JOIN payroll_saves ps ON ps.user_id = u.id AND ps.period = ?
-      WHERE (ua.pay_type = 'commission' OR ps.pay_type = 'commission') AND u.approved = 1 AND u.role != 'resigned'
+      WHERE (${historyPayTypeSql} = 'commission' OR ps.pay_type = 'commission') AND u.approved = 1 AND u.role != 'resigned'
         ${branchFilterSql}
       ORDER BY u.branch, u.department, u.name
-    `).bind(periodLabel, ...branchFilterBinds).all<any>();
+    `).bind(periodLabel, month, ...branchFilterBinds).all<any>();
   }
 
   // commission_rate_overrides 일괄 조회 (해당 월)

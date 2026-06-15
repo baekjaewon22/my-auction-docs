@@ -4,6 +4,7 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 import { recheckAlertsForJournalEntry, recheckAlertsAfterEntryDelete } from '../lib/journal-alerts';
 import { deleteBidAnalysisForJournal, upsertBidAnalysisFromJournal } from '../lib/bid-analysis';
 import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
+import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 
 // KST (한국 시간) 기준 날짜 — 연도별 공휴일
 const HOLIDAYS: Record<string, string[]> = {
@@ -140,8 +141,10 @@ journal.get('/', async (c) => {
   } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
-    conditions.push('j.branch = ?');
-    params.push(user.branch);
+    const allBranches = await getAdminVisibleBranches(db, user);
+    const placeholders = allBranches.map(() => '?').join(',');
+    conditions.push(`j.branch IN (${placeholders})`);
+    params.push(...allBranches);
   }
 
   if (date) {
@@ -180,8 +183,10 @@ journal.get('/members', async (c) => {
   } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
-    query += ' AND branch = ?';
-    params.push(user.branch);
+    const allBranches = await getAdminVisibleBranches(db, user);
+    const placeholders = allBranches.map(() => '?').join(',');
+    query += ` AND branch IN (${placeholders})`;
+    params.push(...allBranches);
   }
 
   query += " ORDER BY branch, department, CASE role WHEN 'master' THEN 1 WHEN 'ceo' THEN 2 WHEN 'cc_ref' THEN 2 WHEN 'admin' THEN 3 WHEN 'manager' THEN 4 WHEN 'member' THEN 5 END, name";

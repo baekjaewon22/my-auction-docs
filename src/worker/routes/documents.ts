@@ -12,7 +12,7 @@ import {
 import { dispatchApprovalAlerts } from '../lib/approval-alerts-dispatcher';
 import { recheckAlertsAfterDocumentChange } from '../lib/journal-alerts';
 import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
-import { applyBranchApprovalOverride } from '../lib/branch-approval-overrides';
+import { applyBranchApprovalOverride, getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 
 const LEAVE_REQUEST_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
 
@@ -137,9 +137,11 @@ documents.get('/', async (c) => {
     params.push(user.sub);
   } else if (user.role === 'admin') {
     // 기타 지사 관리자: 본인 지사 — 타인 draft 제외
-    conditions.push('d.branch = ?');
+    const allBranches = await getAdminVisibleBranches(db, user);
+    const placeholders = allBranches.map(() => '?').join(',');
+    conditions.push(`d.branch IN (${placeholders})`);
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
-    params.push(user.branch);
+    params.push(...allBranches);
     params.push(user.sub);
   } else if (user.role === 'manager') {
     conditions.push('d.branch = ?');
@@ -212,7 +214,12 @@ documents.get('/:id', async (c) => {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
   // 의정부 관리자는 타지사 열람 가능, 기타 관리자는 본인 지사만
-  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch) && !sameBranchName(doc.branch, user.branch) && doc.author_id !== user.sub) {
+  if (
+    user.role === 'admin'
+    && !isHeadOfficeBranch(user.branch)
+    && doc.author_id !== user.sub
+    && !(await getAdminVisibleBranches(db, user)).some((branch) => sameBranchName(doc.branch, branch))
+  ) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 

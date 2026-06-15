@@ -4,6 +4,7 @@ import { api } from '../api';
 import { BID_PROPERTY_CATEGORIES, COURT_OPTIONS, generateYears } from '../journal/types';
 import { useAuthStore } from '../store';
 import { sameBranchName } from '../lib/branchAliases';
+import { groupUserOptions } from '../lib/userSelectOptions';
 
 type BidResult = '실패' | '낙찰' | '취소';
 
@@ -129,6 +130,7 @@ export default function FreelancerBidHistory() {
   const assigneeOptions = branchFilter
     ? filterOptions.assignees.filter(item => sameBranchName(item.branch, branchFilter))
     : filterOptions.assignees;
+  const assigneeGroups = groupUserOptions(assigneeOptions, item => item.branch ? ` (${item.branch})` : '');
 
   const caseNumber = useMemo(() => {
     const no = form.bid_case_no.trim();
@@ -476,8 +478,12 @@ export default function FreelancerBidHistory() {
               <span>담당자</span>
               <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}>
                 <option value="">전체 담당자</option>
-                {assigneeOptions.map(item => (
-                  <option key={item.id} value={item.id}>{item.name}{item.branch ? ` (${item.branch})` : ''}</option>
+                {assigneeGroups.map(group => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.options.map(option => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </label>

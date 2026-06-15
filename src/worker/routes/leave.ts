@@ -35,6 +35,47 @@ function leaveTypeForMessage(leaveType: string, halfDayPeriod?: string): string 
   return leaveType === '반차' && halfDayPeriod ? `반차(${halfDayPeriod})` : leaveType;
 }
 
+async function isDirectOrgParent(db: D1Database, approverId: string, requesterId: string): Promise<boolean> {
+  const row = await db.prepare(`
+    SELECT 1
+    FROM org_nodes child
+    JOIN org_nodes parent ON parent.id = child.parent_id
+    WHERE child.user_id = ?
+      AND parent.user_id = ?
+    LIMIT 1
+  `).bind(requesterId, approverId).first();
+  return Boolean(row);
+}
+
+async function getDirectOrgParentPhone(db: D1Database, requesterId: string): Promise<string> {
+  const row = await db.prepare(`
+    SELECT u.phone
+    FROM org_nodes child
+    JOIN org_nodes parent ON parent.id = child.parent_id
+    JOIN users u ON u.id = parent.user_id
+    WHERE child.user_id = ?
+      AND u.approved = 1
+      AND u.phone != ''
+    LIMIT 1
+  `).bind(requesterId).first<{ phone: string }>();
+  return row?.phone || '';
+}
+
+async function canApproveLeaveRequest(
+  db: D1Database,
+  user: { sub: string; role: string; branch?: string; department?: string },
+  req: any,
+): Promise<boolean> {
+  if (['master', 'ceo', 'admin'].includes(user.role)) return true;
+  if (user.role === 'manager') {
+    return req.branch === user.branch && req.department === user.department;
+  }
+  if (user.role === 'accountant' || user.role === 'cc_ref') {
+    return isDirectOrgParent(db, user.sub, req.user_id);
+  }
+  return false;
+}
+
 function halfDayTimeRange(period?: string): string {
   if (period === '오전') return '09:00~13:00';
   if (period === '오후') return '14:00~18:00';
@@ -628,7 +669,11 @@ leave.post('/request', async (c) => {
     const admins = await db.prepare(
       "SELECT phone FROM users WHERE role IN ('master', 'ceo', 'admin', 'accountant') AND approved = 1 AND phone != ''"
     ).all<{ phone: string }>();
-    const phones = (admins.results || []).map(r => r.phone).filter(Boolean);
+    const directParentPhone = await getDirectOrgParentPhone(db, targetUserId);
+    const phones = Array.from(new Set([
+      ...(admins.results || []).map(r => r.phone).filter(Boolean),
+      directParentPhone,
+    ].filter(Boolean)));
     if (phones.length > 0) {
       c.executionCtx.waitUntil(sendAlimtalkByTemplate(
         c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
@@ -654,7 +699,11 @@ leave.post('/request', async (c) => {
   const admins = await db.prepare(
     "SELECT phone FROM users WHERE role IN ('master', 'ceo', 'admin', 'accountant') AND approved = 1 AND phone != ''"
   ).all<{ phone: string }>();
-  const phones = (admins.results || []).map(r => r.phone).filter(Boolean);
+  const directParentPhone = await getDirectOrgParentPhone(db, targetUserId);
+  const phones = Array.from(new Set([
+    ...(admins.results || []).map(r => r.phone).filter(Boolean),
+    directParentPhone,
+  ].filter(Boolean)));
   if (phones.length > 0) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
@@ -694,6 +743,15 @@ leave.get('/requests', async (c) => {
   } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ' AND lr.branch = ?';
     params.push(user.branch);
+  } else if ((user.role === 'accountant' || user.role === 'cc_ref') && (status === 'pending' || status === 'cancel_requested')) {
+    query += ` AND EXISTS (
+      SELECT 1
+      FROM org_nodes child
+      JOIN org_nodes parent ON parent.id = child.parent_id
+      WHERE child.user_id = lr.user_id
+        AND parent.user_id = ?
+    )`;
+    params.push(user.sub);
   }
 
   if (status) {
@@ -712,7 +770,7 @@ leave.get('/requests', async (c) => {
 });
 
 // ───── 휴가 승인/반려 (관리자+) ─────
-leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'), async (c) => {
   const requestId = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
@@ -721,6 +779,7 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'pending') return c.json({ error: '이미 처리된 신청입니다.' }, 400);
+  if (!(await canApproveLeaveRequest(db, user, req))) return c.json({ error: '승인 권한이 없습니다.' }, 403);
 
   await reinitUserLeave(db, req.user_id);
 
@@ -775,7 +834,7 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
   return c.json({ success: true });
 });
 
-leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'), async (c) => {
   const requestId = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
@@ -785,6 +844,8 @@ leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'admin', 'manage
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'pending') return c.json({ error: '이미 처리된 신청입니다.' }, 400);
+
+  if (!(await canApproveLeaveRequest(db, user, req))) return c.json({ error: '반려 권한이 없습니다.' }, 403);
 
   await db.prepare(`UPDATE leave_requests SET status = 'rejected', approved_by = ?,
     reject_reason = ?, approved_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
@@ -842,13 +903,16 @@ leave.post('/requests/:id/cancel', async (c) => {
 });
 
 // ───── 취소요청 승인 (관리자) ─────
-leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'), async (c) => {
   const requestId = c.req.param('id');
   const db = c.env.DB;
+  const user = c.get('user');
 
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'cancel_requested') return c.json({ error: '취소요청 상태가 아닙니다.' }, 400);
+
+  if (!(await canApproveLeaveRequest(db, user, req))) return c.json({ error: '취소 승인 권한이 없습니다.' }, 403);
 
   await db.prepare("UPDATE leave_requests SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
     .bind(requestId).run();
@@ -976,9 +1040,8 @@ leave.delete('/requests/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'a
 leave.get('/accountant-leaves', async (c) => {
   const db = c.env.DB;
   const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST
-  // 하루 전부터 공지
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  // 7일 후
+  // 오늘부터 7일 후까지 공지
+  const today = now.toISOString().slice(0, 10);
   const future = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const result = await db.prepare(`
@@ -991,7 +1054,7 @@ leave.get('/accountant-leaves', async (c) => {
       AND lr.end_date >= ?
       AND lr.start_date <= ?
     ORDER BY lr.start_date ASC
-  `).bind(yesterday, future).all();
+  `).bind(today, future).all();
 
   return c.json({ leaves: result.results || [] });
 });

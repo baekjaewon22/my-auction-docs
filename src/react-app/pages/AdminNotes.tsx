@@ -9,6 +9,7 @@ import Select from '../components/Select';
 import { COURTS as ALL_COURTS } from '../journal/types';
 import BidAnalysis from './BidAnalysis';
 import BidMatchCheck from './BidMatchCheck';
+import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 type NoteCategory = 'community' | 'notice' | 'article_news' | 'briefing_schedule' | 'eviction_quote' | 'legal_support' | 'cooperation';
 type LegalSubcategory = 'auction' | 'lawsuit' | 'legal_terms' | 'fee_calculation';
@@ -291,6 +292,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const [formVisibility, setFormVisibility] = useState('all');
   const [formCourt, setFormCourt] = useState(COURTS[0]);
   const [formCaseNumber, setFormCaseNumber] = useState('');
+  const [formNoCaseNumber, setFormNoCaseNumber] = useState(false);
   const [formLegalSubcategory, setFormLegalSubcategory] = useState<LegalSubcategory>('lawsuit');
   const [formLawsuitCostRequested, setFormLawsuitCostRequested] = useState(false);
   const [formAttachments, setFormAttachments] = useState<NoteAttachment[]>([]);
@@ -433,10 +435,10 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       .catch(() => undefined);
   }, [canCreateBriefingSchedule, activeCategory]);
 
-  const assigneeOptions = members.map(m => ({
-    value: m.id,
-    label: `${m.name}${m.position_title ? ` · ${m.position_title}` : ''}${m.department ? ` · ${m.department}` : ''}`,
-  }));
+  const assigneeOptions = groupUserOptions(
+    members,
+    m => `${m.position_title ? ` · ${m.position_title}` : ''}${m.department ? ` · ${m.department}` : ''}`,
+  );
 
   useEffect(() => {
     if (!(activeCategory === 'community' && communitySection === 'briefing_schedule')) return;
@@ -501,17 +503,18 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   };
 
   const handleCreate = async () => {
+    const isEditing = !!editingId;
     const isBriefingSchedule = activeCategory === 'community' && communitySection === 'briefing_schedule';
     const isNotice = activeCategory === 'community' && communitySection === 'notice';
     const isLegalAuction = activeCategory === 'legal_support' && formLegalSubcategory === 'auction';
     const legalAuctionCaseNo = formCaseNumber.replace(/[^0-9]/g, '');
-    const legalAuctionCaseNumber = `${formCaseYear}타경${legalAuctionCaseNo}`;
-    if (activeCategory === 'community' && communitySection === 'article_news') { alert('오늘의 뉴스는 외부 API 업로드로만 등록됩니다.'); return; }
-    if (isNotice && !canCreateNotice) { alert('공지사항 등록 권한이 없습니다.'); return; }
+    const legalAuctionCaseNumber = formNoCaseNumber ? '사건번호없음' : `${formCaseYear}타경${legalAuctionCaseNo}`;
+    if (!isEditing && activeCategory === 'community' && communitySection === 'article_news') { alert('오늘의 뉴스는 외부 API 업로드로만 등록됩니다.'); return; }
+    if (!isEditing && isNotice && !canCreateNotice) { alert('공지사항 등록 권한이 없습니다.'); return; }
     if (activeCategory === 'legal_support' && formLegalSubcategory === 'legal_terms' && !canCreateLegalTerms) { alert('법률용어는 법률지원팀 및 관리자급 이상만 작성할 수 있습니다.'); return; }
     if (!isBriefingSchedule && activeCategory !== 'eviction_quote' && !formTitle.trim()) { alert('제목을 입력하세요.'); return; }
     if (activeCategory === 'eviction_quote' && !formCaseNumber.trim()) { alert('사건번호를 입력하세요.'); return; }
-    if (isLegalAuction && (!legalAuctionCaseNo || !formCourt)) { alert('경매 상담은 사건번호와 법원을 입력하세요.'); return; }
+    if (isLegalAuction && ((!formNoCaseNumber && !legalAuctionCaseNo) || !formCourt)) { alert('경매 상담은 사건번호와 법원을 입력하세요.'); return; }
     if (isBriefingSchedule && !canCreateBriefingSchedule) { alert('브리핑자료 제출 등록 권한이 없습니다.'); return; }
     if (isBriefingSchedule && !formAssigneeId) { alert('담당자를 목록에서 선택하세요.'); return; }
     if (isBriefingSchedule && !formTargetDate) { alert('일정일을 입력하세요.'); return; }
@@ -534,6 +537,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           lawsuit_cost_requested: activeCategory === 'legal_support' && usesLawsuitCostCheckbox(formLegalSubcategory) ? formLawsuitCostRequested : false,
           court: isLegalAuction ? formCourt : undefined,
           case_number: isLegalAuction ? legalAuctionCaseNumber : undefined,
+          no_case_number: isLegalAuction ? formNoCaseNumber : undefined,
         });
         if (detail?.id === editingId) {
           const res = await api.adminNotes.get(editingId);
@@ -555,6 +559,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           target_date: isBriefingSchedule ? formTargetDate : undefined,
           court: activeCategory === 'eviction_quote' || isBriefingSchedule || isLegalAuction ? formCourt : undefined,
           case_number: activeCategory === 'eviction_quote' ? formCaseNumber.trim() : isBriefingSchedule ? briefingCaseNumber : isLegalAuction ? legalAuctionCaseNumber : undefined,
+          no_case_number: isLegalAuction ? formNoCaseNumber : undefined,
           item_no: isBriefingSchedule ? formItemNo.trim() : undefined,
           client_name: isBriefingSchedule ? formClientName.trim() : undefined,
         });
@@ -568,7 +573,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const resetForm = () => {
     setFormTitle(''); setFormContent(''); setFormPinned(false);
     setFormAnonymous(false); setFormVisibility(isManager ? 'all' : 'branch');
-    setFormCourt(COURTS[0]); setFormCaseNumber(''); setFormLegalSubcategory(activeLegalSubcategory); setFormLawsuitCostRequested(false); setFormAttachments([]);
+    setFormCourt(COURTS[0]); setFormCaseNumber(''); setFormNoCaseNumber(false); setFormLegalSubcategory(activeLegalSubcategory); setFormLawsuitCostRequested(false); setFormAttachments([]);
     setFormAssigneeId(members[0]?.id || ''); setFormTargetDate(new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10));
     setFormCaseYear('2026'); setFormBriefingCaseNo(''); setFormItemNo(''); setFormClientName(''); setAutofillHint(''); setAutofillMatch(null);
     setShowForm(false); setEditingId(null);
@@ -581,8 +586,9 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     setFormContent(note.content);
     setFormPinned(!!note.pinned);
     setFormCourt(note.court || COURTS[0]);
+    setFormNoCaseNumber(note.category === 'legal_support' && legalSubcategory === 'auction' && note.case_number === '사건번호없음');
     setFormCaseYear(note.category === 'legal_support' && legalSubcategory === 'auction' ? auctionCase.year : '2026');
-    setFormCaseNumber(note.category === 'legal_support' && legalSubcategory === 'auction' ? auctionCase.no : note.case_number || '');
+    setFormCaseNumber(note.category === 'legal_support' && legalSubcategory === 'auction' ? (note.case_number === '사건번호없음' ? '' : auctionCase.no) : note.case_number || '');
     setFormLegalSubcategory(legalSubcategory);
     setFormLawsuitCostRequested(!!note.lawsuit_cost_requested);
     setEditingId(note.id);
@@ -981,6 +987,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
               onClick={() => {
                 setActiveLegalSubcategory(item.key);
                 setFormLegalSubcategory(item.key);
+                if (item.key !== 'auction') setFormNoCaseNumber(false);
                 setDetail(null);
                 setSearchParams({ tab: 'legal_support', section: item.key });
               }}
@@ -1029,7 +1036,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                   <label>담당자 *</label>
                   <Select
                     options={assigneeOptions}
-                    value={assigneeOptions.find(o => o.value === formAssigneeId) || null}
+                    value={findUserOption(assigneeOptions, formAssigneeId)}
                     onChange={(o: any) => setFormAssigneeId(o?.value || '')}
                     placeholder="담당자 검색"
                     isSearchable
@@ -1120,7 +1127,11 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
               {activeCategory === 'legal_support' && (
                 <div className="form-group" style={{ marginBottom: 12 }}>
                   <label>분류</label>
-                  <select className="form-input" value={formLegalSubcategory} onChange={(e) => setFormLegalSubcategory(e.target.value as LegalSubcategory)} style={{ width: 180 }}>
+                  <select className="form-input" value={formLegalSubcategory} onChange={(e) => {
+                    const next = e.target.value as LegalSubcategory;
+                    setFormLegalSubcategory(next);
+                    if (next !== 'auction') setFormNoCaseNumber(false);
+                  }} style={{ width: 180 }}>
                     {WRITABLE_LEGAL_SUBCATEGORIES.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
                   </select>
                 </div>
@@ -1144,8 +1155,20 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                         onChange={(e) => setFormCaseNumber(e.target.value.replace(/[^0-9]/g, ''))}
                         placeholder="12345"
                         inputMode="numeric"
+                        disabled={formNoCaseNumber}
                       />
                     </div>
+                    <label className="legal-auction-no-case">
+                      <input
+                        type="checkbox"
+                        checked={formNoCaseNumber}
+                        onChange={(e) => {
+                          setFormNoCaseNumber(e.target.checked);
+                          if (e.target.checked) setFormCaseNumber('');
+                        }}
+                      />
+                      사건번호 없음
+                    </label>
                   </div>
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <label>법원 *</label>

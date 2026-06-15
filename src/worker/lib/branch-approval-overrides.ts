@@ -1,4 +1,5 @@
-import { normalizeBranchName } from './branchAliases';
+import { branchAliases, normalizeBranchName } from './branchAliases';
+import type { JwtPayload } from '../types';
 
 export async function ensureBranchApprovalOverridesTable(db: D1Database) {
   await db.prepare(`
@@ -57,4 +58,38 @@ export async function applyBranchApprovalOverride(
     chain: [...chain.slice(0, insertAt), approverId, ...chain.slice(insertAt)],
     addedApproverId: approverId,
   };
+}
+
+export async function getBranchApprovalBranchesForUser(
+  db: D1Database,
+  userId: string,
+): Promise<string[]> {
+  await ensureBranchApprovalOverridesTable(db);
+  const result = await db.prepare(`
+    SELECT branch
+    FROM branch_approval_overrides
+    WHERE approver_id = ?
+  `).bind(userId).all<{ branch: string }>();
+
+  return Array.from(new Set(
+    (result.results || [])
+      .map((row) => normalizeBranchName(row.branch))
+      .filter(Boolean),
+  ));
+}
+
+export async function getAdminVisibleBranches(
+  db: D1Database,
+  user: Pick<JwtPayload, 'sub' | 'branch'>,
+  fallbackExtraBranches: string[] = [],
+): Promise<string[]> {
+  const canonicalBranches = [
+    normalizeBranchName(user.branch),
+    ...fallbackExtraBranches.map((branch) => normalizeBranchName(branch)),
+    ...(await getBranchApprovalBranchesForUser(db, user.sub)),
+  ].filter(Boolean);
+
+  return Array.from(new Set(
+    canonicalBranches.flatMap((branch) => branchAliases(branch)),
+  ));
 }

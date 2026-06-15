@@ -7,6 +7,7 @@ import { useBranches } from '../hooks/useBranches';
 import type { Role } from '../types';
 import Select from '../components/Select';
 import { isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import {
   BookOpenCheck, ChevronLeft, ChevronRight, CalendarDays, TrendingDown, TrendingUp, AlertTriangle,
   ArrowDownCircle, Plus, X, Pencil, RotateCcw, Users as UsersIcon
@@ -607,7 +608,9 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
 
   // 필터
   const filteredMembers = filterBranch ? users.filter(u => sameBranchName(u.branch, filterBranch)) : users;
-  const memberOpts = filteredMembers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` }));
+  const memberOpts = groupUserOptions(filteredMembers, u => ` (${u.department || ''})`);
+  const entryAssigneeOpts = groupUserOptions(users, u => ` (${u.department || ''})`);
+  const bankMoveUserGroups = groupUserOptions(users, u => ` (${u.department || ''})`);
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
   const filteredStaffUsers = users.filter(u =>
     (u.name.includes(searchTerm) || u.department?.includes(searchTerm) || u.branch?.includes(searchTerm))
@@ -931,8 +934,8 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                 <div><label className="form-label">내용</label><input className="form-input" value={entryContent} onChange={(e) => setEntryContent(e.target.value)} style={{ width: '100%' }} placeholder="내용" /></div>
                 <div><label className="form-label">일시</label><input className="form-input" type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} style={{ width: '100%' }} /></div>
                 <div><label className="form-label">담당자</label>
-                  <Select size="sm" options={[{ value: '__all__', label: '전체 (미지정)' }, ...users.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` }))]}
-                    value={entryAssignee === '__all__' ? { value: '__all__', label: '전체 (미지정)' } : users.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` })).find(o => o.value === entryAssignee) || null}
+                  <Select size="sm" options={[{ value: '__all__', label: '전체 (미지정)' }, ...entryAssigneeOpts]}
+                    value={entryAssignee === '__all__' ? { value: '__all__', label: '전체 (미지정)' } : findUserOption(entryAssigneeOpts, entryAssignee)}
                     onChange={(o: any) => setEntryAssignee(o?.value || '')} placeholder="담당자 선택" isSearchable /></div>
               </div>
               <div style={{ marginTop: 14 }}><button className="btn btn-primary" onClick={handleAddEntry}>등록</button></div>
@@ -954,7 +957,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
             </div>
             <div style={{ minWidth: 200 }}>
               <Select size="sm" options={[{ value: '', label: '전체 담당자' }, ...memberOpts]}
-                value={memberOpts.find(o => o.value === filterUser) || { value: '', label: '전체 담당자' }}
+                value={findUserOption(memberOpts, filterUser) || { value: '', label: '전체 담당자' }}
                 onChange={(o: any) => setFilterUser(o?.value || '')} placeholder="담당자" isClearable />
             </div>
             <div className="acc-toggle-group">
@@ -1333,7 +1336,13 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                             <select className="form-input" value={bankMoveUser} onChange={(e) => setBankMoveUser(e.target.value)}
                               style={{ fontSize: '0.72rem', padding: '2px 4px', width: 80 }}>
                               <option value="">담당자</option>
-                              {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                              {bankMoveUserGroups.map(group => (
+                                <optgroup key={group.label} label={group.label}>
+                                  {group.options.map(option => (
+                                    <option key={option.value} value={option.value}>{option.label}</option>
+                                  ))}
+                                </optgroup>
+                              ))}
                             </select>
                             <button className="btn btn-sm btn-primary" style={{ fontSize: '0.68rem', padding: '2px 6px' }}
                               onClick={async () => {
@@ -1463,10 +1472,11 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                 const filteredUsers = cardFilterBranch
                   ? users.filter(u => sameBranchName(u.branch, cardFilterBranch))
                   : users;
-                const opts = [{ value: '', label: '전체 담당자' }, ...filteredUsers.map(u => ({ value: u.id, label: `${u.name} (${u.department || ''})` }))];
+                const groupedOpts = groupUserOptions(filteredUsers, u => ` (${u.department || ''})`);
+                const opts = [{ value: '', label: '전체 담당자' }, ...groupedOpts];
                 return (
                   <Select size="sm" options={opts}
-                    value={opts.find(o => o.value === cardFilterUser) || { value: '', label: '전체 담당자' }}
+                    value={findUserOption(groupedOpts, cardFilterUser) || { value: '', label: '전체 담당자' }}
                     onChange={(o: any) => setCardFilterUser(o?.value || '')} isClearable isSearchable />
                 );
               })()}

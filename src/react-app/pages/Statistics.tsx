@@ -15,6 +15,7 @@ import Select from '../components/Select';
 import { useBranches } from '../hooks/useBranches';
 import ComprehensiveAnalysis from '../components/ComprehensiveAnalysis';
 import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 interface Member {
   id: string; name: string; role: string; branch: string; department: string; login_type?: string;
@@ -236,8 +237,8 @@ export default function Statistics() {
           <div style={{ minWidth: 140 }}>
             <Select
               size="sm"
-              options={filteredUsers.map(m => ({ value: m.id, label: `${m.name} (${ROLE_LABELS[m.role as Role]})` }))}
-              value={filterUser ? { value: filterUser, label: `${filteredUsers.find(m => m.id === filterUser)?.name || ''} (${ROLE_LABELS[filteredUsers.find(m => m.id === filterUser)?.role as Role] || ''})` } : null}
+              options={groupUserOptions(filteredUsers, m => ` (${ROLE_LABELS[m.role as Role] || ''})`)}
+              value={findUserOption(groupUserOptions(filteredUsers, m => ` (${ROLE_LABELS[m.role as Role] || ''})`), filterUser)}
               onChange={(o: any) => setFilterUser(o?.value || '')}
               placeholder="전체 인원"
               isClearable

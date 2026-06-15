@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { JournalEntry } from '../journal/types';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 const TYPE_OPTIONS = [
   { value: '계약', label: '계약' },
@@ -450,7 +451,7 @@ export default function Sales() {
   const filteredMembers = (filterBranch ? members.filter(m => sameBranchName(m.branch, filterBranch)) : members)
     .filter(m => m.role !== 'master')
     .filter(m => (m.role as string) !== 'resigned' || resignedWithSales.has(m.id));
-  const memberOpts = filteredMembers.map(m => ({ value: m.id, label: `${m.name} (${m.department})${(m.role as string) === 'resigned' ? ' [퇴사]' : ''}` }));
+  const memberOpts = groupUserOptions(filteredMembers, m => ` (${m.department || ''})`);
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
 
   // 지사 + 유형 + 담당자 + 상태 필터 적용된 records
@@ -688,7 +689,7 @@ export default function Sales() {
         {showUserFilter && (
           <div style={{ minWidth: 200 }}>
             <Select size="sm" options={[{ value: '', label: '전체 담당자' }, ...memberOpts]}
-              value={memberOpts.find(o => o.value === filterUser) || { value: '', label: '전체 담당자' }}
+              value={findUserOption(memberOpts, filterUser) || { value: '', label: '전체 담당자' }}
               onChange={(o: any) => setFilterUser(o?.value || '')} placeholder="담당자" isClearable />
           </div>
         )}
@@ -853,10 +854,12 @@ export default function Sales() {
               <div style={{ minWidth: 260 }}>
                 <label className="form-label">담당자</label>
                 {(() => {
-                  const opts = activityBranch ? memberOpts.filter(o => members.find(m => m.id === o.value && sameBranchName(m.branch, activityBranch))) : memberOpts;
+                  const opts = activityBranch
+                    ? groupUserOptions(filteredMembers.filter(m => sameBranchName(m.branch, activityBranch)), m => ` (${m.department || ''})`)
+                    : memberOpts;
                   return (
                     <Select options={[{ value: '', label: '전체 담당자' }, ...opts]}
-                      value={opts.find(o => o.value === activityUser) || { value: '', label: '전체 담당자' }}
+                      value={findUserOption(opts, activityUser) || { value: '', label: '전체 담당자' }}
                       onChange={(o: any) => { setActivityUser(o?.value || ''); setActivityPage(0); }}
                       placeholder="담당자 선택" isSearchable />
                   );

@@ -61,6 +61,7 @@ auth.post('/login', async (c) => {
   const token = await createToken({
     sub: user.id, email: user.email, name: user.name, phone: user.phone,
     role: user.role, team_id: user.team_id, branch: user.branch, department: user.department,
+    position_title: user.position_title,
     login_type: userLoginType,
   });
 
@@ -68,6 +69,7 @@ auth.post('/login', async (c) => {
     token,
     user: { id: user.id, email: user.email, name: user.name, phone: user.phone,
       role: user.role, team_id: user.team_id, branch: user.branch, department: user.department,
+      position_title: user.position_title,
       login_type: userLoginType },
   });
 });

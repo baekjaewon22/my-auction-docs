@@ -5,6 +5,7 @@ import { Upload, FileText, Trash2, Eye, Download, Plus, X, ArrowLeft, Share2, Fi
 import { useNavigate } from 'react-router-dom';
 import Select from '../components/Select';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { flattenUserOptions, groupUserOptions } from '../lib/userSelectOptions';
 
 interface MinuteItem {
   id: string;
@@ -237,10 +238,9 @@ export default function MeetingMinutes() {
   const canManageMinute = (item: MinuteItem) => user?.role === 'master' || item.uploaded_by === user?.id;
   const activeSharingMinute = sharingId ? items.find(item => item.id === sharingId) : null;
   const shareableMembers = members.filter(m => m.id !== user?.id && m.id !== activeSharingMinute?.uploaded_by);
-  const shareOptions = shareableMembers.map(m => ({ value: m.id, label: `${m.name} (${m.branch || '-'} · ${m.department || '-'})` }));
-  const selectedShareOptions = shareableMembers
-    .filter(m => shareTargets.includes(m.id))
-    .map(m => ({ value: m.id, label: `${m.name} (${m.branch || '-'} · ${m.department || '-'})` }));
+  const shareOptions = groupUserOptions(shareableMembers, m => ` (${m.branch || '-'} · ${m.department || '-'})`);
+  const flatShareOptions = flattenUserOptions(shareOptions);
+  const selectedShareOptions = flatShareOptions.filter(option => shareTargets.includes(option.value));
   const branchGroups = [...new Set(shareableMembers.map(m => normalizeBranchName(m.branch)).filter(Boolean))];
   const departmentGroups = [...new Set(shareableMembers.map(m => `${normalizeBranchName(m.branch) || '-'}|||${m.department || '-'}`))];
   const addShareTargets = (ids: string[]) => setShareTargets(prev => [...new Set([...prev, ...ids])]);
