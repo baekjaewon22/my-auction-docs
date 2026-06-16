@@ -34,6 +34,7 @@ export default function DocumentEdit() {
   const [showLogs, setShowLogs] = useState(false);
   const [showSignature, setShowSignature] = useState(false);
   const [signatureType, setSignatureType] = useState<SignatureType>('author');
+  const [signatureStepId, setSignatureStepId] = useState<string | undefined>(undefined);
   const [rejectReason, setRejectReason] = useState('');
   const [showReject, setShowReject] = useState(false);
   const [approvalSteps, setApprovalSteps] = useState<ApprovalStep[]>([]);
@@ -445,7 +446,7 @@ export default function DocumentEdit() {
   };
 
   // ApprovalBar에서 서명 버튼 클릭 시 — approverRole로 자동 판단
-  const handleApprovalSign = async (type: 'author' | 'approver', approverRole?: string) => {
+  const handleApprovalSign = async (type: 'author' | 'approver', approverRole?: string, stepId?: string) => {
     if (!id) return;
     if (approvingRef.current) return;
 
@@ -456,7 +457,7 @@ export default function DocumentEdit() {
       try {
         await api.signatures.sign(id, '/LNCstemp.png');
         if (type === 'approver') {
-          const result = await api.documents.approve(id) as any;
+          const result = await api.documents.approve(id, stepId ? { step_id: stepId } : undefined) as any;
           alert(result.final ? '문서가 최종 승인되었습니다.' : '승인 완료. 다음 단계 결재자에게 전달됩니다.');
         }
         window.location.reload();
@@ -474,7 +475,7 @@ export default function DocumentEdit() {
           // 서명 완료 후: 결재자 슬롯이면 자동으로 승인 API 호출
           if (type === 'approver') {
             try {
-              const result = await api.documents.approve(id) as any;
+              const result = await api.documents.approve(id, stepId ? { step_id: stepId } : undefined) as any;
               alert(result.final ? '문서가 최종 승인되었습니다.' : '승인 완료. 다음 단계 결재자에게 전달됩니다.');
               window.location.reload();
               return;
@@ -494,6 +495,7 @@ export default function DocumentEdit() {
     }
     // 저장된 서명이 없으면 패널 열기 (최초 서명 등록)
     setSignatureType(type);
+    setSignatureStepId(stepId);
     setShowSignature(true);
   };
 
@@ -504,7 +506,7 @@ export default function DocumentEdit() {
     // signatureType이 'approver'이면 승인 API 호출 (패널 통해 최초 서명 등록하는 경로)
     if (signatureType === 'approver') {
       try {
-        const result = await api.documents.approve(id) as any;
+        const result = await api.documents.approve(id, signatureStepId ? { step_id: signatureStepId } : undefined) as any;
         alert(result.final ? '문서가 최종 승인되었습니다.' : '승인 완료. 다음 단계 결재자에게 전달됩니다.');
         window.location.reload();
         return;
@@ -514,6 +516,7 @@ export default function DocumentEdit() {
     }
     api.signatures.getByDocument(id).then((res) => setSignatures(res.signatures));
     setShowSignature(false);
+    setSignatureStepId(undefined);
   };
 
   // 현재 문서 내용을 원본 템플릿에 덮어쓰기

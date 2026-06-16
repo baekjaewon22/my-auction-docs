@@ -28,6 +28,7 @@ export default function PropertyReport() {
   const [approvalSteps, setApprovalSteps] = useState<ApprovalStep[]>([]);
   const [showSignPanel, setShowSignPanel] = useState(false);
   const [signType, setSignType] = useState<'author' | 'approver'>('author');
+  const [signStepId, setSignStepId] = useState<string | undefined>(undefined);
   const approvingRef = useRef(false);
   const [approving, setApproving] = useState(false);
 
@@ -79,7 +80,7 @@ export default function PropertyReport() {
   }, [id]);
 
   // 서명 처리 — approverRole로 자동 판단
-  const handleSignRequest = async (type: 'author' | 'approver', approverRole?: string) => {
+  const handleSignRequest = async (type: 'author' | 'approver', approverRole?: string, stepId?: string) => {
     if (!docId) return;
     if (approvingRef.current) return;
 
@@ -90,7 +91,7 @@ export default function PropertyReport() {
       try {
         await api.signatures.sign(docId, '/LNCstemp.png');
         if (type === 'approver') {
-          await api.documents.approve(docId);
+          await api.documents.approve(docId, stepId ? { step_id: stepId } : undefined);
         }
         await loadDoc(docId);
       } catch (err: any) { alert(err.message); }
@@ -105,7 +106,7 @@ export default function PropertyReport() {
       try {
         await quickSign(docId, type, async () => {
           if (type === 'approver') {
-            await api.documents.approve(docId);
+            await api.documents.approve(docId, stepId ? { step_id: stepId } : undefined);
           }
           await loadDoc(docId);
         });
@@ -113,6 +114,7 @@ export default function PropertyReport() {
       finally { approvingRef.current = false; setApproving(false); }
     } else {
       setSignType(type);
+      setSignStepId(stepId);
       setShowSignPanel(true);
     }
   };
@@ -121,9 +123,10 @@ export default function PropertyReport() {
     if (!docId) return;
     try {
       if (signType === 'approver') {
-        await api.documents.approve(docId);
+        await api.documents.approve(docId, signStepId ? { step_id: signStepId } : undefined);
       }
       setShowSignPanel(false);
+      setSignStepId(undefined);
       await loadDoc(docId);
     } catch (err: any) { alert(err.message); }
   };

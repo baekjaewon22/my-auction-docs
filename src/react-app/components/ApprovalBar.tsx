@@ -7,7 +7,7 @@ interface Props {
   currentUserRole?: string;
   docStatus: string;
   authorName?: string;
-  onSign: (type: 'author' | 'approver', approverRole?: string) => void;
+  onSign: (type: 'author' | 'approver', approverRole?: string, stepId?: string) => void;
 }
 
 export default function ApprovalBar({ signatures, approvalSteps, currentUserId, currentUserRole, docStatus, authorName, onSign }: Props) {
@@ -18,7 +18,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
   const authorSigned = signatures.some(s => s.user_id === currentUserId && s.signature_data);
 
   // 동적 결재선: 작성자 + approval_steps
-  const slots: { label: string; name?: string; status: 'empty' | 'signed' | 'approved' | 'rejected' | 'pending'; signature?: Signature; canSign: boolean; approverRole?: string }[] = [];
+  const slots: { label: string; name?: string; status: 'empty' | 'signed' | 'approved' | 'rejected' | 'pending'; signature?: Signature; canSign: boolean; approverRole?: string; stepId?: string }[] = [];
 
   // 1) 작성자 슬롯
   slots.push({
@@ -56,7 +56,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
 
       // 권한자는 순서 무관 대리 서명 가능
       const isSuperApprover = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUserRole || '') &&
-        step.status === 'pending' && docStatus === 'submitted';
+        step.status === 'pending' && prevAllApproved && docStatus === 'submitted';
 
       slots.push({
         label: step.approver_name || `승인 ${step.step_order}`,
@@ -65,6 +65,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
         signature: stepSig || undefined,
         canSign: isMyTurn || isSuperApprover,
         approverRole: (step as any).approver_role || undefined,
+        stepId: step.id,
       });
     }
   } else if (docStatus !== 'draft') {
@@ -108,7 +109,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
               ) : (
                 <div className="approval-slot-empty">
                   {slot.canSign && (
-                    <button className="approval-sign-btn" onClick={() => onSign(idx === 0 ? 'author' : 'approver', slot.approverRole)}>
+                    <button className="approval-sign-btn" onClick={() => onSign(idx === 0 ? 'author' : 'approver', slot.approverRole, slot.stepId)}>
                       {slot.approverRole === 'ceo' && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUserRole || '')
                         ? '대표 직인'
                         : '서명'}

@@ -439,15 +439,31 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
+  let body: { step_id?: string } = {};
+  try { body = await c.req.json(); } catch { body = {}; }
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
   if (doc.status !== 'submitted') return c.json({ error: '제출된 문서만 승인할 수 있습니다.' }, 400);
 
   // 결재선에서 현재 대기중인 내 단계 찾기
-  const myStep = await db.prepare(
-    "SELECT * FROM approval_steps WHERE document_id = ? AND approver_id = ? AND status = 'pending'"
-  ).bind(id, user.sub).first<{ id: string; step_order: number }>();
+  let myStep: { id: string; step_order: number } | null = null;
+  if (body.step_id) {
+    myStep = await db.prepare(
+      "SELECT * FROM approval_steps WHERE document_id = ? AND id = ? AND status = 'pending'"
+    ).bind(id, body.step_id).first<{ id: string; step_order: number }>() || null;
+    if (!myStep) return c.json({ error: '승인 대기 중인 결재 단계를 찾을 수 없습니다.' }, 404);
+    const isOwnStep = await db.prepare(
+      "SELECT id FROM approval_steps WHERE id = ? AND approver_id = ?"
+    ).bind(body.step_id, user.sub).first();
+    if (!isOwnStep && !['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role)) {
+      return c.json({ error: '해당 결재 단계를 대리 승인할 권한이 없습니다.' }, 403);
+    }
+  } else {
+    myStep = await db.prepare(
+      "SELECT * FROM approval_steps WHERE document_id = ? AND approver_id = ? AND status = 'pending'"
+    ).bind(id, user.sub).first<{ id: string; step_order: number }>() || null;
+  }
 
   if (!myStep) {
     // 대리 승인은 상위 권한(master/ceo/cc_ref/admin/accountant)만 가능 — manager 제외

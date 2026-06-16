@@ -162,7 +162,11 @@ export const api = {
       request('/documents/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request('/documents/' + id, { method: 'DELETE' }),
     submit: (id: string) => request('/documents/' + id + '/submit', { method: 'POST' }),
-    approve: (id: string) => request('/documents/' + id + '/approve', { method: 'POST' }),
+    approve: (id: string, data?: { step_id?: string }) =>
+      request('/documents/' + id + '/approve', {
+        method: 'POST',
+        body: data ? JSON.stringify(data) : undefined,
+      }),
     reject: (id: string, reason?: string) =>
       request('/documents/' + id + '/reject', {
         method: 'POST',
