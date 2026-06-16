@@ -80,7 +80,9 @@ function monthLabel(ym: string): string {
 }
 
 function ManagerPerformancePanel() {
+  const { branches } = useBranches();
   const [monthEnd, setMonthEnd] = useState(() => new Date().toISOString().slice(0, 7));
+  const [branch, setBranch] = useState('');
   const [rows, setRows] = useState<ManagerPerformanceRow[]>([]);
   const [scope, setScope] = useState<'all' | 'branch' | 'team'>('team');
   const [loading, setLoading] = useState(false);
@@ -90,7 +92,7 @@ function ManagerPerformancePanel() {
     setLoading(true);
     setError('');
     try {
-      const res = await api.sales.managerPerformance({ month_end: monthEnd, months: 6 });
+      const res = await api.sales.managerPerformance({ month_end: monthEnd, months: 6, branch: branch || undefined });
       setRows(res.rows || []);
       setScope(res.scope);
     } catch (err: any) {
@@ -101,7 +103,7 @@ function ManagerPerformancePanel() {
     }
   };
 
-  useEffect(() => { load(); }, [monthEnd]);
+  useEffect(() => { load(); }, [monthEnd, branch]);
 
   const totals = useMemo(() => ({
     people: rows.length,
@@ -110,6 +112,8 @@ function ManagerPerformancePanel() {
   }), [rows]);
 
   const scopeLabel = scope === 'all' ? '전체 공개' : scope === 'branch' ? '본인 지사' : '본인 팀';
+  const branchOptions = [{ value: '', label: '전체 지사' }, ...branches.map((value) => ({ value, label: value }))];
+  const canFilterBranch = scope === 'all';
 
   return (
     <div className="manager-performance-panel">
@@ -120,8 +124,13 @@ function ManagerPerformancePanel() {
             월 기준매출 대비 달성 여부를 사람별 실선 그래프로 확인합니다. 정렬은 매출 낮은 순입니다.
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.75rem', color: '#5f6368' }}>{scopeLabel}</span>
+          {canFilterBranch && (
+            <div style={{ width: 150 }}>
+              <Select size="sm" options={branchOptions} value={branchOptions.find((opt) => opt.value === branch) || branchOptions[0]} onChange={(opt: any) => setBranch(opt?.value || '')} />
+            </div>
+          )}
           <input type="month" className="form-input" value={monthEnd} onChange={(e) => setMonthEnd(e.target.value)} style={{ width: 140 }} />
         </div>
       </div>

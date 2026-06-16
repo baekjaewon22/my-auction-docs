@@ -1087,6 +1087,7 @@ sales.get('/manager-performance', async (c) => {
   }
 
   const months = monthRange(c.req.query('month_end') || '', Math.min(12, Math.max(3, Number(c.req.query('months') || 6) || 6)));
+  const requestedBranch = (c.req.query('branch') || '').trim();
   const startDate = `${months[0]}-01`;
   const [endYear, endMonth] = months[months.length - 1].split('-').map(Number);
   const endDate = `${months[months.length - 1]}-${new Date(endYear, endMonth, 0).getDate()}`;
@@ -1116,6 +1117,9 @@ sales.get('/manager-performance', async (c) => {
   };
   if (canViewBranch) {
     addBranchCondition(user.branch);
+  }
+  if (canViewAll && requestedBranch) {
+    addBranchCondition(requestedBranch);
   }
   if (canViewTeam) {
     addBranchCondition(user.branch);

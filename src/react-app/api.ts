@@ -495,10 +495,11 @@ export const api = {
       const qs = q.toString();
       return request<{ records: import('./types').SalesRecord[] }>('/sales/stats' + (qs ? '?' + qs : ''));
     },
-    managerPerformance: (params?: { month_end?: string; months?: number }) => {
+    managerPerformance: (params?: { month_end?: string; months?: number; branch?: string }) => {
       const q = new URLSearchParams();
       if (params?.month_end) q.set('month_end', params.month_end);
       if (params?.months) q.set('months', String(params.months));
+      if (params?.branch) q.set('branch', params.branch);
       const qs = q.toString();
       return request<{
         months: string[];
