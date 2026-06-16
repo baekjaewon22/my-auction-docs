@@ -34,8 +34,8 @@ type BidAnalysisForm = {
   client_name: string;
 };
 
-const PAGE_SIZE = 20;
-const PAGE_WINDOW = 10;
+const PAGE_SIZE = 15;
+const PAGE_WINDOW = 5;
 
 function money(value: number | null | undefined) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';

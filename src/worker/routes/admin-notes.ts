@@ -746,7 +746,7 @@ adminNotes.get('/bid-analysis', async (c) => {
   if (!canManageBidHistory(user.role)) return c.json({ error: '입찰분석 열람 권한이 없습니다.' }, 403);
 
   const page = Math.max(1, Number(c.req.query('page') || 1) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(c.req.query('page_size') || 20) || 20));
+  const pageSize = Math.min(100, Math.max(1, Number(c.req.query('page_size') || 15) || 15));
   const from = String(c.req.query('from') || '').trim();
   const to = String(c.req.query('to') || '').trim();
   const branch = normalizeBranchName(c.req.query('branch') || '');
