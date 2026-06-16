@@ -10,6 +10,7 @@ sales.use('*', authMiddleware);
 
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 const EDIT_ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+const TEST_ACCOUNT_KEYWORDS = ['test', '테스트', 'dummy', 'sample', 'example', '임시'];
 
 // admin 권한 확장: 본인 지사 외 추가 지사 열람 가능 (특정 사용자 예외)
 // 진성헌(서초·admin·본부장): 서초 + 대전 매출 열람
@@ -1096,6 +1097,13 @@ sales.get('/manager-performance', async (c) => {
     "COALESCE(u.login_type, 'employee') != 'freelancer'",
   ];
   const memberParams: any[] = [];
+  memberConditions.push(`NOT (${TEST_ACCOUNT_KEYWORDS.map(() =>
+    "(LOWER(COALESCE(u.name, '')) LIKE ? OR LOWER(COALESCE(u.email, '')) LIKE ? OR LOWER(COALESCE(u.branch, '')) LIKE ? OR LOWER(COALESCE(u.department, '')) LIKE ?)"
+  ).join(' OR ')})`);
+  for (const keyword of TEST_ACCOUNT_KEYWORDS) {
+    const pattern = `%${keyword.toLowerCase()}%`;
+    memberParams.push(pattern, pattern, pattern, pattern);
+  }
   const addBranchCondition = (branch: string | null | undefined) => {
     const aliases = branchAliases(branch);
     if (aliases.length > 0) {
