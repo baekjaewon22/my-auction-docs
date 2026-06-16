@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
-import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 
 const sales = new Hono<AuthEnv>();
@@ -84,6 +84,20 @@ function buildDiff(before: any, after: any, fields: { key: string; label: string
     parts.push(`${f.label}: ${bv || '(없음)'} → ${av || '(없음)'}`);
   }
   return parts.join(', ');
+}
+
+function monthKey(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function monthRange(endMonth: string, count: number): string[] {
+  const match = String(endMonth || '').match(/^(\d{4})-(\d{2})$/);
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const end = match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1)) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - (count - 1 - i), 1));
+    return monthKey(d);
+  });
 }
 
 const SALES_DIFF_FIELDS = [
@@ -1058,6 +1072,104 @@ sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'
 // ━━━ 입금 등록 (역방향: 회계 → 담당자) ━━━
 
 // GET /api/sales/deposits — 입금 등록 목록
+// GET /api/sales/manager-performance - 담당자 월별 매출 달성 추이
+sales.get('/manager-performance', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const role = user.role;
+  const canViewAll = role === 'admin' && isHeadOfficeBranch(user.branch);
+  const canViewBranch = role === 'admin' && !isHeadOfficeBranch(user.branch);
+  const canViewTeam = role === 'manager';
+
+  if (!canViewAll && !canViewBranch && !canViewTeam) {
+    return c.json({ error: '담당자 매출성과 열람 권한이 없습니다.' }, 403);
+  }
+
+  const months = monthRange(c.req.query('month_end') || '', Math.min(12, Math.max(3, Number(c.req.query('months') || 6) || 6)));
+  const startDate = `${months[0]}-01`;
+  const [endYear, endMonth] = months[months.length - 1].split('-').map(Number);
+  const endDate = `${months[months.length - 1]}-${new Date(endYear, endMonth, 0).getDate()}`;
+
+  const memberConditions = [
+    "u.approved = 1",
+    "u.role IN ('member', 'manager')",
+    "COALESCE(u.login_type, 'employee') != 'freelancer'",
+  ];
+  const memberParams: any[] = [];
+  const addBranchCondition = (branch: string | null | undefined) => {
+    const aliases = branchAliases(branch);
+    if (aliases.length > 0) {
+      memberConditions.push(`u.branch IN (${aliases.map(() => '?').join(',')})`);
+      memberParams.push(...aliases);
+    } else {
+      memberConditions.push('u.branch = ?');
+      memberParams.push(branch || '');
+    }
+  };
+  if (canViewBranch) {
+    addBranchCondition(user.branch);
+  }
+  if (canViewTeam) {
+    addBranchCondition(user.branch);
+    memberConditions.push('u.department = ?');
+    memberParams.push(user.department);
+  }
+
+  const membersResult = await db.prepare(`
+    SELECT u.id, u.name, u.branch, u.department, u.position_title,
+           COALESCE(ua.standard_sales, 0) as standard_sales
+    FROM users u
+    LEFT JOIN user_accounting ua ON ua.user_id = u.id
+    WHERE ${memberConditions.join(' AND ')}
+    ORDER BY u.branch, u.department, u.name
+  `).bind(...memberParams).all<any>();
+  const members = membersResult.results || [];
+  if (members.length === 0) return c.json({ months, rows: [], scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team' });
+
+  const ids = members.map((m: any) => m.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const salesResult = await db.prepare(`
+    SELECT sr.user_id, substr(sr.contract_date, 1, 7) as month, SUM(sr.amount) as amount
+    FROM sales_records sr
+    WHERE sr.status = 'confirmed'
+      AND sr.type = '계약'
+      AND sr.contract_date >= ?
+      AND sr.contract_date <= ?
+      AND sr.user_id IN (${placeholders})
+    GROUP BY sr.user_id, substr(sr.contract_date, 1, 7)
+  `).bind(startDate, endDate, ...ids).all<any>();
+
+  const amountMap = new Map<string, number>();
+  for (const row of salesResult.results || []) {
+    amountMap.set(`${row.user_id}|${row.month}`, Number(row.amount || 0));
+  }
+
+  const rows = members.map((m: any) => {
+    const target = Math.round(Number(m.standard_sales || 0) / 2);
+    const monthly = months.map((month) => {
+      const amount = amountMap.get(`${m.id}|${month}`) || 0;
+      return { month, amount, target, met: target > 0 ? amount >= target : amount > 0 };
+    });
+    const totalAmount = monthly.reduce((sum, item) => sum + item.amount, 0);
+    const metCount = monthly.filter((item) => item.met).length;
+    return {
+      user_id: m.id,
+      name: m.name,
+      branch: m.branch,
+      department: m.department,
+      position_title: m.position_title,
+      monthly_target: target,
+      total_amount: totalAmount,
+      average_amount: Math.round(totalAmount / months.length),
+      met_count: metCount,
+      miss_count: months.length - metCount,
+      months: monthly,
+    };
+  }).sort((a: any, b: any) => a.total_amount - b.total_amount || a.average_amount - b.average_amount || String(a.name).localeCompare(String(b.name)));
+
+  return c.json({ months, rows, scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team' });
+});
+
 sales.get('/deposits', async (c) => {
   const db = c.env.DB;
   const result = await db.prepare(`

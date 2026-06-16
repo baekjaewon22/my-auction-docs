@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, setSourcePage } from '../api';
 import { useAuthStore } from '../store';
@@ -8,6 +8,7 @@ import Select from '../components/Select';
 import {
   DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity, ChevronDown, ChevronUp, Trash2
 } from 'lucide-react';
+import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { JournalEntry } from '../journal/types';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
@@ -57,6 +58,140 @@ function toMoneyDisplay(val: string): string {
 }
 function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
+}
+
+type ManagerPerformanceRow = {
+  user_id: string;
+  name: string;
+  branch: string;
+  department: string;
+  position_title: string;
+  monthly_target: number;
+  total_amount: number;
+  average_amount: number;
+  met_count: number;
+  miss_count: number;
+  months: { month: string; amount: number; target: number; met: boolean }[];
+};
+
+function monthLabel(ym: string): string {
+  const [, month] = String(ym || '').split('-');
+  return month ? `${Number(month)}월` : ym;
+}
+
+function ManagerPerformancePanel() {
+  const [monthEnd, setMonthEnd] = useState(() => new Date().toISOString().slice(0, 7));
+  const [rows, setRows] = useState<ManagerPerformanceRow[]>([]);
+  const [scope, setScope] = useState<'all' | 'branch' | 'team'>('team');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await api.sales.managerPerformance({ month_end: monthEnd, months: 6 });
+      setRows(res.rows || []);
+      setScope(res.scope);
+    } catch (err: any) {
+      setRows([]);
+      setError(err?.message || '담당자 매출성과를 불러오지 못했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [monthEnd]);
+
+  const totals = useMemo(() => ({
+    people: rows.length,
+    total: rows.reduce((sum, row) => sum + row.total_amount, 0),
+    missed: rows.filter(row => row.miss_count > 0).length,
+  }), [rows]);
+
+  const scopeLabel = scope === 'all' ? '전체 공개' : scope === 'branch' ? '본인 지사' : '본인 팀';
+
+  return (
+    <div className="manager-performance-panel">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: '1rem', color: '#1a2744' }}>담당자 매출성과</h3>
+          <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: '#5f6368' }}>
+            월 기준매출 대비 달성 여부를 사람별 실선 그래프로 확인합니다. 정렬은 매출 낮은 순입니다.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: '0.75rem', color: '#5f6368' }}>{scopeLabel}</span>
+          <input type="month" className="form-input" value={monthEnd} onChange={(e) => setMonthEnd(e.target.value)} style={{ width: 140 }} />
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 14 }}>
+        <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>대상 인원</div><div style={{ fontSize: 20, fontWeight: 800 }}>{totals.people}명</div></div>
+        <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>기간 총매출</div><div style={{ fontSize: 20, fontWeight: 800, color: '#1a73e8' }}>{formatCurrency(totals.total)}</div></div>
+        <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>미달 월 보유</div><div style={{ fontSize: 20, fontWeight: 800, color: '#d93025' }}>{totals.missed}명</div></div>
+      </div>
+
+      {loading && <div className="page-loading">불러오는 중...</div>}
+      {error && <div className="empty-state">{error}</div>}
+      {!loading && !error && rows.length === 0 && <div className="empty-state">표시할 담당자 매출성과가 없습니다.</div>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 12 }}>
+        {rows.map(row => {
+          const chartData = row.months.map(item => ({
+            month: monthLabel(item.month),
+            amount: item.amount,
+            target: item.target,
+            result: item.met ? '달성' : '미달성',
+          }));
+          const target = row.monthly_target || 0;
+          return (
+            <div key={row.user_id} className="card" style={{ padding: 14, borderRadius: 10, border: '1px solid #e0e0e0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#202124' }}>{row.name}</div>
+                  <div style={{ fontSize: 11, color: '#5f6368' }}>{row.position_title || '담당자'} · {row.branch}{row.department ? ` · ${row.department}` : ''}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 11, color: '#5f6368' }}>월 기준</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: '#1a73e8' }}>{formatCurrency(target)}</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8, fontSize: 11 }}>
+                <span style={{ color: '#188038', fontWeight: 700 }}>달성 {row.met_count}개월</span>
+                <span style={{ color: '#d93025', fontWeight: 700 }}>미달성 {row.miss_count}개월</span>
+                <span style={{ color: '#5f6368' }}>총 {formatCurrency(row.total_amount)}</span>
+              </div>
+              <div style={{ width: '100%', height: 190 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData} margin={{ top: 12, right: 14, left: 6, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#edf0f5" />
+                    <XAxis dataKey="month" fontSize={11} tickLine={false} axisLine={{ stroke: '#dfe3eb' }} />
+                    <YAxis width={54} fontSize={10} tickFormatter={(v) => `${Math.round(Number(v) / 10000)}만`} tickLine={false} axisLine={{ stroke: '#dfe3eb' }} />
+                    <Tooltip
+                      formatter={(value: any, name: any) => [formatCurrency(Number(value || 0)), name === 'amount' ? '달성금액' : '월 기준매출']}
+                      labelFormatter={(label) => `${label}`}
+                      contentStyle={{ borderRadius: 8, border: '1px solid #dfe3eb', fontSize: 12 }}
+                    />
+                    <ReferenceLine y={target} stroke="#1a73e8" strokeDasharray="3 3" label={{ value: '월 기준매출', fill: '#1a73e8', fontSize: 11, position: 'insideTopRight' }} />
+                    <Line type="linear" dataKey="amount" name="달성금액" stroke="#e53935" strokeWidth={2.4} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(1, row.months.length)}, 1fr)`, gap: 4, marginTop: 8 }}>
+                {row.months.map(item => (
+                  <div key={item.month} title={`${item.month}: ${formatCurrency(item.amount)} / 기준 ${formatCurrency(item.target)}`}
+                    style={{ textAlign: 'center', borderRadius: 6, padding: '4px 2px', fontSize: 10, fontWeight: 700, background: item.met ? '#e6f4ea' : '#fce8e6', color: item.met ? '#188038' : '#d93025' }}>
+                    {monthLabel(item.month)} {item.met ? '달성' : '미달'}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function contractCustomerKey(r: SalesRecord): string {
@@ -228,7 +363,7 @@ export default function Sales() {
   const [claimClient, setClaimClient] = useState('');
 
   // [6-3] 활동내역
-  const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'myungdo' | 'upload' | 'auditlog'>('list');
+  const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'managerPerformance' | 'myungdo' | 'upload' | 'auditlog'>('list');
   // 명도계약 (외부 명승 사건 — 매출 시스템과 분리, 표시만)
   const [myungdoCases, setMyungdoCases] = useState<any[]>([]);
   const [myungdoLoading, setMyungdoLoading] = useState(false);
@@ -258,6 +393,7 @@ export default function Sales() {
   const isDirector = role === 'director';
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const isManager = role === 'manager';
+  const canViewManagerPerformance = role === 'admin' || role === 'manager';
   const showUserFilter = isAdminPlus || isAccountant || isManager || isDirector;
 
   const load = async (silent = false) => {
@@ -731,6 +867,11 @@ export default function Sales() {
               <Activity size={14} style={{ marginRight: 4 }} /> 활동내역
             </button>
           )}
+          {canViewManagerPerformance && (
+            <button className={`premium-filter-btn ${salesTab === 'managerPerformance' ? 'active' : ''}`} onClick={() => setSalesTab('managerPerformance')}>
+              담당자 매출성과
+            </button>
+          )}
           <button className={`premium-filter-btn ${salesTab === 'myungdo' ? 'active' : ''}`} onClick={() => setSalesTab('myungdo')} title="외부 명승 사건 (매출 합계와 별개)">
             명도계약
           </button>
@@ -750,6 +891,8 @@ export default function Sales() {
             placeholder="계약자, 담당자, 입금자, 번호 검색" style={{ width: 220, fontSize: '0.82rem', padding: '6px 10px' }} />
         )}
       </div>
+
+      {salesTab === 'managerPerformance' && <ManagerPerformancePanel />}
 
       {/* ━━━ 활동내역 탭 [6-3] ━━━ */}
       {salesTab === 'activity' && (() => {

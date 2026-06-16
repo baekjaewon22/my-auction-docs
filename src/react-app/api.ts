@@ -495,6 +495,21 @@ export const api = {
       const qs = q.toString();
       return request<{ records: import('./types').SalesRecord[] }>('/sales/stats' + (qs ? '?' + qs : ''));
     },
+    managerPerformance: (params?: { month_end?: string; months?: number }) => {
+      const q = new URLSearchParams();
+      if (params?.month_end) q.set('month_end', params.month_end);
+      if (params?.months) q.set('months', String(params.months));
+      const qs = q.toString();
+      return request<{
+        months: string[];
+        scope: 'all' | 'branch' | 'team';
+        rows: Array<{
+          user_id: string; name: string; branch: string; department: string; position_title: string;
+          monthly_target: number; total_amount: number; average_amount: number; met_count: number; miss_count: number;
+          months: Array<{ month: string; amount: number; target: number; met: boolean }>;
+        }>;
+      }>('/sales/manager-performance' + (qs ? '?' + qs : ''));
+    },
     deposits: () => request<{ deposits: import('./types').DepositNotice[] }>('/sales/deposits'),
     createDeposit: (data: { depositor: string; amount: number; deposit_date: string }) =>
       request<{ success: boolean; id: string }>('/sales/deposits', { method: 'POST', body: JSON.stringify(data) }),
