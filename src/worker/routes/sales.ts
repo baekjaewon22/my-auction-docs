@@ -1139,8 +1139,9 @@ sales.get('/manager-performance', async (c) => {
   const salesResult = await db.prepare(`
     SELECT sr.user_id, substr(sr.contract_date, 1, 7) as month, SUM(sr.amount) as amount
     FROM sales_records sr
-    WHERE sr.status = 'confirmed'
-      AND sr.type = '계약'
+    WHERE sr.status IN ('confirmed', 'card_pending')
+      AND sr.direction != 'expense'
+      AND COALESCE(sr.exclude_from_count, 0) = 0
       AND sr.contract_date >= ?
       AND sr.contract_date <= ?
       AND sr.user_id IN (${placeholders})

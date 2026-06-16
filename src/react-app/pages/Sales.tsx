@@ -145,6 +145,7 @@ function ManagerPerformancePanel() {
             result: item.met ? '달성' : '미달성',
           }));
           const target = row.monthly_target || 0;
+          const yDomain: [number, number] | undefined = target > 0 ? [0, target * 2] : undefined;
           return (
             <div key={row.user_id} className="card" style={{ padding: 14, borderRadius: 10, border: '1px solid #e0e0e0' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
@@ -167,7 +168,7 @@ function ManagerPerformancePanel() {
                   <LineChart data={chartData} margin={{ top: 12, right: 14, left: 6, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#edf0f5" />
                     <XAxis dataKey="month" fontSize={11} tickLine={false} axisLine={{ stroke: '#dfe3eb' }} />
-                    <YAxis width={54} fontSize={10} tickFormatter={(v) => `${Math.round(Number(v) / 10000)}만`} tickLine={false} axisLine={{ stroke: '#dfe3eb' }} />
+                    <YAxis width={54} fontSize={10} domain={yDomain} allowDataOverflow tickFormatter={(v) => `${Math.round(Number(v) / 10000)}만`} tickLine={false} axisLine={{ stroke: '#dfe3eb' }} />
                     <Tooltip
                       formatter={(value: any, name: any) => [formatCurrency(Number(value || 0)), name === 'amount' ? '달성금액' : '월 기준매출']}
                       labelFormatter={(label) => `${label}`}
