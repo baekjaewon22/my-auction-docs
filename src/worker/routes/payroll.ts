@@ -24,6 +24,14 @@ function leaveHoursToDays(hours: number): number {
   return Math.round((Number(hours || 0) / LEAVE_HOURS_PER_DAY) * 1000) / 1000;
 }
 
+async function ensureUsersResignedAtColumn(db: D1Database): Promise<void> {
+  const columns = await db.prepare('PRAGMA table_info(users)').all<{ name: string }>();
+  const names = new Set((columns.results || []).map((c) => c.name));
+  if (!names.has('resigned_at')) {
+    await db.prepare('ALTER TABLE users ADD COLUMN resigned_at TEXT').run();
+  }
+}
+
 async function buildTerminationSettlement(
   db: D1Database,
   userId: string,
@@ -34,7 +42,7 @@ async function buildTerminationSettlement(
 ): Promise<Record<string, any> | null> {
   if (String(user?.role || '') !== 'resigned') return null;
 
-  const resignedDate = String(user?.updated_at || '').slice(0, 10);
+  const resignedDate = String(user?.resigned_at || user?.updated_at || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(resignedDate) || resignedDate.slice(0, 7) !== month) return null;
 
   const [yearText, monthText] = month.split('-');
@@ -262,6 +270,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   }
   const periodLabel = payrollPeriodLabel(month);
   const isPaidPeriod = isPayrollPaidMonth(month);
+  await ensureUsersResignedAtColumn(db);
 
   // 1개월 구간 (급여/비율 공통)
   const monthStart = `${month}-01`;
@@ -275,7 +284,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const isPayoutMonth = m % 2 === 0;
 
   const user = await db.prepare(
-    'SELECT id, name, branch, department, position_title, role, updated_at FROM users WHERE id = ?'
+    'SELECT id, name, branch, department, position_title, role, resigned_at, updated_at FROM users WHERE id = ?'
   ).bind(userId).first<any>();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 

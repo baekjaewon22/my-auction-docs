@@ -34,6 +34,7 @@ export interface User {
   position_title: string;
   card_number?: string;
   hire_date?: string;
+  resigned_at?: string;
   login_type?: 'employee' | 'freelancer';
   created_at?: string;
   updated_at?: string;

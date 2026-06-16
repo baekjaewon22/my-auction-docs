@@ -16,6 +16,7 @@ export interface User {
   department: string;
   position_title: string;
   hire_date: string;
+  resigned_at?: string;
   approved: number;
   created_at: string;
   updated_at: string;

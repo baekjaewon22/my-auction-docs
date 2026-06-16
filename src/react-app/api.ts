@@ -79,8 +79,8 @@ export const api = {
       request('/users/' + id + '/approve', { method: 'POST', body: JSON.stringify({ department }) }),
     reject: (id: string) =>
       request('/users/' + id + '/reject', { method: 'POST' }),
-    updateRole: (id: string, role: string, branch?: string, department?: string) =>
-      request('/users/' + id + '/role', { method: 'PUT', body: JSON.stringify({ role, branch, department }) }),
+    updateRole: (id: string, role: string, branch?: string, department?: string, resigned_at?: string) =>
+      request('/users/' + id + '/role', { method: 'PUT', body: JSON.stringify({ role, branch, department, resigned_at }) }),
     delete: (id: string) =>
       request('/users/' + id, { method: 'DELETE' }),
     update: (id: string, data: { name?: string; password?: string; phone?: string; branch?: string; department?: string; position_title?: string }) =>

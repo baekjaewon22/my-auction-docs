@@ -124,7 +124,32 @@ export default function UserManagement() {
   };
 
   const handleRoleChange = async (userId: string, role: string) => {
-    try { await api.users.updateRole(userId, role); load(); }
+    let resignedAt = '';
+    if (role === 'resigned') {
+      const target = users.find((u) => u.id === userId) || pendingUsers.find((u) => u.id === userId);
+      const defaultDate = (target?.resigned_at || new Date().toISOString().slice(0, 10)).slice(0, 10);
+      const input = window.prompt('퇴사일을 입력하세요. (YYYY-MM-DD)', defaultDate);
+      if (input === null) return;
+      resignedAt = input.trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(resignedAt)) {
+        alert('퇴사일은 YYYY-MM-DD 형식으로 입력해주세요.');
+        return;
+      }
+    }
+    try { await api.users.updateRole(userId, role, undefined, undefined, resignedAt); load(); }
+    catch (err: any) { alert(err.message); }
+  };
+
+  const handleResignedDateChange = async (u: User) => {
+    const defaultDate = (u.resigned_at || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const input = window.prompt(`${u.name}님의 퇴사일을 입력하세요. (YYYY-MM-DD)`, defaultDate);
+    if (input === null) return;
+    const resignedAt = input.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(resignedAt)) {
+      alert('퇴사일은 YYYY-MM-DD 형식으로 입력해주세요.');
+      return;
+    }
+    try { await api.users.updateRole(u.id, 'resigned', undefined, undefined, resignedAt); load(); }
     catch (err: any) { alert(err.message); }
   };
 
@@ -823,7 +848,7 @@ export default function UserManagement() {
       {tab === 'resigned' && (
         <div className="table-wrapper">
           <table className="data-table">
-            <thead><tr><th>이름</th><th>이메일</th><th>지사</th><th>팀</th><th>가입일</th><th>복직</th></tr></thead>
+            <thead><tr><th>이름</th><th>이메일</th><th>지사</th><th>팀</th><th>가입일</th><th>퇴사일</th><th>관리</th></tr></thead>
             <tbody>
               {users.filter(u => u.role === 'resigned').map(u => (
                 <tr key={u.id}>
@@ -832,7 +857,9 @@ export default function UserManagement() {
                   <td>{u.branch || '-'}</td>
                   <td>{u.department || '-'}</td>
                   <td style={{ fontSize: '0.72rem' }}>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
+                  <td style={{ fontSize: '0.72rem' }}>{u.resigned_at ? new Date(u.resigned_at).toLocaleDateString('ko-KR') : '-'}</td>
                   <td>
+                    <button className="btn btn-sm" style={{ marginRight: 6 }} onClick={() => handleResignedDateChange(u)}>퇴사일 수정</button>
                     <button className="btn btn-sm btn-success" onClick={async () => {
                       if (!confirm(`${u.name}님을 복직 처리하시겠습니까?`)) return;
                       try { await api.users.updateRole(u.id, 'member'); load(); } catch (err: any) { alert(err.message); }
@@ -841,7 +868,7 @@ export default function UserManagement() {
                 </tr>
               ))}
               {users.filter(u => u.role === 'resigned').length === 0 && (
-                <tr><td colSpan={6} className="empty-state">퇴사자가 없습니다.</td></tr>
+                <tr><td colSpan={7} className="empty-state">퇴사자가 없습니다.</td></tr>
               )}
             </tbody>
           </table>

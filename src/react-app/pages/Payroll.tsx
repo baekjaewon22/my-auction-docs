@@ -253,8 +253,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const activeUsers = branchFiltered.filter(u => (u.role as string) !== 'resigned');
   const resignedUsers = branchFiltered.filter(u => {
     if ((u.role as string) !== 'resigned') return false;
-    // updated_at(퇴사 처리일)의 월과 선택 정산월 비교 → 퇴사월 이전까지만 표시
-    const resignedMonth = (u.updated_at || '').slice(0, 7);
+    // resigned_at(퇴사일)의 월까지 급여 정산 대상에 표시
+    const resignedMonth = (u.resigned_at || u.updated_at || '').slice(0, 7);
     return resignedMonth && selectedMonth <= resignedMonth;
   });
   const filteredUsers = [...activeUsers, ...resignedUsers];

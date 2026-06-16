@@ -8,12 +8,21 @@ import { currentKstMonth, ensurePayTypeHistoryTable, normalizeYearMonth, previou
 const users = new Hono<AuthEnv>();
 users.use('*', authMiddleware);
 
+async function ensureUsersResignedAtColumn(db: D1Database): Promise<void> {
+  const columns = await db.prepare('PRAGMA table_info(users)').all<{ name: string }>();
+  const names = new Set((columns.results || []).map((c) => c.name));
+  if (!names.has('resigned_at')) {
+    await db.prepare('ALTER TABLE users ADD COLUMN resigned_at TEXT').run();
+  }
+}
+
 // GET /api/users
 users.get('/', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_asst', 'manager'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureUsersResignedAtColumn(db);
 
-  let query = 'SELECT id, email, name, phone, role, team_id, branch, department, position_title, card_number, hire_date, login_type, approved, created_at, updated_at FROM users WHERE approved = 1';
+  let query = 'SELECT id, email, name, phone, role, team_id, branch, department, position_title, card_number, hire_date, login_type, approved, resigned_at, created_at, updated_at FROM users WHERE approved = 1';
   const params: string[] = [];
 
   if (user.role === 'accountant' || user.role === 'accountant_asst') {
@@ -93,8 +102,9 @@ users.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'accountant'), a
 users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   const id = c.req.param('id');
   const currentUser = c.get('user');
-  const { role, branch, department } = await c.req.json<{ role?: string; branch?: string; department?: string }>();
+  const { role, branch, department, resigned_at } = await c.req.json<{ role?: string; branch?: string; department?: string; resigned_at?: string }>();
   const db = c.env.DB;
+  await ensureUsersResignedAtColumn(db);
 
   if (role && !['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst', 'manager', 'member', 'support', 'resigned'].includes(role)) {
     return c.json({ error: '유효하지 않은 역할입니다.' }, 400);
@@ -109,6 +119,13 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   }
 
   const newRole = role || existing.role;
+  const nextResignedAt = newRole === 'resigned'
+    ? String(resigned_at || (existing as any).resigned_at || '').trim()
+    : '';
+
+  if (newRole === 'resigned' && !/^\d{4}-\d{2}-\d{2}$/.test(nextResignedAt)) {
+    return c.json({ error: '퇴사일을 YYYY-MM-DD 형식으로 입력해주세요.' }, 400);
+  }
 
   if (newRole === 'master' && currentUser.role !== 'master') {
     return c.json({ error: '마스터 권한은 마스터만 설정할 수 있습니다.' }, 403);
@@ -127,8 +144,8 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   }
 
   await db.prepare(
-    "UPDATE users SET role = ?, branch = ?, department = ?, updated_at = datetime('now') WHERE id = ?"
-  ).bind(newRole, branch !== undefined ? normalizeBranchName(branch) : existing.branch, department ?? existing.department, id).run();
+    "UPDATE users SET role = ?, branch = ?, department = ?, resigned_at = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(newRole, branch !== undefined ? normalizeBranchName(branch) : existing.branch, department ?? existing.department, nextResignedAt, id).run();
 
   return c.json({ success: true });
 });
