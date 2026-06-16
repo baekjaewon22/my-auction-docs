@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { calculateCaseAllowance, isCaseAllowanceExcludedName } from './cases';
+import { reinitUserLeave } from './leave';
 import { normalizeBranchName } from '../lib/branchAliases';
 import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotForMonth, payTypeAtMonthSql, resolvePayTypeFromHistory } from '../lib/pay-type-history';
 
@@ -11,8 +12,76 @@ import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotFor
 // 매출포상(일반 성과금) 산정에는 합산 X — 별도 항목으로만 표시
 const CONTRACT_AWARD_TIERS = [300_000, 200_000, 100_000];
 const CONTRACT_AWARD_MIN_COUNT = 10;
+const LEAVE_HOURS_PER_DAY = 8;
 const truncMoney = (value: number): number => Math.trunc(Number(value) || 0);
 const vatSupplyAmount = (amount: number): number => Math.round((Number(amount) || 0) * 10 / 11);
+
+function leaveDaysToHours(days: number): number {
+  return Math.round((Number(days || 0) * LEAVE_HOURS_PER_DAY) * 1000) / 1000;
+}
+
+function leaveHoursToDays(hours: number): number {
+  return Math.round((Number(hours || 0) / LEAVE_HOURS_PER_DAY) * 1000) / 1000;
+}
+
+async function buildTerminationSettlement(
+  db: D1Database,
+  userId: string,
+  user: any,
+  month: string,
+  salary: number,
+  positionAllowance: number,
+): Promise<Record<string, any> | null> {
+  if (String(user?.role || '') !== 'resigned') return null;
+
+  const resignedDate = String(user?.updated_at || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(resignedDate) || resignedDate.slice(0, 7) !== month) return null;
+
+  const [yearText, monthText] = month.split('-');
+  const year = Number(yearText);
+  const monthNumber = Number(monthText);
+  const monthDays = new Date(year, monthNumber, 0).getDate();
+  const resignedDay = Math.min(Math.max(Number(resignedDate.slice(8, 10)) || 1, 1), monthDays);
+  const basePay = Number(salary || 0) + Number(positionAllowance || 0);
+  const proratedBasePay = Math.round(basePay * resignedDay / monthDays);
+  const baseDeduction = Math.max(basePay - proratedBasePay, 0);
+
+  try {
+    await reinitUserLeave(db, userId);
+  } catch {
+    // Leave settlement should not block payroll if leave data needs manual repair.
+  }
+
+  const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
+  const annualRemainingHours = leaveInfo
+    ? leaveDaysToHours(leaveInfo.total_days || 0) - leaveDaysToHours(leaveInfo.used_days || 0)
+    : 0;
+  const monthlyRemainingHours = leaveInfo
+    ? leaveDaysToHours(leaveInfo.monthly_days || 0) - leaveDaysToHours(leaveInfo.monthly_used || 0)
+    : 0;
+  const leaveRemainingHours = Math.round((annualRemainingHours + monthlyRemainingHours) * 1000) / 1000;
+  const leaveAdjustmentAmount = salary > 0 ? Math.round((salary / 209) * leaveRemainingHours) : 0;
+  const leavePayout = Math.max(leaveAdjustmentAmount, 0);
+  const leaveDeduction = Math.max(-leaveAdjustmentAmount, 0);
+
+  return {
+    is_termination: true,
+    resigned_date: resignedDate,
+    month,
+    worked_days: resignedDay,
+    month_days: monthDays,
+    base_pay: basePay,
+    prorated_base_pay: proratedBasePay,
+    base_deduction: baseDeduction,
+    leave_remaining_hours: leaveRemainingHours,
+    leave_remaining_days: leaveHoursToDays(leaveRemainingHours),
+    leave_adjustment_amount: leaveAdjustmentAmount,
+    leave_payout: leavePayout,
+    leave_deduction: leaveDeduction,
+    leave_adjustment_label: leaveRemainingHours >= 0 ? 'unused_leave_payout' : 'excess_leave_deduction',
+    net_adjustment: leavePayout - leaveDeduction - baseDeduction,
+  };
+}
 
 function parsePayrollPeriodMonth(value: string): string {
   const text = String(value || '').trim();
@@ -206,7 +275,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const isPayoutMonth = m % 2 === 0;
 
   const user = await db.prepare(
-    'SELECT id, name, branch, department, position_title, role FROM users WHERE id = ?'
+    'SELECT id, name, branch, department, position_title, role, updated_at FROM users WHERE id = ?'
   ).bind(userId).first<any>();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
@@ -454,6 +523,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const contractAward = (isPayoutMonth && !isHQ)
     ? await calcContractAwardForUser(db, userId, bonusPeriodStart, bonusPeriodEnd)
     : { rank: null, count: 0, award: 0, total_amount: 0 };
+  const terminationSettlement = await buildTerminationSettlement(db, userId, user, month, salary, positionAllowance);
 
   const payrollResponse = {
     user,
@@ -479,6 +549,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     refunded_records: refundedRecords,
     refund_recoveries: refundRecoveries,
     contract_award: contractAward, // { rank, count, award, total_amount } — rank null이면 자격 미달
+    termination_settlement: terminationSettlement,
     summary: {
       contract_count: contractCount,
       total_sales: totalSales,

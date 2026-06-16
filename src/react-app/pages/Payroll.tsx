@@ -255,7 +255,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
     if ((u.role as string) !== 'resigned') return false;
     // updated_at(퇴사 처리일)의 월과 선택 정산월 비교 → 퇴사월 이전까지만 표시
     const resignedMonth = (u.updated_at || '').slice(0, 7);
-    return resignedMonth && selectedMonth < resignedMonth;
+    return resignedMonth && selectedMonth <= resignedMonth;
   });
   const filteredUsers = [...activeUsers, ...resignedUsers];
   const userOpts = groupUserOptions(filteredUsers, u => ` (${u.department || ''} · ${u.branch || ''})`);
@@ -273,11 +273,15 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const extraPayNum = Number(extraPay) || 0;
   const extraDeductionNum = Number(extraDeduction) || 0;
   const unpaidDeduction = s?.unpaid_leave_deduction || 0;
+  const termination = data?.termination_settlement || null;
+  const terminationBaseDeduction = termination?.base_deduction || 0;
+  const terminationLeavePayout = termination?.leave_payout || 0;
+  const terminationLeaveDeduction = termination?.leave_deduction || 0;
   const basePay = s ? s.salary + s.position_allowance : 0;
-  const afterDeduction = basePay - deductionNum - unpaidDeduction - extraDeductionNum;
+  const afterDeduction = basePay - terminationBaseDeduction - deductionNum - unpaidDeduction - extraDeductionNum - terminationLeaveDeduction;
   const caseAllowanceValue = caseAllowance?.bonus || 0;
   const contractAwardAmount = (data?.is_payout_month && data?.contract_award?.rank) ? (data.contract_award.award || 0) : 0;
-  const totalPay = s ? afterDeduction + s.bonus + extraPayNum + caseAllowanceValue + contractAwardAmount : 0;
+  const totalPay = s ? afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount : 0;
 
   if (requireBranchSelection && searchParams.get('branch') === null) {
     return (
@@ -914,6 +918,36 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 <span style={{ fontWeight: 600 }}>기본급+직급수당</span>
                 <span className="num" style={{ fontWeight: 600 }}>{fmtWon(basePay)}</span>
               </div>
+              {termination && (
+                <>
+                  <div className="payroll-bonus-row" style={{ borderTop: '1px solid #e8eaed', background: '#f8fbff' }}>
+                    <span style={{ fontWeight: 600 }}>퇴사 정산 ({termination.resigned_date})</span>
+                    <span className="num">{termination.worked_days}/{termination.month_days}일 근무</span>
+                  </div>
+                  <div className="payroll-bonus-row">
+                    <span>퇴사월 일할 기본급</span>
+                    <span className="num">{fmtWon(termination.prorated_base_pay || 0)}</span>
+                  </div>
+                  {terminationBaseDeduction > 0 && (
+                    <div className="payroll-bonus-row" style={{ color: '#d93025' }}>
+                      <span>퇴사 일할 공제</span>
+                      <span className="num">-{fmtWon(terminationBaseDeduction)}</span>
+                    </div>
+                  )}
+                  {terminationLeavePayout > 0 && (
+                    <div className="payroll-bonus-row" style={{ color: '#188038' }}>
+                      <span>미사용 연차수당 ({termination.leave_remaining_days}일)</span>
+                      <span className="num">+{fmtWon(terminationLeavePayout)}</span>
+                    </div>
+                  )}
+                  {terminationLeaveDeduction > 0 && (
+                    <div className="payroll-bonus-row" style={{ color: '#d93025' }}>
+                      <span>초과사용 연차공제 ({Math.abs(termination.leave_remaining_days || 0)}일)</span>
+                      <span className="num">-{fmtWon(terminationLeaveDeduction)}</span>
+                    </div>
+                  )}
+                </>
+              )}
               <div className="payroll-bonus-row" style={{ color: '#d93025' }}>
                 <span>공제합계 (4대보험료 등)</span>
                 <span className="num">-{fmtWon(deductionNum)}</span>
@@ -1203,7 +1237,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         const mNet = mSales - mRefund;
         const mContracts = s.contract_count;
         const mBonus = s.bonus; // 백엔드에서 짝수월만 계산
-        const mTotalPay = s.salary + s.position_allowance + mBonus;
+        const mTerminationNet = (termination?.leave_payout || 0) - (termination?.leave_deduction || 0) - (termination?.base_deduction || 0);
+        const mTotalPay = s.salary + s.position_allowance + mBonus + mTerminationNet;
         const mProfit = mNet - mTotalPay;
         const monthLabel = selectedMonth.replace('-', '년 ') + '월';
         return (
@@ -1234,6 +1269,12 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 <div className="payroll-summary-item"><span>기본급여</span><span className="num">{fmtWon(s.salary)}</span></div>
                 <div className="payroll-summary-item"><span>직급수당</span><span className="num">{fmtWon(s.position_allowance)}</span></div>
                 <div className="payroll-summary-item"><span>성과금{!data.is_payout_month ? ' (홀수월 미지급)' : ''}</span><span className="num">{fmtWon(mBonus)}</span></div>
+                {termination && (
+                  <div className="payroll-summary-item">
+                    <span>퇴사 정산</span>
+                    <span className="num">{mTerminationNet >= 0 ? '+' : ''}{fmtWon(mTerminationNet)}</span>
+                  </div>
+                )}
                 <div className="payroll-summary-item bold"><span>지출 합계</span><span className="num">{fmtWon(mTotalPay)}</span></div>
               </div>
 
