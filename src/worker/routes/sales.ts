@@ -1077,7 +1077,7 @@ sales.get('/manager-performance', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const role = user.role;
-  const canViewAll = role === 'admin' && isHeadOfficeBranch(user.branch);
+  const canViewAll = role === 'master' || (role === 'admin' && isHeadOfficeBranch(user.branch));
   const canViewBranch = role === 'admin' && !isHeadOfficeBranch(user.branch);
   const canViewTeam = role === 'manager';
 

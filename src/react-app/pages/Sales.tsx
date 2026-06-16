@@ -393,7 +393,7 @@ export default function Sales() {
   const isDirector = role === 'director';
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const isManager = role === 'manager';
-  const canViewManagerPerformance = role === 'admin' || role === 'manager';
+  const canViewManagerPerformance = role === 'master' || role === 'admin' || role === 'manager';
   const showUserFilter = isAdminPlus || isAccountant || isManager || isDirector;
 
   const load = async (silent = false) => {
