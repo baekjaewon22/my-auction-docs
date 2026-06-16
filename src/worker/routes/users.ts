@@ -99,7 +99,7 @@ users.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'accountant'), a
 });
 
 // PUT /api/users/:id/role - 역할/지사/팀 변경
-users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
+users.put('/:id/role', requireRole('master', 'ceo', 'admin', 'accountant'), async (c) => {
   const id = c.req.param('id');
   const currentUser = c.get('user');
   const { role, branch, department, resigned_at } = await c.req.json<{ role?: string; branch?: string; department?: string; resigned_at?: string }>();
@@ -119,6 +119,16 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin'), async (c) => {
   }
 
   const newRole = role || existing.role;
+  if (currentUser.role === 'accountant') {
+    const canSetResigned = newRole === 'resigned' && !['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(existing.role);
+    const canEditResignedDate = existing.role === 'resigned' && newRole === 'resigned';
+    if (!canSetResigned && !canEditResignedDate) {
+      return c.json({ error: '총무담당은 퇴사 처리와 퇴사일 수정만 가능합니다.' }, 403);
+    }
+    if (branch !== undefined || department !== undefined) {
+      return c.json({ error: '총무담당은 지사/팀을 변경할 수 없습니다.' }, 403);
+    }
+  }
   const nextResignedAt = newRole === 'resigned'
     ? String(resigned_at || (existing as any).resigned_at || '').trim()
     : '';
@@ -327,7 +337,7 @@ users.put('/:id', async (c) => {
   const currentUser = c.get('user');
   const db = c.env.DB;
 
-  if (currentUser.sub !== id && currentUser.role !== 'master' && currentUser.role !== 'ceo' && currentUser.role !== 'cc_ref' && currentUser.role !== 'admin') {
+  if (currentUser.sub !== id && currentUser.role !== 'master' && currentUser.role !== 'ceo' && currentUser.role !== 'cc_ref' && currentUser.role !== 'admin' && currentUser.role !== 'accountant') {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
@@ -338,6 +348,18 @@ users.put('/:id', async (c) => {
   if (!existing) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
   // admin의 지사/부서/보직 변경은 대표(ceo/master)만 가능
+  if (currentUser.role === 'accountant' && currentUser.sub !== id) {
+    if (phone !== undefined || branch !== undefined || department !== undefined || password !== undefined || api_key !== undefined) {
+      return c.json({ error: '총무담당은 보직만 변경할 수 있습니다.' }, 403);
+    }
+    if (position_title === undefined) {
+      return c.json({ error: '변경할 보직을 입력해주세요.' }, 400);
+    }
+    if (['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(existing.role)) {
+      return c.json({ error: '총무담당은 관리자/총무 계정의 보직을 변경할 수 없습니다.' }, 403);
+    }
+  }
+
   if (existing.role === 'admin') {
     const changingProfile = (branch !== undefined && !sameBranchName(branch, existing.branch)) ||
       (department !== undefined && department !== existing.department) ||

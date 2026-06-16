@@ -93,6 +93,7 @@ export default function UserManagement() {
     if (currentUser?.role === 'master') return ROLE_OPTS;
     if (currentUser?.role === 'ceo' || currentUser?.role === 'cc_ref') return ROLE_OPTS.filter((r) => ['cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'member', 'resigned'].includes(r.value));
     if (currentUser?.role === 'admin') return ROLE_OPTS.filter((r) => ['manager', 'member', 'resigned'].includes(r.value));
+    if (currentUser?.role === 'accountant') return ROLE_OPTS.filter((r) => r.value === 'resigned');
     return [];
   };
   const availableRoles = getAvailableRoles();
@@ -320,6 +321,8 @@ export default function UserManagement() {
   };
 
   const isAdminPlus = !!currentUser && ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser.role);
+  const canEditPositionTitle = isAdminPlus || currentUser?.role === 'accountant';
+  const canEditResignedDate = isAdminPlus || currentUser?.role === 'accountant';
 
   const calculatedStandardSales = Math.round((Number(salaryInput) || 0) * 1.3 * 4);
 
@@ -788,8 +791,10 @@ export default function UserManagement() {
                 const canEdit = availableRoles.length > 0 && u.id !== currentUser?.id && isSameBranch;
                 const targetLevel = hierarchy[u.role] || 99;
                 const isHigher = targetLevel < myLevel || (targetLevel === myLevel && u.role !== 'cc_ref');
-                const canDel = canEdit && !isHigher;
-                const canChangeRole = canEdit && !isHigher;
+                const isAccountantRestrictedTarget = currentUser?.role === 'accountant' && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(u.role as string);
+                const canDel = isAdminPlus && canEdit && !isHigher;
+                const canChangeRole = canEdit && !isHigher && !isAccountantRestrictedTarget;
+                const canChangePosition = canEditPositionTitle && u.id !== currentUser?.id && !isAccountantRestrictedTarget;
                 return (
                   <tr key={u.id} onClick={() => handleSelectUser(u)} className="clickable-row" style={{ cursor: 'pointer' }}>
                     <td><strong>{u.name}</strong>{(u as any).login_type === 'freelancer' && <span style={{ marginLeft: 6, fontSize: '0.65rem', background: '#7b1fa2', color: '#fff', padding: '1px 6px', borderRadius: 8 }}>프리랜서</span>}</td>
@@ -805,7 +810,7 @@ export default function UserManagement() {
                       )}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      {isAdminPlus && u.id !== currentUser?.id ? (
+                      {canChangePosition ? (
                         <Select size="sm" options={POSITION_OPTS}
                           value={POSITION_OPTS.find((o) => o.value === u.position_title) || (u.position_title ? { value: u.position_title, label: u.position_title } : null)}
                           onChange={(o: any) => handleProfileChange(u.id, { position_title: o?.value || '' })}
@@ -859,11 +864,13 @@ export default function UserManagement() {
                   <td style={{ fontSize: '0.72rem' }}>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
                   <td style={{ fontSize: '0.72rem' }}>{u.resigned_at ? new Date(u.resigned_at).toLocaleDateString('ko-KR') : '-'}</td>
                   <td>
-                    <button className="btn btn-sm" style={{ marginRight: 6 }} onClick={() => handleResignedDateChange(u)}>퇴사일 수정</button>
-                    <button className="btn btn-sm btn-success" onClick={async () => {
-                      if (!confirm(`${u.name}님을 복직 처리하시겠습니까?`)) return;
-                      try { await api.users.updateRole(u.id, 'member'); load(); } catch (err: any) { alert(err.message); }
-                    }}><UserCheck size={13} /> 복직</button>
+                    {canEditResignedDate && <button className="btn btn-sm" style={{ marginRight: 6 }} onClick={() => handleResignedDateChange(u)}>퇴사일 수정</button>}
+                    {isAdminPlus && (
+                      <button className="btn btn-sm btn-success" onClick={async () => {
+                        if (!confirm(`${u.name}님을 복직 처리하시겠습니까?`)) return;
+                        try { await api.users.updateRole(u.id, 'member'); load(); } catch (err: any) { alert(err.message); }
+                      }}><UserCheck size={13} /> 복직</button>
+                    )}
                   </td>
                 </tr>
               ))}
