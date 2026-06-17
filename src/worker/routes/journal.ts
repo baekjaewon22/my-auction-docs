@@ -86,6 +86,7 @@ const journal = new Hono<AuthEnv>();
 journal.use('*', authMiddleware);
 
 const canManageJournalAssignees = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+const canViewSuggestedPrice = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
 const FIELD_ACTIVITY_TYPES = new Set(['입찰', '미팅', '임장']);
 
 async function getJournalAssignee(db: D1Database, userId: string) {
@@ -118,6 +119,21 @@ function parseJournalData(data: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function redactSuggestedPrice<T extends { activity_type?: string; data?: string }>(entry: T, canView: boolean): T {
+  if (canView || entry.activity_type !== '입찰' || !entry.data) return entry;
+  const data = parseJournalData(entry.data);
+  if (!Object.prototype.hasOwnProperty.call(data, 'suggestedPrice')) return entry;
+  const { suggestedPrice: _suggestedPrice, ...rest } = data;
+  return { ...entry, data: JSON.stringify(rest) };
+}
+
+function preserveSuggestedPriceForRestrictedUpdate(entry: JournalEntry, nextData: Record<string, unknown>, canView: boolean): Record<string, unknown> {
+  if (canView || entry.activity_type !== '입찰') return nextData;
+  const existingData = parseJournalData(entry.data);
+  if (!Object.prototype.hasOwnProperty.call(existingData, 'suggestedPrice')) return nextData;
+  return { ...nextData, suggestedPrice: existingData.suggestedPrice };
 }
 
 // GET /api/journal?date=2026-03-30&range=all
@@ -163,7 +179,8 @@ journal.get('/', async (c) => {
 
   const stmt = db.prepare(query);
   const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all();
-  return c.json({ entries: result.results });
+  const entries = (result.results || []).map((entry: any) => redactSuggestedPrice(entry, canViewSuggestedPrice(user.role)));
+  return c.json({ entries });
 });
 
 // GET /api/journal/members - 권한 범위 내 전체 사용자 목록 (팀/지사별)
@@ -310,9 +327,10 @@ journal.put('/:id', async (c) => {
     }
   }
 
-  const nextData = body.data
+  const normalizedData = body.data
     ? normalizeJournalData(entry.activity_type, body.data)
     : normalizeJournalData(entry.activity_type, parseJournalData(entry.data));
+  const nextData = preserveSuggestedPriceForRestrictedUpdate(entry, normalizedData, canViewSuggestedPrice(user.role));
 
   await db.prepare(
     "UPDATE journal_entries SET user_id = ?, activity_subtype = ?, data = ?, completed = ?, fail_reason = ?, branch = ?, department = ?, updated_at = datetime('now') WHERE id = ?"

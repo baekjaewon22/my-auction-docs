@@ -619,7 +619,7 @@ export const api = {
       const q = forDocId ? '?for_doc_id=' + encodeURIComponent(forDocId) : '';
       return request<{ entries: Array<{
         id: string; target_date: string; activity_type: string; activity_subtype: string;
-        time_from: string; time_to: string; place: string; case_no: string; client: string; court: string;
+        time_from: string; time_to: string; place: string; case_no: string; property_type: string; client: string; court: string;
         linked_to_other_doc: string | null; linked_to_current_doc: boolean;
       }> }>('/links/my-outdoor-entries' + q);
     },

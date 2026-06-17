@@ -153,6 +153,11 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   const [inspClientType, setInspClientType] = useState<'고객명' | '기타'>('고객명');
   const [inspClient, setInspClient] = useState('');
   const [inspEtcReason, setInspEtcReason] = useState('');
+  const [inspPropertyMain, setInspPropertyMain] = useState('');
+  const [inspPropertyType, setInspPropertyType] = useState('');
+  const inspPropertyDetailOptions = BID_PROPERTY_CATEGORIES
+    .find((c) => c.main === inspPropertyMain)?.details
+    .map((detail) => ({ value: detail, label: detail })) || [];
   // 임장 중복 경고
   const [inspDupWarning, setInspDupWarning] = useState<{ user_name: string; target_date: string }[] | null>(null);
 
@@ -193,6 +198,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     if (activityType === '입찰' && (!bidPropertyMain || !bidPropertyType)) { alert('물건종류를 선택해주세요.'); return null; }
     if (activityType === '임장' && !inspCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '임장' && !inspCourt) { alert('법원을 선택해주세요.'); return null; }
+    if (activityType === '임장' && (!inspPropertyMain || !inspPropertyType)) { alert('물건종류를 선택해주세요.'); return null; }
     if (activityType === '임장' && inspClientType === '고객명' && !inspClient.trim()) { alert(`${companion ? '담당자' : '계약자명'}을 입력해주세요.`); return null; }
     if (activityType === '임장' && inspClientType === '기타' && !inspEtcReason.trim()) { alert('사유를 입력해주세요.'); return null; }
     if (activityType === '미팅' && !meetingClient.trim()) { alert(`${companion ? '담당자' : '계약자명'}을 입력해주세요.`); return null; }
@@ -229,10 +235,11 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
       }
       case '임장':
         data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, itemNo: inspItemNo, court: inspCourt, place: inspPlace,
+          propertyCategory: inspPropertyMain, propertyType: inspPropertyType,
           client: inspClientType === '고객명' ? inspClient : '', companion, companionPerson: companion ? inspClient : '',
           inspClientType, inspEtcReason: inspClientType === '기타' ? inspEtcReason : '' };
         subtype = `${inspYear}타경${inspCaseNo}`;
-        label = `임장${companion ? ' [동행]' : ''} — ${subtype}${inspItemNo ? ` | ${inspItemNo}` : ''} | ${inspClientType === '고객명' ? inspClient : inspEtcReason}`;
+        label = `임장${companion ? ' [동행]' : ''} — ${subtype}${inspItemNo ? ` | ${inspItemNo}` : ''} | ${inspPropertyType} | ${inspClientType === '고객명' ? inspClient : inspEtcReason}`;
         break;
       case '미팅':
         data = { ...data, meetingType, etcReason: meetingEtc, place: meetingPlace, client: meetingClient,
@@ -273,7 +280,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     setTimeFrom(''); setTimeTo('');
     setBidCaseNo(''); setBidItemNo(''); setBidBidder(''); setBidBidderName(''); setBidSuggestedPrice(''); setBidPrice('');
     setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidCancelled(false); setBidDeviationReason(''); setBidPropertyMain(''); setBidPropertyType('');
-    setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient('');
+    setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient(''); setInspPropertyMain(''); setInspPropertyType('');
     setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo(''); setMeetingItemNo(''); setMeetingInternal(false);
     setCompanion(false);
     setOfficeEtc('');
@@ -553,6 +560,32 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
               <div className="form-group">
                 <label>법원</label>
                 <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === inspCourt) || null} onChange={(o: any) => setInspCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
+              </div>
+              <div className="form-row form-row-inline">
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>물건종류 대분류 *</label>
+                  <Select
+                    size="sm"
+                    options={PROPERTY_MAIN_OPTS}
+                    value={PROPERTY_MAIN_OPTS.find((o) => o.value === inspPropertyMain) || null}
+                    onChange={(o: any) => {
+                      setInspPropertyMain(o?.value || '');
+                      setInspPropertyType('');
+                    }}
+                    placeholder="대분류 선택"
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>물건종류 세부 *</label>
+                  <Select
+                    size="sm"
+                    options={inspPropertyDetailOptions}
+                    value={inspPropertyDetailOptions.find((o) => o.value === inspPropertyType) || null}
+                    onChange={(o: any) => setInspPropertyType(o?.value || '')}
+                    placeholder="세부 선택"
+                    isDisabled={!inspPropertyMain}
+                  />
+                </div>
               </div>
               <div className="form-group">
                 <label>장소</label>

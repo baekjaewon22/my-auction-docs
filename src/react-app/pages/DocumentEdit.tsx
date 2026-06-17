@@ -47,7 +47,7 @@ export default function DocumentEdit() {
   // 외근보고서 link 관리
   type OutdoorEntry = {
     id: string; target_date: string; activity_type: string; activity_subtype: string;
-    time_from: string; time_to: string; place: string; case_no: string; client: string; court: string;
+    time_from: string; time_to: string; place: string; case_no: string; property_type: string; client: string; court: string;
     linked_to_other_doc: string | null; linked_to_current_doc: boolean;
   };
   const [outdoorEntries, setOutdoorEntries] = useState<OutdoorEntry[]>([]);
@@ -247,12 +247,21 @@ export default function DocumentEdit() {
       const checkBid = e.activity_type === '입찰' ? '☑' : '☐';
       const checkInsp = e.activity_type === '임장' ? '☑' : '☐';
       const checkMeet = e.activity_type === '미팅' ? '☑' : '☐';
-      const place = e.place || (e.case_no ? `${e.case_no}${e.client ? ' ' + e.client : ''}` : '');
+      const place = e.activity_type === '입찰'
+        ? (e.court || e.place || '')
+        : e.activity_type === '임장'
+          ? (e.place || e.court || '')
+          : (e.place || e.court || '');
       const time = e.time_from && e.time_to ? `${e.time_from} ~ ${e.time_to}` : (e.time_from || '');
+      const detailLines = (e.activity_type === '입찰' || e.activity_type === '임장')
+        ? `<p>사건번호 : ${e.case_no || ''}</p>` +
+          `<p>물건종류 : ${e.property_type || ''}</p>`
+        : '';
       return `<p>외근 일자&nbsp;: &nbsp;${yy} 년 &nbsp;${parseInt(m, 10)} 월 &nbsp;${parseInt(d, 10)} 일</p>` +
         `<p>외근 시간&nbsp;: &nbsp;${time}</p>` +
         `<p>외근 목적 : ${checkBid} 입찰 ${checkInsp} 임장 ${checkMeet} 미팅</p>` +
         `<p>외근 장소 : ${place}</p>` +
+        detailLines +
         `<p><br></p>`;
     }).join('');
 
@@ -754,7 +763,7 @@ export default function DocumentEdit() {
                           <span style={{ minWidth: 40, color: purposeColor, fontWeight: 600 }}>{e.activity_type}</span>
                           <span style={{ minWidth: 90, color: '#5f6368' }}>{e.time_from}{e.time_to ? `~${e.time_to}` : ''}</span>
                           <span style={{ flex: 1, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {e.case_no || ''} {e.place || e.client || ''}
+                            {e.case_no || ''} {e.property_type || ''} {e.place || e.client || ''}
                           </span>
                         </label>
                       );

@@ -7,6 +7,19 @@ links.use('*', authMiddleware);
 
 const REVIEW_ROLES = ['master', 'accountant', 'admin'] as const;
 const EXEMPTION_APPROVER_ROLES = ['master', 'ceo', 'admin', 'accountant'] as const;
+const canViewSuggestedPrice = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+
+function redactSuggestedPrice<T extends { activity_type?: string; data?: string }>(entry: T, canView: boolean): T {
+  if (canView || entry.activity_type !== '입찰' || !entry.data) return entry;
+  try {
+    const data = JSON.parse(entry.data || '{}');
+    if (!Object.prototype.hasOwnProperty.call(data, 'suggestedPrice')) return entry;
+    const { suggestedPrice: _suggestedPrice, ...rest } = data;
+    return { ...entry, data: JSON.stringify(rest) };
+  } catch {
+    return entry;
+  }
+}
 
 async function ensureOutdoorExemptionTable(db: D1Database): Promise<void> {
   await db.prepare(`
@@ -476,6 +489,7 @@ links.get('/my-outdoor-entries', async (c) => {
       time_to: parsed.timeTo || '',
       place: parsed.place || '',
       case_no: parsed.caseNo || '',
+      property_type: parsed.propertyType || '',
       client: parsed.client || '',
       court: parsed.court || '',
       linked_to_other_doc: otherDoc || (implicitLinkedToOther.has(e.id) ? '__implicit_existing_report__' : approvedExemptions.has(e.id) ? '__approved_exemption__' : null),
@@ -890,6 +904,7 @@ links.get('/effective-entry-ids', async (c) => {
 
 // GET /api/links/by-document/:doc_id — 특정 문서에 link된 entries
 links.get('/by-document/:doc_id', async (c) => {
+  const user = c.get('user');
   const db = c.env.DB;
   const docId = c.req.param('doc_id');
   const result = await db.prepare(`
@@ -900,7 +915,8 @@ links.get('/by-document/:doc_id', async (c) => {
     WHERE djl.document_id = ?
     ORDER BY je.target_date DESC
   `).bind(docId).all();
-  return c.json({ links: result.results });
+  const links = (result.results || []).map((entry: any) => redactSuggestedPrice(entry, canViewSuggestedPrice(user.role)));
+  return c.json({ links });
 });
 
 export default links;
