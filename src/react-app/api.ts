@@ -499,8 +499,9 @@ export const api = {
       const qs = q.toString();
       return request<{ records: import('./types').SalesRecord[] }>('/sales/stats' + (qs ? '?' + qs : ''));
     },
-    managerPerformance: (params?: { month_end?: string; months?: number; branch?: string }) => {
+    managerPerformance: (params?: { month_start?: string; month_end?: string; months?: number; branch?: string }) => {
       const q = new URLSearchParams();
+      if (params?.month_start) q.set('month_start', params.month_start);
       if (params?.month_end) q.set('month_end', params.month_end);
       if (params?.months) q.set('months', String(params.months));
       if (params?.branch) q.set('branch', params.branch);

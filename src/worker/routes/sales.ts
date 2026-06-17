@@ -101,6 +101,23 @@ function monthRange(endMonth: string, count: number): string[] {
   });
 }
 
+function monthRangeBetween(startMonth: string, endMonth: string): string[] | null {
+  const startMatch = String(startMonth || '').match(/^(\d{4})-(\d{2})$/);
+  if (!startMatch) return null;
+  const endMatch = String(endMonth || '').match(/^(\d{4})-(\d{2})$/);
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const start = new Date(Date.UTC(Number(startMatch[1]), Number(startMatch[2]) - 1, 1));
+  const end = endMatch ? new Date(Date.UTC(Number(endMatch[1]), Number(endMatch[2]) - 1, 1)) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  if (start > end) return [];
+  const months: string[] = [];
+  const cursor = new Date(start);
+  while (cursor <= end && months.length < 12) {
+    months.push(monthKey(cursor));
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+  return months;
+}
+
 const SALES_DIFF_FIELDS = [
   { key: 'type', label: '유형' },
   { key: 'type_detail', label: '사건내용' },
@@ -1086,8 +1103,14 @@ sales.get('/manager-performance', async (c) => {
     return c.json({ error: '담당자 매출성과 열람 권한이 없습니다.' }, 403);
   }
 
-  const months = monthRange(c.req.query('month_end') || '', Math.min(12, Math.max(3, Number(c.req.query('months') || 6) || 6)));
+  const monthEnd = c.req.query('month_end') || '';
+  const monthStart = c.req.query('month_start') || '';
+  const requestedMonths = monthRangeBetween(monthStart, monthEnd);
+  const months = requestedMonths !== null
+    ? requestedMonths
+    : monthRange(monthEnd, Math.min(12, Math.max(3, Number(c.req.query('months') || 6) || 6)));
   const requestedBranch = (c.req.query('branch') || '').trim();
+  if (months.length === 0) return c.json({ months, rows: [], scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team' });
   const startDate = `${months[0]}-01`;
   const [endYear, endMonth] = months[months.length - 1].split('-').map(Number);
   const endDate = `${months[months.length - 1]}-${new Date(endYear, endMonth, 0).getDate()}`;

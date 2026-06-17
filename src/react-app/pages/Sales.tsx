@@ -79,6 +79,14 @@ function monthLabel(ym: string): string {
   return month ? `${Number(month)}월` : ym;
 }
 
+function marchStartForMonth(monthEnd: string): string {
+  const match = String(monthEnd || '').match(/^(\d{4})-(\d{2})$/);
+  if (!match) return '';
+  const year = match[1];
+  const month = Number(match[2]);
+  return month >= 3 ? `${year}-03` : `${year}-${String(month).padStart(2, '0')}`;
+}
+
 function ManagerPerformancePanel() {
   const { branches } = useBranches();
   const [monthEnd, setMonthEnd] = useState(() => new Date().toISOString().slice(0, 7));
@@ -92,7 +100,7 @@ function ManagerPerformancePanel() {
     setLoading(true);
     setError('');
     try {
-      const res = await api.sales.managerPerformance({ month_end: monthEnd, months: 6, branch: branch || undefined });
+      const res = await api.sales.managerPerformance({ month_start: marchStartForMonth(monthEnd), month_end: monthEnd, branch: branch || undefined });
       setRows(res.rows || []);
       setScope(res.scope);
     } catch (err: any) {
@@ -154,7 +162,11 @@ function ManagerPerformancePanel() {
             result: item.met ? '달성' : '미달성',
           }));
           const target = row.monthly_target || 0;
-          const yDomain: [number, number] | undefined = target > 0 ? [0, target * 2] : undefined;
+          const average = row.average_amount || 0;
+          const maxAmount = row.months.reduce((max, item) => Math.max(max, item.amount), 0);
+          const yMax = Math.max(target, average, maxAmount);
+          const yDomain: [number, number] | undefined = yMax > 0 ? [0, Math.ceil(yMax * 1.18)] : undefined;
+          const labelsAreClose = yMax > 0 && Math.abs(target - average) < yMax * 0.12;
           return (
             <div key={row.user_id} className="card" style={{ padding: 14, borderRadius: 10, border: '1px solid #e0e0e0' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
@@ -165,6 +177,7 @@ function ManagerPerformancePanel() {
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontSize: 11, color: '#5f6368' }}>월 기준</div>
                   <div style={{ fontSize: 13, fontWeight: 800, color: '#1a73e8' }}>{formatCurrency(target)}</div>
+                  <div style={{ fontSize: 11, color: '#f57c00', fontWeight: 700 }}>평균 {formatCurrency(average)}</div>
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, marginBottom: 8, fontSize: 11 }}>
@@ -184,6 +197,7 @@ function ManagerPerformancePanel() {
                       contentStyle={{ borderRadius: 8, border: '1px solid #dfe3eb', fontSize: 12 }}
                     />
                     <ReferenceLine y={target} stroke="#1a73e8" strokeDasharray="3 3" label={{ value: '월 기준매출', fill: '#1a73e8', fontSize: 11, position: 'insideTopRight' }} />
+                    <ReferenceLine y={average} stroke="#f57c00" strokeDasharray="3 3" label={{ value: '평균 매출', fill: '#f57c00', fontSize: 11, position: labelsAreClose ? 'insideBottomLeft' : 'insideBottomRight' }} />
                     <Line type="linear" dataKey="amount" name="달성금액" stroke="#e53935" strokeWidth={2.4} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>
