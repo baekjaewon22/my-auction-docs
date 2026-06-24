@@ -458,10 +458,15 @@ links.get('/my-outdoor-entries', async (c) => {
 
   // 다른 문서에 이미 link된 entry id 조회
   const linkedRes = await db.prepare(`
-    SELECT journal_entry_id, document_id
-    FROM document_journal_links
-    WHERE link_type = 'outdoor'
-  `).all();
+    SELECT djl.journal_entry_id, djl.document_id
+    FROM document_journal_links djl
+    JOIN documents d ON d.id = djl.document_id
+    WHERE djl.link_type = 'outdoor'
+      AND (
+        djl.document_id = ?
+        OR (d.status IN ('submitted','approved') AND COALESCE(d.cancelled, 0) = 0)
+      )
+  `).bind(forDocId).all();
   const linkedToOther = new Map<string, string>();      // entry_id → other_doc_id
   const linkedToCurrent = new Set<string>();             // entry_id (현재 문서에 link된)
   for (const r of (linkedRes.results || []) as Array<{ journal_entry_id: string; document_id: string }>) {
@@ -538,6 +543,20 @@ links.post('/', async (c) => {
     if (linkType === 'outdoor' && !isOutdoorEntry(e.activity_type, e.data)) {
       return c.json({ error: `outdoor link은 외근 entry만 가능합니다 (${e.activity_type})` }, 400);
     }
+  }
+
+  if (linkType === 'outdoor') {
+    await db.prepare(`
+      DELETE FROM document_journal_links
+      WHERE link_type = ?
+        AND journal_entry_id IN (${placeholders})
+        AND document_id IN (
+          SELECT id
+          FROM documents
+          WHERE id <> ?
+            AND (status NOT IN ('submitted','approved') OR COALESCE(cancelled, 0) = 1)
+        )
+    `).bind(linkType, ...entryIds, docId).run();
   }
 
   // INSERT (UNIQUE 위반은 무시)

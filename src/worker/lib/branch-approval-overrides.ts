@@ -1,6 +1,11 @@
 import { branchAliases, normalizeBranchName } from './branchAliases';
 import type { JwtPayload } from '../types';
 
+const ADMIN_EXTRA_BRANCHES: Record<string, string[]> = {
+  // 진성헌(서초·admin·본부장): 서초 + 대전 열람
+  'c32c3021-b8f6-42f8-b977-7e6e53a7e6f6': ['대전지사'],
+};
+
 export async function ensureBranchApprovalOverridesTable(db: D1Database) {
   await db.prepare(`
     CREATE TABLE IF NOT EXISTS branch_approval_overrides (
@@ -85,6 +90,7 @@ export async function getAdminVisibleBranches(
 ): Promise<string[]> {
   const canonicalBranches = [
     normalizeBranchName(user.branch),
+    ...(ADMIN_EXTRA_BRANCHES[user.sub] || []).map((branch) => normalizeBranchName(branch)),
     ...fallbackExtraBranches.map((branch) => normalizeBranchName(branch)),
     ...(await getBranchApprovalBranchesForUser(db, user.sub)),
   ].filter(Boolean);

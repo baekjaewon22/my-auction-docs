@@ -164,7 +164,7 @@ sales.get('/', async (c) => {
   } else if (!isAdmin && !isAccountant) {
     if (role === 'manager') {
       // 팀장: 본인 팀 전체
-      conditions.push('(sr.user_id = ? OR (sr.branch = ? AND sr.department = ?))');
+      conditions.push('(sr.user_id = ? OR (u.branch = ? AND u.department = ?))');
       params.push(user.sub, user.branch, user.department);
     } else {
       // 팀원: 본인만
@@ -389,7 +389,7 @@ sales.get('/missing-documents', async (c) => {
   }
 
   if (role === 'manager') {
-    query += ' AND (sr.user_id = ? OR (sr.branch = ? AND sr.department = ?))';
+    query += ' AND (sr.user_id = ? OR (u.branch = ? AND u.department = ?))';
     params.push(user.sub, user.branch, user.department);
   } else if (role === 'director') {
     query += " AND (sr.user_id = ? OR sr.branch IN ('대전', '대전지사', '부산', '부산지사') OR sr.attribution_branch IN ('대전', '대전지사', '부산', '부산지사'))";
@@ -1139,7 +1139,13 @@ sales.get('/manager-performance', async (c) => {
     }
   };
   if (canViewBranch) {
-    addBranchCondition(user.branch);
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 0) {
+      memberConditions.push(`u.branch IN (${allBranches.map(() => '?').join(',')})`);
+      memberParams.push(...allBranches);
+    } else {
+      addBranchCondition(user.branch);
+    }
   }
   if (canViewAll && requestedBranch) {
     addBranchCondition(requestedBranch);

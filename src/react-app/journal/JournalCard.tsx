@@ -127,7 +127,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     // 낙찰 시 낙찰가 미입력 상태라면 실제입찰가를 기본 낙찰가로 자동 적용
     if (newWon && !updated.winPrice) updated.winPrice = d.bidPrice || '';
     try {
-      await api.journal.update(entry.id, { data: updated });
+      await api.journal.update(entry.id, { data: updated, bid_field_only: true });
       // 수수료 자동 생성/삭제
       if (newWon) {
         const winningPrice = parseMoney(updated.winPrice);

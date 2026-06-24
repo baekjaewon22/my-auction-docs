@@ -57,6 +57,27 @@ function isDescendant(node: OrgNode, targetId: string): boolean {
   return node.children.some((c) => isDescendant(c, targetId));
 }
 
+function findParentId(nodes: OrgNode[], childId: string, parentId: string | null = null): string | null | undefined {
+  for (const n of nodes) {
+    if (n.id === childId) return parentId;
+    const found = findParentId(n.children, childId, n.id);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function updateTierDeep(node: OrgNode, tier: number): OrgNode {
+  return {
+    ...node,
+    tier,
+    children: node.children.map((child) => updateTierDeep(child, Math.min(tier + 1, 5))),
+  };
+}
+
+type PendingDropItem =
+  | { kind: 'node'; node: OrgNode }
+  | { kind: 'user'; userId: string };
+
 // 트리 → flat 변환 (DB 저장용)
 function treeToFlat(nodes: OrgNode[], parentId?: string): { id: string; label: string; user_id?: string; parent_id?: string; tier: number; sort_order: number }[] {
   const result: { id: string; label: string; user_id?: string; parent_id?: string; tier: number; sort_order: number }[] = [];
@@ -124,8 +145,13 @@ export default function OrgChart() {
   const [showBranchApproverModal, setShowBranchApproverModal] = useState(false);
   const [branchApprovers, setBranchApprovers] = useState<Record<string, string>>({});
   const [savingBranchApprovers, setSavingBranchApprovers] = useState(false);
+  const [pendingDrop, setPendingDrop] = useState<{
+    item: PendingDropItem;
+    targetId: string;
+    targetLabel: string;
+  } | null>(null);
 
-  const canEdit = currentUser && ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser.role);
+  const canEdit = currentUser && ['master', 'ceo', 'admin'].includes(currentUser.role);
 
   const load = useCallback(async () => {
     const uRes = await api.users.list();
@@ -204,6 +230,52 @@ export default function OrgChart() {
     (u.department || '').includes(poolSearch) || (u.position_title || '').includes(poolSearch)
   );
   const getUserById = (id: string) => users.find((u) => u.id === id);
+  const makeUserNode = (u: User, tier: number): OrgNode => ({
+    id: genId(),
+    label: `${u.name} ${u.position_title || ROLE_LABELS[u.role]}`,
+    userId: u.id,
+    tier,
+    children: [],
+  });
+
+  const placeDropItem = (item: PendingDropItem, targetId: string | null, mode: 'child' | 'sibling') => {
+    let base = JSON.parse(JSON.stringify(tree)) as OrgNode[];
+    let nodeToPlace: OrgNode | null = null;
+
+    if (item.kind === 'node') {
+      base = removeNode(base, item.node.id);
+      nodeToPlace = item.node;
+    } else {
+      const u = getUserById(item.userId);
+      if (!u) return;
+      nodeToPlace = makeUserNode(u, 1);
+    }
+
+    if (!targetId) {
+      save([...base, updateTierDeep(nodeToPlace, 1)]);
+      return;
+    }
+
+    const target = findNode(base, targetId);
+    if (!target) return;
+
+    if (mode === 'child') {
+      target.children.push(updateTierDeep(nodeToPlace, Math.min(target.tier + 1, 5)));
+      save(base);
+      return;
+    }
+
+    const parentId = findParentId(base, targetId);
+    if (parentId === undefined) return;
+    if (parentId === null) {
+      base.push(updateTierDeep(nodeToPlace, target.tier));
+    } else {
+      const parent = findNode(base, parentId);
+      if (!parent) return;
+      parent.children.push(updateTierDeep(nodeToPlace, Math.min(parent.tier + 1, 5)));
+    }
+    save(base);
+  };
 
   // 추가
   const handleAdd = () => {
@@ -254,38 +326,34 @@ export default function OrgChart() {
       const drag = findNode(tree, nodeId);
       if (drag && targetId && isDescendant(drag, targetId)) { reset(); return; }
 
-      const stripped = removeNode(JSON.parse(JSON.stringify(tree)), nodeId);
-      const orig = findNode(JSON.parse(JSON.stringify(tree)), nodeId)!;
+      const orig = findNode(JSON.parse(JSON.stringify(tree)), nodeId);
+      if (!orig) { reset(); return; }
 
       if (!targetId) {
-        orig.tier = 1;
-        stripped.push(orig);
+        placeDropItem({ kind: 'node', node: orig }, null, 'child');
       } else {
-        const parent = findNode(stripped, targetId);
-        if (parent) { orig.tier = Math.min(parent.tier + 1, 5); parent.children.push(orig); }
+        const target = findNode(tree, targetId);
+        if (!target) { reset(); return; }
+        if (target.userId) {
+          setPendingDrop({ item: { kind: 'node', node: orig }, targetId, targetLabel: target.label });
+        } else {
+          placeDropItem({ kind: 'node', node: orig }, targetId, 'child');
+        }
       }
-      save(stripped);
     } else if (userId) {
       const u = getUserById(userId);
       if (!u) { reset(); return; }
-      const updated = JSON.parse(JSON.stringify(tree)) as OrgNode[];
 
       if (!targetId) {
-        const label = `${u.name} ${u.position_title || ROLE_LABELS[u.role]}`;
-        updated.push({ id: genId(), label, userId: u.id, tier: 1, children: [] });
+        placeDropItem({ kind: 'user', userId }, null, 'child');
       } else {
-        const target = findNode(updated, targetId);
+        const target = findNode(tree, targetId);
         if (target && !target.userId) {
-          // 빈 자리(부서)에 드롭 → 채워넣기
-          target.userId = u.id;
-          // 라벨은 변경하지 않음 (부서명 유지)
+          placeDropItem({ kind: 'user', userId }, targetId, 'child');
         } else if (target) {
-          // 인원이 있는 노드 → 하위로 추가
-          const label = `${u.name} ${u.position_title || ROLE_LABELS[u.role]}`;
-          target.children.push({ id: genId(), label, userId: u.id, tier: Math.min(target.tier + 1, 5), children: [] });
+          setPendingDrop({ item: { kind: 'user', userId }, targetId, targetLabel: target.label });
         }
       }
-      save(updated);
     }
     reset();
   };
@@ -384,6 +452,12 @@ export default function OrgChart() {
           className={`ocm-row ${u ? '' : 'ocm-row-dept'}`}
           style={{ borderLeftColor: color, background: u ? '#fff' : bg }}
           onClick={() => hasChildren && toggleCollapse(node.id)}
+          draggable={!!canEdit}
+          onDragStart={(e) => { e.dataTransfer.setData('text/node', node.id); e.dataTransfer.effectAllowed = 'move'; setDragNodeId(node.id); }}
+          onDragEnd={reset}
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDropTargetId(node.id); }}
+          onDragLeave={(e) => { e.stopPropagation(); if (dropTargetId === node.id) setDropTargetId(null); }}
+          onDrop={(e) => handleDrop(node.id, e)}
         >
           {hasChildren && (
             <span className="ocm-chevron">
@@ -558,6 +632,12 @@ export default function OrgChart() {
     );
   };
 
+  const pendingDropName = pendingDrop
+    ? pendingDrop.item.kind === 'user'
+      ? getUserById(pendingDrop.item.userId)?.name || '선택한 인원'
+      : pendingDrop.item.node.label
+    : '';
+
   if (loading) return <div className="page-loading">로딩중...</div>;
 
   return (
@@ -724,6 +804,47 @@ export default function OrgChart() {
               <button className="btn btn-primary" onClick={saveBranchApprovers} disabled={savingBranchApprovers}>
                 {savingBranchApprovers ? '저장 중...' : '저장'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingDrop && (
+        <div className="modal-overlay" onClick={() => setPendingDrop(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <h3>배치 방식 선택</h3>
+            <p style={{ fontSize: '0.82rem', color: '#5f6368', lineHeight: 1.5, margin: '4px 0 14px' }}>
+              <b>{pendingDropName}</b>을(를) <b>{pendingDrop.targetLabel}</b> 기준으로 어떻게 배치할까요?
+            </p>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ justifyContent: 'flex-start', padding: '12px 14px' }}
+                onClick={() => {
+                  placeDropItem(pendingDrop.item, pendingDrop.targetId, 'sibling');
+                  setPendingDrop(null);
+                }}
+              >
+                같은 팀원으로 배치
+              </button>
+              <button
+                type="button"
+                className="btn"
+                style={{ justifyContent: 'flex-start', padding: '12px 14px' }}
+                onClick={() => {
+                  placeDropItem(pendingDrop.item, pendingDrop.targetId, 'child');
+                  setPendingDrop(null);
+                }}
+              >
+                하위자로 배치
+              </button>
+            </div>
+            <div style={{ marginTop: 12, fontSize: '0.74rem', color: '#9aa0a6', lineHeight: 1.5 }}>
+              같은 팀원은 상하관계를 만들지 않습니다. 하위자는 결재/승인 상위관계에 영향을 줄 수 있습니다.
+            </div>
+            <div className="modal-actions" style={{ marginTop: 14 }}>
+              <button className="btn" onClick={() => setPendingDrop(null)}>취소</button>
             </div>
           </div>
         </div>

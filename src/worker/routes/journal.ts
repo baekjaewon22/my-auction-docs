@@ -95,11 +95,14 @@ async function getJournalAssignee(db: D1Database, userId: string) {
     .first<JournalAssignee>();
 }
 
-function canUseAssignee(currentUser: { role: string; branch: string; sub: string }, assignee: JournalAssignee) {
+async function canUseAssignee(db: D1Database, currentUser: { role: string; branch: string; sub: string }, assignee: JournalAssignee) {
   if (assignee.approved !== 1 || assignee.role === 'master') return false;
   if (assignee.id === currentUser.sub) return true;
   if (!canManageJournalAssignees(currentUser.role)) return false;
-  if (currentUser.role === 'admin') return sameBranchName(assignee.branch, currentUser.branch);
+  if (currentUser.role === 'admin') {
+    const branches = await getAdminVisibleBranches(db, currentUser);
+    return branches.some((branch) => sameBranchName(assignee.branch, branch));
+  }
   return true;
 }
 
@@ -134,6 +137,19 @@ function preserveSuggestedPriceForRestrictedUpdate(entry: JournalEntry, nextData
   const existingData = parseJournalData(entry.data);
   if (!Object.prototype.hasOwnProperty.call(existingData, 'suggestedPrice')) return nextData;
   return { ...nextData, suggestedPrice: existingData.suggestedPrice };
+}
+
+function mergeBidFieldOnlyData(entry: JournalEntry, data: Record<string, unknown> | undefined): Record<string, unknown> {
+  const existingData = parseJournalData(entry.data);
+  const nextData = data || {};
+  return {
+    ...existingData,
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'bidPrice') ? { bidPrice: nextData.bidPrice } : {}),
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'winPrice') ? { winPrice: nextData.winPrice } : {}),
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'bidWon') ? { bidWon: nextData.bidWon } : {}),
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'bidCancelled') ? { bidCancelled: nextData.bidCancelled } : {}),
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'deviationReason') ? { deviationReason: nextData.deviationReason } : {}),
+  };
 }
 
 // GET /api/journal?date=2026-03-30&range=all
@@ -250,7 +266,7 @@ journal.post('/', async (c) => {
     ? { id: user.sub, role: user.role, branch: user.branch, department: user.department, approved: 1 }
     : await getJournalAssignee(db, assigneeId);
 
-  if (!assignee || !canUseAssignee(user, assignee)) {
+  if (!assignee || !(await canUseAssignee(db, user, assignee))) {
     return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
   }
 
@@ -282,7 +298,11 @@ journal.put('/:id', async (c) => {
 
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(id).first<JournalEntry>();
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
-  const canEditAssignedEntry = canManageJournalAssignees(user.role) && (user.role !== 'admin' || sameBranchName(entry.branch, user.branch));
+  let canEditAssignedEntry = canManageJournalAssignees(user.role);
+  if (canEditAssignedEntry && user.role === 'admin') {
+    const branches = await getAdminVisibleBranches(db, user);
+    canEditAssignedEntry = branches.some((branch) => sameBranchName(entry.branch, branch));
+  }
   if (entry.user_id !== user.sub && !canEditAssignedEntry) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const today = await getKSTToday(db);
@@ -295,6 +315,9 @@ journal.put('/:id', async (c) => {
     bid_field_only?: boolean; // 낙찰가/입찰가만 수정하는 경우
     user_id?: string;
   }>();
+
+  const isRestrictedBidFieldUpdate = !isAdminPlus && isBidEntry && body.bid_field_only === true
+    && (entry.target_date < today || (entry.target_date === today && new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCHours() >= 18));
 
   // 시간 제한 체크 (admin 이상은 모든 날짜 수정 가능)
   if (!isTopRole && !isAdminPlus) {
@@ -321,25 +344,31 @@ journal.put('/:id', async (c) => {
 
   let assignee: JournalAssignee | null = null;
   if (body.user_id && body.user_id !== entry.user_id) {
+    if (isRestrictedBidFieldUpdate) {
+      return c.json({ error: '지난 일정에서는 담당자를 변경할 수 없습니다.' }, 400);
+    }
     assignee = await getJournalAssignee(db, body.user_id);
-    if (!assignee || !canUseAssignee(user, assignee)) {
+    if (!assignee || !(await canUseAssignee(db, user, assignee))) {
       return c.json({ error: '담당자를 변경할 권한이 없습니다.' }, 403);
     }
   }
 
-  const normalizedData = body.data
-    ? normalizeJournalData(entry.activity_type, body.data)
-    : normalizeJournalData(entry.activity_type, parseJournalData(entry.data));
+  const normalizedData = normalizeJournalData(
+    entry.activity_type,
+    isRestrictedBidFieldUpdate
+      ? mergeBidFieldOnlyData(entry, body.data)
+      : body.data || parseJournalData(entry.data),
+  );
   const nextData = preserveSuggestedPriceForRestrictedUpdate(entry, normalizedData, canViewSuggestedPrice(user.role));
 
   await db.prepare(
     "UPDATE journal_entries SET user_id = ?, activity_subtype = ?, data = ?, completed = ?, fail_reason = ?, branch = ?, department = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(
     assignee?.id || entry.user_id,
-    body.activity_subtype ?? entry.activity_subtype,
+    isRestrictedBidFieldUpdate ? entry.activity_subtype : body.activity_subtype ?? entry.activity_subtype,
     JSON.stringify(nextData),
-    body.completed ?? entry.completed,
-    body.fail_reason ?? entry.fail_reason,
+    isRestrictedBidFieldUpdate ? entry.completed : body.completed ?? entry.completed,
+    isRestrictedBidFieldUpdate ? entry.fail_reason : body.fail_reason ?? entry.fail_reason,
     assignee?.branch || entry.branch,
     assignee?.department || entry.department,
     id

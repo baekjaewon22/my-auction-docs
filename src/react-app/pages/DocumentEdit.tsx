@@ -13,6 +13,7 @@ import { FontSize, FONT_SIZES, FONT_SIZE_LABELS } from '../extensions/FontSize';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import type { Document, DocumentLog, Signature, ApprovalStep } from '../types';
+import type { JournalEntry } from '../journal/types';
 import SignaturePanel, { hasSavedSignature, quickSign } from '../components/SignaturePanel';
 import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
@@ -50,9 +51,14 @@ export default function DocumentEdit() {
     time_from: string; time_to: string; place: string; case_no: string; property_type: string; client: string; court: string;
     linked_to_other_doc: string | null; linked_to_current_doc: boolean;
   };
+  type ManualJournalCandidate = OutdoorEntry & { eligible: boolean; inAutoList: boolean; reason: string };
   const [outdoorEntries, setOutdoorEntries] = useState<OutdoorEntry[]>([]);
   const [linkedEntryIds, setLinkedEntryIds] = useState<Set<string>>(new Set());
   const [linkLoading, setLinkLoading] = useState(false);
+  const [showManualPicker, setShowManualPicker] = useState(false);
+  const [manualCandidates, setManualCandidates] = useState<ManualJournalCandidate[]>([]);
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualNoLinkMode, setManualNoLinkMode] = useState(false);
   const isOutdoorReport = doc?.template_id === 'tpl-work-007';
 
   // 일지를 작성하지 않는 직책 — 외근보고서 작성 시 일지 entry 연결 면제 (수동 작성)
@@ -64,6 +70,48 @@ export default function DocumentEdit() {
 
   const STAMP_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
   const canUseStamp = STAMP_ROLES.includes(user?.role || '');
+
+  const parseEntryData = (data: string | Record<string, unknown> | null | undefined): Record<string, any> => {
+    if (!data) return {};
+    if (typeof data === 'object') return data as Record<string, any>;
+    try { return JSON.parse(data); } catch { return {}; }
+  };
+
+  const getManualEligibility = (activityType: string, data: Record<string, any>) => {
+    if (activityType === '입찰') {
+      if (data.bidProxy) return { eligible: false, reason: '대리입찰은 외근보고서 연결 대상에서 제외됩니다.' };
+      if (data.bidCancelled) return { eligible: false, reason: '취소된 입찰은 외근보고서 연결 대상에서 제외됩니다.' };
+      return { eligible: true, reason: '연결 가능' };
+    }
+    if (activityType === '임장') return { eligible: true, reason: '연결 가능' };
+    if (activityType === '미팅') {
+      if (data.internalMeeting) return { eligible: false, reason: '내부미팅은 외근보고서 연결 대상에서 제외됩니다.' };
+      return { eligible: true, reason: '연결 가능' };
+    }
+    return { eligible: false, reason: `${activityType || '해당'} 일지는 외근보고서 연결 대상이 아닙니다.` };
+  };
+
+  const toOutdoorEntry = (
+    entry: Pick<JournalEntry, 'id' | 'target_date' | 'activity_type' | 'activity_subtype' | 'data'>,
+    linkState?: Pick<OutdoorEntry, 'linked_to_other_doc' | 'linked_to_current_doc'>
+  ): OutdoorEntry => {
+    const data = parseEntryData(entry.data);
+    return {
+      id: entry.id,
+      target_date: entry.target_date,
+      activity_type: entry.activity_type,
+      activity_subtype: entry.activity_subtype || '',
+      time_from: data.timeFrom || '',
+      time_to: data.timeTo || '',
+      place: data.place || '',
+      case_no: data.caseNo || '',
+      property_type: data.propertyType || '',
+      client: data.client || '',
+      court: data.court || '',
+      linked_to_other_doc: linkState?.linked_to_other_doc || null,
+      linked_to_current_doc: Boolean(linkState?.linked_to_current_doc),
+    };
+  };
 
   const editor = useEditor({
     extensions: [
@@ -175,6 +223,7 @@ export default function DocumentEdit() {
       const content = d.template_id === 'tpl-work-007' && !isJournalUser
         ? rawContent.replace(OUTDOOR_PLACEHOLDER_REGEX, MANUAL_OUTDOOR_FIELDS)
         : rawContent;
+      setManualNoLinkMode(d.template_id === 'tpl-work-007' && rawContent.includes('[수동매칭 검토필요]'));
       setDoc({ ...d, content });
       setTitle(d.title);
       setLogs(logRes.logs);
@@ -209,6 +258,37 @@ export default function DocumentEdit() {
 
   useEffect(() => { loadLinkData(); }, [loadLinkData]);
 
+  const loadManualCandidates = useCallback(async () => {
+    if (!id || !isOutdoorReport || !isJournalUser) return;
+    setManualLoading(true);
+    try {
+      const res = await api.journal.list({ range: 'month' });
+      const autoById = new Map(outdoorEntries.map((entry) => [entry.id, entry]));
+      const ownEntries = res.entries
+        .filter((entry) => entry.user_id === user?.id)
+        .map((entry) => {
+          const data = parseEntryData(entry.data);
+          const eligibility = getManualEligibility(entry.activity_type, data);
+          const autoEntry = autoById.get(entry.id);
+          return {
+            ...toOutdoorEntry(entry, autoEntry),
+            eligible: eligibility.eligible,
+            inAutoList: Boolean(autoEntry),
+            reason: eligibility.reason,
+          };
+        })
+        .sort((a, b) => b.target_date.localeCompare(a.target_date));
+      setManualCandidates(ownEntries);
+    } catch (err) {
+      console.error('직접 선택 일지 로딩 실패:', err);
+    }
+    setManualLoading(false);
+  }, [id, isOutdoorReport, isJournalUser, outdoorEntries, user?.id]);
+
+  useEffect(() => {
+    if (showManualPicker) loadManualCandidates();
+  }, [showManualPicker, loadManualCandidates]);
+
   // 일지 entry 체크박스 토글
   const toggleEntryLink = async (entryId: string, linked: boolean) => {
     if (!id) return;
@@ -217,6 +297,7 @@ export default function DocumentEdit() {
         // 추가
         await api.links.create({ document_id: id, journal_entry_ids: [entryId], link_type: 'outdoor' });
         setLinkedEntryIds((prev) => { const n = new Set(prev); n.add(entryId); return n; });
+        setManualNoLinkMode(false);
       } else {
         // 삭제
         const linksRes = await api.links.byDocument(id);
@@ -226,6 +307,7 @@ export default function DocumentEdit() {
           setLinkedEntryIds((prev) => { const n = new Set(prev); n.delete(entryId); return n; });
         }
       }
+      loadLinkData();
     } catch (err: any) {
       alert('처리 실패: ' + (err.message || ''));
     }
@@ -290,8 +372,11 @@ export default function DocumentEdit() {
   const handleSubmit = async () => {
     if (!id) return;
     // 외근보고서: 일지 entry 1개 이상 link 필수 (단, 일지 비작성 직책은 면제 — 수동 작성)
-    if (requiresJournalLink && linkedEntryIds.size === 0) {
+    if (requiresJournalLink && linkedEntryIds.size === 0 && !manualNoLinkMode) {
       alert('외근보고서는 1개 이상의 외근 일지 entry를 연결해야 제출할 수 있습니다.\n상단 "외근 일지 선택" 패널에서 entry를 선택해주세요.');
+      return;
+    }
+    if (requiresJournalLink && linkedEntryIds.size === 0 && manualNoLinkMode && !confirm('연결된 일지 없이 수동 작성 상태로 제출합니다.\n결재자가 외근보고서 본문을 직접 검토해야 합니다. 계속할까요?')) {
       return;
     }
     if (!mySigned) {
@@ -300,7 +385,12 @@ export default function DocumentEdit() {
     }
     if (!confirm('서명이 완료된 문서를 최종 제출하시겠습니까?\n제출 후에는 수정할 수 없습니다.')) return;
     if (editor) {
-      await api.documents.update(id, { title, content: editor.getHTML() });
+      let content = editor.getHTML();
+      if (requiresJournalLink && linkedEntryIds.size === 0 && manualNoLinkMode && !content.includes('[수동매칭 검토필요]')) {
+        content = `<p><strong>[수동매칭 검토필요]</strong> 연결 가능한 외근 일지를 찾지 못해 수동 작성으로 제출되었습니다. 결재자는 일자, 시간, 장소, 목적을 본문에서 직접 확인해주세요.</p>${content}`;
+        editor.commands.setContent(content);
+      }
+      await api.documents.update(id, { title, content });
     }
     await api.documents.submit(id);
     window.location.reload();
@@ -722,6 +812,19 @@ export default function DocumentEdit() {
                 <span style={{ fontSize: '0.78rem', color: linkedEntryIds.size > 0 ? '#188038' : '#d93025', fontWeight: 600 }}>
                   연결 {linkedEntryIds.size}건
                 </span>
+                <button className="btn btn-sm" onClick={() => setShowManualPicker((v) => !v)}
+                  title="자동 후보가 없거나 맞지 않을 때 본인 일지에서 직접 선택">
+                  직접 선택
+                </button>
+                <button className="btn btn-sm" onClick={() => setManualNoLinkMode((v) => !v)}
+                  style={{
+                    borderColor: manualNoLinkMode ? '#fbbc04' : undefined,
+                    background: manualNoLinkMode ? '#fff8e1' : undefined,
+                    color: manualNoLinkMode ? '#8a5a00' : undefined
+                  }}
+                  title="연결 가능한 일지가 없을 때 본문 수동 작성으로 제출">
+                  수동 작성
+                </button>
                 <button className="btn btn-sm" onClick={autoFillBody} disabled={linkedEntryIds.size === 0}
                   title="선택한 일지 정보를 본문에 자동 삽입">본문 자동 채우기</button>
               </div>
@@ -777,6 +880,73 @@ export default function DocumentEdit() {
                 </>
               );
             })()}
+            {manualNoLinkMode && linkedEntryIds.size === 0 && (
+              <div style={{
+                marginTop: 10, padding: 8, borderRadius: 4,
+                background: '#fff8e1', border: '1px solid #fbbc04',
+                fontSize: '0.76rem', color: '#8a5a00'
+              }}>
+                매칭 없이 수동 작성으로 제출할 수 있습니다. 제출 시 본문에 [수동매칭 검토필요] 표시가 자동 추가됩니다.
+              </div>
+            )}
+            {showManualPicker && (
+              <div style={{
+                marginTop: 12, paddingTop: 10, borderTop: '1px solid #d2e3fc'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#3c4043' }}>
+                    본인 일지에서 직접 선택
+                  </div>
+                  <button className="btn btn-sm" onClick={loadManualCandidates} disabled={manualLoading}>
+                    새로고침
+                  </button>
+                </div>
+                {manualLoading ? (
+                  <div style={{ fontSize: '0.78rem', color: '#9aa0a6' }}>직접 선택 목록 로딩 중...</div>
+                ) : manualCandidates.length === 0 ? (
+                  <div style={{ fontSize: '0.78rem', color: '#9aa0a6', padding: 8 }}>
+                    최근 30일 본인 일지가 없습니다.
+                  </div>
+                ) : (
+                  <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {manualCandidates.map((e) => {
+                      const isLinked = linkedEntryIds.has(e.id);
+                      const blocked = !e.eligible || Boolean(e.linked_to_other_doc);
+                      const purposeColor = e.activity_type === '입찰' ? '#d93025' : e.activity_type === '임장' ? '#188038' : e.activity_type === '미팅' ? '#1a73e8' : '#5f6368';
+                      const reason = e.linked_to_other_doc ? '다른 활성 보고서에 이미 연결되어 있습니다.' : e.reason;
+                      return (
+                        <label key={e.id} style={{
+                          display: 'flex', alignItems: 'center', gap: 8,
+                          padding: '6px 8px', borderRadius: 4,
+                          background: isLinked ? '#e8f0fe' : blocked ? '#f8f9fa' : '#fff',
+                          border: isLinked ? '1px solid #1a73e8' : '1px solid #e8eaed',
+                          cursor: blocked && !isLinked ? 'not-allowed' : 'pointer',
+                          fontSize: '0.76rem',
+                          opacity: blocked && !isLinked ? 0.68 : 1
+                        }}>
+                          <input type="checkbox" checked={isLinked} disabled={blocked && !isLinked}
+                            onChange={(ev) => {
+                              if (ev.target.checked && !outdoorEntries.some((entry) => entry.id === e.id)) {
+                                setOutdoorEntries((prev) => [{ ...e }, ...prev]);
+                              }
+                              toggleEntryLink(e.id, ev.target.checked);
+                            }} />
+                          <span style={{ minWidth: 86, color: '#3c4043', fontWeight: 600 }}>{e.target_date}</span>
+                          <span style={{ minWidth: 38, color: purposeColor, fontWeight: 600 }}>{e.activity_type}</span>
+                          <span style={{ minWidth: 84, color: '#5f6368' }}>{e.time_from}{e.time_to ? `~${e.time_to}` : ''}</span>
+                          <span style={{ flex: 1, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {e.case_no || ''} {e.property_type || ''} {e.place || e.client || e.activity_subtype || ''}
+                          </span>
+                          <span style={{ maxWidth: 210, color: e.eligible && !e.linked_to_other_doc ? '#188038' : '#9aa0a6', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {reason}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

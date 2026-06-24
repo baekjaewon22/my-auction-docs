@@ -193,14 +193,71 @@ function leaveDisplayFields(data: any) {
 /**
  * leave_requests 이력 기반으로 사용 시간 합계 산출 (사용자 타입 인자 받음)
  */
-async function sumApprovedLeave(db: D1Database, userId: string, userType: 'monthly' | 'annual'): Promise<{ used_days: number; monthly_used: number; used_hours: number; monthly_used_hours: number }> {
+type LeaveCycle = { start: string; end: string };
+
+function todayKstDateOnly(): string {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function dateStringFromParts(year: number, month: number, day: number): string {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.toISOString().slice(0, 10);
+}
+
+function addYearsDateString(dateStr: string, years: number): string {
+  const [year, month, day] = dateStr.slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return '';
+  return dateStringFromParts(year + years, month, day);
+}
+
+function addDaysDateString(dateStr: string, days: number): string {
+  const [year, month, day] = dateStr.slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return '';
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+  return date.toISOString().slice(0, 10);
+}
+
+function getCurrentLeaveCycle(hireDate: string, userType: 'monthly' | 'annual'): LeaveCycle | null {
+  const normalizedHireDate = (hireDate || '').slice(0, 10);
+  if (!normalizedHireDate) return null;
+
+  if (userType === 'monthly') {
+    const start = normalizedHireDate < MONTHLY_BASE_DATE ? MONTHLY_BASE_DATE : normalizedHireDate;
+    const firstAnniversary = addYearsDateString(normalizedHireDate, 1);
+    return {
+      start,
+      end: firstAnniversary ? addDaysDateString(firstAnniversary, -1) : todayKstDateOnly(),
+    };
+  }
+
+  const today = todayKstDateOnly();
+  const [todayYearText] = today.split('-');
+  const [, hireMonthText, hireDayText] = normalizedHireDate.split('-');
+  const todayYear = Number(todayYearText);
+  if (!todayYear || !hireMonthText || !hireDayText) return null;
+
+  let start = `${todayYear}-${hireMonthText}-${hireDayText}`;
+  if (start > today) start = `${todayYear - 1}-${hireMonthText}-${hireDayText}`;
+  const nextStart = addYearsDateString(start, 1);
+  return {
+    start,
+    end: nextStart ? addDaysDateString(nextStart, -1) : today,
+  };
+}
+
+async function sumApprovedLeave(db: D1Database, userId: string, userType: 'monthly' | 'annual', cycle?: LeaveCycle | null): Promise<{ used_days: number; monthly_used: number; used_hours: number; monthly_used_hours: number }> {
+  const cycleStart = cycle?.start || null;
+  const cycleEnd = cycle?.end || null;
+
   const result = await db.prepare(`
     SELECT leave_type,
       COALESCE(SUM(CASE WHEN leave_type = '시간차' THEN hours ELSE days * ? END), 0) as total_hours
     FROM leave_requests
     WHERE user_id = ? AND status = 'approved' AND leave_type != '특별휴가'
+      AND (? IS NULL OR start_date >= ?)
+      AND (? IS NULL OR start_date <= ?)
     GROUP BY leave_type
-  `).bind(HOURS_PER_DAY, userId).all<{ leave_type: string; total_hours: number }>();
+  `).bind(HOURS_PER_DAY, userId, cycleStart, cycleStart, cycleEnd, cycleEnd).all<{ leave_type: string; total_hours: number }>();
 
   let usedHours = 0;
   let monthlyUsedHours = 0;
@@ -227,8 +284,11 @@ async function recalcUserLeave(db: D1Database, userId: string): Promise<{ used_d
   const al = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(userId).first<{ leave_type: string }>();
   if (!al) return null;
   const userType = (al.leave_type as 'monthly' | 'annual') || 'annual';
+  const userInfo = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(userId).first<{ hire_date: string; created_at: string }>();
+  const hireDate = userInfo?.hire_date || (userInfo?.created_at || '').slice(0, 10);
+  const cycle = getCurrentLeaveCycle(hireDate, userType);
 
-  const sum = await sumApprovedLeave(db, userId, userType);
+  const sum = await sumApprovedLeave(db, userId, userType, cycle);
   await db.prepare("UPDATE annual_leave SET used_days = ?, monthly_used = ?, updated_at = datetime('now') WHERE user_id = ?")
     .bind(sum.used_days, sum.monthly_used, userId).run();
 
@@ -245,9 +305,10 @@ export async function reinitUserLeave(db: D1Database, userId: string): Promise<{
   if (!userInfo) return null;
   const hireDate = userInfo.hire_date || (userInfo.created_at || '').slice(0, 10);
   const ent = calculateLeaveEntitlement(hireDate);
+  const cycle = getCurrentLeaveCycle(hireDate, ent.type);
 
   const before = await db.prepare('SELECT total_days, used_days, monthly_days, monthly_used, leave_type FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
-  const sum = await sumApprovedLeave(db, userId, ent.type);
+  const sum = await sumApprovedLeave(db, userId, ent.type, cycle);
 
   if (before) {
     await db.prepare(`UPDATE annual_leave SET
@@ -269,6 +330,8 @@ export async function reinitUserLeave(db: D1Database, userId: string): Promise<{
     monthly_used: sum.monthly_used,
     leave_type: ent.type,
     hire_date: hireDate,
+    leave_cycle_start: cycle?.start || '',
+    leave_cycle_end: cycle?.end || '',
   };
   return { before, after };
 }
@@ -939,6 +1002,7 @@ leave.get('/refund/:userId', requireRole('master', 'ceo', 'admin', 'accountant',
     }
   }
 
+  await reinitUserLeave(db, userId);
   const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
   const accounting = await db.prepare('SELECT salary FROM user_accounting WHERE user_id = ?').bind(userId).first<any>();
   const userInfo = await db.prepare('SELECT name, hire_date, created_at FROM users WHERE id = ?').bind(userId).first<any>();
@@ -1002,22 +1066,9 @@ leave.put('/hire-date/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 
   await db.prepare("UPDATE users SET hire_date = ?, updated_at = datetime('now') WHERE id = ?")
     .bind(hire_date, userId).run();
 
-  // 입사일 기준으로 연차 자동 재계산
   const entitlement = calculateLeaveEntitlement(hire_date);
-  const existing = await db.prepare('SELECT id FROM annual_leave WHERE user_id = ?').bind(userId).first();
-
-  if (existing) {
-    await db.prepare(`UPDATE annual_leave SET total_days = ?, monthly_days = ?,
-      leave_type = ?, updated_at = datetime('now') WHERE user_id = ?`)
-      .bind(entitlement.totalAnnual, entitlement.totalMonthly, entitlement.type, userId).run();
-  } else {
-    await db.prepare(`INSERT INTO annual_leave
-      (id, user_id, total_days, used_days, monthly_days, monthly_used, leave_type)
-      VALUES (?, ?, ?, 0, ?, 0, ?)`)
-      .bind(crypto.randomUUID(), userId, entitlement.totalAnnual, entitlement.totalMonthly, entitlement.type).run();
-  }
-
-  return c.json({ success: true, entitlement });
+  const reinitialized = await reinitUserLeave(db, userId);
+  return c.json({ success: true, entitlement, leave: reinitialized?.after || null });
 });
 
 // ───── 휴가 신청 삭제 (관리자/회계) ─────

@@ -80,6 +80,7 @@ export default function Journal() {
   const today = getToday();
   const tomorrow = getTomorrow();
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref';
+  const canSwitchBranches = isCeoPlus || user?.role === 'admin';
   const canDelegateJournal = isCeoPlus || user?.role === 'admin';
 
   // 현재 탭에서 보여줄 날짜
@@ -124,7 +125,7 @@ export default function Journal() {
     });
   if (branches.length === 0 && members.length > 0) branches.push('');
 
-  const currentBranch = isCeoPlus ? branches[activeBranch] : (normalizeBranchName(user?.branch) || user?.branch || '');
+  const currentBranch = canSwitchBranches ? branches[activeBranch] : (normalizeBranchName(user?.branch) || user?.branch || '');
   const HIDDEN_DEPTS = ['명도팀', '지원팀'];
   const getAssignableMembers = (branch: string) => members.filter((m) =>
     (sameBranchName(m.branch, branch) || (!branch && !m.branch))
@@ -227,7 +228,7 @@ export default function Journal() {
     <div className="page">
       <div className="page-header">
         <h2><CalendarDays size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} />컨설턴트 일지</h2>
-        {isCeoPlus && branches.length > 1 && tab !== 'history' && (
+        {canSwitchBranches && branches.length > 1 && tab !== 'history' && (
           <div className="journal-branch-header">
             <button className="journal-slide-btn" onClick={() => setActiveBranch((p) => (p - 1 + branches.length) % branches.length)}>
               <ChevronLeft size={20} />
@@ -301,7 +302,7 @@ export default function Journal() {
         <div className="page-loading">로딩중...</div>
       ) : tab === 'history' ? (
         <div className="journal-history">
-          {isCeoPlus && branches.length > 1 && (
+          {canSwitchBranches && branches.length > 1 && (
             <div className="journal-branch-header" style={{ marginBottom: 12 }}>
               <button className="journal-slide-btn" onClick={() => setHistoryBranch((p) => (p - 1 + branches.length) % branches.length)}>
                 <ChevronLeft size={20} />
@@ -329,7 +330,7 @@ export default function Journal() {
             </div>
             <div style={{ display: 'flex', gap: 4 }}>
               {(() => {
-                const hBranch = isCeoPlus && branches.length > 1 ? branches[historyBranch] : (normalizeBranchName(user?.branch) || user?.branch || '');
+                const hBranch = canSwitchBranches && branches.length > 1 ? branches[historyBranch] : (normalizeBranchName(user?.branch) || user?.branch || '');
                 const HIDDEN_DEPTS = ['명도팀', '지원팀'];
                 const depts = [...new Set(
                   members.filter(m => sameBranchName(m.branch, hBranch) && m.department && !HIDDEN_DEPTS.includes(m.department)).map(m => m.department)
@@ -364,7 +365,7 @@ export default function Journal() {
           </div>
 
           {(() => {
-            const hBranch = isCeoPlus && branches.length > 1 ? branches[historyBranch] : (normalizeBranchName(user?.branch) || user?.branch || '');
+            const hBranch = canSwitchBranches && branches.length > 1 ? branches[historyBranch] : (normalizeBranchName(user?.branch) || user?.branch || '');
             const canSeeAll = user?.role === 'master';
             let deptMembers = members.filter(m => sameBranchName(m.branch, hBranch) && (historyDept === '' || m.department === historyDept) && m.role !== 'resigned');
 
@@ -477,7 +478,7 @@ export default function Journal() {
         </div>
       ) : (
         /* Today / Tomorrow / Calendar view */
-        isCeoPlus && branches.length > 1 ? (
+        canSwitchBranches && branches.length > 1 ? (
           renderBranchView(currentBranch)
         ) : (
           branches.map((b) => renderBranchView(b))
