@@ -70,11 +70,15 @@ export default function ArchivePage() {
     }
   }, [driveModalOpen]);
   const [driveStatus, setDriveStatus] = useState<{ last_backup_at: string | null; pending_count: number; connected: boolean } | null>(null);
+  const [driveStatusCheckedAt, setDriveStatusCheckedAt] = useState(0);
 
   useEffect(() => {
     if (!canDrive) return;
     api.drive.settings()
-      .then(s => setDriveStatus({ last_backup_at: s.last_backup_at, pending_count: s.pending_count, connected: !!s.settings?.connected_email }))
+      .then(s => {
+        setDriveStatus({ last_backup_at: s.last_backup_at, pending_count: s.pending_count, connected: !!s.settings?.connected_email });
+        setDriveStatusCheckedAt(Date.now());
+      })
       .catch(() => { /* ignore */ });
   }, [canDrive, driveModalOpen]);
   const canFilterAll = isCeoPlus || isAdmin || isAccountant;
@@ -187,7 +191,7 @@ export default function ArchivePage() {
           <Archive size={24} style={{ verticalAlign: 'middle' }} /> 문서 보관함
           {canDrive && (() => {
             const ds = driveStatus;
-            const stale = ds?.last_backup_at && (Date.now() - new Date(ds.last_backup_at).getTime() > 7 * 86400 * 1000);
+            const stale = ds?.last_backup_at && driveStatusCheckedAt > 0 && (driveStatusCheckedAt - new Date(ds.last_backup_at).getTime() > 7 * 86400 * 1000);
             const connected = !!ds?.connected;
             const pending = ds?.pending_count || 0;
             const color = !ds ? '#9aa0a6' : !connected ? '#9aa0a6' : (pending > 0 || stale) ? '#e65100' : '#188038';
