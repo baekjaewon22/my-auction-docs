@@ -138,6 +138,18 @@ export default function Layout() {
         <Link to="/rooms" className={`nav-item ${isActive('/rooms') ? 'active' : ''}`} title="회의실 예약" onClick={() => setMobileOpen(false)}>
           <DoorOpen size={18} /> {!collapsed && '회의실 예약'}
         </Link>
+        <div className="nav-divider" />
+        {!collapsed && <span className="nav-label">자료 생성</span>}
+        {!isFreelancer && (
+          <Link to="/briefing-materials" className={`nav-item ${isActive('/briefing-materials') ? 'active' : ''}`} title="브리핑자료" onClick={() => setMobileOpen(false)}>
+            <FileText size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>브리핑자료</span>}
+          </Link>
+        )}
+        {!isFreelancer && (
+          <Link to="/rights-analysis-guarantee" className={`nav-item ${isActive('/rights-analysis-guarantee') ? 'active' : ''}`} title="권리분석 보증서" onClick={() => setMobileOpen(false)}>
+            <FileSignature size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>권리분석 보증서</span>}
+          </Link>
+        )}
         {canViewContractTracker && (
           <Link to="/contract-tracker" className={`nav-item ${isActive('/contract-tracker') ? 'active' : ''}`} title="컨설턴트 계약관리" onClick={() => setMobileOpen(false)}>
             <FileSignature size={18} /> {!collapsed && '컨설턴트 계약관리'}

@@ -53,6 +53,8 @@ import ContractTracker from './pages/ContractTracker';
 import LinkReview from './pages/LinkReview';
 import Print from './pages/Print';
 import FreelancerBidHistory from './pages/FreelancerBidHistory';
+import BriefingMaterials from './pages/BriefingMaterials';
+import RightsAnalysisGuarantee from './pages/RightsAnalysisGuarantee';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -594,6 +596,22 @@ export default function App() {
             element={
               <PrivateRoute>
                 <RoomReservation />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="briefing-materials"
+            element={
+              <PrivateRoute>
+                <BriefingMaterials />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="rights-analysis-guarantee"
+            element={
+              <PrivateRoute>
+                <RightsAnalysisGuarantee />
               </PrivateRoute>
             }
           />
