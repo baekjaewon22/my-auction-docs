@@ -475,6 +475,31 @@ export default function Sales() {
   const handleAdd = async () => {
     if (!formClientName) { alert('계약자명을 입력하세요.'); return; }
     if (!fromMoneyDisplay(formAmount) || Number(fromMoneyDisplay(formAmount)) <= 0) { alert('금액을 입력하세요.'); return; }
+    const rawAmount = Number(fromMoneyDisplay(formAmount)) || 0;
+    try {
+      const dupRes = await api.sales.duplicateByClientAmount({ client_name: formClientName, amount: rawAmount });
+      const duplicates = dupRes.duplicates || [];
+      if (duplicates.length > 0) {
+        const detail = duplicates.slice(0, 5).map((d, i) =>
+          `${i + 1}. ${d.contract_date || '-'} / ${d.type || '-'} / ${d.user_name || '-'} / ${d.branch || '-'} / ${Number(d.amount || 0).toLocaleString()}원`
+        ).join('\n');
+        if (!confirm(
+          `동일한 계약자명과 금액의 기존 매출이 있습니다.\n\n` +
+          `계약자명: ${formClientName}\n금액: ${rawAmount.toLocaleString()}원\n\n` +
+          `${detail}\n\n` +
+          `낙찰 자동 반영 또는 기존 등록 건일 수 있습니다.\n그래도 중복으로 등록하시겠습니까?`
+        )) return;
+      }
+    } catch {
+      const localDup = records.find(r =>
+        (r.client_name || '').trim().replace(/\s+/g, '').toLowerCase() === formClientName.trim().replace(/\s+/g, '').toLowerCase() &&
+        Number(r.amount || 0) === rawAmount &&
+        r.status !== 'refunded'
+      );
+      if (localDup) {
+        if (!confirm(`동일한 계약자명과 금액의 기존 매출이 있습니다.\n\n계약자명: ${formClientName}\n금액: ${rawAmount.toLocaleString()}원\n기존: ${localDup.contract_date || '-'} / ${localDup.type || '-'}\n\n그래도 중복으로 등록하시겠습니까?`)) return;
+      }
+    }
     // [6-1] 계약 타입이면 감정가%/낙찰가% 및 전화번호 필수
     if (formType === '계약') {
       if (!formAppraisalRate || !formWinningRate) { alert('감정가 %와 낙찰가 %를 모두 입력하세요.'); return; }
@@ -511,7 +536,6 @@ export default function Sales() {
       }
     }
     try {
-      const rawAmount = Number(fromMoneyDisplay(formAmount)) || 0;
       const proxyCost = formType === '매수신청대리' ? (Number(fromMoneyDisplay(formProxyCost)) || 0) : 0;
       const proxySupply = Math.round(rawAmount / 1.1);
       const proxyPayrollAmount = proxySupply - proxyCost;
@@ -1604,40 +1628,42 @@ export default function Sales() {
             </div>
           )}
 
-          {/* 결제방식 / 지출증빙 */}
-          <div style={{ marginTop: 14, padding: 16, background: '#f0f4ff', borderRadius: 8, border: '1px solid #c8d6e5' }}>
-            <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: 10, color: '#3c4043' }}>결제 정보</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-              <div>
-                <label className="form-label">결제방식</label>
-                <select className="form-input" value={formPaymentType} onChange={(e) => setFormPaymentType(e.target.value as any)} style={{ width: '100%' }}>
-                  <option value="이체">이체</option>
-                  <option value="카드">카드</option>
-                </select>
-              </div>
-              {formPaymentType === '이체' && (
+          {/* 결제방식 / 지출증빙 — 총무급 이상 전용 */}
+          {canApproveAccounting && (
+            <div style={{ marginTop: 14, padding: 16, background: '#f0f4ff', borderRadius: 8, border: '1px solid #c8d6e5' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: 10, color: '#3c4043' }}>결제 정보</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
                 <div>
-                  <label className="form-label">지출증빙</label>
-                  <select className="form-input" value={formReceiptType} onChange={(e) => setFormReceiptType(e.target.value as any)} style={{ width: '100%' }}>
-                    <option value="">선택</option>
-                    <option value="현금영수증">현금영수증</option>
-                    <option value="세금계산서">세금계산서</option>
+                  <label className="form-label">결제방식</label>
+                  <select className="form-input" value={formPaymentType} onChange={(e) => setFormPaymentType(e.target.value as any)} style={{ width: '100%' }}>
+                    <option value="이체">이체</option>
+                    <option value="카드">카드</option>
                   </select>
                 </div>
-              )}
-              {formPaymentType === '이체' && formReceiptType === '현금영수증' && (
-                <div>
-                  <label className="form-label">현금영수증 전화번호</label>
-                  <input className="form-input" value={formReceiptPhone} onChange={(e) => setFormReceiptPhone(e.target.value)} style={{ width: '100%' }} placeholder="010-0000-0000" />
+                {formPaymentType === '이체' && (
+                  <div>
+                    <label className="form-label">지출증빙</label>
+                    <select className="form-input" value={formReceiptType} onChange={(e) => setFormReceiptType(e.target.value as any)} style={{ width: '100%' }}>
+                      <option value="">선택</option>
+                      <option value="현금영수증">현금영수증</option>
+                      <option value="세금계산서">세금계산서</option>
+                    </select>
+                  </div>
+                )}
+                {formPaymentType === '이체' && formReceiptType === '현금영수증' && (
+                  <div>
+                    <label className="form-label">현금영수증 전화번호</label>
+                    <input className="form-input" value={formReceiptPhone} onChange={(e) => setFormReceiptPhone(e.target.value)} style={{ width: '100%' }} placeholder="010-0000-0000" />
+                  </div>
+                )}
+              </div>
+              {formPaymentType === '이체' && formReceiptType === '세금계산서' && (
+                <div style={{ marginTop: 10, padding: '8px 12px', background: '#fff3e0', borderRadius: 6, fontSize: '0.78rem', color: '#e65100', border: '1px solid #ffcc80' }}>
+                  총무담당자님에게 카카오톡으로 세금계산서를 발송해주세요.
                 </div>
               )}
             </div>
-            {formPaymentType === '이체' && formReceiptType === '세금계산서' && (
-              <div style={{ marginTop: 10, padding: '8px 12px', background: '#fff3e0', borderRadius: 6, fontSize: '0.78rem', color: '#e65100', border: '1px solid #ffcc80' }}>
-                총무담당자님에게 카카오톡으로 세금계산서를 발송해주세요.
-              </div>
-            )}
-          </div>
+          )}
 
           <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
             <button className="btn btn-primary" onClick={handleAdd}>등록</button>
@@ -2289,10 +2315,10 @@ export default function Sales() {
                 {detailRecord.deposit_date && (
                   <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>결제일</span><div style={{ color: '#188038' }}>{detailRecord.deposit_date}</div></div>
                 )}
-                {(detailRecord.payment_type || canApproveAccounting || isMaster) && (
+                {(detailRecord.payment_type || canApproveAccounting) && (
                   <div>
                     <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>결제방식 {!detailRecord.payment_type && <span style={{ color: '#d93025', fontSize: '0.68rem' }}>(미입력)</span>}</span>
-                    {(isMaster || canApproveAccounting) ? (
+                    {canApproveAccounting ? (
                       <select className="form-input" defaultValue={detailRecord.payment_type || ''} style={{ width: '100%', fontSize: '0.9rem', fontWeight: 600, marginTop: 2 }}
                         onChange={async (e) => {
                           if (!e.target.value) return;

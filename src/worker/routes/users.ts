@@ -14,6 +14,15 @@ async function ensureUsersResignedAtColumn(db: D1Database): Promise<void> {
   if (!names.has('resigned_at')) {
     await db.prepare('ALTER TABLE users ADD COLUMN resigned_at TEXT').run();
   }
+  if (!names.has('myauction_id')) {
+    await db.prepare("ALTER TABLE users ADD COLUMN myauction_id TEXT NOT NULL DEFAULT ''").run();
+  }
+  if (!names.has('myauction_pw')) {
+    await db.prepare("ALTER TABLE users ADD COLUMN myauction_pw TEXT NOT NULL DEFAULT ''").run();
+  }
+  if (!names.has('report_permission')) {
+    await db.prepare("ALTER TABLE users ADD COLUMN report_permission TEXT NOT NULL DEFAULT 'basic'").run();
+  }
 }
 
 // GET /api/users
@@ -22,7 +31,14 @@ users.get('/', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_a
   const db = c.env.DB;
   await ensureUsersResignedAtColumn(db);
 
-  let query = 'SELECT id, email, name, phone, role, team_id, branch, department, position_title, card_number, hire_date, login_type, approved, resigned_at, created_at, updated_at FROM users WHERE approved = 1';
+  let query = `
+    SELECT id, email, name, phone, role, team_id, branch, department, position_title,
+      card_number, hire_date, login_type, approved, resigned_at, created_at, updated_at,
+      COALESCE(myauction_id, '') AS myauction_id,
+      CASE WHEN COALESCE(myauction_id, '') != '' AND COALESCE(myauction_pw, '') != '' THEN 1 ELSE 0 END AS has_myauction_credentials,
+      COALESCE(report_permission, 'basic') AS report_permission
+    FROM users WHERE approved = 1
+  `;
   const params: string[] = [];
 
   if (user.role === 'accountant' || user.role === 'accountant_asst') {
@@ -341,15 +357,26 @@ users.put('/:id', async (c) => {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
-  const { phone, branch, department, position_title, password, api_key } = await c.req.json<{
-    phone?: string; branch?: string; department?: string; position_title?: string; password?: string; api_key?: string;
+  await ensureUsersResignedAtColumn(db);
+
+  const { name, phone, branch, department, position_title, password, api_key, myauction_id, myauction_pw, report_permission } = await c.req.json<{
+    name?: string;
+    phone?: string;
+    branch?: string;
+    department?: string;
+    position_title?: string;
+    password?: string;
+    api_key?: string;
+    myauction_id?: string;
+    myauction_pw?: string;
+    report_permission?: 'basic' | 'special';
   }>();
   const existing = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<User>();
   if (!existing) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
   // admin의 지사/부서/보직 변경은 대표(ceo/master)만 가능
   if (currentUser.role === 'accountant' && currentUser.sub !== id) {
-    if (phone !== undefined || branch !== undefined || department !== undefined || password !== undefined || api_key !== undefined) {
+    if (name !== undefined || phone !== undefined || branch !== undefined || department !== undefined || password !== undefined || api_key !== undefined || myauction_id !== undefined || myauction_pw !== undefined || report_permission !== undefined) {
       return c.json({ error: '총무담당은 보직만 변경할 수 있습니다.' }, 403);
     }
     if (position_title === undefined) {
@@ -369,11 +396,49 @@ users.put('/:id', async (c) => {
     }
   }
 
+  const touchesAuctionSettings = myauction_id !== undefined || myauction_pw !== undefined;
+  if (touchesAuctionSettings) {
+    const canEditAuctionSettings = currentUser.sub === id || ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser.role);
+    if (!canEditAuctionSettings) return c.json({ error: '마이옥션 계정 수정 권한이 없습니다.' }, 403);
+    if (currentUser.role === 'admin' && currentUser.sub !== id && !sameBranchName(existing.branch, currentUser.branch)) {
+      return c.json({ error: '본인 지사 사용자만 수정할 수 있습니다.' }, 403);
+    }
+  }
+
+  if (report_permission !== undefined) {
+    if (currentUser.role !== 'master') {
+      return c.json({ error: '자료 생성 권한 부여는 마스터만 가능합니다.' }, 403);
+    }
+    if (!['basic', 'special'].includes(report_permission)) {
+      return c.json({ error: '유효하지 않은 자료 생성 권한입니다.' }, 400);
+    }
+  }
+
   const newHash = password ? await hashPassword(password) : existing.password_hash;
+  const nextName = name !== undefined ? String(name || '').trim() : existing.name;
+  if (!nextName) return c.json({ error: '이름을 입력하세요.' }, 400);
+  const nextMyauctionId = myauction_id !== undefined ? String(myauction_id || '').trim() : String((existing as any).myauction_id || '');
+  const nextMyauctionPw = myauction_pw !== undefined ? String(myauction_pw || '') : String((existing as any).myauction_pw || '');
+  const nextReportPermission = report_permission !== undefined ? report_permission : String((existing as any).report_permission || 'basic');
 
   await db.prepare(
-    "UPDATE users SET phone = ?, branch = ?, department = ?, position_title = ?, password_hash = ?, api_key = ?, updated_at = datetime('now') WHERE id = ?"
-  ).bind(phone ?? existing.phone, branch !== undefined ? normalizeBranchName(branch) : existing.branch, department ?? existing.department, position_title ?? existing.position_title, newHash, api_key ?? (existing as any).api_key ?? '', id).run();
+    `UPDATE users
+     SET name = ?, phone = ?, branch = ?, department = ?, position_title = ?, password_hash = ?, api_key = ?,
+         myauction_id = ?, myauction_pw = ?, report_permission = ?, updated_at = datetime('now')
+     WHERE id = ?`
+  ).bind(
+    nextName,
+    phone ?? existing.phone,
+    branch !== undefined ? normalizeBranchName(branch) : existing.branch,
+    department ?? existing.department,
+    position_title ?? existing.position_title,
+    newHash,
+    api_key ?? (existing as any).api_key ?? '',
+    nextMyauctionId,
+    nextMyauctionPw,
+    nextReportPermission,
+    id,
+  ).run();
 
   return c.json({ success: true });
 });

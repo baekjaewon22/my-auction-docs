@@ -446,6 +446,44 @@ journal.get('/dismissed-alerts', async (c) => {
   return c.json({ keys: (result.results || []).map((r: any) => r.alert_key) });
 });
 
+function filterDuplicateActivityRows(
+  rows: any[],
+  options: {
+    isTopRole: boolean;
+    isManager: boolean;
+    canSeeIfInvolved: boolean;
+    userId: string;
+    branch: string;
+    department: string;
+  },
+) {
+  let results = rows;
+  const involvedOnly = !options.isTopRole && !options.isManager && options.canSeeIfInvolved;
+
+  if (involvedOnly) {
+    results = results.filter((r: any) => {
+      const ids = (r.user_ids || '').split(',');
+      return ids.includes(options.userId);
+    });
+  }
+
+  if (options.isManager) {
+    results = results.filter((r: any) => {
+      const ids = (r.user_ids || '').split(',');
+      if (ids.includes(options.userId)) return true;
+      const branches = (r.branch || '').split(',').map((b: string) => b.trim());
+      const depts = (r.user_departments || '').split(',').map((d: string) => d.trim());
+      return branches.some((b: string) => sameBranchName(b, options.branch)) && depts.includes(options.department);
+    });
+  }
+
+  if (!options.isTopRole && !options.isManager && !options.canSeeIfInvolved) {
+    results = [];
+  }
+
+  return results;
+}
+
 // GET /api/journal/duplicate-inspections — 중복 임장 사건번호+법원 조회
 // 열람 권한:
 //   - master/ceo/cc_ref/admin/director: 전체 열람 가능
@@ -463,15 +501,15 @@ journal.get('/duplicate-inspections', async (c) => {
 
   const isTopRole = ['master', 'ceo', 'cc_ref', 'admin', 'director'].includes(user.role);
   const isManager = user.role === 'manager';
-  const isMember = user.role === 'member';
+  const canSeeIfInvolved = ['member', 'manager', 'accountant', 'accountant_asst', 'support'].includes(user.role);
 
   // 알림 종료 조건:
-  //   1) 같은 사건번호+법원+지사로 '입찰' 일지가 등록됨 → 알림 제외
-  //   2) 첫 임장 등록일 기준 1개월(30일) 경과 → 알림 제외
+  //   1) 첫 임장 등록일 기준 1개월(30일) 경과 → 알림 제외
+  // 입찰 등록 여부와 무관하게 동일 사건 임장은 계속 알려야 한다.
   let query = `
     SELECT j.activity_subtype as case_no,
            json_extract(j.data, '$.court') as court,
-           j.branch,
+           GROUP_CONCAT(DISTINCT j.branch) as branch,
            GROUP_CONCAT(DISTINCT u.name) as user_names,
            GROUP_CONCAT(DISTINCT j.user_id) as user_ids,
            GROUP_CONCAT(DISTINCT u.department) as user_departments,
@@ -483,31 +521,11 @@ journal.get('/duplicate-inspections', async (c) => {
     WHERE j.activity_type = '임장'
       AND j.activity_subtype != ''
       AND COALESCE(json_extract(j.data, '$.companion'), 0) != 1
-      AND NOT EXISTS (
-        SELECT 1 FROM journal_entries jb
-        WHERE jb.activity_type = '입찰'
-          AND jb.activity_subtype = j.activity_subtype
-          AND json_extract(jb.data, '$.court') = json_extract(j.data, '$.court')
-          AND jb.branch = j.branch
-      )
   `;
   const params: string[] = [];
 
-  // 권한별 지사/팀 필터
-  // - 상위자(master/ceo/cc_ref/admin/director): 기본 전체 지사 (항상 전부 노출)
-  // - 일반 사용자: 본인 지사 고정
-  if (!isTopRole) {
-    query += ' AND j.branch = ?';
-    params.push(branch);
-  }
-  // 상위자는 별도 지사 필터 없음 (전체 노출)
-
-  // 팀원/팀장은 관련 건만 볼 수 있게 후처리 필터링용 변수 (GROUP BY 결과 이후 필터)
-  const memberOnlyMine = isMember;
-  const managerOnlyMyTeam = isManager;
-
   query += `
-    GROUP BY j.activity_subtype, json_extract(j.data, '$.court'), j.branch
+    GROUP BY j.activity_subtype, json_extract(j.data, '$.court')
     HAVING COUNT(DISTINCT j.user_id) > 1
        AND MIN(j.target_date) >= date('now', '-30 days')
     ORDER BY MAX(j.target_date) DESC
@@ -517,24 +535,14 @@ journal.get('/duplicate-inspections', async (c) => {
     ? await db.prepare(query).bind(...params).all()
     : await db.prepare(query).all();
 
-  let results = rows.results || [];
-
-  // 팀원: 본인이 관련된 중복건만
-  if (memberOnlyMine) {
-    results = results.filter((r: any) => {
-      const ids = (r.user_ids || '').split(',');
-      return ids.includes(user.sub);
-    });
-  }
-
-  // 팀장: 본인 지사+부서에 속한 팀원이 관련된 중복건만
-  if (managerOnlyMyTeam) {
-    results = results.filter((r: any) => {
-      // 해당 중복건 관련자의 department 중 본인 부서가 있는지
-      const depts = (r.user_departments || '').split(',').map((d: string) => d.trim());
-      return sameBranchName(r.branch, branch) && depts.includes(department);
-    });
-  }
+  const results = filterDuplicateActivityRows(rows.results || [], {
+    isTopRole,
+    isManager,
+    canSeeIfInvolved,
+    userId: user.sub,
+    branch,
+    department,
+  });
 
   return c.json({ duplicates: results });
 });

@@ -592,6 +592,30 @@ sales.post('/', async (c) => {
   return c.json({ success: true, id });
 });
 
+// GET /api/sales/duplicate-check — 계약자명+금액 기준 중복 매출 확인
+sales.get('/duplicate-check', async (c) => {
+  const db = c.env.DB;
+  const clientName = (c.req.query('client_name') || '').trim();
+  const amount = Number(c.req.query('amount') || 0);
+  if (!clientName || amount <= 0) return c.json({ duplicates: [] });
+
+  const normalizedClient = clientName.replace(/\s+/g, '').toLowerCase();
+  const rows = await db.prepare(`
+    SELECT sr.id, sr.type, sr.client_name, sr.amount, sr.contract_date, sr.status,
+           sr.branch, u.name as user_name
+    FROM sales_records sr
+    LEFT JOIN users u ON u.id = sr.user_id
+    WHERE LOWER(REPLACE(TRIM(sr.client_name), ' ', '')) = ?
+      AND CAST(sr.amount AS INTEGER) = ?
+      AND COALESCE(sr.status, '') != 'refunded'
+      AND COALESCE(sr.direction, 'income') != 'expense'
+    ORDER BY sr.contract_date DESC, sr.created_at DESC
+    LIMIT 10
+  `).bind(normalizedClient, amount).all();
+
+  return c.json({ duplicates: rows.results || [] });
+});
+
 // PUT /api/sales/:id — 매출 내역 수정 (본인 건, pending 상태만)
 sales.put('/:id', async (c) => {
   const id = c.req.param('id');
@@ -1170,7 +1194,14 @@ sales.get('/manager-performance', async (c) => {
   const ids = members.map((m: any) => m.id);
   const placeholders = ids.map(() => '?').join(',');
   const salesResult = await db.prepare(`
-    SELECT sr.user_id, substr(sr.contract_date, 1, 7) as month, SUM(sr.amount) as amount
+    SELECT sr.user_id, substr(sr.contract_date, 1, 7) as month,
+      SUM(
+        CASE
+          WHEN sr.type = '매수신청대리'
+            THEN MAX(ROUND(sr.amount / 1.1) - COALESCE(sr.proxy_cost, 0), 0)
+          ELSE sr.amount
+        END
+      ) as amount
     FROM sales_records sr
     WHERE sr.status IN ('confirmed', 'card_pending')
       AND sr.direction != 'expense'

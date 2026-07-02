@@ -201,3 +201,24 @@ worker-configuration.d.ts
 
 ### Local import artifacts ###
 tmp-expense-classification/
+
+### Auction report automation reference/runtime artifacts ###
+auction-report-web/
+auction-report-web/.venv/
+auction-report-web/backend/bin/
+auction-report-web/backend/capture/
+auction-report-web/backend/download_pdf/
+auction-report-web/backend/logs/
+auction-report-web/backend/output/
+auction-report-web/backend/selenium_profile/
+auction-report-web/frontend/node_modules/
+auction-report-web/frontend/dist/
+automation-service/backend/.venv/
+automation-service/backend/bin/
+automation-service/backend/capture/
+automation-service/backend/download_pdf/
+automation-service/backend/logs/
+automation-service/backend/output/
+automation-service/backend/selenium_profile/
+automation-service/**/__pycache__/
+automation-service/**/*.pyc

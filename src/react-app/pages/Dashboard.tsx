@@ -9,6 +9,8 @@ import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 import { sameBranchName } from '../lib/branchAliases';
 
+const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
+
 const statusConfig: Record<string, { label: string; className: string; icon: typeof FileText }> = {
   draft: { label: '작성중', className: 'status-draft', icon: FilePlus },
   submitted: { label: '제출', className: 'status-submitted', icon: FileText },
@@ -110,7 +112,7 @@ function FreelancerDashboard() {
               {todayNews.slice(0, 1).map((note: any) => {
                 const preview = dashboardNewsPreview(note.content || '');
                 return (
-                  <Link key={note.id} to="/admin-notes?section=article_news" className="dashboard-today-news-item">
+                  <Link key={note.id} to={`/admin-notes?section=article_news&note=${note.id}`} className="dashboard-today-news-item">
                     <div className="dashboard-today-news-title">{note.title}</div>
                     {preview && <div className="dashboard-today-news-preview">{preview.length > 72 ? preview.slice(0, 72) + '...' : preview}</div>}
                     <div className="dashboard-today-news-date">{dashboardNewsDate(note.updated_at || note.created_at)}</div>
@@ -182,7 +184,7 @@ export default function Dashboard() {
   const [contractAlerts, setContractAlerts] = useState<SalesRecord[]>([]);
   const [myMissingDocs, setMyMissingDocs] = useState<SalesRecord[]>([]);
   const [dupInspections, setDupInspections] = useState<{ case_no: string; court: string; user_names: string; user_count: number; first_date: string; last_date: string; branch?: string }[]>([]);
-  const [dupAllBranches, setDupAllBranches] = useState(false);
+  const dupAllBranches = true;
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [pendingSalesBranch, setPendingSalesBranch] = useState('');
   const [accountantLeaves, setAccountantLeaves] = useState<any[]>([]);
@@ -194,7 +196,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '');
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
-  const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
+  const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '')
+    || ACCOUNTING_ALERT_EXTRA_USER_IDS.includes(user?.id || '');
   const isMaster = user?.role === 'master';
   const canDismissScheduleGapAlerts = ['master', 'admin'].includes(user?.role || '');
 
@@ -561,7 +564,7 @@ export default function Dashboard() {
           {todayNews.slice(0, 1).map((note: any) => {
             const preview = newsPreview(note.content || '');
             return (
-              <Link key={note.id} to="/admin-notes?section=article_news" className="dashboard-today-news-item">
+              <Link key={note.id} to={`/admin-notes?section=article_news&note=${note.id}`} className="dashboard-today-news-item">
                 <div className="dashboard-today-news-title">{note.title}</div>
                 {preview && <div className="dashboard-today-news-preview">{preview.length > 72 ? preview.slice(0, 72) + '...' : preview}</div>}
                 <div className="dashboard-today-news-date">{newsDate(note.updated_at || note.created_at)}</div>
@@ -980,12 +983,7 @@ export default function Dashboard() {
             <MapPin size={18} color="#7b1fa2" /> 동일 사건 임장 알림
             <span style={{ background: '#7b1fa2', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{dupInspections.length}건</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 'auto' }}>
-              <span style={{ fontSize: '0.68rem', color: !dupAllBranches ? '#7b1fa2' : '#9aa0a6', fontWeight: !dupAllBranches ? 600 : 400 }}>내 지사</span>
-              <div onClick={() => setDupAllBranches(!dupAllBranches)}
-                style={{ width: 32, height: 18, borderRadius: 9, background: dupAllBranches ? '#7b1fa2' : '#dadce0', cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}>
-                <div style={{ width: 14, height: 14, borderRadius: 7, background: '#fff', position: 'absolute', top: 2, left: dupAllBranches ? 16 : 2, transition: 'left 0.2s', boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }} />
-              </div>
-              <span style={{ fontSize: '0.68rem', color: dupAllBranches ? '#7b1fa2' : '#9aa0a6', fontWeight: dupAllBranches ? 600 : 400 }}>전 지사</span>
+              <span style={{ fontSize: '0.68rem', color: '#7b1fa2', fontWeight: 700 }}>전 지사 중복 기준</span>
               <MasterCloseBtn alertType="dup_inspection" keys={dupInspections.map(d => `dup_${d.case_no}_${d.court}_${d.branch || ''}`)} onClose={() => setDupInspections([])} />
             </div>
           </h3>

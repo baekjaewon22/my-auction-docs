@@ -19,17 +19,36 @@ const FORM_LEAVE_TYPES: { value: FormLeaveType; label: string; desc: string; col
 ];
 
 // 특별휴가 세부 유형
-type SpecialLeaveSubtype = '특별유급휴가' | '여름휴가' | '기타';
+type SpecialLeaveSubtype = '특별유급휴가' | '여름휴가' | '무급휴가' | '기타';
 
 const SPECIAL_LEAVE_ITEMS = [
   { label: '본인 결혼', days: 5 },
   { label: '부모/배우자부모/배우자/자녀 장례', days: 3 },
   { label: '조부모/배우자조부모/형제자매 장례', days: 1 },
+  { label: '포상휴가', days: 1, noFamilyProof: true },
 ];
 
 // 여름휴가 규정
 const SUMMER_TOTAL_DAYS = 3;       // 연간 총 3일
 const SUMMER_MAX_CHAIN = 2;         // 연차와 이어쓸 수 있는 최대 일수
+
+function kstToday(): Date {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000);
+}
+
+function currentKstYear(): number {
+  return kstToday().getUTCFullYear();
+}
+
+function isSummerVacationWindowOpen(): boolean {
+  const month = kstToday().getUTCMonth() + 1;
+  return month >= 7 && month <= 8;
+}
+
+function isJulyOrAugustDate(value: string): boolean {
+  const month = Number(String(value || '').slice(5, 7));
+  return month === 7 || month === 8;
+}
 
 // 타입 색상 매핑 (목록 표시용)
 function getTypeColor(leaveType: string): string {
@@ -130,6 +149,7 @@ export default function Leave() {
   const canViewHourly = ['master', 'ceo', 'admin'].includes(role);
   const canManageAll = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canRequestForOthers = role === 'master';
+  const canManualAdjustLeave = role === 'master';
 
   // 담당자 열람 기능
   const [members, setMembers] = useState<User[]>([]);
@@ -225,10 +245,19 @@ export default function Leave() {
     const requestUserId = canRequestForOthers && formUserId ? formUserId : undefined;
     // 특별휴가만 사유 검증
     if (formType === '특별휴가') {
-      if (specialSubtype === '기타' && !specialEtcReason.trim()) {
-        alert('기타 사유를 입력하세요.'); return;
+      if ((specialSubtype === '기타' || specialSubtype === '무급휴가') && !specialEtcReason.trim()) {
+        alert(`${specialSubtype} 사유를 입력하세요.`); return;
       }
       if (specialSubtype === '여름휴가') {
+        if (!summerVacationOpen) {
+          alert('여름 특별휴가는 매년 7~8월에만 신청할 수 있습니다. 9월부터는 사용이 불가합니다.'); return;
+        }
+        if (summerAlreadyRequested) {
+          alert('여름 특별휴가는 인당 연 1회만 신청할 수 있습니다.'); return;
+        }
+        if (!isJulyOrAugustDate(formStartDate)) {
+          alert('여름 특별휴가 시작일은 7~8월 안에서만 선택할 수 있습니다.'); return;
+        }
         if (summerDays < 1 || summerDays > summerRemaining) {
           alert(`여름휴가 잔여일(${summerRemaining}일)을 초과할 수 없습니다.`); return;
         }
@@ -258,6 +287,10 @@ export default function Leave() {
         summerEnd = new Date(summerStart); summerEnd.setDate(summerStart.getDate() + summerDays - 1);
       }
       const fmt = (d: Date) => d.toISOString().slice(0, 10);
+      const rangeDates = [summerStart, summerEnd, chainStart, chainEnd].filter(Boolean).map(d => fmt(d as Date));
+      if (rangeDates.some(d => !isJulyOrAugustDate(d))) {
+        alert('여름 특별휴가와 연결 연차는 모두 7~8월 안에서만 사용할 수 있습니다.'); return;
+      }
       const annualType = '연차';
       const summerReason = summerChain > 0
         ? `[여름휴가] ${summerDays}일 (${annualType} ${summerChain}일 연결 ${summerChainPos === 'after' ? '뒤' : '앞'})`
@@ -296,7 +329,10 @@ export default function Leave() {
     let reason = '';
     if (formType === '특별휴가') {
       if (specialSubtype === '특별유급휴가') {
-        reason = `[특별유급] ${SPECIAL_LEAVE_ITEMS[specialItem].label} (${SPECIAL_LEAVE_ITEMS[specialItem].days}일) ※ 가족관계증명원 전제`;
+        const item = SPECIAL_LEAVE_ITEMS[specialItem];
+        reason = `[특별유급] ${item.label} (${item.days}일)${item.noFamilyProof ? '' : ' ※ 가족관계증명원 전제'}`;
+      } else if (specialSubtype === '무급휴가') {
+        reason = `[무급] ${specialEtcReason}`;
       } else {
         reason = `[기타] ${specialEtcReason}`;
       }
@@ -323,7 +359,7 @@ export default function Leave() {
         user_id: requestUserId,
         leave_type: apiLeaveType,
         start_date: formStartDate,
-        end_date: formType === '반차' || formType === '시간차' ? formStartDate : formEndDate,
+        end_date: formType === '반차' || formType === '시간차' || (formType === '특별휴가' && specialSubtype === '특별유급휴가' && SPECIAL_LEAVE_ITEMS[specialItem].days === 1) ? formStartDate : formEndDate,
         hours: formType === '시간차' ? formHours : 8,
         half_day_period: formType === '반차' ? halfDayPeriod : '',
         reason,
@@ -369,20 +405,44 @@ export default function Leave() {
     catch (err: any) { alert(err.message); }
   };
 
+  const handleManualAdjustLeave = async (field: 'total' | 'used', deltaDays: number) => {
+    if (!viewUserId || !canManualAdjustLeave) return;
+    const targetName = members.find(m => m.id === viewUserId)?.name || '선택 담당자';
+    const label = field === 'total' ? '총 부여일수' : '사용일수';
+    const sign = deltaDays > 0 ? '+' : '';
+    if (!confirm(`${targetName}의 ${label}를 ${sign}${deltaDays}일 조정하시겠습니까?`)) return;
+    try {
+      const res = await api.leave.adjust(viewUserId, { field, delta_days: deltaDays });
+      if (res.leave) setViewBalance(res.leave);
+      await Promise.all([loadViewUser(viewUserId), load()]);
+    } catch (err: any) {
+      alert(err.message || '연차 조정에 실패했습니다.');
+    }
+  };
+
   // 여름휴가 — 올해 사용량 집계 (pending + approved)
   const summerSourceRequests = canRequestForOthers && formUserId ? formUserRequests : requests;
+  const summerVacationOpen = isSummerVacationWindowOpen();
+  const summerYear = currentKstYear();
+  const summerActiveStatuses = ['pending', 'approved', 'cancel_requested'];
+  const summerAlreadyRequested = summerSourceRequests.some(r =>
+    r.leave_type === '특별휴가'
+    && summerActiveStatuses.includes(r.status)
+    && (r.reason || '').includes('[여름휴가]')
+    && r.start_date >= `${summerYear}-01-01` && r.start_date <= `${summerYear}-12-31`
+  );
   const summerUsed = (() => {
-    const yr = new Date().getFullYear();
     return summerSourceRequests
-      .filter(r => r.leave_type === '특별휴가' && ['pending', 'approved'].includes(r.status)
+      .filter(r => r.leave_type === '특별휴가' && summerActiveStatuses.includes(r.status)
         && (r.reason || '').includes('[여름휴가]')
-        && r.start_date >= `${yr}-01-01` && r.start_date <= `${yr}-12-31`)
+        && r.start_date >= `${summerYear}-01-01` && r.start_date <= `${summerYear}-12-31`)
       .reduce((sum, r) => {
         const m = (r.reason || '').match(/\[여름휴가\].*?(\d+)일/);
         return sum + (m ? Number(m[1]) : Number(r.days || 0));
       }, 0);
   })();
   const summerRemaining = Math.max(0, SUMMER_TOTAL_DAYS - summerUsed);
+  const summerBlocked = !summerVacationOpen || summerAlreadyRequested || summerRemaining === 0;
 
   // 차감시간 미리보기
   const previewHours = (): number => {
@@ -521,6 +581,30 @@ export default function Leave() {
                   <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#5f6368' }}>{viewBalance.hire_date || '-'}</div>
                 </div>
               </div>
+
+              {canManualAdjustLeave && (
+                <div className="card" style={{ padding: 14, marginBottom: 16, border: '1px solid #e8eaed' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
+                    <strong style={{ fontSize: '0.86rem', color: '#202124' }}>마스터 수동 조정</strong>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.76rem', color: '#5f6368' }}>총 부여일수</span>
+                      {[-1, -0.5, 0.5, 1].map(delta => (
+                        <button key={`total-${delta}`} type="button" className="btn btn-sm" onClick={() => handleManualAdjustLeave('total', delta)}>
+                          {delta > 0 ? '+' : ''}{delta}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.76rem', color: '#5f6368' }}>사용일수</span>
+                      {[-1, -0.5, 0.5, 1].map(delta => (
+                        <button key={`used-${delta}`} type="button" className="btn btn-sm" onClick={() => handleManualAdjustLeave('used', delta)}>
+                          {delta > 0 ? '+' : ''}{delta}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* 열람 대상 휴가 내역 */}
               {viewRequests.length > 0 && (
@@ -690,7 +774,7 @@ export default function Leave() {
                 <div style={{ marginBottom: 16 }}>
                   <label className="form-label">구분</label>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-                    {(['특별유급휴가', '여름휴가', '기타'] as SpecialLeaveSubtype[]).map(s => (
+                    {(['특별유급휴가', '여름휴가', '무급휴가', '기타'] as SpecialLeaveSubtype[]).map(s => (
                       <button key={s} type="button" onClick={() => setSpecialSubtype(s)}
                         style={{ padding: '6px 14px', borderRadius: 6, border: specialSubtype === s ? '2px solid #7b1fa2' : '1px solid #dadce0', background: specialSubtype === s ? '#f3e5f5' : '#fff', cursor: 'pointer', fontWeight: specialSubtype === s ? 600 : 400, fontSize: '0.85rem', color: specialSubtype === s ? '#7b1fa2' : '#202124' }}>
                         {s}
@@ -718,10 +802,19 @@ export default function Leave() {
                     <div style={{ background: '#fafafa', padding: 14, borderRadius: 8, border: '1px solid #e8eaed' }}>
                       <div style={{ padding: '8px 12px', borderRadius: 6, background: '#fff3e0', fontSize: '0.8rem', color: '#e65100', marginBottom: 12, lineHeight: 1.5 }}>
                         · 연간 <strong>총 {SUMMER_TOTAL_DAYS}일</strong> · 올해 사용 <strong>{summerUsed}일</strong> · <strong style={{ color: '#188038' }}>잔여 {summerRemaining}일</strong><br/>
-                        · 연차와 이어서 최대 {SUMMER_MAX_CHAIN}일 연결 사용 가능 (연차 잔여에서 차감)
+                        · 한번만 사용 가능하며 연차 {SUMMER_MAX_CHAIN}일까지 추가 가능<br/>
+                        <span style={{ fontSize: '0.74rem', color: '#5f6368' }}>※ 여름 특별휴가는 매년 7~8월에만 신청 및 사용 가능합니다.</span>
                       </div>
 
-                      {summerRemaining === 0 ? (
+                      {summerAlreadyRequested ? (
+                        <div style={{ padding: 12, background: '#fce4ec', color: '#d93025', borderRadius: 6, fontSize: '0.85rem' }}>
+                          올해 여름 특별휴가를 이미 신청 또는 사용했습니다. 인당 연 1회만 사용 가능합니다.
+                        </div>
+                      ) : !summerVacationOpen ? (
+                        <div style={{ padding: 12, background: '#fce4ec', color: '#d93025', borderRadius: 6, fontSize: '0.85rem' }}>
+                          현재는 신청 기간이 아닙니다. 여름 특별휴가는 매년 7~8월에만 신청할 수 있으며 9월부터는 사용이 불가합니다.
+                        </div>
+                      ) : summerRemaining === 0 ? (
                         <div style={{ padding: 12, background: '#fce4ec', color: '#d93025', borderRadius: 6, fontSize: '0.85rem' }}>
                           올해 여름휴가를 모두 사용하셨습니다.
                         </div>
@@ -768,6 +861,16 @@ export default function Leave() {
                           </div>
                         </>
                       )}
+                    </div>
+                  )}
+
+                  {specialSubtype === '무급휴가' && (
+                    <div>
+                      <div style={{ marginBottom: 8, padding: '8px 12px', borderRadius: 6, background: '#fce4ec', fontSize: '0.75rem', color: '#d93025', lineHeight: 1.4 }}>
+                        ※ 무급휴가는 연차에서 차감되지 않으며, 승인 시 급여에서 해당 시간만큼 공제됩니다.
+                      </div>
+                      <label className="form-label">사유</label>
+                      <textarea className="form-input" value={specialEtcReason} onChange={(e) => setSpecialEtcReason(e.target.value)} rows={3} placeholder="무급휴가 사유를 입력하세요" style={{ width: '100%', resize: 'vertical' }} />
                     </div>
                   )}
 
@@ -824,7 +927,8 @@ export default function Leave() {
               {/* 날짜 */}
               {(() => {
                 const isSummer = formType === '특별휴가' && specialSubtype === '여름휴가';
-                const singleDate = formType === '반차' || formType === '시간차' || isSummer;
+                const isOneDaySpecialPaid = formType === '특별휴가' && specialSubtype === '특별유급휴가' && SPECIAL_LEAVE_ITEMS[specialItem].days === 1;
+                const singleDate = formType === '반차' || formType === '시간차' || isSummer || isOneDaySpecialPaid;
                 const label = isSummer ? '시작일 (전체 연속 휴가의 첫날)'
                   : singleDate ? '날짜' : '시작일';
                 return (
@@ -855,7 +959,12 @@ export default function Leave() {
               </div>
 
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-primary" onClick={handleSubmit} disabled={submitting} style={{ flex: 1 }}>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleSubmit}
+                  disabled={submitting || (formType === '특별휴가' && specialSubtype === '여름휴가' && summerBlocked)}
+                  style={{ flex: 1 }}
+                >
                   {submitting ? '제출중...' : '신청하기'}
                 </button>
                 <button className="btn" onClick={() => setShowForm(false)}>취소</button>
@@ -883,7 +992,7 @@ export default function Leave() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                         <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: '0.78rem', fontWeight: 600, background: typeColor + '18', color: typeColor }}>{displayLeaveType(req.leave_type)}</span>
-                        {req.leave_type === '특별휴가' && req.reason?.startsWith('[기타]') && (
+                        {req.leave_type === '특별휴가' && (req.reason?.startsWith('[무급]') || req.reason?.startsWith('[기타]')) && (
                           <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: '0.72rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>무급</span>
                         )}
                         <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
@@ -935,7 +1044,7 @@ export default function Leave() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                         <strong style={{ fontSize: '0.9rem' }}>{req.user_name}</strong>
                         <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: '0.78rem', fontWeight: 600, background: typeColor + '18', color: typeColor }}>{displayLeaveType(req.leave_type)}</span>
-                        {req.leave_type === '특별휴가' && req.reason?.startsWith('[기타]') && (
+                        {req.leave_type === '특별휴가' && (req.reason?.startsWith('[무급]') || req.reason?.startsWith('[기타]')) && (
                           <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: '0.72rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>무급</span>
                         )}
                         <span style={{ fontSize: '0.85rem' }}>

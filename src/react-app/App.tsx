@@ -77,6 +77,14 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function MasterRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuthStore();
+  if (loading) return <div className="page-loading">로딩중...</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role !== 'master') return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
 function TopRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   if (!user || !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) return <Navigate to="/dashboard" replace />;
@@ -602,17 +610,17 @@ export default function App() {
           <Route
             path="briefing-materials"
             element={
-              <PrivateRoute>
+              <MasterRoute>
                 <BriefingMaterials />
-              </PrivateRoute>
+              </MasterRoute>
             }
           />
           <Route
             path="rights-analysis-guarantee"
             element={
-              <PrivateRoute>
+              <MasterRoute>
                 <RightsAnalysisGuarantee />
-              </PrivateRoute>
+              </MasterRoute>
             }
           />
           <Route

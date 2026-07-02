@@ -41,6 +41,10 @@ export default function UserManagement() {
   const [userSearchTerm, setUserSearchTerm] = useState('');
   const [resetPasswordInput, setResetPasswordInput] = useState('');
   const [resettingPassword, setResettingPassword] = useState(false);
+  const [myauctionIdInput, setMyauctionIdInput] = useState('');
+  const [myauctionPwInput, setMyauctionPwInput] = useState('');
+  const [reportPermissionInput, setReportPermissionInput] = useState<'basic' | 'special'>('basic');
+  const [savingAuctionSettings, setSavingAuctionSettings] = useState(false);
 
   // 상세페이지 관련
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -74,6 +78,7 @@ export default function UserManagement() {
   // 입사기준일 편집 가능한 역할
   const canSetHireDate = ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   const canConvertFreelancer = ['master', 'ceo', 'accountant'].includes(currentUser?.role || '');
+  const canGrantReportPermission = currentUser?.role === 'master';
 
   const load = () => {
     setLoading(true);
@@ -159,6 +164,42 @@ export default function UserManagement() {
     catch (err: any) { alert(err.message); }
   };
 
+  const handleAuctionSettingsSave = async () => {
+    if (!selectedUser) return;
+    const myauctionId = myauctionIdInput.trim();
+    const payload: {
+      myauction_id: string;
+      myauction_pw?: string;
+      report_permission?: 'basic' | 'special';
+    } = { myauction_id: myauctionId };
+
+    if (myauctionPwInput.length > 0) {
+      payload.myauction_pw = myauctionPwInput;
+    }
+    if (canGrantReportPermission) {
+      payload.report_permission = reportPermissionInput;
+    }
+
+    setSavingAuctionSettings(true);
+    try {
+      await api.users.update(selectedUser.id, payload);
+      const nextUser = {
+        ...selectedUser,
+        myauction_id: myauctionId,
+        has_myauction_credentials: myauctionId && (myauctionPwInput.length > 0 || selectedUser.has_myauction_credentials) ? 1 : 0,
+        report_permission: canGrantReportPermission ? reportPermissionInput : selectedUser.report_permission,
+      };
+      setSelectedUser(nextUser);
+      setUsers(prev => prev.map(u => u.id === selectedUser.id ? nextUser : u));
+      setMyauctionPwInput('');
+      alert('자료 생성 설정이 저장되었습니다.');
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setSavingAuctionSettings(false);
+    }
+  };
+
   const handlePasswordReset = async () => {
     if (!selectedUser || !isAdminPlus || selectedUser.id === currentUser?.id) return;
     const nextPassword = resetPasswordInput.trim();
@@ -183,6 +224,9 @@ export default function UserManagement() {
   const handleSelectUser = async (u: User) => {
     setSelectedUser(u);
     setResetPasswordInput('');
+    setMyauctionIdInput(u.myauction_id || '');
+    setMyauctionPwInput('');
+    setReportPermissionInput(u.report_permission || 'basic');
     setHireDateInput(u.hire_date || '');
     // 알림톡 설정 로드
     try {
@@ -355,6 +399,7 @@ export default function UserManagement() {
   // 상세 페이지 (사용자 클릭 시)
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   if (selectedUser) {
+    const canEditAuctionSettings = selectedUser.id === currentUser?.id || ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser?.role || '');
     return (
       <div className="page">
         <div className="page-header">
@@ -435,6 +480,65 @@ export default function UserManagement() {
                   {resettingPassword ? '초기화 중...' : '비밀번호 초기화'}
                 </button>
               </div>
+            </div>
+          )}
+        </div>
+
+        {/* 자료 생성 설정 */}
+        <div className="card" style={{ marginBottom: 20, padding: 20 }}>
+          <h3 style={{ marginTop: 0, marginBottom: 16, fontSize: '1rem', color: '#1a1a2e' }}>자료 생성 설정</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>마이옥션 아이디</label>
+              <input
+                className="form-input"
+                value={myauctionIdInput}
+                onChange={(e) => setMyauctionIdInput(e.target.value)}
+                disabled={!canEditAuctionSettings}
+                placeholder="마이옥션 아이디"
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>마이옥션 비밀번호</label>
+              <input
+                type="password"
+                className="form-input"
+                value={myauctionPwInput}
+                onChange={(e) => setMyauctionPwInput(e.target.value)}
+                disabled={!canEditAuctionSettings}
+                placeholder={selectedUser.has_myauction_credentials ? '저장됨 - 변경 시에만 입력' : '마이옥션 비밀번호'}
+                style={{ width: '100%' }}
+              />
+              <div style={{ fontSize: '0.72rem', color: selectedUser.has_myauction_credentials ? '#188038' : '#9aa0a6', marginTop: 4 }}>
+                {selectedUser.has_myauction_credentials ? '마이옥션 계정이 저장되어 있습니다.' : '저장된 마이옥션 계정이 없습니다.'}
+              </div>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>자료 생성 권한</label>
+              <select
+                className="form-input"
+                value={reportPermissionInput}
+                onChange={(e) => setReportPermissionInput(e.target.value as 'basic' | 'special')}
+                disabled={!canGrantReportPermission}
+                style={{ width: '100%' }}
+              >
+                <option value="basic">basic - 브리핑자료</option>
+                <option value="special">special - 브리핑자료 + 권리분석 보증서</option>
+              </select>
+              <div style={{ fontSize: '0.72rem', color: canGrantReportPermission ? '#5f6368' : '#9aa0a6', marginTop: 4 }}>
+                권한 부여는 현재 마스터만 가능합니다.
+              </div>
+            </div>
+          </div>
+          {(canEditAuctionSettings || canGrantReportPermission) && (
+            <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" onClick={handleAuctionSettingsSave} disabled={savingAuctionSettings}>
+                {savingAuctionSettings ? '저장중...' : '자료 생성 설정 저장'}
+              </button>
+              {!canGrantReportPermission && (
+                <span style={{ fontSize: '0.76rem', color: '#9aa0a6' }}>마이옥션 계정만 저장됩니다.</span>
+              )}
             </div>
           )}
         </div>

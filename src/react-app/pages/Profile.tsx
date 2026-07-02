@@ -20,6 +20,8 @@ export default function Profile() {
   const [branch, setBranch] = useState(user?.branch || '');
   const [department, setDepartment] = useState(user?.department || '');
   const [positionTitle, setPositionTitle] = useState(user?.position_title || '');
+  const [myauctionId, setMyauctionId] = useState(user?.myauction_id || '');
+  const [myauctionPw, setMyauctionPw] = useState('');
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [saving, setSaving] = useState(false);
@@ -94,7 +96,14 @@ export default function Profile() {
     setSaving(true);
     setMessage('');
     try {
-      const data: any = { phone, branch, department, position_title: positionTitle };
+      const data: any = {
+        phone,
+        branch,
+        department,
+        position_title: positionTitle,
+        myauction_id: myauctionId.trim(),
+      };
+      if (myauctionPw) data.myauction_pw = myauctionPw;
       if (password) data.password = password;
       if (apiKey) data.api_key = apiKey;
 
@@ -102,6 +111,7 @@ export default function Profile() {
       await loadUser();
       setPassword('');
       setPasswordConfirm('');
+      setMyauctionPw('');
       setMessage('저장되었습니다.');
     } catch (err: any) {
       setMessage(err.message);
@@ -170,6 +180,25 @@ export default function Profile() {
                 placeholder="미지정"
                 isClearable
                 isDisabled={user.role === 'admin'}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="profile-section">
+          <h3>마이옥션 계정 <span className="profile-editable-tag">수정 가능</span></h3>
+          <div className="form-row">
+            <div className="form-group">
+              <label>마이옥션 아이디</label>
+              <input type="text" value={myauctionId} onChange={(e) => setMyauctionId(e.target.value)} placeholder="마이옥션 아이디" />
+            </div>
+            <div className="form-group">
+              <label>마이옥션 비밀번호</label>
+              <input
+                type="password"
+                value={myauctionPw}
+                onChange={(e) => setMyauctionPw(e.target.value)}
+                placeholder={user.has_myauction_credentials ? '저장됨 - 변경 시에만 입력' : '마이옥션 비밀번호'}
               />
             </div>
           </div>

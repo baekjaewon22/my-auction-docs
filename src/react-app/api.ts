@@ -72,6 +72,20 @@ export const api = {
     me: () => request<{ user: import('./types').User }>('/auth/me'),
   },
 
+  auctionReference: {
+    list: (type: 'rights' | 'legal' | 'checklist') =>
+      request<{ items: Array<{ id: string; type: 'rights' | 'legal' | 'checklist'; category?: string; title: string; content: string; created_at?: string; updated_at?: string }> }>(
+        '/auction-reference/items?type=' + encodeURIComponent(type)
+      ),
+    save: (data: { id?: string; type: 'rights' | 'legal' | 'checklist'; category?: string; title: string; content: string }) =>
+      request<{ success: boolean; item: { id: string; type: 'rights' | 'legal' | 'checklist'; category?: string; title: string; content: string } }>(
+        '/auction-reference/items',
+        { method: 'POST', body: JSON.stringify(data) }
+      ),
+    remove: (id: string) =>
+      request<{ success: boolean }>('/auction-reference/items/' + encodeURIComponent(id), { method: 'DELETE' }),
+  },
+
   users: {
     list: () => request<{ users: import('./types').User[] }>('/users'),
     pending: () => request<{ users: import('./types').User[] }>('/users/pending'),
@@ -83,7 +97,17 @@ export const api = {
       request('/users/' + id + '/role', { method: 'PUT', body: JSON.stringify({ role, branch, department, resigned_at }) }),
     delete: (id: string) =>
       request('/users/' + id, { method: 'DELETE' }),
-    update: (id: string, data: { name?: string; password?: string; phone?: string; branch?: string; department?: string; position_title?: string }) =>
+    update: (id: string, data: {
+      name?: string;
+      password?: string;
+      phone?: string;
+      branch?: string;
+      department?: string;
+      position_title?: string;
+      myauction_id?: string;
+      myauction_pw?: string;
+      report_permission?: 'basic' | 'special';
+    }) =>
       request('/users/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     convertToEmployee: (id: string, data: { salary: number; grade?: string; position_allowance?: number; effective_month?: string }) =>
       request<{ success: boolean; user: import('./types').User; account: import('./types').UserAccounting }>(
@@ -235,6 +259,8 @@ export const api = {
       request('/leave/init', { method: 'POST', body: JSON.stringify({ user_id: userId, total_days: totalDays }) }),
     update: (userId: string, data: { total_days?: number; used_days?: number; monthly_days?: number; monthly_used?: number; leave_type?: string }) =>
       request('/leave/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
+    adjust: (userId: string, data: { field: 'total' | 'used'; delta_days: number }) =>
+      request<{ success: boolean; leave: any }>('/leave/' + userId + '/adjust', { method: 'POST', body: JSON.stringify(data) }),
     // 휴가 신청
     createRequest: (data: { leave_type: string; start_date: string; end_date: string; hours?: number; reason: string; user_id?: string; half_day_period?: '오전' | '오후' | '' }) =>
       request('/leave/request', { method: 'POST', body: JSON.stringify(data) }),
@@ -459,7 +485,13 @@ export const api = {
         }>;
       }>('/sales/missing-documents' + (qs ? '?' + qs : ''));
     },
-    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number }) =>
+    duplicateByClientAmount: (params: { client_name: string; amount: number }) => {
+      const q = new URLSearchParams();
+      q.set('client_name', params.client_name);
+      q.set('amount', String(params.amount || 0));
+      return request<{ duplicates: Array<{ id: string; type: string; client_name: string; amount: number; contract_date: string; status: string; user_name?: string; branch?: string }> }>('/sales/duplicate-check?' + q.toString());
+    },
+    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; deposit_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),

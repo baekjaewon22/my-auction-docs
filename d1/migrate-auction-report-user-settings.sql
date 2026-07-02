@@ -1,0 +1,3 @@
+ALTER TABLE users ADD COLUMN myauction_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN myauction_pw TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN report_permission TEXT NOT NULL DEFAULT 'basic';

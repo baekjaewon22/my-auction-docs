@@ -8,7 +8,7 @@ import { ensureBidAnalysisTable, makeBidDedupeKey, normalizeAmount, normalizeBid
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const ADMIN_ROLES: Role[] = ['master', 'ceo', 'cc_ref', 'admin'];
-const NOTE_CATEGORIES = ['community', 'notice', 'article_news', 'briefing_schedule', 'eviction_quote', 'legal_support'] as const;
+const NOTE_CATEGORIES = ['community', 'notice', 'article_news', 'briefing_schedule', 'resource_library', 'eviction_quote', 'legal_support'] as const;
 type NoteCategory = typeof NOTE_CATEGORIES[number];
 const LEGAL_SUBCATEGORIES = ['auction', 'lawsuit', 'legal_terms', 'fee_calculation'] as const;
 type LegalSubcategory = typeof LEGAL_SUBCATEGORIES[number];
@@ -64,12 +64,26 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
       FOREIGN KEY (note_id) REFERENCES admin_notes(id) ON DELETE CASCADE
     )
   `).run();
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS resource_library_files (
+      id TEXT PRIMARY KEY,
+      note_id TEXT NOT NULL,
+      object_key TEXT NOT NULL UNIQUE,
+      file_name TEXT NOT NULL,
+      file_type TEXT DEFAULT '',
+      file_size INTEGER DEFAULT 0,
+      uploaded_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now', '+9 hours')),
+      FOREIGN KEY (note_id) REFERENCES admin_notes(id) ON DELETE CASCADE
+    )
+  `).run();
   await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_note_view_logs_daily ON admin_note_view_logs(note_id, viewer_id, viewed_date)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_category ON admin_notes(category)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_legal_subcategory ON admin_notes(legal_subcategory)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_journal_entry ON admin_notes(journal_entry_id)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_attachments_note ON admin_note_attachments(note_id)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_view_logs_note ON admin_note_view_logs(note_id)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_resource_library_files_note ON resource_library_files(note_id)').run();
   await ensureArticlePdfTable(db);
 }
 
@@ -159,6 +173,38 @@ function normalizeArticleDate(raw: unknown): string | null {
 
 function pdfContentDisposition(fileName: string): string {
   return `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
+
+function attachmentContentDisposition(fileName: string): string {
+  return `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
+
+function safeResourceFileName(name: string): string {
+  return String(name || 'download')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160) || 'download';
+}
+
+function resourceObjectKey(noteId: string, fileId: string, fileName: string): string {
+  return `resource-library/${noteId}/${fileId}-${safeResourceFileName(fileName)}`;
+}
+
+function dataUrlToArrayBuffer(dataUrl: string): { buffer: ArrayBuffer; contentType: string } | null {
+  const match = String(dataUrl || '').match(/^data:([^;,]*)(;base64)?,(.*)$/s);
+  if (!match) return null;
+  const contentType = match[1] || 'application/octet-stream';
+  const isBase64 = !!match[2];
+  const payload = match[3] || '';
+  if (isBase64) {
+    const binary = atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return { buffer: bytes.buffer, contentType };
+  }
+  const text = decodeURIComponent(payload);
+  return { buffer: new TextEncoder().encode(text).buffer, contentType };
 }
 
 async function resolveArticleApiAuthor(db: D1Database, user: any) {
@@ -481,7 +527,7 @@ adminNotes.get('/', async (c) => {
     notes = await db.prepare(
       `SELECT n.*, u.position_title as author_position,
          (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = n.id) as comment_count,
-         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL)) as attachment_count
+         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL) + (SELECT COUNT(*) FROM resource_library_files rf WHERE rf.note_id = n.id)) as attachment_count
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
        WHERE COALESCE(n.category, 'community') = ?
@@ -494,7 +540,7 @@ adminNotes.get('/', async (c) => {
     notes = await db.prepare(
       `SELECT n.*, u.position_title as author_position,
          (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = n.id) as comment_count,
-         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL)) as attachment_count
+         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL) + (SELECT COUNT(*) FROM resource_library_files rf WHERE rf.note_id = n.id)) as attachment_count
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
        WHERE COALESCE(n.category, 'community') = ?
@@ -734,6 +780,39 @@ adminNotes.get('/articles/:articleId/download', async (c) => {
       'Content-Type': 'application/pdf',
       'Content-Length': String(object.size),
       'Content-Disposition': pdfContentDisposition(row.file_name),
+      'Cache-Control': 'private, max-age=300',
+    },
+  });
+});
+
+// GET /api/admin-notes/resource-library/:fileId/download - 자료실 파일 다운로드
+adminNotes.get('/resource-library/:fileId/download', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  await ensureAdminNoteExtensions(db);
+  if (!c.env.ARTICLE_BUCKET) return c.json({ error: 'ARTICLE_BUCKET R2 바인딩이 설정되지 않았습니다.' }, 500);
+
+  const fileId = c.req.param('fileId');
+  const row = await db.prepare(`
+    SELECT rf.*, n.author_id, n.visibility, n.author_branch, n.author_department, n.category
+    FROM resource_library_files rf
+    JOIN admin_notes n ON n.id = rf.note_id
+    WHERE rf.id = ?
+  `).bind(fileId).first<any>();
+  if (!row) return c.json({ error: '자료 파일을 찾을 수 없습니다.' }, 404);
+
+  const viewerInfo = await db.prepare('SELECT role, branch, department FROM users WHERE id = ?').bind(user.sub).first<{ role: string; branch: string; department: string }>();
+  const role = viewerInfo?.role || user.role;
+  if (!canReadNote(row, user, viewerInfo, role)) return c.json({ error: '열람 권한이 없습니다.' }, 403);
+
+  const object = await c.env.ARTICLE_BUCKET.get(row.object_key);
+  if (!object) return c.json({ error: 'R2 객체를 찾을 수 없습니다.' }, 404);
+
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': row.file_type || object.httpMetadata?.contentType || 'application/octet-stream',
+      'Content-Length': String(object.size),
+      'Content-Disposition': attachmentContentDisposition(row.file_name),
       'Cache-Control': 'private, max-age=300',
     },
   });
@@ -1097,6 +1176,12 @@ adminNotes.get('/:id', async (c) => {
      WHERE note_id = ? AND deleted_at IS NULL
      ORDER BY created_at ASC`
   ).bind(id).all<any>();
+  const resourceFiles = await db.prepare(
+    `SELECT id, note_id, file_name, file_type, file_size, created_at
+     FROM resource_library_files
+     WHERE note_id = ?
+     ORDER BY created_at ASC`
+  ).bind(id).all<any>();
 
   const maskedNote = maskNote({ ...note }, role);
   const maskedComments = (comments.results || []).map((cm: any) => maskComment({ ...cm }, role));
@@ -1115,8 +1200,19 @@ adminNotes.get('/:id', async (c) => {
     expires_at: file.expires_at,
     created_at: file.created_at,
   }));
+  const resourceAttachments = (resourceFiles.results || []).map((file: any) => ({
+    id: file.id,
+    note_id: file.note_id,
+    file_name: file.file_name,
+    file_type: file.file_type || 'application/octet-stream',
+    file_size: file.file_size || 0,
+    file_data: '',
+    download_url: `/api/admin-notes/resource-library/${file.id}/download`,
+    storage: 'r2',
+    created_at: file.created_at,
+  }));
 
-  return c.json({ note: maskedNote, comments: maskedComments, attachments: [...(attachments.results || []), ...r2Attachments] });
+  return c.json({ note: maskedNote, comments: maskedComments, attachments: [...(attachments.results || []), ...r2Attachments, ...resourceAttachments] });
 });
 
 // POST /api/admin-notes - 생성
@@ -1133,6 +1229,13 @@ adminNotes.post('/', async (c) => {
   const legalSubcategory = category === 'legal_support' ? normalizeLegalSubcategory(legal_subcategory) : null;
   const legalAuctionCaseNumber = no_case_number ? '사건번호없음' : String(case_number || '').trim().replace(/\s+/g, '');
   if (category !== 'briefing_schedule' && (!title?.trim() || !content?.trim())) return c.json({ error: '제목과 내용을 입력하세요.' }, 400);
+  const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5) : [];
+  if (category === 'resource_library' && safeAttachments.length === 0) {
+    return c.json({ error: '자료실은 다운로드할 첨부파일을 1개 이상 등록하세요.' }, 400);
+  }
+  if (category === 'resource_library' && !c.env.ARTICLE_BUCKET) {
+    return c.json({ error: 'ARTICLE_BUCKET R2 바인딩이 설정되지 않았습니다.' }, 500);
+  }
   if (category === 'eviction_quote' && (!court?.trim() || !case_number?.trim())) {
     return c.json({ error: '법원과 사건번호를 입력하세요.' }, 400);
   }
@@ -1242,20 +1345,44 @@ adminNotes.post('/', async (c) => {
     journalEntryId
   ).run();
 
-  const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5) : [];
   for (const file of safeAttachments) {
     if (!file?.file_name || !file?.file_data) continue;
-    await db.prepare(
-      `INSERT INTO admin_note_attachments (id, note_id, file_name, file_type, file_size, file_data, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})`
-    ).bind(
-      crypto.randomUUID(),
-      id,
-      String(file.file_name).slice(0, 160),
-      String(file.file_type || '').slice(0, 100),
-      Number(file.file_size || 0),
-      String(file.file_data),
-    ).run();
+    const fileName = safeResourceFileName(file.file_name);
+    const fileType = String(file.file_type || '').slice(0, 100) || 'application/octet-stream';
+    if (category === 'resource_library') {
+      if (!c.env.ARTICLE_BUCKET) return c.json({ error: 'ARTICLE_BUCKET R2 바인딩이 설정되지 않았습니다.' }, 500);
+      const parsed = dataUrlToArrayBuffer(String(file.file_data));
+      if (!parsed) return c.json({ error: `${fileName} 파일 데이터를 읽을 수 없습니다.` }, 400);
+      const fileId = crypto.randomUUID();
+      const objectKey = resourceObjectKey(id, fileId, fileName);
+      await c.env.ARTICLE_BUCKET.put(objectKey, parsed.buffer, {
+        httpMetadata: {
+          contentType: fileType || parsed.contentType,
+          contentDisposition: attachmentContentDisposition(fileName),
+        },
+      });
+      try {
+        await db.prepare(
+          `INSERT INTO resource_library_files (id, note_id, object_key, file_name, file_type, file_size, uploaded_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})`
+        ).bind(fileId, id, objectKey, fileName, fileType || parsed.contentType, parsed.buffer.byteLength, user.sub).run();
+      } catch (err) {
+        await c.env.ARTICLE_BUCKET.delete(objectKey).catch(() => undefined);
+        throw err;
+      }
+    } else {
+      await db.prepare(
+        `INSERT INTO admin_note_attachments (id, note_id, file_name, file_type, file_size, file_data, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})`
+      ).bind(
+        crypto.randomUUID(),
+        id,
+        fileName,
+        fileType,
+        Number(file.file_size || 0),
+        String(file.file_data),
+      ).run();
+    }
   }
 
   c.executionCtx.waitUntil(sendCommunityNoteCreatedAlimtalk(
@@ -1352,6 +1479,11 @@ adminNotes.delete('/:id', async (c) => {
       await recheckAlertsAfterEntryDelete(db, entry.user_id, entry.target_date)
         .catch((err) => console.error('[recheckAlerts on briefing schedule delete]', err));
     }
+  }
+  if (note.category === 'resource_library' && c.env.ARTICLE_BUCKET) {
+    const bucket = c.env.ARTICLE_BUCKET;
+    const files = await db.prepare('SELECT object_key FROM resource_library_files WHERE note_id = ?').bind(id).all<{ object_key: string }>();
+    await Promise.all((files.results || []).map(file => bucket.delete(file.object_key).catch(() => undefined)));
   }
   await db.prepare('DELETE FROM admin_notes WHERE id = ?').bind(id).run();
   return c.json({ success: true });

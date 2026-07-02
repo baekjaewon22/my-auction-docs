@@ -1,4 +1,4 @@
-import { useEffect, useState, type ClipboardEvent } from 'react';
+import { useEffect, useRef, useState, type ClipboardEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
@@ -11,9 +11,9 @@ import BidAnalysis from './BidAnalysis';
 import BidMatchCheck from './BidMatchCheck';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
-type NoteCategory = 'community' | 'notice' | 'article_news' | 'briefing_schedule' | 'eviction_quote' | 'legal_support' | 'cooperation';
+type NoteCategory = 'community' | 'notice' | 'article_news' | 'briefing_schedule' | 'resource_library' | 'eviction_quote' | 'legal_support' | 'cooperation';
 type LegalSubcategory = 'auction' | 'lawsuit' | 'legal_terms' | 'fee_calculation';
-type CommunitySection = 'posts' | 'notice' | 'article_news' | 'briefing_schedule';
+type CommunitySection = 'posts' | 'notice' | 'article_news' | 'briefing_schedule' | 'resource_library';
 
 interface Note {
   id: string;
@@ -64,7 +64,13 @@ interface NoteAttachment {
   file_data: string;
   download_url?: string;
   storage?: string;
+  source_name?: string;
+  article_date?: string;
   expires_at?: string;
+}
+
+function isPdfAttachment(file: NoteAttachment) {
+  return file.file_type === 'application/pdf' || /\.pdf$/i.test(file.file_name || '');
 }
 
 const CATEGORIES: Array<{ key: NoteCategory; label: string; icon: typeof StickyNote }> = [
@@ -279,7 +285,9 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   });
   const [communitySection, setCommunitySection] = useState<CommunitySection>(() =>
     isBidHistoryMode ? 'briefing_schedule' :
-    searchParams.get('section') === 'article_news' ? 'article_news' : searchParams.get('section') === 'notice' && !isFreelancer ? 'notice' : 'posts'
+    searchParams.get('section') === 'article_news' ? 'article_news' :
+    searchParams.get('section') === 'resource_library' ? 'resource_library' :
+    searchParams.get('section') === 'notice' && !isFreelancer ? 'notice' : 'posts'
   );
   const [members, setMembers] = useState<Array<{ id: string; name: string; role: string; branch: string; department: string; position_title?: string }>>([]);
 
@@ -296,6 +304,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const [formLegalSubcategory, setFormLegalSubcategory] = useState<LegalSubcategory>('lawsuit');
   const [formLawsuitCostRequested, setFormLawsuitCostRequested] = useState(false);
   const [formAttachments, setFormAttachments] = useState<NoteAttachment[]>([]);
+  const [resourceFileModalOpen, setResourceFileModalOpen] = useState(false);
+  const [resourceDragActive, setResourceDragActive] = useState(false);
   const [formAssigneeId, setFormAssigneeId] = useState('');
   const [formTargetDate, setFormTargetDate] = useState(() => new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10));
   const [formCaseYear, setFormCaseYear] = useState('2026');
@@ -313,6 +323,10 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const [detail, setDetail] = useState<Note | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [attachments, setAttachments] = useState<NoteAttachment[]>([]);
+  const [articlePdfUrl, setArticlePdfUrl] = useState('');
+  const [articlePdfLoading, setArticlePdfLoading] = useState(false);
+  const [articlePdfError, setArticlePdfError] = useState('');
+  const downloadingAttachmentIds = useRef<Set<string>>(new Set());
   const [commentText, setCommentText] = useState('');
   const [commentAnonymous, setCommentAnonymous] = useState(false);
   const [commentLoading, setCommentLoading] = useState(false);
@@ -339,7 +353,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       value: `user:${m.id}`,
       label: `단일 대상 · ${m.name}${m.position_title ? ` · ${m.position_title}` : ''}${m.department ? ` · ${m.department}` : ''}`,
     }));
-  const visibilityOptions = isManager
+  const canShareAll = isManager || (activeCategory === 'community' && communitySection === 'resource_library');
+  const visibilityOptions = canShareAll
     ? [
         { value: 'all', label: '전체 공유' },
         { value: 'branch', label: `지사 (${user?.branch || '소속 지사'})` },
@@ -391,6 +406,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
         ? 'notice'
         : requestedSection === 'article_news'
         ? 'article_news'
+        : requestedSection === 'resource_library'
+        ? 'resource_library'
         : 'posts'
       : 'posts';
     const nextLegalSubcategory = normalizeLegalSubcategory(searchParams.get('section') || undefined);
@@ -482,6 +499,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
 
   const readFiles = async (files: FileList | File[]) => {
     const picked = Array.from(files).slice(0, Math.max(0, 5 - formAttachments.length));
+    if (picked.length === 0) return;
     const converted = await Promise.all(picked.map(file => new Promise<NoteAttachment>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve({
@@ -497,6 +515,12 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     setFormAttachments(prev => [...prev, ...converted].slice(0, 5));
   };
 
+  const handleResourceFiles = async (files: FileList | File[]) => {
+    await readFiles(files);
+    setResourceDragActive(false);
+    setResourceFileModalOpen(false);
+  };
+
   const handlePaste = async (e: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(e.clipboardData.files || []).filter(f => f.type.startsWith('image/'));
     if (files.length > 0) await readFiles(files);
@@ -506,6 +530,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     const isEditing = !!editingId;
     const isBriefingSchedule = activeCategory === 'community' && communitySection === 'briefing_schedule';
     const isNotice = activeCategory === 'community' && communitySection === 'notice';
+    const isResourceLibrary = activeCategory === 'community' && communitySection === 'resource_library';
     const isLegalAuction = activeCategory === 'legal_support' && formLegalSubcategory === 'auction';
     const legalAuctionCaseNo = formCaseNumber.replace(/[^0-9]/g, '');
     const legalAuctionCaseNumber = formNoCaseNumber ? '사건번호없음' : `${formCaseYear}타경${legalAuctionCaseNo}`;
@@ -520,6 +545,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     if (isBriefingSchedule && !formTargetDate) { alert('일정일을 입력하세요.'); return; }
     if (isBriefingSchedule && (!formBriefingCaseNo.trim() || !formCourt || !formClientName.trim())) { alert('사건번호, 법원, 계약자명을 입력하세요.'); return; }
     if (!isBriefingSchedule && !formContent.trim()) { alert('내용을 입력하세요.'); return; }
+    if (!isEditing && isResourceLibrary && formAttachments.length === 0) { alert('자료실은 다운로드할 첨부파일을 1개 이상 등록하세요.'); return; }
     setSubmitting(true);
     try {
       const briefingCaseNumber = `${formCaseYear}타경${formBriefingCaseNo.trim()}`;
@@ -551,10 +577,10 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           pinned: formPinned,
           is_anonymous: activeCategory === 'legal_support' ? formAnonymous : formAnonymous,
           visibility: isNotice ? 'all' : activeCategory === 'community' && !isBriefingSchedule ? formVisibility : 'all',
-          category: isBriefingSchedule ? 'briefing_schedule' : isNotice ? 'notice' : activeCategory,
+          category: isBriefingSchedule ? 'briefing_schedule' : isNotice ? 'notice' : isResourceLibrary ? 'resource_library' : activeCategory,
           legal_subcategory: activeCategory === 'legal_support' ? formLegalSubcategory : undefined,
           lawsuit_cost_requested: activeCategory === 'legal_support' && usesLawsuitCostCheckbox(formLegalSubcategory) ? formLawsuitCostRequested : false,
-          attachments: activeCategory === 'legal_support' ? formAttachments : [],
+          attachments: activeCategory === 'legal_support' || isResourceLibrary ? formAttachments : [],
           assignee_id: isBriefingSchedule ? formAssigneeId : undefined,
           target_date: isBriefingSchedule ? formTargetDate : undefined,
           court: activeCategory === 'eviction_quote' || isBriefingSchedule || isLegalAuction ? formCourt : undefined,
@@ -572,7 +598,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
 
   const resetForm = () => {
     setFormTitle(''); setFormContent(''); setFormPinned(false);
-    setFormAnonymous(false); setFormVisibility(isManager ? 'all' : 'branch');
+    setFormAnonymous(false); setFormVisibility(isManager || (activeCategory === 'community' && communitySection === 'resource_library') ? 'all' : 'branch');
     setFormCourt(COURTS[0]); setFormCaseNumber(''); setFormNoCaseNumber(false); setFormLegalSubcategory(activeLegalSubcategory); setFormLawsuitCostRequested(false); setFormAttachments([]);
     setFormAssigneeId(members[0]?.id || ''); setFormTargetDate(new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10));
     setFormCaseYear('2026'); setFormBriefingCaseNo(''); setFormItemNo(''); setFormClientName(''); setAutofillHint(''); setAutofillMatch(null);
@@ -631,28 +657,79 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   };
 
   const openAttachment = async (file: NoteAttachment) => {
+    if (downloadingAttachmentIds.current.has(file.id)) return;
+    downloadingAttachmentIds.current.add(file.id);
     if (!file.download_url) {
       const link = document.createElement('a');
       link.href = file.file_data;
       link.download = file.file_name;
+      document.body.appendChild(link);
       link.click();
+      link.remove();
+      downloadingAttachmentIds.current.delete(file.id);
       return;
     }
     try {
       const blob = await api.adminNotes.downloadAttachment(file.download_url);
       const url = URL.createObjectURL(blob);
-      const opened = window.open(url, '_blank', 'noopener,noreferrer');
-      if (!opened) {
+      if (isPdfAttachment(file)) {
+        const opened = window.open(url, '_blank', 'noopener,noreferrer');
+        if (!opened) {
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = file.file_name;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+        }
+      } else {
         const link = document.createElement('a');
         link.href = url;
         link.download = file.file_name;
+        document.body.appendChild(link);
         link.click();
+        link.remove();
       }
       window.setTimeout(() => URL.revokeObjectURL(url), 120000);
     } catch (err: any) {
       alert(err.message || '파일을 열 수 없습니다.');
+    } finally {
+      downloadingAttachmentIds.current.delete(file.id);
     }
   };
+
+  const articlePdfAttachment = detail?.category === 'article_news'
+    ? attachments.find(file => file.file_type === 'application/pdf' && file.download_url)
+    : undefined;
+
+  useEffect(() => {
+    let objectUrl = '';
+    let cancelled = false;
+    setArticlePdfUrl('');
+    setArticlePdfError('');
+    if (!articlePdfAttachment?.download_url) {
+      setArticlePdfLoading(false);
+      return;
+    }
+    setArticlePdfLoading(true);
+    api.adminNotes.downloadAttachment(articlePdfAttachment.download_url)
+      .then(blob => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setArticlePdfUrl(objectUrl);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setArticlePdfError(err.message || 'PDF를 불러오지 못했습니다.');
+      })
+      .finally(() => {
+        if (!cancelled) setArticlePdfLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [articlePdfAttachment?.download_url]);
 
   const applyBriefingAutofill = (match: NonNullable<typeof autofillMatch>) => {
     const matchedCase = match.case_number.match(/^(\d{4})타경(.+)$/);
@@ -800,9 +877,48 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           {isLegalAnswerable(detail) && (
             <div className="admin-note-editor-label">질문 내용</div>
           )}
-          <div className={`admin-note-detail-content ${detail.category === 'legal_support' ? 'legal-question-editor' : ''}`}>{detail.content}</div>
+          {detail.category === 'article_news' ? (
+            <div className="article-pdf-post">
+              <div className="article-pdf-toolbar">
+                <div className="article-pdf-meta">
+                  <span>{articlePdfAttachment?.article_date || (detail.created_at || '').slice(0, 10)}</span>
+                  {articlePdfAttachment?.source_name && <span>{articlePdfAttachment.source_name}</span>}
+                  {articlePdfAttachment?.file_name && <span>{articlePdfAttachment.file_name}</span>}
+                </div>
+                {articlePdfAttachment && (
+                  <button type="button" className="btn btn-sm" onClick={() => openAttachment(articlePdfAttachment)}>
+                    <Download size={13} /> 새 창 열람
+                  </button>
+                )}
+              </div>
+              <div className="article-pdf-viewer">
+                {articlePdfLoading && <div className="article-pdf-placeholder">PDF를 불러오는 중...</div>}
+                {!articlePdfLoading && articlePdfError && <div className="article-pdf-placeholder error">{articlePdfError}</div>}
+                {!articlePdfLoading && !articlePdfError && articlePdfUrl && (
+                  <object
+                    key={articlePdfUrl}
+                    title={articlePdfAttachment?.file_name || detail.title}
+                    data={`${articlePdfUrl}#toolbar=1&navpanes=0&view=FitH`}
+                    type="application/pdf"
+                    className="article-pdf-frame"
+                  >
+                    <embed
+                      src={`${articlePdfUrl}#toolbar=1&navpanes=0&view=FitH`}
+                      type="application/pdf"
+                      className="article-pdf-frame"
+                    />
+                  </object>
+                )}
+                {!articlePdfLoading && !articlePdfError && !articlePdfUrl && (
+                  <div className="article-pdf-placeholder">열람할 PDF가 없습니다.</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className={`admin-note-detail-content ${detail.category === 'legal_support' ? 'legal-question-editor' : ''}`}>{detail.content}</div>
+          )}
           {attachments.length > 0 && (
-            <div style={{ marginTop: 16, display: 'grid', gap: 8 }}>
+            <div style={{ marginTop: 16, display: detail.category === 'article_news' ? 'none' : 'grid', gap: 8 }}>
               {attachments.map(file => (
                 <button key={file.id} type="button" onClick={() => openAttachment(file)} className="btn btn-sm" style={{ justifyContent: 'flex-start', width: 'fit-content' }}>
                   <Download size={13} /> {file.file_name}
@@ -874,7 +990,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
         <h2><StickyNote size={20} style={{ marginRight: 6, verticalAlign: 'middle' }} />{isBidHistoryMode ? '경매분석' : '사내 커뮤니티'}</h2>
         {bidHistorySection !== 'bid_analysis' && bidHistorySection !== 'bid_match_check' && activeCategory !== 'cooperation' && !isFeeCalculationTool && canCreateCurrentLegalCategory && !(activeCategory === 'community' && communitySection === 'article_news') && !(activeCategory === 'community' && communitySection === 'briefing_schedule' && !canCreateBriefingSchedule) && !(activeCategory === 'community' && communitySection === 'notice' && !canCreateNotice) && (
           <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); if (showForm) resetForm(); }}>
-            {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> {activeCategory === 'community' && communitySection === 'briefing_schedule' ? (isBidHistoryMode ? '브리핑자료 제출 등록' : '브리핑자료 일정 등록') : activeCategory === 'community' && communitySection === 'notice' ? '공지사항 등록' : '새 게시글'}</>}
+            {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> {activeCategory === 'community' && communitySection === 'briefing_schedule' ? (isBidHistoryMode ? '브리핑자료 제출 등록' : '브리핑자료 일정 등록') : activeCategory === 'community' && communitySection === 'notice' ? '공지사항 등록' : activeCategory === 'community' && communitySection === 'resource_library' ? '자료 업로드' : '새 게시글'}</>}
           </button>
         )}
       </div>
@@ -971,6 +1087,17 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
               <Bell size={14} /> 공지사항
             </button>
           )}
+          <button
+            className={`btn btn-sm ${communitySection === 'resource_library' ? 'btn-primary' : ''}`}
+            onClick={() => {
+              setCommunitySection('resource_library');
+              setDetail(null);
+              resetForm();
+              setSearchParams({ section: 'resource_library' });
+            }}
+          >
+            <Paperclip size={14} /> 자료실
+          </button>
           {communitySection === 'article_news' && (
             <div style={{ flexBasis: '100%', color: '#5f6368', fontSize: '0.82rem', padding: '2px 0 0 2px' }}>
               매일 오전 08:00 업로드 됩니다.
@@ -1008,7 +1135,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
-              placeholder={activeCategory === 'eviction_quote' ? '법원, 사건번호, 내용 검색...' : activeCategory === 'legal_support' ? '궁금한 법률 내용을 검색하세요' : communitySection === 'briefing_schedule' ? '담당자, 사건번호, 계약자명 검색...' : communitySection === 'article_news' ? '뉴스 제목, 내용 검색...' : '제목, 내용, 작성자 검색...'}
+              placeholder={activeCategory === 'eviction_quote' ? '법원, 사건번호, 내용 검색...' : activeCategory === 'legal_support' ? '궁금한 법률 내용을 검색하세요' : communitySection === 'briefing_schedule' ? '담당자, 사건번호, 계약자명 검색...' : communitySection === 'article_news' ? '뉴스 제목, 내용 검색...' : communitySection === 'resource_library' ? '자료명, 설명, 업로더 검색...' : '제목, 내용, 작성자 검색...'}
               style={{ flex: 1, border: 'none', outline: 'none', padding: activeCategory === 'legal_support' ? '12px 18px' : '8px 12px', fontSize: activeCategory === 'legal_support' ? 15 : 13 }}
             />
             <button onClick={load} aria-label="검색" style={{ width: activeCategory === 'legal_support' ? 66 : 44, alignSelf: 'stretch', border: 'none', background: activeCategory === 'legal_support' ? 'var(--primary)' : '#f8f9fa', color: activeCategory === 'legal_support' ? '#fff' : '#5f6368', display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
@@ -1020,7 +1147,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       {!isFeeCalculationTool && showForm && (
         <div className="card" style={{ marginBottom: 20, padding: 20 }}>
           <h3 style={{ margin: '0 0 12px', fontSize: '0.95rem' }}>
-            {editingId ? '게시글 수정' : activeCategory === 'eviction_quote' ? '명도 견적 의뢰' : activeCategory === 'legal_support' ? `${getLegalSubcategoryLabel(formLegalSubcategory)} 작성` : activeCategory === 'community' && communitySection === 'briefing_schedule' ? (isBidHistoryMode ? '브리핑자료 제출 등록' : '브리핑자료 일정 등록') : activeCategory === 'community' && communitySection === 'notice' ? '공지사항 작성' : '새 게시글 작성'}
+            {editingId ? '게시글 수정' : activeCategory === 'eviction_quote' ? '명도 견적 의뢰' : activeCategory === 'legal_support' ? `${getLegalSubcategoryLabel(formLegalSubcategory)} 작성` : activeCategory === 'community' && communitySection === 'briefing_schedule' ? (isBidHistoryMode ? '브리핑자료 제출 등록' : '브리핑자료 일정 등록') : activeCategory === 'community' && communitySection === 'notice' ? '공지사항 작성' : activeCategory === 'community' && communitySection === 'resource_library' ? '자료 업로드' : '새 게시글 작성'}
           </h3>
           {activeCategory === 'community' && communitySection === 'briefing_schedule' ? (
             <div style={{ display: 'grid', gap: 12, marginBottom: 12 }}>
@@ -1137,8 +1264,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                 </div>
               )}
               <div className="form-group" style={{ marginBottom: 12 }}>
-                <label>{activeCategory === 'legal_support' ? (formLegalSubcategory === 'legal_terms' ? '용어 제목 *' : '질문 제목 *') : '제목 *'}</label>
-                <input className="form-input" value={formTitle} onChange={(e) => setFormTitle(e.target.value)} placeholder={activeCategory === 'legal_support' ? (formLegalSubcategory === 'legal_terms' ? '법률용어 제목' : '질문 제목') : '게시글 제목'} style={{ width: '100%' }} />
+                <label>{activeCategory === 'legal_support' ? (formLegalSubcategory === 'legal_terms' ? '용어 제목 *' : '질문 제목 *') : activeCategory === 'community' && communitySection === 'resource_library' ? '자료명 *' : '제목 *'}</label>
+                <input className="form-input" value={formTitle} onChange={(e) => setFormTitle(e.target.value)} placeholder={activeCategory === 'legal_support' ? (formLegalSubcategory === 'legal_terms' ? '법률용어 제목' : '질문 제목') : activeCategory === 'community' && communitySection === 'resource_library' ? '자료명' : '게시글 제목'} style={{ width: '100%' }} />
               </div>
               {activeCategory === 'legal_support' && formLegalSubcategory === 'auction' && (
                 <div className="legal-auction-case-box">
@@ -1182,10 +1309,10 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           )}
           {!(activeCategory === 'community' && communitySection === 'briefing_schedule') && (
           <div className="form-group" style={{ marginBottom: 12 }}>
-            <label>{activeCategory === 'legal_support' ? (formLegalSubcategory === 'legal_terms' ? '설명 내용 *' : '질문 내용 *') : '내용 *'}</label>
+            <label>{activeCategory === 'legal_support' ? (formLegalSubcategory === 'legal_terms' ? '설명 내용 *' : '질문 내용 *') : activeCategory === 'community' && communitySection === 'resource_library' ? '자료 설명 *' : '내용 *'}</label>
             <textarea className="form-input" value={formContent} onChange={(e) => setFormContent(e.target.value)}
-              onPaste={activeCategory === 'legal_support' ? handlePaste : undefined}
-              placeholder={activeCategory === 'eviction_quote' ? '현장 상황, 점유자 정보, 특이사항 등을 입력하세요.' : activeCategory === 'legal_support' && formLegalSubcategory !== 'legal_terms' ? '질문 내용을 입력하세요. 이미지는 붙여넣기로 추가할 수 있습니다.' : activeCategory === 'legal_support' ? '용어 설명, 실무 메모를 입력하세요.' : '게시글 내용을 입력하세요...'}
+              onPaste={activeCategory === 'legal_support' || (activeCategory === 'community' && communitySection === 'resource_library') ? handlePaste : undefined}
+              placeholder={activeCategory === 'eviction_quote' ? '현장 상황, 점유자 정보, 특이사항 등을 입력하세요.' : activeCategory === 'legal_support' && formLegalSubcategory !== 'legal_terms' ? '질문 내용을 입력하세요. 이미지는 붙여넣기로 추가할 수 있습니다.' : activeCategory === 'legal_support' ? '용어 설명, 실무 메모를 입력하세요.' : activeCategory === 'community' && communitySection === 'resource_library' ? '자료 설명, 사용 방법, 참고사항을 입력하세요.' : '게시글 내용을 입력하세요...'}
               rows={6} style={{ width: '100%', resize: 'vertical' }} />
           </div>
           )}
@@ -1195,12 +1322,21 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
               소송비용도 궁금합니다.
             </label>
           )}
-          {activeCategory === 'legal_support' && (
+          {(activeCategory === 'legal_support' || (activeCategory === 'community' && communitySection === 'resource_library')) && (
             <div style={{ marginBottom: 12 }}>
-              <label className="btn btn-sm" style={{ width: 'fit-content' }}>
-                <Paperclip size={13} /> 첨부파일 추가
-                <input type="file" multiple style={{ display: 'none' }} onChange={(e) => { if (e.target.files) readFiles(e.target.files); e.currentTarget.value = ''; }} />
-              </label>
+              {activeCategory === 'community' && communitySection === 'resource_library' ? (
+                <button type="button" className="btn btn-sm" style={{ width: 'fit-content' }} onClick={() => setResourceFileModalOpen(true)}>
+                  <Paperclip size={13} /> 자료 파일 추가
+                </button>
+              ) : (
+                <label className="btn btn-sm" style={{ width: 'fit-content' }}>
+                  <Paperclip size={13} /> 첨부파일 추가
+                  <input type="file" multiple style={{ display: 'none' }} onChange={(e) => { if (e.target.files) readFiles(e.target.files); e.currentTarget.value = ''; }} />
+                </label>
+              )}
+              {activeCategory === 'community' && communitySection === 'resource_library' && formAttachments.length === 0 && (
+                <div style={{ fontSize: '0.76rem', color: '#d93025', marginTop: 6 }}>자료실은 첨부파일 1개 이상이 필요합니다.</div>
+              )}
               {formAttachments.length > 0 && (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
                   {formAttachments.map(file => (
@@ -1211,6 +1347,61 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                   ))}
                 </div>
               )}
+            </div>
+          )}
+          {resourceFileModalOpen && activeCategory === 'community' && communitySection === 'resource_library' && (
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="자료 파일 추가"
+              onClick={() => setResourceFileModalOpen(false)}
+              style={{ position: 'fixed', inset: 0, zIndex: 2000, background: 'rgba(0,0,0,0.38)', display: 'grid', placeItems: 'center', padding: 18 }}
+            >
+              <div
+                className="card"
+                onClick={(e) => e.stopPropagation()}
+                style={{ width: 'min(520px, 100%)', padding: 20, borderRadius: 10, boxShadow: '0 20px 50px rgba(0,0,0,0.25)' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+                  <h3 style={{ margin: 0, fontSize: '1rem', color: '#1a2744' }}>자료 파일 추가</h3>
+                  <button className="btn-icon-sm" type="button" onClick={() => setResourceFileModalOpen(false)} title="닫기"><X size={16} /></button>
+                </div>
+                <label
+                  onDragOver={(e) => { e.preventDefault(); setResourceDragActive(true); }}
+                  onDragEnter={(e) => { e.preventDefault(); setResourceDragActive(true); }}
+                  onDragLeave={(e) => { e.preventDefault(); setResourceDragActive(false); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (e.dataTransfer.files?.length) handleResourceFiles(e.dataTransfer.files);
+                  }}
+                  style={{
+                    display: 'grid',
+                    placeItems: 'center',
+                    gap: 10,
+                    minHeight: 190,
+                    padding: 22,
+                    border: `2px dashed ${resourceDragActive ? '#1a73e8' : '#c7d2e3'}`,
+                    borderRadius: 10,
+                    background: resourceDragActive ? '#eef5ff' : '#f8fbff',
+                    cursor: 'pointer',
+                    textAlign: 'center',
+                  }}
+                >
+                  <Paperclip size={30} color="#1a73e8" />
+                  <strong style={{ color: '#1a2744' }}>파일을 끌어다 놓으세요</strong>
+                  <span style={{ color: '#5f6368', fontSize: '0.82rem' }}>또는 클릭해서 첨부파일을 선택할 수 있습니다.</span>
+                  <span style={{ color: '#9aa0a6', fontSize: '0.74rem' }}>최대 5개까지 등록됩니다.</span>
+                  <input type="file" multiple style={{ display: 'none' }} onChange={(e) => { if (e.target.files) handleResourceFiles(e.target.files); e.currentTarget.value = ''; }} />
+                </label>
+                {formAttachments.length > 0 && (
+                  <div style={{ marginTop: 12, fontSize: '0.78rem', color: '#5f6368' }}>
+                    현재 첨부 {formAttachments.length}개
+                  </div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+                  <button type="button" className="btn" onClick={() => setResourceFileModalOpen(false)}>닫기</button>
+                </div>
+              </div>
             </div>
           )}
           {!editingId && (
@@ -1234,7 +1425,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-primary" onClick={handleCreate} disabled={submitting}>
-              {submitting ? '저장 중...' : editingId ? '수정' : activeCategory === 'community' && communitySection === 'briefing_schedule' ? (isBidHistoryMode ? '브리핑자료 제출 등록' : '일정 등록') : activeCategory === 'community' && communitySection === 'notice' ? '공지 등록' : '등록'}
+              {submitting ? '저장 중...' : editingId ? '수정' : activeCategory === 'community' && communitySection === 'briefing_schedule' ? (isBidHistoryMode ? '브리핑자료 제출 등록' : '일정 등록') : activeCategory === 'community' && communitySection === 'notice' ? '공지 등록' : activeCategory === 'community' && communitySection === 'resource_library' ? '자료 업로드' : '등록'}
             </button>
             <button className="btn" onClick={resetForm}>취소</button>
           </div>
@@ -1255,6 +1446,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                   {note.source_type === 'minutes' && <BookOpen size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
                   {note.category === 'notice' && <Bell size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
                   {note.category === 'article_news' && <Newspaper size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
+                  {note.category === 'resource_library' && <Paperclip size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
                   {note.category === 'eviction_quote' && <Gavel size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
                   {note.category === 'legal_support' && <Scale size={13} style={{ color: '#1a73e8', flexShrink: 0 }} />}
                   {note.category === 'briefing_schedule' && <CalendarDays size={13} style={{ color: '#0d47a1', flexShrink: 0 }} />}

@@ -11,6 +11,7 @@ accounting.use('*', authMiddleware);
 const ACCOUNTING_ROLES = ['master', 'ceo', 'accountant', 'accountant_asst'] as const;
 const PROFIT_LOSS_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const LABOR_COST_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
 
 const CARD_SETTLEMENT_KEYWORDS = [
   '카드', '헥토', '파이낸셜', '나이스', 'nice', '토스', 'toss', '이니시스', 'kg', 'kcp',
@@ -288,6 +289,12 @@ function payrollMoney(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function payrollSettlementMoney(value: number, month: string): number {
+  return /^\d{4}-\d{2}$/.test(month) && month >= '2026-06'
+    ? Math.trunc(Number(value) || 0)
+    : Math.round(Number(value) || 0);
+}
+
 function payrollSaveAdjustmentAmount(rawData: unknown): number {
   if (!rawData) return 0;
   try {
@@ -338,7 +345,7 @@ async function payrollLaborRowsForProfitLoss(db: D1Database, month: string, bran
     seen.add(row.user_id);
     const basePay = Number(row.salary || 0) + Number(row.position_allowance || 0);
     const adjustment = payrollSaveAdjustmentAmount(row.save_data);
-    const amount = Math.round(basePay + adjustment);
+    const amount = payrollSettlementMoney(basePay + adjustment, month);
     if (!amount) return [];
     return [{
       id: `payroll:${month}:${row.user_id}`,
@@ -1770,9 +1777,12 @@ accounting.post('/evaluate', requireRole(...ACCOUNTING_ROLES), async (c) => {
 });
 
 // GET /api/accounting/alerts - 대시보드용 경고 목록 (미달 + 강등 대상)
-accounting.get('/alerts/dashboard', requireRole(...ACCOUNTING_ROLES), async (c) => {
+accounting.get('/alerts/dashboard', async (c) => {
   const db = c.env.DB;
   const viewer = c.get('user');
+  if (![...ACCOUNTING_ROLES].includes(viewer.role as any) && !ACCOUNTING_ALERT_EXTRA_USER_IDS.includes(viewer.sub)) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
+  }
 
   // 현재 기준 평가 기간 계산 (2개월 단위: 1-2월, 3-4월, 5-6월 ...)
   const now = new Date();

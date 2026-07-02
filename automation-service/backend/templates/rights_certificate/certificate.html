@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Malgun Gothic", "맑은 고딕", sans-serif;
+    color: #1f2933;
+    background: #fff;
+    font-size: 12.5px;
+  }
+  .page {
+    width: 210mm;
+    min-height: 297mm;
+    padding: 12mm;
+    page-break-after: always;
+  }
+  .gold-border {
+    min-height: 273mm;
+    border: 6px solid #c8a84b;
+    border-radius: 8px;
+    padding: 10mm 12mm;
+    position: relative;
+    background: linear-gradient(to right, #fffaf0 0%, #fff 8%, #fff 92%, #fffaf0 100%);
+  }
+  .gold-border::before {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    border: 2px solid #e8c96a;
+    border-radius: 5px;
+    pointer-events: none;
+  }
+  h1 {
+    text-align: center;
+    font-size: 31px;
+    letter-spacing: 4px;
+    margin: 0 0 2mm;
+  }
+  .subtitle {
+    text-align: center;
+    color: #777;
+    letter-spacing: 1.5px;
+    margin-bottom: 7mm;
+  }
+  .meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2mm 8mm;
+    margin-bottom: 6mm;
+  }
+  .meta span:first-child { color: #666; }
+  .meta span:last-child { font-weight: 700; }
+  .property-box {
+    border: 1px solid #e2d4a7;
+    background: #fffdf7;
+    padding: 3mm;
+    margin-bottom: 5mm;
+    line-height: 1.7;
+  }
+  .section { margin-bottom: 5mm; }
+  .section h2 {
+    font-size: 15px;
+    margin: 0 0 2mm;
+    padding-bottom: 1mm;
+    border-bottom: 1.5px solid #c8a84b;
+  }
+  p { line-height: 1.8; margin: 0 0 2mm; font-size: 11pt; white-space: pre-line; }
+  ul { margin: 0; padding-left: 16px; }
+  li { line-height: 1.75; margin-bottom: 1mm; font-size: 11pt; }
+  .highlight { color: #c62828; font-weight: 800; }
+  .note {
+    margin-top: 3mm;
+    padding: 3mm;
+    background: #f8fafc;
+    border-left: 3px solid #c8a84b;
+    color: #4b5563;
+    line-height: 1.7;
+  }
+  .footer {
+    text-align: center;
+    margin-top: 6mm;
+  }
+  .company { font-size: 18px; font-weight: 900; letter-spacing: 2px; }
+  .muted { color: #777; font-size: 11px; }
+  .disclaimer {
+    margin-top: 4mm;
+    padding-top: 3mm;
+    border-top: 1px solid #ddd;
+    text-align: center;
+    color: #777;
+    font-size: 10.5px;
+    line-height: 1.6;
+  }
+  .flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3mm;
+    margin: 5mm 0;
+  }
+  .circle {
+    width: 26mm;
+    height: 26mm;
+    border: 2px solid #4a90d9;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-weight: 800;
+    line-height: 1.35;
+  }
+  .arrow { color: #555; font-weight: 800; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="gold-border">
+    <h1>권리분석 보증서</h1>
+    <div class="subtitle">Certificate of Real Estate Auction Rights Analysis</div>
+
+    <div class="meta">
+      <div><span>사건번호: </span><span>{{caseNumber}}</span></div>
+      <div><span>작성자: </span><span>{{authorName}} {{authorTitle}}</span></div>
+      <div><span>법원: </span><span>{{court}}</span></div>
+      <div><span>작성일: </span><span>{{createdDate}}</span></div>
+    </div>
+
+    <div class="property-box">
+      <strong>물건 정보</strong><br>
+      물건종류: {{propertyType}} / 감정가: {{appraisalValue}} / 최저가: {{minBidPrice}} / 매각기일: {{bidDate}}
+    </div>
+
+    <div class="section">
+      <h2>1. 말소기준권리 및 권리분석</h2>
+      <p>{{baseRightDescription}}</p>
+      <p>기준 권리: <span class="highlight">{{baseRightDate}} {{baseRightType}}</span></p>
+    </div>
+
+    <div class="section">
+      <h2>2. 임차권리 인수사항</h2>
+      {{#each tenantAnalyses}}
+      <p>{{this.description}}</p>
+      {{/each}}
+      {{#if noTenants}}
+      <p>조사된 임차인이 없으므로, 낙찰자에게 인수되는 임차권리는 없습니다.</p>
+      {{/if}}
+    </div>
+
+    <div class="section">
+      <h2>3. 경매취하 / 무잉여 가능성</h2>
+      <p>{{surplusDescription}}</p>
+    </div>
+
+    <div class="section">
+      <h2>4. 기타사항</h2>
+      <p>{{specialSummaryText}}</p>
+    </div>
+
+    <div class="section">
+      <h2>담당자 검토 체크리스트</h2>
+      <ul>
+        {{#each reviewItems}}
+        <li>{{this}}</li>
+        {{/each}}
+      </ul>
+    </div>
+
+    <p style="font-weight:700;">
+      본 권리분석의 내용은 감정평가서, 법원현황조사서, 매각물건명세서, 등기부등본, 건축물대장 등의 내용을 참조하여 작성되었습니다.
+    </p>
+    <p>담당자 : {{authorName}} {{authorTitle}} {{authorPhone}}</p>
+
+    <div class="footer">
+      <div class="company">부동산경매 컨설팅 마이옥션</div>
+      <div class="muted">법률자문 : 법률사무소 명승</div>
+      <div class="muted">(주)엘앤씨부동산중개법인</div>
+    </div>
+
+    <div class="disclaimer">
+      ※본 보증서는 의뢰인과 의뢰인의 직계존비속에 한해 유효합니다.<br>
+      ※권리분석 의뢰 후 변경되는 권리에 대한 사항은 고객 요청 시 확인하여 재발급하며 기존 보증서는 효력이 없음을 고지드립니다.
+    </div>
+  </div>
+</div>
+
+<div class="page">
+  <div class="gold-border">
+    <h1 style="font-size:24px; letter-spacing:2px;">낙찰 후 명도절차 안내</h1>
+    <div class="flow">
+      <div class="circle">낙찰</div><div class="arrow">→</div>
+      <div class="circle">매각허가<br>결정</div><div class="arrow">→</div>
+      <div class="circle">매각허가<br>확정</div><div class="arrow">→</div>
+      <div class="circle">잔금납부<br>소유권이전</div><div class="arrow">→</div>
+      <div class="circle">명도<br>강제집행</div>
+    </div>
+
+    <div class="section">
+      <h2>낙찰 이후 절차 안내</h2>
+      <p>낙찰 후 법원은 매각허가결정 여부를 판단하고, 이해관계인의 항고가 없으면 매각허가가 확정됩니다. 이후 잔금납부기일까지 잔금을 납부하면 소유권이전촉탁등기를 통해 부동산을 이전받게 됩니다.</p>
+    </div>
+
+    <div class="section">
+      <p><strong>경매명도</strong>는 점유관계 파악, 배당여부 판단, 점유자 협상, 인도명령신청, 강제집행신청 및 집행 등 다양한 법률절차가 따릅니다.</p>
+      <p><strong>법률사무소 명승 명도상담: <span class="highlight">1877-6542</span></strong></p>
+    </div>
+
+    <div class="footer">
+      <div class="company">부동산경매 컨설팅 마이옥션</div>
+      <div class="muted">법률자문 : 법률사무소 명승</div>
+      <div class="muted">(주)엘앤씨부동산중개법인</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

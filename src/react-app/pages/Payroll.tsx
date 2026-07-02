@@ -7,13 +7,19 @@ import { useBranches } from '../hooks/useBranches';
 import Select from '../components/Select';
 import BusinessIncomeTab from '../components/BusinessIncomeTab';
 import EmployeeBonusTab from '../components/EmployeeBonusTab';
+import EmployeePayrollListTab from '../components/EmployeePayrollListTab';
 import { Receipt, Camera } from 'lucide-react';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
 function truncMoney(n: number): number { return Math.trunc(Number(n) || 0); }
-function vatSupplyAmount(n: number): number { return Math.round((Number(n) || 0) * 10 / 11); }
+function payrollMoney(n: number, month: string): number {
+  return /^\d{4}-\d{2}$/.test(month) && month >= '2026-06'
+    ? truncMoney(n)
+    : Math.round(Number(n) || 0);
+}
+function vatSupplyAmount(n: number, month: string): number { return payrollMoney((Number(n) || 0) * 10 / 11, month); }
 function toMoneyDisplay(val: string): string {
   const num = val.replace(/[^0-9]/g, '');
   return num ? Number(num).toLocaleString('ko-KR') : '';
@@ -22,7 +28,22 @@ function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
 }
 
-type PayrollTab = 'payroll' | 'summary' | 'branch' | 'business_income' | 'employee_bonus';
+function defaultPayrollMonth(): string {
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  let year = kst.getUTCFullYear();
+  let monthIndex = kst.getUTCMonth();
+  const day = kst.getUTCDate();
+  if (day <= 15) {
+    monthIndex -= 1;
+    if (monthIndex < 0) {
+      monthIndex = 11;
+      year -= 1;
+    }
+  }
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+}
+
+type PayrollTab = 'payroll' | 'summary' | 'branch' | 'business_income' | 'employee_bonus' | 'employee_payroll_list';
 
 const PAYROLL_BRANCH_SELECTOR = [
   { label: '의정부본사', value: '의정부본사', meta: '본사 정산' },
@@ -32,6 +53,7 @@ const PAYROLL_BRANCH_SELECTOR = [
   { label: '본사관리', value: '본사관리', meta: '관리 조직' },
   { label: '전체', value: '', meta: '전체 지사' },
 ];
+const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 
 export default function Payroll({ initialTab = 'payroll', requireBranchSelection = false }: { initialTab?: PayrollTab; requireBranchSelection?: boolean }) {
   const { user: currentUser } = useAuthStore();
@@ -39,7 +61,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const { branches: BRANCHES } = useBranches();
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [selectedMonth, setSelectedMonth] = useState(defaultPayrollMonth);
   const [filterBranch, setFilterBranch] = useState('');
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -258,6 +280,9 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
     return resignedMonth && selectedMonth <= resignedMonth;
   });
   const filteredUsers = [...activeUsers, ...resignedUsers];
+  const isAllBranchView = !effectiveFilterBranch;
+  const canViewAllEmployeePayroll = !!currentUser
+    && (['master', 'ceo', 'accountant'].includes(currentUser.role) || PAYROLL_EXTRA_IDS.includes(currentUser.id));
   const userOpts = groupUserOptions(filteredUsers, u => ` (${u.department || ''} · ${u.branch || ''})`);
   const branchOptionValues = Array.from(new Set([
     ...BRANCHES,
@@ -273,12 +298,15 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const extraPayNum = Number(extraPay) || 0;
   const extraDeductionNum = Number(extraDeduction) || 0;
   const unpaidDeduction = s?.unpaid_leave_deduction || 0;
+  const joining = data?.joining_settlement || null;
+  const joiningBaseDeduction = joining?.base_deduction || 0;
   const termination = data?.termination_settlement || null;
   const terminationBaseDeduction = termination?.base_deduction || 0;
   const terminationLeavePayout = termination?.leave_payout || 0;
   const terminationLeaveDeduction = termination?.leave_deduction || 0;
   const basePay = s ? s.salary + s.position_allowance : 0;
-  const afterDeduction = basePay - terminationBaseDeduction - deductionNum - unpaidDeduction - extraDeductionNum - terminationLeaveDeduction;
+  const caseAllowanceIncludedInBonusBasis = s?.bonus_case_allowance_included_in_bonus_basis !== false;
+  const afterDeduction = basePay - joiningBaseDeduction - terminationBaseDeduction - deductionNum - unpaidDeduction - extraDeductionNum - terminationLeaveDeduction;
   const caseAllowanceValue = caseAllowance?.bonus || 0;
   const contractAwardAmount = (data?.is_payout_month && data?.contract_award?.rank) ? (data.contract_award.award || 0) : 0;
   const totalPay = s ? afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount : 0;
@@ -356,6 +384,11 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         <button className={`filter-btn ${tab === 'employee_bonus' ? 'active' : ''}`} onClick={() => setTab('employee_bonus')}>
           정직원 성과금내역
         </button>
+        {isAllBranchView && canViewAllEmployeePayroll && (
+          <button className={`filter-btn ${tab === 'employee_payroll_list' ? 'active' : ''}`} onClick={() => setTab('employee_payroll_list')}>
+            전직원 급여 내역
+          </button>
+        )}
       </div>
 
       {loading && <div className="page-loading">로딩중...</div>}
@@ -480,8 +513,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
                   // 일반 매출 (매수신청대리 제외)
                   const normalRecords = (data.records || []).filter((r: any) => r.type !== '매수신청대리');
-                  const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || vatSupplyAmount(r.amount)), 0);
-                  const normalRefundSupply = (data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + vatSupplyAmount(r.amount), 0);
+                  const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || vatSupplyAmount(r.amount, selectedMonth)), 0);
+                  const normalRefundSupply = (data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + vatSupplyAmount(r.amount, selectedMonth), 0);
                   const netNormalSales = normalSupply - normalRefundSupply;
                   const commissionAmount = truncMoney(netNormalSales * rate / 100);
 
@@ -490,7 +523,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                   // 담당자 지급 = amount/1.1 - cost (원천세는 전체 소득 합산 시 3.3% 적용)
                   const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
                   const proxyIncome = proxyRecords.reduce((sum: number, r: any) => {
-                    const payrollAmount = vatSupplyAmount(r.amount || 0) - (r.proxy_cost || 0);
+                    const payrollAmount = vatSupplyAmount(r.amount || 0, selectedMonth) - (r.proxy_cost || 0);
                     return sum + Math.max(payrollAmount, 0);
                   }, 0);
 
@@ -722,7 +755,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                   <th style={{ width: '22%' }}>고객명 (입금자명)</th>
                   <th style={{ width: '14%' }}>매출항목</th>
                   <th style={{ width: '18%', textAlign: 'right' }}>매출액</th>
-                  <th style={{ width: '16%', textAlign: 'right' }}>공급가액</th>
+                  <th style={{ width: '16%', textAlign: 'right' }}>공급가액/급여반영</th>
                   <th style={{ width: '14%', textAlign: 'right' }}>부가세</th>
                 </tr>
               </thead>
@@ -740,7 +773,14 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                         </td>
                         <td><span className={`payroll-type payroll-type-${r.type}`}>{r.type}</span></td>
                         <td className="num">{fmtWon(r.amount)}</td>
-                        <td className="num sub">{fmtWon(r.supply_amount)}</td>
+                        <td className="num sub">
+                          {fmtWon(r.supply_amount)}
+                          {r.type === '매수신청대리' && Number(r.proxy_cost || 0) > 0 && (
+                            <div style={{ fontSize: '0.68rem', color: '#d93025', fontWeight: 500 }}>
+                              대리비 {fmtWon(r.proxy_cost)} 차감
+                            </div>
+                          )}
+                        </td>
                         <td className="num sub">{fmtWon(r.vat_amount)}</td>
                       </tr>
                     ))}
@@ -820,14 +860,12 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 <span>2개월 매출 합계 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(공급가액)</span></span>
                 <span className="num">{fmtWon(s.bonus_regular_supply || 0)}</span>
               </div>
-              {(s.bonus_case_allowance || 0) > 0 && (
-                <div className="payroll-bonus-row" style={{ background: '#fff8e1', padding: '4px 8px', borderRadius: 4 }}>
-                  <span>＋ 안건 수당 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(부가세 없음)</span></span>
-                  <span className="num" style={{ color: '#e65100', fontWeight: 600 }}>{fmtWon(s.bonus_case_allowance)}</span>
-                </div>
-              )}
               <div className="payroll-bonus-row" style={{ borderTop: '1px solid #e0e0e0', paddingTop: 6 }}>
-                <span>산정 기준 합계 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>(공급가 + 안건 수당)</span></span>
+                <span>
+                  산정 기준 합계 <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>
+                    ({caseAllowanceIncludedInBonusBasis ? '공급가 + 안건 수당' : '공급가액 · 안건 수당 제외'})
+                  </span>
+                </span>
                 <span className="num" style={{ fontWeight: 700 }}>{fmtWon(s.bonus_total_sales || 0)}</span>
               </div>
               <div className="payroll-bonus-row">
@@ -918,6 +956,24 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 <span style={{ fontWeight: 600 }}>기본급+직급수당</span>
                 <span className="num" style={{ fontWeight: 600 }}>{fmtWon(basePay)}</span>
               </div>
+              {joining && (
+                <>
+                  <div className="payroll-bonus-row" style={{ borderTop: '1px solid #e8eaed', background: '#f8fbff' }}>
+                    <span style={{ fontWeight: 600 }}>입사월 정산 ({joining.hire_date})</span>
+                    <span className="num">{joining.worked_days}/{joining.payroll_base_days}일 기준</span>
+                  </div>
+                  <div className="payroll-bonus-row">
+                    <span>입사월 일할 기본급</span>
+                    <span className="num">{fmtWon(joining.prorated_base_pay || 0)}</span>
+                  </div>
+                  {joiningBaseDeduction > 0 && (
+                    <div className="payroll-bonus-row" style={{ color: '#d93025' }}>
+                      <span>입사 일할 공제</span>
+                      <span className="num">-{fmtWon(joiningBaseDeduction)}</span>
+                    </div>
+                  )}
+                </>
+              )}
               {termination && (
                 <>
                   <div className="payroll-bonus-row" style={{ borderTop: '1px solid #e8eaed', background: '#f8fbff' }}>
@@ -1030,8 +1086,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           {data.accounting.pay_type === 'commission' && (() => {
             const rate = data.accounting.commission_rate || 0;
             const normalRecords = (data.records || []).filter((r: any) => r.type !== '매수신청대리');
-            const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || vatSupplyAmount(r.amount)), 0);
-            const normalRefundSupply = (data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + vatSupplyAmount(r.amount), 0);
+            const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || vatSupplyAmount(r.amount, selectedMonth)), 0);
+            const normalRefundSupply = (data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + vatSupplyAmount(r.amount, selectedMonth), 0);
             const netSales = normalSupply - normalRefundSupply;
             const commAmt = truncMoney(netSales * rate / 100);
             const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
@@ -1237,8 +1293,9 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         const mNet = mSales - mRefund;
         const mContracts = s.contract_count;
         const mBonus = s.bonus; // 백엔드에서 짝수월만 계산
+        const mJoiningDeduction = joining?.base_deduction || 0;
         const mTerminationNet = (termination?.leave_payout || 0) - (termination?.leave_deduction || 0) - (termination?.base_deduction || 0);
-        const mTotalPay = s.salary + s.position_allowance + mBonus + mTerminationNet;
+        const mTotalPay = s.salary + s.position_allowance + mBonus + mTerminationNet - mJoiningDeduction;
         const mProfit = mNet - mTotalPay;
         const monthLabel = selectedMonth.replace('-', '년 ') + '월';
         return (
@@ -1269,6 +1326,12 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 <div className="payroll-summary-item"><span>기본급여</span><span className="num">{fmtWon(s.salary)}</span></div>
                 <div className="payroll-summary-item"><span>직급수당</span><span className="num">{fmtWon(s.position_allowance)}</span></div>
                 <div className="payroll-summary-item"><span>성과금{!data.is_payout_month ? ' (홀수월 미지급)' : ''}</span><span className="num">{fmtWon(mBonus)}</span></div>
+                {joining && (
+                  <div className="payroll-summary-item">
+                    <span>입사 일할 공제</span>
+                    <span className="num">-{fmtWon(mJoiningDeduction)}</span>
+                  </div>
+                )}
                 {termination && (
                   <div className="payroll-summary-item">
                     <span>퇴사 정산</span>
@@ -1405,6 +1468,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
       {tab === 'business_income' && <BusinessIncomeTab month={selectedMonth} />}
       {tab === 'employee_bonus' && <EmployeeBonusTab month={selectedMonth} users={filteredUsers} />}
+      {tab === 'employee_payroll_list' && isAllBranchView && canViewAllEmployeePayroll && <EmployeePayrollListTab month={selectedMonth} users={filteredUsers} />}
     </div>
   );
 }

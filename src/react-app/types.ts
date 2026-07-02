@@ -35,6 +35,9 @@ export interface User {
   card_number?: string;
   hire_date?: string;
   resigned_at?: string;
+  myauction_id?: string;
+  has_myauction_credentials?: number;
+  report_permission?: 'basic' | 'special';
   login_type?: 'employee' | 'freelancer';
   created_at?: string;
   updated_at?: string;

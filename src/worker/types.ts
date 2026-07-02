@@ -17,6 +17,10 @@ export interface User {
   position_title: string;
   hire_date: string;
   resigned_at?: string;
+  myauction_id?: string;
+  myauction_pw?: string;
+  has_myauction_credentials?: number;
+  report_permission?: 'basic' | 'special';
   approved: number;
   created_at: string;
   updated_at: string;

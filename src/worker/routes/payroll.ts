@@ -13,8 +13,14 @@ import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotFor
 const CONTRACT_AWARD_TIERS = [300_000, 200_000, 100_000];
 const CONTRACT_AWARD_MIN_COUNT = 10;
 const LEAVE_HOURS_PER_DAY = 8;
+const CASE_ALLOWANCE_EXCLUDED_FROM_BONUS_BASIS_FROM = '2026-06';
+const PAYROLL_TRUNCATE_MONEY_FROM = '2026-06';
 const truncMoney = (value: number): number => Math.trunc(Number(value) || 0);
-const vatSupplyAmount = (amount: number): number => Math.round((Number(amount) || 0) * 10 / 11);
+const shouldTruncatePayrollMoney = (month: string): boolean => /^\d{4}-\d{2}$/.test(month) && month >= PAYROLL_TRUNCATE_MONEY_FROM;
+const payrollMoney = (value: number, month: string): number => (
+  shouldTruncatePayrollMoney(month) ? truncMoney(value) : Math.round(Number(value) || 0)
+);
+const vatSupplyAmount = (amount: number, month: string): number => payrollMoney((Number(amount) || 0) * 10 / 11, month);
 
 function leaveDaysToHours(days: number): number {
   return Math.round((Number(days || 0) * LEAVE_HOURS_PER_DAY) * 1000) / 1000;
@@ -51,7 +57,7 @@ async function buildTerminationSettlement(
   const monthDays = new Date(year, monthNumber, 0).getDate();
   const resignedDay = Math.min(Math.max(Number(resignedDate.slice(8, 10)) || 1, 1), monthDays);
   const basePay = Number(salary || 0) + Number(positionAllowance || 0);
-  const proratedBasePay = Math.round(basePay * resignedDay / monthDays);
+  const proratedBasePay = payrollMoney(basePay * resignedDay / monthDays, month);
   const baseDeduction = Math.max(basePay - proratedBasePay, 0);
 
   try {
@@ -68,7 +74,7 @@ async function buildTerminationSettlement(
     ? leaveDaysToHours(leaveInfo.monthly_days || 0) - leaveDaysToHours(leaveInfo.monthly_used || 0)
     : 0;
   const leaveRemainingHours = Math.round((annualRemainingHours + monthlyRemainingHours) * 1000) / 1000;
-  const leaveAdjustmentAmount = salary > 0 ? Math.round((salary / 209) * leaveRemainingHours) : 0;
+  const leaveAdjustmentAmount = salary > 0 ? payrollMoney((salary / 209) * leaveRemainingHours, month) : 0;
   const leavePayout = Math.max(leaveAdjustmentAmount, 0);
   const leaveDeduction = Math.max(-leaveAdjustmentAmount, 0);
 
@@ -88,6 +94,41 @@ async function buildTerminationSettlement(
     leave_deduction: leaveDeduction,
     leave_adjustment_label: leaveRemainingHours >= 0 ? 'unused_leave_payout' : 'excess_leave_deduction',
     net_adjustment: leavePayout - leaveDeduction - baseDeduction,
+  };
+}
+
+function buildJoiningSettlement(
+  user: any,
+  month: string,
+  salary: number,
+  positionAllowance: number,
+): Record<string, any> | null {
+  const hireDate = String(user?.hire_date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(hireDate) || hireDate.slice(0, 7) !== month) return null;
+
+  const [, monthText] = month.split('-');
+  const year = Number(month.slice(0, 4));
+  const monthNumber = Number(monthText);
+  const monthDays = new Date(year, monthNumber, 0).getDate();
+  const hireDay = Math.min(Math.max(Number(hireDate.slice(8, 10)) || 1, 1), monthDays);
+  if (hireDay <= 1) return null;
+
+  const payrollBaseDays = 30;
+  const workedDays = Math.min(Math.max(monthDays - hireDay + 1, 0), payrollBaseDays);
+  const basePay = Number(salary || 0) + Number(positionAllowance || 0);
+  const proratedBasePay = payrollMoney(basePay * workedDays / payrollBaseDays, month);
+  const baseDeduction = Math.max(basePay - proratedBasePay, 0);
+
+  return {
+    is_joining: true,
+    hire_date: hireDate,
+    month,
+    worked_days: workedDays,
+    month_days: monthDays,
+    payroll_base_days: payrollBaseDays,
+    base_pay: basePay,
+    prorated_base_pay: proratedBasePay,
+    base_deduction: baseDeduction,
   };
 }
 
@@ -120,6 +161,25 @@ function isPayrollPaidMonth(month: string): boolean {
   const nowKey = nowKst.getUTCFullYear() * 10000 + (nowKst.getUTCMonth() + 1) * 100 + nowKst.getUTCDate();
   const paidKey = year * 10000 + paymentMonth * 100 + 5;
   return nowKey >= paidKey;
+}
+
+function defaultPayrollMonth(): string {
+  const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  let year = nowKst.getUTCFullYear();
+  let monthIndex = nowKst.getUTCMonth();
+  const day = nowKst.getUTCDate();
+  if (day <= 15) {
+    monthIndex -= 1;
+    if (monthIndex < 0) {
+      monthIndex = 11;
+      year -= 1;
+    }
+  }
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+}
+
+function excludesCaseAllowanceFromBonusBasis(month: string): boolean {
+  return /^\d{4}-\d{2}$/.test(month) && month >= CASE_ALLOWANCE_EXCLUDED_FROM_BONUS_BASIS_FROM;
 }
 
 function parsePayrollSaveData(raw: unknown): Record<string, any> {
@@ -172,8 +232,6 @@ async function calcContractAwardForUser(
   db: D1Database, userId: string, periodStart: string, periodEnd: string,
 ): Promise<{ rank: number | null; count: number; award: number; total_amount: number }> {
   await ensurePayTypeHistoryTable(db);
-  const recordMonthExpr = "substr(COALESCE(NULLIF(sr.card_deposit_date, ''), NULLIF(sr.deposit_date, ''), sr.contract_date), 1, 7)";
-  const salaryMonthFilter = payTypeAtMonthSql('sr.user_id', recordMonthExpr, "'salary'");
   const result = await db.prepare(`
     SELECT user_id, user_name,
       SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as cnt,
@@ -189,7 +247,6 @@ async function calcContractAwardForUser(
       JOIN users u ON u.id = sr.user_id
       WHERE sr.type = '계약' AND sr.status = 'confirmed'
         AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
-        AND ${salaryMonthFilter} = 'salary'
         AND (
           (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
           OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
@@ -255,7 +312,7 @@ export async function lockPaidPayrollSaves(db: D1Database): Promise<{ scanned: n
 // 매출 기준: 카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date
 payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const userId = c.req.param('userId');
-  const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
+  const month = c.req.query('month') || defaultPayrollMonth();
   const db = c.env.DB;
   const viewer = c.get('user');
   if (!(await canAccessUserPayroll(db, viewer, userId))) {
@@ -284,13 +341,14 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const isPayoutMonth = m % 2 === 0;
 
   const user = await db.prepare(
-    'SELECT id, name, branch, department, position_title, role, resigned_at, updated_at FROM users WHERE id = ?'
+    'SELECT id, name, branch, department, position_title, role, hire_date, resigned_at, updated_at FROM users WHERE id = ?'
   ).bind(userId).first<any>();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
   const savedPayroll = await db.prepare('SELECT * FROM payroll_saves WHERE user_id = ? AND period = ?').bind(userId, periodLabel).first<any>();
   const savedPayrollData = parsePayrollSaveData(savedPayroll?.data);
-  const shouldUseSavedSnapshot = !!savedPayroll && !!savedPayroll.locked;
+  const excludeCaseAllowanceFromBonusBasis = excludesCaseAllowanceFromBonusBasis(month);
+  const shouldUseSavedSnapshot = !!savedPayroll && !!savedPayroll.locked && !excludeCaseAllowanceFromBonusBasis;
   const savedSnapshot = savedPayrollData.payroll_snapshot;
   if (shouldUseSavedSnapshot && savedSnapshot?.response) {
     return c.json({
@@ -406,14 +464,16 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     `${y}-${String(bonusPeriodEndMonth).padStart(2, '0')}`,
   ];
   const salaryBonusMonths = bonusMonths.filter((ym) => payTypeForMonth(ym) === 'salary');
-  const bonusStandardSales = isPayoutMonth ? Math.round(standardSales * (salaryBonusMonths.length / 2)) : standardSales;
+  const bonusStandardSales = isPayoutMonth ? payrollMoney(standardSales * (salaryBonusMonths.length / 2), month) : standardSales;
   const positionAllowance = accounting?.position_allowance || 0;
 
-  // 무급휴가 공제 계산: 해당 월 내 승인된 무급휴가(특별휴가-기타) 조회
+  // 무급휴가 공제 계산: 해당 월 내 승인된 무급휴가 조회
+  // 기존 데이터 호환을 위해 과거 [기타] 특별휴가도 무급 공제 대상으로 유지한다.
   const unpaidLeaveResult = await db.prepare(`
     SELECT COALESCE(SUM(COALESCE(hours, days * 8)), 0) as total_hours FROM leave_requests
     WHERE user_id = ? AND status = 'approved'
-      AND leave_type = '특별휴가' AND instr(reason, '기타') > 0
+      AND leave_type = '특별휴가'
+      AND (instr(reason, '[무급]') > 0 OR instr(reason, '[기타]') > 0)
       AND start_date >= ? AND start_date <= ?
   `).bind(userId, monthStart, monthEnd).first<any>();
   const unpaidLeaveHours = unpaidLeaveResult?.total_hours || 0;
@@ -439,13 +499,13 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   let bonus = 0;
   // 일반매출 (부가세 분리 대상) — 매수신청대리는 대리비용 차감 후 환산
   let bonusRegularRaw = totalSalesEffective;                          // 일반 원본 (effective)
-  let bonusRegularSupply = vatSupplyAmount(totalSalesEffective);      // 일반 공급가액
+  let bonusRegularSupply = vatSupplyAmount(totalSalesEffective, month);      // 일반 공급가액
   let bonusRegularVat = totalSalesEffective - bonusRegularSupply;     // 일반 부가세
   // 안건 수당 (부가세 X) — cases 테이블 등급별 산정
   let bonusCaseAllowance = 0;
-  // 합계 (성과금 산정 기준 = 일반공급가 + 안건 수당)
-  let bonusTotalSalesRaw = bonusRegularRaw;                  // 호환: raw = 일반 원본 + 안건 수당
-  let bonusTotalSales = bonusRegularSupply;                  // 호환: 합계 = 일반공급가 + 안건 수당
+  // 합계 (2026-06 급여명세부터 성과금 산정 기준에서 안건 수당 제외)
+  let bonusTotalSalesRaw = bonusRegularRaw;
+  let bonusTotalSales = bonusRegularSupply;
   let bonusTotalVat = bonusRegularVat;                       // 호환: 부가세
   let bonusExcess = 0;
   if (!isCommission && !isHQ && isPayoutMonth) {
@@ -463,7 +523,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     bonusRegularRaw = bonusConfirmed
       .filter((r: any) => !isCaseAllowanceSalesRow(r))
       .reduce((sum: number, r: any) => sum + proxyEffectiveRaw(r), 0);
-    bonusRegularSupply = vatSupplyAmount(bonusRegularRaw);
+    bonusRegularSupply = vatSupplyAmount(bonusRegularRaw, month);
     bonusRegularVat = bonusRegularRaw - bonusRegularSupply;
 
     // 안건 수당: cases 테이블에서 직접 등급 성과금 계산 (트리거 INSERT 여부 무관)
@@ -483,8 +543,12 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       bonusCaseAllowance = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
     }
 
-    bonusTotalSalesRaw = bonusRegularRaw + bonusCaseAllowance;
-    bonusTotalSales = bonusRegularSupply + bonusCaseAllowance;  // 산정 기준
+    bonusTotalSalesRaw = excludeCaseAllowanceFromBonusBasis
+      ? bonusRegularRaw
+      : bonusRegularRaw + bonusCaseAllowance;
+    bonusTotalSales = excludeCaseAllowanceFromBonusBasis
+      ? bonusRegularSupply
+      : bonusRegularSupply + bonusCaseAllowance;
     bonusTotalVat = bonusRegularVat;
     bonusExcess = Math.max(bonusTotalSales - bonusStandardSales, 0);
 
@@ -500,11 +564,25 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   }
 
   // 부가세 분리
+  // 매수신청대리는 담당자에게 지급되는 대리비용을 제외한 금액이 급여/성과 반영액이다.
+  // amount는 VAT 포함 입금액이므로 급여반영액 = amount / 1.1 - proxy_cost.
   const recordsWithVat = confirmedRecords.map((r: any) => {
-    const supply = vatSupplyAmount(r.amount);
-    const vat = r.amount - supply;
-    return { ...r, supply_amount: supply, vat_amount: vat };
+    const grossSupply = vatSupplyAmount(r.amount, month);
+    const vat = r.amount - grossSupply;
+    const proxyCost = r.type === '매수신청대리' ? Number(r.proxy_cost || 0) : 0;
+    const supply = r.type === '매수신청대리'
+      ? Math.max(grossSupply - proxyCost, 0)
+      : grossSupply;
+    return {
+      ...r,
+      supply_amount: supply,
+      vat_amount: vat,
+      gross_supply_amount: grossSupply,
+      proxy_payroll_amount: supply,
+    };
   });
+  const totalPayrollSupply = recordsWithVat.reduce((sum: number, r: any) => sum + (Number(r.supply_amount) || 0), 0);
+  const totalPayrollVat = recordsWithVat.reduce((sum: number, r: any) => sum + (Number(r.vat_amount) || 0), 0);
 
   // 이전 기간 환불 건 조회: 현재 정산월에 환불 승인된 + 이전 기간 매출 건
   const prevRefunds = await db.prepare(`
@@ -519,7 +597,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       : r.deposit_date ? r.deposit_date : r.contract_date;
     return sd && sd < monthStart;
   }).map((r: any) => {
-    const supply = vatSupplyAmount(r.amount);
+    const supply = vatSupplyAmount(r.amount, month);
     let recovery = 0;
     if (isCommission) {
       const comm = truncMoney(supply * effectiveRate / 100);
@@ -532,6 +610,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const contractAward = (isPayoutMonth && !isHQ)
     ? await calcContractAwardForUser(db, userId, bonusPeriodStart, bonusPeriodEnd)
     : { rank: null, count: 0, award: 0, total_amount: 0 };
+  const joiningSettlement = buildJoiningSettlement(user, month, salary, positionAllowance);
   const terminationSettlement = await buildTerminationSettlement(db, userId, user, month, salary, positionAllowance);
 
   const payrollResponse = {
@@ -558,12 +637,13 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     refunded_records: refundedRecords,
     refund_recoveries: refundRecoveries,
     contract_award: contractAward, // { rank, count, award, total_amount } — rank null이면 자격 미달
+    joining_settlement: joiningSettlement,
     termination_settlement: terminationSettlement,
     summary: {
       contract_count: contractCount,
       total_sales: totalSales,
-      total_supply: vatSupplyAmount(totalSales),
-      total_vat: totalSales - vatSupplyAmount(totalSales),
+      total_supply: totalPayrollSupply,
+      total_vat: totalPayrollVat,
       total_refund: totalRefund,
       net_sales: totalSales - totalRefund,
       standard_sales: bonusStandardSales,
@@ -573,9 +653,10 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       bonus_regular_vat: bonusRegularVat,            // 일반매출 부가세
       bonus_regular_supply: bonusRegularSupply,      // 일반매출 공급가액
       bonus_case_allowance: bonusCaseAllowance,      // 안건 수당 합계 (부가세 X)
-      bonus_total_sales_raw: bonusTotalSalesRaw,    // 합계: 일반원본 + 안건 수당
+      bonus_case_allowance_included_in_bonus_basis: !excludeCaseAllowanceFromBonusBasis,
+      bonus_total_sales_raw: bonusTotalSalesRaw,
       bonus_total_vat: bonusTotalVat,                // 호환
-      bonus_total_sales: bonusTotalSales,            // 산정 기준: 일반공급가 + 안건 수당
+      bonus_total_sales: bonusTotalSales,
       bonus_excess: bonusExcess,
       excess: bonusExcess,
       bonus,
@@ -607,7 +688,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
 // GET /api/payroll/branch-summary?month=YYYY-MM&branch=xxx — 지사별 합산
 payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
-  const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
+  const month = c.req.query('month') || defaultPayrollMonth();
   const viewer = c.get('user');
   const scopedBranch = getAsstScopedBranch(viewer);
   if (scopedBranch === null) {
@@ -787,7 +868,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   if (scopedBranch === null) {
     return c.json({ error: '총무보조는 의정부 본사 및 종합 지표를 열람할 수 없습니다.' }, 403);
   }
-  const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
+  const month = c.req.query('month') || defaultPayrollMonth();
   const [y, m] = month.split('-').map(Number);
   const periodLabel = payrollPeriodLabel(month);
   const monthStart = `${month}-01`;
@@ -868,10 +949,10 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       } else if (r.type === '매수신청대리') {
         // amount = 매출 gross (VAT 포함), proxy_cost = 대리비용
         // 담당자 지급 = (매출 - 부가세) - 대리비용 = amount/1.1 - cost
-        const payrollAmount = vatSupplyAmount(r.amount || 0) - (r.proxy_cost || 0);
+        const payrollAmount = vatSupplyAmount(r.amount || 0, month) - (r.proxy_cost || 0);
         proxyIncome += Math.max(payrollAmount, 0);
       } else {
-        normalSupply += vatSupplyAmount(r.amount || 0);
+        normalSupply += vatSupplyAmount(r.amount || 0, month);
       }
     }
 
