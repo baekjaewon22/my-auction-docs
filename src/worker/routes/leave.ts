@@ -2,44 +2,349 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
+import { isHeadOfficeBranch } from '../lib/branchAliases';
 
 const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
 
 // ───── 헬퍼 ─────
+const HOURS_PER_DAY = 8;
+const HALF_DAY_PERIODS = new Set(['오전', '오후']);
+
+function normalizeLeaveType(type: string): '연차' | '반차' | '시간차' | '특별휴가' {
+  if (type === '월차') return '연차';
+  if (type === '반차' || type === '시간차' || type === '특별휴가') return type;
+  return '연차';
+}
+
+async function ensureLeaveRequestSchema(db: D1Database): Promise<void> {
+  const columns = await db.prepare('PRAGMA table_info(leave_requests)').all<{ name: string }>();
+  const names = new Set((columns.results || []).map((c) => c.name));
+  if (!names.has('half_day_period')) {
+    await db.prepare("ALTER TABLE leave_requests ADD COLUMN half_day_period TEXT NOT NULL DEFAULT ''").run();
+  }
+}
+
+async function ensureAnnualLeaveSchema(db: D1Database): Promise<void> {
+  const columns = await db.prepare('PRAGMA table_info(annual_leave)').all<{ name: string }>();
+  const names = new Set((columns.results || []).map((c) => c.name));
+  if (!names.has('manual_total_adjust_days')) {
+    await db.prepare("ALTER TABLE annual_leave ADD COLUMN manual_total_adjust_days REAL NOT NULL DEFAULT 0").run();
+  }
+  if (!names.has('manual_used_adjust_days')) {
+    await db.prepare("ALTER TABLE annual_leave ADD COLUMN manual_used_adjust_days REAL NOT NULL DEFAULT 0").run();
+  }
+}
+
+function normalizeHalfDayPeriod(leaveType: string, value: unknown): '' | '오전' | '오후' {
+  if (leaveType !== '반차') return '';
+  const period = String(value || '').trim();
+  return HALF_DAY_PERIODS.has(period) ? period as '오전' | '오후' : '';
+}
+
+function leaveTypeForMessage(leaveType: string, halfDayPeriod?: string): string {
+  return leaveType === '반차' && halfDayPeriod ? `반차(${halfDayPeriod})` : leaveType;
+}
+
+function kstToday(): Date {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000);
+}
+
+function isSummerVacationReason(reason: unknown): boolean {
+  return String(reason || '').includes('[여름휴가]');
+}
+
+function isRewardVacationReason(reason: unknown): boolean {
+  return String(reason || '').includes('[특별유급]') && String(reason || '').includes('포상휴가');
+}
+
+function isSummerVacationWindowOpen(): boolean {
+  const month = kstToday().getUTCMonth() + 1;
+  return month >= 7 && month <= 8;
+}
+
+function isJulyOrAugustDate(value: string): boolean {
+  const month = Number(String(value || '').slice(5, 7));
+  return month === 7 || month === 8;
+}
+
+async function hasActiveSummerVacationRequest(db: D1Database, userId: string, year: string): Promise<boolean> {
+  const row = await db.prepare(`
+    SELECT id FROM leave_requests
+    WHERE user_id = ?
+      AND leave_type = '특별휴가'
+      AND reason LIKE '%[여름휴가]%'
+      AND start_date >= ? AND start_date <= ?
+      AND status IN ('pending', 'approved', 'cancel_requested')
+    LIMIT 1
+  `).bind(userId, `${year}-01-01`, `${year}-12-31`).first();
+  return Boolean(row);
+}
+
+async function isDirectOrgParent(db: D1Database, approverId: string, requesterId: string): Promise<boolean> {
+  const row = await db.prepare(`
+    SELECT 1
+    FROM org_nodes child
+    JOIN org_nodes parent ON parent.id = child.parent_id
+    WHERE child.user_id = ?
+      AND parent.user_id = ?
+    LIMIT 1
+  `).bind(requesterId, approverId).first();
+  return Boolean(row);
+}
+
+async function getDirectOrgParentPhone(db: D1Database, requesterId: string): Promise<string> {
+  const row = await db.prepare(`
+    SELECT u.phone
+    FROM org_nodes child
+    JOIN org_nodes parent ON parent.id = child.parent_id
+    JOIN users u ON u.id = parent.user_id
+    WHERE child.user_id = ?
+      AND u.approved = 1
+      AND u.phone != ''
+    LIMIT 1
+  `).bind(requesterId).first<{ phone: string }>();
+  return row?.phone || '';
+}
+
+async function getLeaveApprovalNotifyPhones(db: D1Database, requesterId: string): Promise<string[]> {
+  const directParentPhone = await getDirectOrgParentPhone(db, requesterId);
+  if (directParentPhone) return [directParentPhone];
+
+  const fallback = await db.prepare(
+    "SELECT phone FROM users WHERE role IN ('master', 'ceo') AND approved = 1 AND phone != ''"
+  ).all<{ phone: string }>();
+  return Array.from(new Set((fallback.results || []).map(r => r.phone).filter(Boolean)));
+}
+
+async function canApproveLeaveRequest(
+  db: D1Database,
+  user: { sub: string; role: string; branch?: string; department?: string },
+  req: any,
+): Promise<boolean> {
+  if (['master', 'ceo'].includes(user.role)) return true;
+  if (['admin', 'manager', 'accountant', 'cc_ref'].includes(user.role)) {
+    return isDirectOrgParent(db, user.sub, req.user_id);
+  }
+  return false;
+}
+
+function halfDayTimeRange(period?: string): string {
+  if (period === '오전') return '09:00~13:00';
+  if (period === '오후') return '14:00~18:00';
+  return '';
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatLeavePeriodForDoc(req: any): string {
+  const dateText = req.start_date === req.end_date ? req.start_date : `${req.start_date} ~ ${req.end_date}`;
+  if (req.leave_type !== '반차' || !req.half_day_period) return dateText;
+  const timeRange = halfDayTimeRange(req.half_day_period);
+  return `${dateText} ${req.half_day_period}${timeRange ? ` (${timeRange})` : ''}`;
+}
+
+function buildLeaveArchiveContent(req: any, reqUser: any, approverName: string): string {
+  const leaveType = leaveTypeForMessage(req.leave_type, req.half_day_period);
+  const period = formatLeavePeriodForDoc(req);
+  const hours = Number(req.hours || req.days * HOURS_PER_DAY || 0);
+  return `
+    <section data-source="leave_request" data-leave-request-id="${req.id}">
+      <!-- leave_request_id:${req.id} -->
+      <h1 style="text-align:center;">휴가 신청서</h1>
+      <table style="width:100%; border-collapse:collapse; margin-top:16px;">
+        <tbody>
+          <tr><th style="border:1px solid #ddd; padding:8px; width:120px;">성명</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(reqUser?.name || req.user_name || '')}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">지사/부서</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(`${req.branch || ''}${req.department ? ' / ' + req.department : ''}`)}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">휴가 유형</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(leaveType)}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">휴가 기간</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(period)}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">차감 시간</th><td style="border:1px solid #ddd; padding:8px;">${hours}시간</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">신청 사유</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(req.reason || '-')}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">승인자</th><td style="border:1px solid #ddd; padding:8px;">${escapeHtml(approverName || '-')}</td></tr>
+          <tr><th style="border:1px solid #ddd; padding:8px;">승인일</th><td style="border:1px solid #ddd; padding:8px;">${new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10)}</td></tr>
+        </tbody>
+      </table>
+    </section>
+  `;
+}
+
+async function createLeaveArchiveDocument(db: D1Database, req: any, approver: any): Promise<string | null> {
+  const existing = await db.prepare(
+    "SELECT id FROM documents WHERE instr(content, ?) > 0 LIMIT 1"
+  ).bind(`leave_request_id:${req.id}`).first<{ id: string }>();
+  if (existing?.id) return existing.id;
+
+  const reqUser = await db.prepare('SELECT name, team_id FROM users WHERE id = ?').bind(req.user_id).first<any>();
+  const leaveType = leaveTypeForMessage(req.leave_type, req.half_day_period);
+  const title = `${leaveType} 신청서 - ${reqUser?.name || req.user_name || ''} (${formatLeavePeriodForDoc(req)})`;
+  const docId = crypto.randomUUID();
+  await db.prepare(`
+    INSERT INTO documents (id, title, content, template_id, author_id, team_id, branch, department, status, created_at, updated_at)
+    VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'approved', datetime('now'), datetime('now'))
+  `).bind(
+    docId, title, buildLeaveArchiveContent(req, reqUser, approver?.name || ''), req.user_id,
+    reqUser?.team_id || null, req.branch || '', req.department || '',
+  ).run();
+  await db.prepare(
+    'INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)'
+  ).bind(crypto.randomUUID(), docId, approver?.sub || approver?.id || req.approved_by || req.user_id, 'approved', '연차관리 승인으로 문서보관함에 자동 보관되었습니다.').run();
+  return docId;
+}
+
+async function cancelLeaveArchiveDocument(db: D1Database, req: any, actor: any, reason: string): Promise<void> {
+  const existing = await db.prepare(
+    "SELECT id FROM documents WHERE instr(content, ?) > 0 AND cancelled = 0 LIMIT 1"
+  ).bind(`leave_request_id:${req.id}`).first<{ id: string }>();
+  if (!existing?.id) return;
+  await db.prepare(
+    "UPDATE documents SET cancelled = 1, cancel_requested = 0, cancel_reason = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(reason, existing.id).run();
+  await db.prepare(
+    'INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)'
+  ).bind(crypto.randomUUID(), existing.id, actor?.sub || actor?.id || req.user_id, 'cancelled', reason).run();
+}
+
+function hoursToDays(hours: number): number {
+  return Math.round((hours / HOURS_PER_DAY) * 1000) / 1000;
+}
+
+function daysToHours(days: number): number {
+  return Math.round((Number(days || 0) * HOURS_PER_DAY) * 1000) / 1000;
+}
+
+function leaveDisplayFields(data: any) {
+  const manualTotalAdjustDays = Number(data.manual_total_adjust_days || 0);
+  const manualUsedAdjustDays = Number(data.manual_used_adjust_days || 0);
+  const annualTotalHours = daysToHours((data.total_days || 0) + manualTotalAdjustDays);
+  const annualUsedHours = daysToHours((data.used_days || 0) + manualUsedAdjustDays);
+  const monthlyTotalHours = daysToHours(data.monthly_days || 0);
+  const monthlyUsedHours = daysToHours(data.monthly_used || 0);
+  const annualRemainingHours = annualTotalHours - annualUsedHours;
+  const monthlyRemainingHours = monthlyTotalHours - monthlyUsedHours;
+  const totalRemainingHours = annualRemainingHours + monthlyRemainingHours;
+  return {
+    total_hours: annualTotalHours + monthlyTotalHours,
+    used_hours: annualUsedHours + monthlyUsedHours,
+    annual_total_hours: annualTotalHours,
+    annual_used_hours: annualUsedHours,
+    annual_remaining_hours: annualRemainingHours,
+    monthly_total_hours: monthlyTotalHours,
+    monthly_used_hours: monthlyUsedHours,
+    monthly_remaining_hours: monthlyRemainingHours,
+    total_remaining_hours: totalRemainingHours,
+    annual_remaining: hoursToDays(annualRemainingHours),
+    monthly_remaining: hoursToDays(monthlyRemainingHours),
+    total_remaining: hoursToDays(totalRemainingHours),
+  };
+}
 
 /**
- * leave_requests 이력 기반으로 사용량 합계 산출 (사용자 타입 인자 받음)
+ * leave_requests 이력 기반으로 사용 시간 합계 산출 (사용자 타입 인자 받음)
  */
-async function sumApprovedLeave(db: D1Database, userId: string, userType: 'monthly' | 'annual'): Promise<{ used_days: number; monthly_used: number }> {
+type LeaveCycle = { start: string; end: string };
+
+function todayKstDateOnly(): string {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function dateStringFromParts(year: number, month: number, day: number): string {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.toISOString().slice(0, 10);
+}
+
+function addYearsDateString(dateStr: string, years: number): string {
+  const [year, month, day] = dateStr.slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return '';
+  return dateStringFromParts(year + years, month, day);
+}
+
+function addDaysDateString(dateStr: string, days: number): string {
+  const [year, month, day] = dateStr.slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return '';
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+  return date.toISOString().slice(0, 10);
+}
+
+function getCurrentLeaveCycle(hireDate: string, userType: 'monthly' | 'annual'): LeaveCycle | null {
+  const normalizedHireDate = (hireDate || '').slice(0, 10);
+  if (!normalizedHireDate) return null;
+
+  if (userType === 'monthly') {
+    const start = normalizedHireDate < MONTHLY_BASE_DATE ? MONTHLY_BASE_DATE : normalizedHireDate;
+    const firstAnniversary = addYearsDateString(normalizedHireDate, 1);
+    return {
+      start,
+      end: firstAnniversary ? addDaysDateString(firstAnniversary, -1) : todayKstDateOnly(),
+    };
+  }
+
+  const today = todayKstDateOnly();
+  const [todayYearText] = today.split('-');
+  const [, hireMonthText, hireDayText] = normalizedHireDate.split('-');
+  const todayYear = Number(todayYearText);
+  if (!todayYear || !hireMonthText || !hireDayText) return null;
+
+  let start = `${todayYear}-${hireMonthText}-${hireDayText}`;
+  if (start > today) start = `${todayYear - 1}-${hireMonthText}-${hireDayText}`;
+  const nextStart = addYearsDateString(start, 1);
+  return {
+    start,
+    end: nextStart ? addDaysDateString(nextStart, -1) : today,
+  };
+}
+
+async function sumApprovedLeave(db: D1Database, userId: string, userType: 'monthly' | 'annual', cycle?: LeaveCycle | null): Promise<{ used_days: number; monthly_used: number; used_hours: number; monthly_used_hours: number }> {
+  const cycleStart = cycle?.start || null;
+  const cycleEnd = cycle?.end || null;
+
   const result = await db.prepare(`
-    SELECT leave_type, COALESCE(SUM(days), 0) as total
+    SELECT leave_type,
+      COALESCE(SUM(CASE WHEN leave_type = '시간차' THEN hours ELSE days * ? END), 0) as total_hours
     FROM leave_requests
     WHERE user_id = ? AND status = 'approved' AND leave_type != '특별휴가'
+      AND (? IS NULL OR start_date >= ?)
+      AND (? IS NULL OR start_date <= ?)
     GROUP BY leave_type
-  `).bind(userId).all<{ leave_type: string; total: number }>();
+  `).bind(HOURS_PER_DAY, userId, cycleStart, cycleStart, cycleEnd, cycleEnd).all<{ leave_type: string; total_hours: number }>();
 
-  let usedDays = 0;
-  let monthlyUsed = 0;
+  let usedHours = 0;
+  let monthlyUsedHours = 0;
   for (const row of (result.results || [])) {
-    if (userType === 'monthly' || row.leave_type === '월차') {
-      monthlyUsed += Number(row.total) || 0;
+    const rowHours = Number(row.total_hours) || 0;
+    if (userType === 'monthly') {
+      monthlyUsedHours += rowHours;
     } else {
-      usedDays += Number(row.total) || 0;
+      usedHours += rowHours;
     }
   }
-  return { used_days: usedDays, monthly_used: monthlyUsed };
+  return {
+    used_hours: usedHours,
+    monthly_used_hours: monthlyUsedHours,
+    used_days: hoursToDays(usedHours),
+    monthly_used: hoursToDays(monthlyUsedHours),
+  };
 }
 
 /**
  * leave_requests 이력 기반으로 annual_leave.used_days / monthly_used 재계산 (entitlement는 그대로)
  */
 async function recalcUserLeave(db: D1Database, userId: string): Promise<{ used_days: number; monthly_used: number } | null> {
+  await ensureAnnualLeaveSchema(db);
   const al = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(userId).first<{ leave_type: string }>();
   if (!al) return null;
   const userType = (al.leave_type as 'monthly' | 'annual') || 'annual';
+  const userInfo = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(userId).first<{ hire_date: string; created_at: string }>();
+  const hireDate = userInfo?.hire_date || (userInfo?.created_at || '').slice(0, 10);
+  const cycle = getCurrentLeaveCycle(hireDate, userType);
 
-  const sum = await sumApprovedLeave(db, userId, userType);
+  const sum = await sumApprovedLeave(db, userId, userType, cycle);
   await db.prepare("UPDATE annual_leave SET used_days = ?, monthly_used = ?, updated_at = datetime('now') WHERE user_id = ?")
     .bind(sum.used_days, sum.monthly_used, userId).run();
 
@@ -52,13 +357,17 @@ async function recalcUserLeave(db: D1Database, userId: string): Promise<{ used_d
  * - calculateLeaveEntitlement 결과 + sumApprovedLeave 합쳐서 전체 SET
  */
 export async function reinitUserLeave(db: D1Database, userId: string): Promise<{ before: any; after: any } | null> {
+  await ensureAnnualLeaveSchema(db);
   const userInfo = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(userId).first<{ hire_date: string; created_at: string }>();
   if (!userInfo) return null;
   const hireDate = userInfo.hire_date || (userInfo.created_at || '').slice(0, 10);
   const ent = calculateLeaveEntitlement(hireDate);
+  const cycle = getCurrentLeaveCycle(hireDate, ent.type);
 
-  const before = await db.prepare('SELECT total_days, used_days, monthly_days, monthly_used, leave_type FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
-  const sum = await sumApprovedLeave(db, userId, ent.type);
+  const before = await db.prepare('SELECT total_days, used_days, monthly_days, monthly_used, leave_type, manual_total_adjust_days, manual_used_adjust_days FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
+  const sum = await sumApprovedLeave(db, userId, ent.type, cycle);
+  const manualTotalAdjustDays = Number(before?.manual_total_adjust_days || 0);
+  const manualUsedAdjustDays = Number(before?.manual_used_adjust_days || 0);
 
   if (before) {
     await db.prepare(`UPDATE annual_leave SET
@@ -78,8 +387,14 @@ export async function reinitUserLeave(db: D1Database, userId: string): Promise<{
     used_days: sum.used_days,
     monthly_days: ent.totalMonthly,
     monthly_used: sum.monthly_used,
+    manual_total_adjust_days: manualTotalAdjustDays,
+    manual_used_adjust_days: manualUsedAdjustDays,
+    effective_total_days: ent.totalAnnual + manualTotalAdjustDays,
+    effective_used_days: sum.used_days + manualUsedAdjustDays,
     leave_type: ent.type,
     hire_date: hireDate,
+    leave_cycle_start: cycle?.start || '',
+    leave_cycle_end: cycle?.end || '',
   };
   return { before, after };
 }
@@ -118,10 +433,10 @@ export function calculateLeaveEntitlement(hireDate: string) {
   return { type: 'annual' as const, totalAnnual, totalMonthly: 0 };
 }
 
-/** 환급금 계산: 월급 ÷ 209h × 8 × 잔여일수 */
-function calculateRefund(salary: number, remainingDays: number): number {
-  if (salary <= 0 || remainingDays <= 0) return 0;
-  return Math.round((salary / 209) * 8 * remainingDays);
+/** 환급금 계산: 월급 ÷ 209h × 잔여시간 */
+function calculateRefund(salary: number, remainingHours: number): number {
+  if (salary <= 0 || remainingHours <= 0) return 0;
+  return Math.round((salary / 209) * remainingHours);
 }
 
 // ───── 연차 목록 (관리자+) ─────
@@ -129,12 +444,31 @@ leave.get('/', requireRole('master', 'ceo', 'admin', 'manager', 'accountant', 'a
   const user = c.get('user');
   const db = c.env.DB;
 
+  let visibleUsersQuery = "SELECT id FROM users WHERE approved = 1 AND role != 'resigned' AND login_type != 'freelancer' AND role != 'freelancer'";
+  const visibleUserParams: string[] = [];
+
+  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
+    visibleUsersQuery += ' AND branch = ?';
+    visibleUserParams.push(user.branch);
+  } else if (user.role === 'manager') {
+    visibleUsersQuery += ' AND branch = ? AND department = ?';
+    visibleUserParams.push(user.branch, user.department);
+  }
+
+  const visibleUsersStmt = db.prepare(visibleUsersQuery);
+  const visibleUsersResult = visibleUserParams.length > 0
+    ? await visibleUsersStmt.bind(...visibleUserParams).all<{ id: string }>()
+    : await visibleUsersStmt.all<{ id: string }>();
+  for (const row of (visibleUsersResult.results || [])) {
+    await reinitUserLeave(db, row.id);
+  }
+
   let query = `SELECT al.*, u.name as user_name, u.branch, u.department, u.role as user_role,
     u.hire_date, u.created_at as user_created_at
     FROM annual_leave al LEFT JOIN users u ON al.user_id = u.id WHERE u.login_type != 'freelancer' AND u.role != 'freelancer'`;
   const params: string[] = [];
 
-  if (user.role === 'admin' && user.branch !== '의정부') {
+  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ' AND u.branch = ?';
     params.push(user.branch);
   } else if (user.role === 'manager') {
@@ -170,13 +504,11 @@ leave.get('/me', async (c) => {
     leave_type: entitlement.type,
   };
 
-  // 잔여일 계산
-  const annualRemaining = (data.total_days || 0) - (data.used_days || 0);
-  const monthlyRemaining = (data.monthly_days || 0) - (data.monthly_used || 0);
-  const totalRemaining = annualRemaining + monthlyRemaining;
+  // 잔여시간 계산. 기존 days 컬럼은 호환용으로 두고 시간 단위로 환산한다.
+  const display = leaveDisplayFields(data);
 
   // 환급금 계산
-  const refundAmount = calculateRefund(salary, totalRemaining);
+  const refundAmount = calculateRefund(salary, display.total_remaining_hours);
 
   // 연차촉진 알림 확인 (입사 6개월)
   const months = getMonthsSinceHire(hireDate);
@@ -185,11 +517,9 @@ leave.get('/me', async (c) => {
   return c.json({
     leave: {
       ...data,
+      ...display,
       hire_date: hireDate,
       months_since_hire: months,
-      annual_remaining: annualRemaining,
-      monthly_remaining: monthlyRemaining,
-      total_remaining: totalRemaining,
       salary,
       refund_amount: refundAmount,
       entitlement,
@@ -210,6 +540,7 @@ leave.get('/user/:userId', requireRole('master', 'ceo', 'admin', 'accountant', '
     return c.json({ error: '해당 직원의 연차·급여 정보 열람 권한이 없습니다.' }, 403);
   }
 
+  await reinitUserLeave(db, userId);
   const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
   const userInfo = await db.prepare('SELECT hire_date, created_at, name FROM users WHERE id = ?').bind(userId).first<any>();
   const accounting = await db.prepare('SELECT salary FROM user_accounting WHERE user_id = ?').bind(userId).first<any>();
@@ -228,21 +559,17 @@ leave.get('/user/:userId', requireRole('master', 'ceo', 'admin', 'accountant', '
     leave_type: entitlement.type,
   };
 
-  const annualRemaining = (data.total_days || 0) - (data.used_days || 0);
-  const monthlyRemaining = (data.monthly_days || 0) - (data.monthly_used || 0);
-  const totalRemaining = annualRemaining + monthlyRemaining;
-  const refundAmount = calculateRefund(salary, totalRemaining);
+  const display = leaveDisplayFields(data);
+  const refundAmount = calculateRefund(salary, display.total_remaining_hours);
   const months = getMonthsSinceHire(hireDate);
   const promotionAlert = months >= 6 && months < 12;
 
   return c.json({
     leave: {
       ...data,
+      ...display,
       hire_date: hireDate,
       months_since_hire: months,
-      annual_remaining: annualRemaining,
-      monthly_remaining: monthlyRemaining,
-      total_remaining: totalRemaining,
       salary,
       refund_amount: refundAmount,
       entitlement,
@@ -272,6 +599,7 @@ leave.put('/:userId', requireRole('master', 'ceo', 'admin'), async (c) => {
   const userId = c.req.param('userId');
   const body = await c.req.json<any>();
   const db = c.env.DB;
+  await ensureAnnualLeaveSchema(db);
 
   const existing = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
   if (!existing) return c.json({ error: '연차 정보가 없습니다.' }, 404);
@@ -290,10 +618,33 @@ leave.put('/:userId', requireRole('master', 'ceo', 'admin'), async (c) => {
   return c.json({ success: true });
 });
 
+// ───── 마스터 수동 보정: 이력/사유 없이 총 부여일수 또는 사용일수 보정 ─────
+leave.post('/:userId/adjust', requireRole('master'), async (c) => {
+  const userId = c.req.param('userId');
+  const body = await c.req.json<{ field?: string; delta_days?: number }>();
+  const db = c.env.DB;
+  await ensureAnnualLeaveSchema(db);
+  await reinitUserLeave(db, userId);
+
+  const field = body.field === 'used' ? 'used' : body.field === 'total' ? 'total' : '';
+  const deltaDays = Math.round(Number(body.delta_days || 0) * 1000) / 1000;
+  if (!field) return c.json({ error: '조정 항목이 올바르지 않습니다.' }, 400);
+  if (!Number.isFinite(deltaDays) || deltaDays === 0) return c.json({ error: '조정 일수가 올바르지 않습니다.' }, 400);
+
+  const column = field === 'total' ? 'manual_total_adjust_days' : 'manual_used_adjust_days';
+  await db.prepare(`UPDATE annual_leave SET ${column} = ${column} + ?, updated_at = datetime('now') WHERE user_id = ?`)
+    .bind(deltaDays, userId).run();
+
+  const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
+  return c.json({ success: true, leave: leaveInfo ? { ...leaveInfo, ...leaveDisplayFields(leaveInfo) } : null });
+});
+
 // ───── 연차 차감 (문서 승인 시 호출) ─────
 leave.post('/deduct', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
-  const { user_id, days } = await c.req.json<{ user_id: string; days: number }>();
+  const { user_id, days, hours } = await c.req.json<{ user_id: string; days?: number; hours?: number }>();
   const db = c.env.DB;
+  const deductHours = Number(hours ?? daysToHours(days || 0));
+  const deductDays = hoursToDays(deductHours);
 
   const reqUser = await db.prepare('SELECT hire_date, created_at FROM users WHERE id = ?').bind(user_id).first<any>();
   const hireDate = reqUser?.hire_date || reqUser?.created_at || '';
@@ -310,13 +661,21 @@ leave.post('/deduct', requireRole('master', 'ceo', 'admin', 'manager'), async (c
   const leaveType = existing.leave_type || entitlement.type;
   if (leaveType === 'monthly') {
     await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-      .bind(days, user_id).run();
-    return c.json({ success: true, used_days: existing.monthly_used + days, remaining: existing.monthly_days - existing.monthly_used - days });
+      .bind(deductDays, user_id).run();
+    return c.json({
+      success: true,
+      used_hours: daysToHours(existing.monthly_used || 0) + deductHours,
+      remaining_hours: daysToHours((existing.monthly_days || 0) - (existing.monthly_used || 0)) - deductHours,
+    });
   } else {
-    const newUsed = existing.used_days + days;
+    const newUsed = existing.used_days + deductDays;
     await db.prepare("UPDATE annual_leave SET used_days = ?, updated_at = datetime('now') WHERE user_id = ?")
       .bind(newUsed, user_id).run();
-    return c.json({ success: true, used_days: newUsed, remaining: existing.total_days - newUsed });
+    return c.json({
+      success: true,
+      used_hours: daysToHours(newUsed),
+      remaining_hours: daysToHours(existing.total_days - newUsed),
+    });
   }
 });
 
@@ -391,80 +750,123 @@ leave.post('/reinit-all', requireRole('master'), async (c) => {
 leave.post('/request', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureLeaveRequestSchema(db);
   const body = await c.req.json<{
     leave_type: '연차' | '월차' | '반차' | '시간차' | '특별휴가';
     start_date: string;
     end_date: string;
     hours?: number;
     reason: string;
+    user_id?: string;
+    half_day_period?: string;
   }>();
+  const requestedLeaveType = normalizeLeaveType(body.leave_type);
+  const halfDayPeriod = normalizeHalfDayPeriod(requestedLeaveType, body.half_day_period);
+  if (requestedLeaveType === '반차' && !halfDayPeriod) {
+    return c.json({ error: '반차는 오전/오후를 선택해야 합니다.' }, 400);
+  }
+  const targetUserId = user.role === 'master' && body.user_id ? body.user_id : user.sub;
+  if (body.user_id && body.user_id !== user.sub && user.role !== 'master') {
+    return c.json({ error: '다른 직원의 휴가는 마스터만 대신 신청할 수 있습니다.' }, 403);
+  }
+  const targetUser = await db.prepare('SELECT id, name, branch, department, hire_date, created_at FROM users WHERE id = ? AND approved = 1')
+    .bind(targetUserId).first<any>();
+  if (!targetUser) return c.json({ error: '휴가를 신청할 직원을 찾을 수 없습니다.' }, 404);
 
-  // 차감일수 계산
-  let days = 1;
-  if (body.leave_type === '반차') {
-    days = 0.5;
-  } else if (body.leave_type === '시간차') {
+  const isSummerVacation = requestedLeaveType === '특별휴가' && isSummerVacationReason(body.reason);
+  if (isSummerVacation) {
+    if (!isSummerVacationWindowOpen()) {
+      return c.json({ error: '여름 특별휴가는 매년 7~8월에만 신청할 수 있습니다. 9월부터는 사용이 불가합니다.' }, 400);
+    }
+    if (!isJulyOrAugustDate(body.start_date) || !isJulyOrAugustDate(body.end_date)) {
+      return c.json({ error: '여름 특별휴가는 사용 기간도 7~8월 안으로만 지정할 수 있습니다.' }, 400);
+    }
+    const year = String(body.start_date || '').slice(0, 4);
+    if (await hasActiveSummerVacationRequest(db, targetUserId, year)) {
+      return c.json({ error: '여름 특별휴가는 인당 연 1회만 신청할 수 있습니다.' }, 400);
+    }
+  }
+  if (requestedLeaveType === '연차' && String(body.reason || '').includes('[여름휴가 연결]')) {
+    if (!isSummerVacationWindowOpen()) {
+      return c.json({ error: '여름 특별휴가 연결 연차는 매년 7~8월에만 신청할 수 있습니다.' }, 400);
+    }
+    if (!isJulyOrAugustDate(body.start_date) || !isJulyOrAugustDate(body.end_date)) {
+      return c.json({ error: '여름 특별휴가 연결 연차는 7~8월 안으로만 지정할 수 있습니다.' }, 400);
+    }
+  }
+
+  // 차감시간 계산. days는 기존 이력 호환용으로만 함께 저장한다.
+  let deductHours = HOURS_PER_DAY;
+  if (requestedLeaveType === '반차') {
+    deductHours = 4;
+  } else if (requestedLeaveType === '시간차') {
     const hours = body.hours || 1;
-    days = Math.round((hours / 8) * 1000) / 1000; // 1/8 단위
-  } else if (body.leave_type === '특별휴가') {
+    deductHours = Math.round(hours * 1000) / 1000;
+  } else if (requestedLeaveType === '특별휴가') {
     // 특별휴가: 시작~종료일 기준
     const start = new Date(body.start_date);
     const end = new Date(body.end_date);
-    days = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-  } else if (body.leave_type === '연차' || body.leave_type === '월차') {
+    deductHours = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1) * HOURS_PER_DAY;
+    if (isRewardVacationReason(body.reason) && deductHours !== HOURS_PER_DAY) {
+      return c.json({ error: '포상휴가는 1일만 신청할 수 있습니다.' }, 400);
+    }
+  } else if (requestedLeaveType === '연차') {
     const start = new Date(body.start_date);
     const end = new Date(body.end_date);
-    days = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    deductHours = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1) * HOURS_PER_DAY;
   }
+  const days = hoursToDays(deductHours);
 
   // [중복 방지] 같은 user + 같은 날짜 + 같은 타입의 미취소 신청이 이미 있으면 차단
-  const existingDup = await db.prepare(
-    "SELECT id, status FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
-  ).bind(user.sub, body.leave_type, body.start_date, body.end_date).first<any>();
+  const existingDup = requestedLeaveType === '반차'
+    ? await db.prepare(
+      "SELECT id, status FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND half_day_period = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
+    ).bind(targetUserId, requestedLeaveType, body.start_date, body.end_date, halfDayPeriod).first<any>()
+    : await db.prepare(
+      "SELECT id, status FROM leave_requests WHERE user_id = ? AND leave_type = ? AND start_date = ? AND end_date = ? AND status IN ('pending', 'approved', 'cancel_requested') LIMIT 1"
+    ).bind(targetUserId, requestedLeaveType, body.start_date, body.end_date).first<any>();
   if (existingDup) {
     const statusLabel = existingDup.status === 'approved' ? '승인됨' : existingDup.status === 'pending' ? '대기 중' : '취소 요청 중';
     return c.json({ error: `동일 날짜·유형의 휴가가 이미 ${statusLabel}입니다. 중복 신청은 불가합니다.` }, 400);
   }
 
   // 특별휴가는 연차 차감 안 함 → 잔여 확인 불필요
-  if (body.leave_type === '특별휴가') {
+  if (requestedLeaveType === '특별휴가') {
     const id = crypto.randomUUID();
     await db.prepare(`INSERT INTO leave_requests
-      (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, user.sub, body.leave_type, body.start_date, body.end_date,
-        body.hours || 8, days, body.reason || '', user.branch, user.department).run();
+      (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
+        deductHours, days, body.reason || '', targetUser.branch || '', targetUser.department || '', halfDayPeriod).run();
+
+    const phones = await getLeaveApprovalNotifyPhones(db, targetUserId);
+    if (phones.length > 0) {
+      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
+        { user_name: targetUser.name, leave_type: leaveTypeForMessage(requestedLeaveType, halfDayPeriod), start_date: body.start_date, end_date: body.end_date, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
+        phones,
+      ).catch(() => {}));
+    }
+
     return c.json({ success: true, id });
   }
 
-  // 잔여 연차 확인: 월차는 음수 허용 (차월 월차 누적 시 자동 상쇄), 연차는 부족 시 차단
-  await reinitUserLeave(db, user.sub);
-  const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(user.sub).first<any>();
-  if (leaveInfo) {
-    const isMonthly = body.leave_type === '월차';
-    if (!isMonthly) {
-      const remaining = leaveInfo.total_days - leaveInfo.used_days;
-      if (remaining < days) return c.json({ error: `연차 잔여일이 부족합니다. (잔여: ${remaining}일)` }, 400);
-    }
-    // 월차: 잔여 부족해도 신청 허용 → monthly_used 증가시켜 음수 잔여 기록
-  }
+  // 잔여 연차는 안내용으로만 관리한다. 부족해도 신청/승인은 가능하며 잔여가 음수로 표시될 수 있다.
+  await reinitUserLeave(db, targetUserId);
 
   const id = crypto.randomUUID();
   await db.prepare(`INSERT INTO leave_requests
-    (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(id, user.sub, body.leave_type, body.start_date, body.end_date,
-      body.hours || 8, days, body.reason, user.branch, user.department).run();
+    (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
+      deductHours, days, body.reason, targetUser.branch || '', targetUser.department || '', halfDayPeriod).run();
 
-  // 알림톡: 관리자/총무에게 LEAVE_REQUEST
-  const admins = await db.prepare(
-    "SELECT phone FROM users WHERE role IN ('master', 'ceo', 'admin', 'accountant') AND approved = 1 AND phone != ''"
-  ).all<{ phone: string }>();
-  const phones = (admins.results || []).map(r => r.phone).filter(Boolean);
+  // 알림톡: 조직도 직접 부모에게 LEAVE_REQUEST. 직접 부모가 없을 때만 대표/마스터로 fallback.
+  const phones = await getLeaveApprovalNotifyPhones(db, targetUserId);
   if (phones.length > 0) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
-      { user_name: user.name, leave_type: body.leave_type, start_date: body.start_date, end_date: body.end_date, branch: user.branch || '', link: `${APP_URL}/leave` },
+      { user_name: targetUser.name, leave_type: leaveTypeForMessage(requestedLeaveType, halfDayPeriod), start_date: body.start_date, end_date: body.end_date, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
       phones,
     ).catch(() => {}));
   }
@@ -476,6 +878,7 @@ leave.post('/request', async (c) => {
 leave.get('/requests', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureLeaveRequestSchema(db);
   const status = c.req.query('status') || '';
   const month = c.req.query('month') || '';
   const filterUserId = c.req.query('user_id') || '';
@@ -493,10 +896,19 @@ leave.get('/requests', async (c) => {
   } else if (!isAdmin) {
     query += ' AND lr.user_id = ?';
     params.push(user.sub);
+  } else if (['admin', 'manager', 'accountant', 'cc_ref'].includes(user.role) && (status === 'pending' || status === 'cancel_requested')) {
+    query += ` AND EXISTS (
+      SELECT 1
+      FROM org_nodes child
+      JOIN org_nodes parent ON parent.id = child.parent_id
+      WHERE child.user_id = lr.user_id
+        AND parent.user_id = ?
+    )`;
+    params.push(user.sub);
   } else if (user.role === 'manager') {
     query += ' AND lr.branch = ? AND lr.department = ?';
     params.push(user.branch, user.department);
-  } else if (user.role === 'admin' && user.branch !== '의정부') {
+  } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ' AND lr.branch = ?';
     params.push(user.branch);
   }
@@ -517,14 +929,16 @@ leave.get('/requests', async (c) => {
 });
 
 // ───── 휴가 승인/반려 (관리자+) ─────
-leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'), async (c) => {
   const requestId = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureLeaveRequestSchema(db);
 
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'pending') return c.json({ error: '이미 처리된 신청입니다.' }, 400);
+  if (!(await canApproveLeaveRequest(db, user, req))) return c.json({ error: '승인 권한이 없습니다.' }, 403);
 
   await reinitUserLeave(db, req.user_id);
 
@@ -548,28 +962,30 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
     }
 
     const leaveType = existing.leave_type || entitlement.type;
+    const deductHours = req.leave_type === '시간차'
+      ? Number(req.hours || 0)
+      : daysToHours(req.days || 0);
+    const deductDays = hoursToDays(deductHours);
     if (leaveType === 'monthly') {
-      // 월차 타입 → monthly_used에서 차감 (연차, 반차, 시간차, 월차 모두)
+      // 1년 미만 발생 방식 → monthly_used에 시간 기준 환산값 누적
       await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-        .bind(req.days, req.user_id).run();
+        .bind(deductDays, req.user_id).run();
     } else {
-      // 연차 타입
-      if (req.leave_type === '월차') {
-        await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-          .bind(req.days, req.user_id).run();
-      } else {
-        await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
-          .bind(req.days, req.user_id).run();
-      }
+      // 1년 이상 발생 방식 → used_days에 시간 기준 환산값 누적
+      await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
+        .bind(deductDays, req.user_id).run();
     }
   }
+
+  await createLeaveArchiveDocument(db, { ...req, status: 'approved', approved_by: user.sub }, user)
+    .catch((err) => console.error('[leave archive auto-create]', err));
 
   // 알림톡: 신청자에게 LEAVE_APPROVED
   const reqUser2 = await db.prepare('SELECT name, phone FROM users WHERE id = ?').bind(req.user_id).first<{ name: string; phone: string }>();
   if (reqUser2?.phone) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'LEAVE_APPROVED',
-      { user_name: reqUser2.name, status: '승인', leave_type: req.leave_type, start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
+      { user_name: reqUser2.name, status: '승인', leave_type: leaveTypeForMessage(req.leave_type, req.half_day_period), start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
       [reqUser2.phone],
     ).catch(() => {}));
   }
@@ -577,15 +993,18 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'admin', 'manag
   return c.json({ success: true });
 });
 
-leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'), async (c) => {
   const requestId = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureLeaveRequestSchema(db);
   const { reason } = await c.req.json<{ reason: string }>();
 
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'pending') return c.json({ error: '이미 처리된 신청입니다.' }, 400);
+
+  if (!(await canApproveLeaveRequest(db, user, req))) return c.json({ error: '반려 권한이 없습니다.' }, 403);
 
   await db.prepare(`UPDATE leave_requests SET status = 'rejected', approved_by = ?,
     reject_reason = ?, approved_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
@@ -596,7 +1015,7 @@ leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'admin', 'manage
   if (reqUser?.phone) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'LEAVE_APPROVED',
-      { user_name: reqUser.name, status: '반려', leave_type: req.leave_type, start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
+      { user_name: reqUser.name, status: '반려', leave_type: leaveTypeForMessage(req.leave_type, req.half_day_period), start_date: req.start_date, end_date: req.end_date, approver_name: user.name, link: `${APP_URL}/leave` },
       [reqUser.phone],
     ).catch(() => {}));
   }
@@ -626,6 +1045,8 @@ leave.post('/requests/:id/cancel', async (c) => {
       await db.prepare("UPDATE leave_requests SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
         .bind(requestId).run();
       await reinitUserLeave(db, req.user_id);
+      await cancelLeaveArchiveDocument(db, req, user, '연차관리에서 휴가 신청이 취소되었습니다.')
+        .catch((err) => console.error('[leave archive auto-cancel]', err));
     } else {
       // 일반 유저: 취소요청 상태로 변경 (관리자 확인 필요)
       await db.prepare("UPDATE leave_requests SET status = 'cancel_requested', updated_at = datetime('now') WHERE id = ?")
@@ -641,18 +1062,23 @@ leave.post('/requests/:id/cancel', async (c) => {
 });
 
 // ───── 취소요청 승인 (관리자) ─────
-leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'), async (c) => {
   const requestId = c.req.param('id');
   const db = c.env.DB;
+  const user = c.get('user');
 
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'cancel_requested') return c.json({ error: '취소요청 상태가 아닙니다.' }, 400);
 
+  if (!(await canApproveLeaveRequest(db, user, req))) return c.json({ error: '취소 승인 권한이 없습니다.' }, 403);
+
   await db.prepare("UPDATE leave_requests SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
     .bind(requestId).run();
 
   await reinitUserLeave(db, req.user_id);
+  await cancelLeaveArchiveDocument(db, req, c.get('user'), '연차관리에서 휴가 취소 요청이 승인되었습니다.')
+    .catch((err) => console.error('[leave archive auto-cancel-approve]', err));
 
   return c.json({ success: true });
 });
@@ -672,21 +1098,23 @@ leave.get('/refund/:userId', requireRole('master', 'ceo', 'admin', 'accountant',
     }
   }
 
+  await reinitUserLeave(db, userId);
   const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
   const accounting = await db.prepare('SELECT salary FROM user_accounting WHERE user_id = ?').bind(userId).first<any>();
   const userInfo = await db.prepare('SELECT name, hire_date, created_at FROM users WHERE id = ?').bind(userId).first<any>();
 
   if (!leaveInfo || !accounting) return c.json({ error: '정보가 부족합니다.' }, 404);
 
-  const totalRemaining = (leaveInfo.total_days - leaveInfo.used_days) +
-    ((leaveInfo.monthly_days || 0) - (leaveInfo.monthly_used || 0));
-  const refund = calculateRefund(accounting.salary, totalRemaining);
+  const display = leaveDisplayFields(leaveInfo);
+  const refund = calculateRefund(accounting.salary, display.total_remaining_hours);
 
   return c.json({
     user_name: userInfo?.name,
     salary: accounting.salary,
-    remaining_days: totalRemaining,
+    remaining_days: display.total_remaining,
+    remaining_hours: display.total_remaining_hours,
     refund_per_day: Math.round((accounting.salary / 209) * 8),
+    refund_per_hour: Math.round(accounting.salary / 209),
     refund_total: refund,
   });
 });
@@ -706,7 +1134,7 @@ leave.get('/alerts', requireRole('master', 'ceo', 'admin', 'manager'), async (c)
   if (user.role === 'manager') {
     query += ' AND u.branch = ? AND u.department = ?';
     params.push(user.branch, user.department);
-  } else if (user.role === 'admin' && user.branch !== '의정부') {
+  } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ' AND u.branch = ?';
     params.push(user.branch);
   }
@@ -734,22 +1162,9 @@ leave.put('/hire-date/:userId', requireRole('master', 'ceo', 'cc_ref', 'admin', 
   await db.prepare("UPDATE users SET hire_date = ?, updated_at = datetime('now') WHERE id = ?")
     .bind(hire_date, userId).run();
 
-  // 입사일 기준으로 연차 자동 재계산
   const entitlement = calculateLeaveEntitlement(hire_date);
-  const existing = await db.prepare('SELECT id FROM annual_leave WHERE user_id = ?').bind(userId).first();
-
-  if (existing) {
-    await db.prepare(`UPDATE annual_leave SET total_days = ?, monthly_days = ?,
-      leave_type = ?, updated_at = datetime('now') WHERE user_id = ?`)
-      .bind(entitlement.totalAnnual, entitlement.totalMonthly, entitlement.type, userId).run();
-  } else {
-    await db.prepare(`INSERT INTO annual_leave
-      (id, user_id, total_days, used_days, monthly_days, monthly_used, leave_type)
-      VALUES (?, ?, ?, 0, ?, 0, ?)`)
-      .bind(crypto.randomUUID(), userId, entitlement.totalAnnual, entitlement.totalMonthly, entitlement.type).run();
-  }
-
-  return c.json({ success: true, entitlement });
+  const reinitialized = await reinitUserLeave(db, userId);
+  return c.json({ success: true, entitlement, leave: reinitialized?.after || null });
 });
 
 // ───── 휴가 신청 삭제 (관리자/회계) ─────
@@ -762,6 +1177,8 @@ leave.delete('/requests/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'a
 
   await db.prepare('DELETE FROM leave_requests WHERE id = ?').bind(id).run();
   await reinitUserLeave(db, req.user_id);
+  await cancelLeaveArchiveDocument(db, req, c.get('user'), '연차관리에서 휴가 신청이 삭제되었습니다.')
+    .catch((err) => console.error('[leave archive auto-cancel-delete]', err));
   return c.json({ success: true });
 });
 
@@ -770,13 +1187,12 @@ leave.delete('/requests/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'a
 leave.get('/accountant-leaves', async (c) => {
   const db = c.env.DB;
   const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST
-  // 하루 전부터 공지
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  // 7일 후
+  // 오늘부터 7일 후까지 공지
+  const today = now.toISOString().slice(0, 10);
   const future = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const result = await db.prepare(`
-    SELECT lr.id, lr.user_id, lr.leave_type, lr.start_date, lr.end_date, lr.days, lr.reason,
+    SELECT lr.id, lr.user_id, lr.leave_type, lr.start_date, lr.end_date, lr.hours, lr.days, lr.reason,
       u.name, u.branch, u.department, u.position_title
     FROM leave_requests lr
     JOIN users u ON u.id = lr.user_id
@@ -785,7 +1201,7 @@ leave.get('/accountant-leaves', async (c) => {
       AND lr.end_date >= ?
       AND lr.start_date <= ?
     ORDER BY lr.start_date ASC
-  `).bind(yesterday, future).all();
+  `).bind(today, future).all();
 
   return c.json({ leaves: result.results || [] });
 });

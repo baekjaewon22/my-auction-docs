@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../api';
 import {
   ACTIVITY_TYPES, MEETING_SUBTYPES, OFFICE_SUBTYPES,
-  COURT_OPTIONS, generateTimeOptions, generateYears,
+  BID_PROPERTY_CATEGORIES, COURT_OPTIONS, generateTimeOptions, generateYears,
   type ActivityType, type CourtOption,
 } from './types';
 import Select, { toOptions } from '../components/Select';
@@ -12,6 +12,7 @@ const TIME_OPTS = toOptions(generateTimeOptions());
 const YEAR_OPTS = generateYears().map((y) => ({ value: String(y), label: String(y) }));
 const MEETING_OPTS = toOptions(MEETING_SUBTYPES as unknown as string[]);
 const OFFICE_OPTS = toOptions(OFFICE_SUBTYPES as unknown as string[]);
+const PROPERTY_MAIN_OPTS = BID_PROPERTY_CATEGORIES.map((c) => ({ value: c.main, label: c.main }));
 
 const formatCourtLabel = (opt: CourtOption) => (
   <span style={{ fontWeight: opt.isMain ? 700 : 400 }}>{opt.label}</span>
@@ -73,7 +74,22 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   const [bidDeviationReason, setBidDeviationReason] = useState('');
   const [bidItemNo, setBidItemNo] = useState('');
   const [bidBidderName, setBidBidderName] = useState(''); // 입찰자명 (고객명과 다를 때)
+  const [bidPropertyMain, setBidPropertyMain] = useState('');
+  const [bidPropertyType, setBidPropertyType] = useState('');
   const [showDeviationWarning, setShowDeviationWarning] = useState(false);
+  const bidPropertyDetailOptions = BID_PROPERTY_CATEGORIES
+    .find((c) => c.main === bidPropertyMain)?.details
+    .map((detail) => ({ value: detail, label: detail })) || [];
+
+  // 미팅
+  const [meetingType, setMeetingType] = useState('브리핑');
+  const [meetingEtc, setMeetingEtc] = useState('');
+  const [meetingPlace, setMeetingPlace] = useState('');
+  const [meetingClient, setMeetingClient] = useState('');
+  const [meetingCaseYear, setMeetingCaseYear] = useState('2026');
+  const [meetingCaseNo, setMeetingCaseNo] = useState('');
+  const [meetingItemNo, setMeetingItemNo] = useState('');
+  const [meetingInternal, setMeetingInternal] = useState(false); // 회사 미팅 — 외근 X, 외근보고서 매칭 제외
 
   useEffect(() => {
     const suggested = Number(bidSuggestedPrice.replace(/[^0-9]/g, ''));
@@ -88,15 +104,8 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   // [3-1] 현장출근 자동 활성화: 입찰/미팅/임장 09:00 시작 → 자동 체크 (대리입찰 제외)
   useEffect(() => {
     const isFieldType = ['입찰', '미팅', '임장'].includes(activityType);
-    if (isFieldType && timeFrom === '09:00') {
-      // 대리입찰이면 비활성화
-      if (activityType === '입찰' && bidProxy) {
-        setFieldCheckIn(false);
-      } else {
-        setFieldCheckIn(true);
-      }
-    }
-  }, [timeFrom, activityType, bidProxy]);
+    setFieldCheckIn(isFieldType && timeFrom === '09:00' && !(activityType === '입찰' && bidProxy) && !companion && !meetingInternal);
+  }, [timeFrom, activityType, bidProxy, companion, meetingInternal]);
 
   // 업무 유형 변경 시: 사무/개인은 현장출퇴근 불필요 → 해제
   useEffect(() => {
@@ -109,14 +118,8 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   // [3-2] 현장퇴근 자동 활성화: 입찰/미팅/임장 18:00 종결 → 자동 체크
   useEffect(() => {
     const isFieldType = ['입찰', '미팅', '임장'].includes(activityType);
-    if (isFieldType && timeTo === '18:00') {
-      if (activityType === '입찰' && bidProxy) {
-        setFieldCheckOut(false);
-      } else {
-        setFieldCheckOut(true);
-      }
-    }
-  }, [timeTo, activityType, bidProxy]);
+    setFieldCheckOut(isFieldType && timeTo === '18:00' && !(activityType === '입찰' && bidProxy) && !companion && !meetingInternal);
+  }, [timeTo, activityType, bidProxy, companion, meetingInternal]);
 
   // 대리입찰 체크 시 현장출퇴근 해제
   useEffect(() => {
@@ -150,6 +153,11 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   const [inspClientType, setInspClientType] = useState<'고객명' | '기타'>('고객명');
   const [inspClient, setInspClient] = useState('');
   const [inspEtcReason, setInspEtcReason] = useState('');
+  const [inspPropertyMain, setInspPropertyMain] = useState('');
+  const [inspPropertyType, setInspPropertyType] = useState('');
+  const inspPropertyDetailOptions = BID_PROPERTY_CATEGORIES
+    .find((c) => c.main === inspPropertyMain)?.details
+    .map((detail) => ({ value: detail, label: detail })) || [];
   // 임장 중복 경고
   const [inspDupWarning, setInspDupWarning] = useState<{ user_name: string; target_date: string }[] | null>(null);
 
@@ -170,16 +178,6 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     return () => clearTimeout(timer);
   }, [inspYear, inspCaseNo, inspCourt, activityType, companion]);
 
-  // 미팅
-  const [meetingType, setMeetingType] = useState('브리핑');
-  const [meetingEtc, setMeetingEtc] = useState('');
-  const [meetingPlace, setMeetingPlace] = useState('');
-  const [meetingClient, setMeetingClient] = useState('');
-  const [meetingCaseYear, setMeetingCaseYear] = useState('2026');
-  const [meetingCaseNo, setMeetingCaseNo] = useState('');
-  const [meetingItemNo, setMeetingItemNo] = useState('');
-  const [meetingInternal, setMeetingInternal] = useState(false); // 회사 미팅 — 외근 X, 외근보고서 매칭 제외
-
   // 사무
   const [officeType, setOfficeType] = useState('고객관리');
   const [officeEtc, setOfficeEtc] = useState('');
@@ -197,8 +195,10 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     if (activityType === '입찰' && !bidCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '입찰' && !bidCourt) { alert('법원을 선택해주세요.'); return null; }
     if (activityType === '입찰' && !bidBidder.trim()) { alert('계약자명을 입력해주세요.'); return null; }
+    if (activityType === '입찰' && (!bidPropertyMain || !bidPropertyType)) { alert('물건종류를 선택해주세요.'); return null; }
     if (activityType === '임장' && !inspCaseNo.trim()) { alert('사건번호를 입력해주세요.'); return null; }
     if (activityType === '임장' && !inspCourt) { alert('법원을 선택해주세요.'); return null; }
+    if (activityType === '임장' && (!inspPropertyMain || !inspPropertyType)) { alert('물건종류를 선택해주세요.'); return null; }
     if (activityType === '임장' && inspClientType === '고객명' && !inspClient.trim()) { alert(`${companion ? '담당자' : '계약자명'}을 입력해주세요.`); return null; }
     if (activityType === '임장' && inspClientType === '기타' && !inspEtcReason.trim()) { alert('사유를 입력해주세요.'); return null; }
     if (activityType === '미팅' && !meetingClient.trim()) { alert(`${companion ? '담당자' : '계약자명'}을 입력해주세요.`); return null; }
@@ -209,11 +209,15 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
       return null;
     }
 
+    const isFieldType = ['입찰', '미팅', '임장'].includes(activityType);
+    const isFieldExcluded = (activityType === '입찰' && bidProxy) || companion || meetingInternal;
+    const normalizedFieldCheckIn = isFieldType && !isFieldExcluded && timeFrom === '09:00';
+    const normalizedFieldCheckOut = isFieldType && !isFieldExcluded && timeTo === '18:00';
     let data: Record<string, unknown> = {
       timeFrom: activityType === '입찰' && bidProxy ? '' : timeFrom,
       timeTo: activityType === '입찰' && bidProxy ? '' : timeTo,
-      fieldCheckIn,
-      fieldCheckOut,
+      fieldCheckIn: normalizedFieldCheckIn,
+      fieldCheckOut: normalizedFieldCheckOut,
     };
     let subtype = '';
     let label = '';
@@ -222,18 +226,20 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
       case '입찰': {
         const actualBidder = bidBidderName.trim() || bidBidder;
         data = { ...data, caseNo: `${bidYear}타경${bidCaseNo}`, itemNo: bidItemNo, bidder: actualBidder, client: bidBidder, court: bidCourt,
+          propertyCategory: bidPropertyMain, propertyType: bidPropertyType,
           suggestedPrice: bidSuggestedPrice, bidPrice, winPrice: bidWon ? bidPrice : bidWinPrice,
           bidWon, bidProxy, bidCancelled, deviationReason: bidDeviationReason };
         subtype = `${bidYear}타경${bidCaseNo}`;
-        label = `입찰 — ${subtype}${bidItemNo ? ` | ${bidItemNo}` : ''} | ${bidBidder}${actualBidder !== bidBidder ? `(입찰자:${actualBidder})` : ''}${bidProxy ? ' (대리)' : ''}${bidCancelled ? ' (취하/변경)' : ''}`;
+        label = `입찰 — ${subtype}${bidItemNo ? ` | ${bidItemNo}` : ''} | ${bidPropertyType} | ${bidBidder}${actualBidder !== bidBidder ? `(입찰자:${actualBidder})` : ''}${bidProxy ? ' (대리)' : ''}${bidCancelled ? ' (취하/변경)' : ''}`;
         break;
       }
       case '임장':
         data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, itemNo: inspItemNo, court: inspCourt, place: inspPlace,
+          propertyCategory: inspPropertyMain, propertyType: inspPropertyType,
           client: inspClientType === '고객명' ? inspClient : '', companion, companionPerson: companion ? inspClient : '',
           inspClientType, inspEtcReason: inspClientType === '기타' ? inspEtcReason : '' };
         subtype = `${inspYear}타경${inspCaseNo}`;
-        label = `임장${companion ? ' [동행]' : ''} — ${subtype}${inspItemNo ? ` | ${inspItemNo}` : ''} | ${inspClientType === '고객명' ? inspClient : inspEtcReason}`;
+        label = `임장${companion ? ' [동행]' : ''} — ${subtype}${inspItemNo ? ` | ${inspItemNo}` : ''} | ${inspPropertyType} | ${inspClientType === '고객명' ? inspClient : inspEtcReason}`;
         break;
       case '미팅':
         data = { ...data, meetingType, etcReason: meetingEtc, place: meetingPlace, client: meetingClient,
@@ -255,7 +261,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
         break;
     }
 
-    return { activityType, timeFrom, timeTo, fieldCheckIn, fieldCheckOut, data, subtype, label };
+    return { activityType, timeFrom, timeTo, fieldCheckIn: normalizedFieldCheckIn, fieldCheckOut: normalizedFieldCheckOut, data, subtype, label };
   };
 
   // 리스트에 추가
@@ -273,8 +279,8 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     setFieldCheckIn(false); setFieldCheckOut(false);
     setTimeFrom(''); setTimeTo('');
     setBidCaseNo(''); setBidItemNo(''); setBidBidder(''); setBidBidderName(''); setBidSuggestedPrice(''); setBidPrice('');
-    setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidCancelled(false); setBidDeviationReason('');
-    setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient('');
+    setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidCancelled(false); setBidDeviationReason(''); setBidPropertyMain(''); setBidPropertyType('');
+    setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient(''); setInspPropertyMain(''); setInspPropertyType('');
     setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo(''); setMeetingItemNo(''); setMeetingInternal(false);
     setCompanion(false);
     setOfficeEtc('');
@@ -287,6 +293,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
 
   const isProxyBid = activityType === '입찰' && bidProxy;
   const supportsCompanion = activityType === '임장' || activityType === '미팅';
+  const supportsFieldCheck = ['입찰', '미팅', '임장'].includes(activityType);
 
   // 전체 등록
   const handleSubmitAll = async () => {
@@ -382,7 +389,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
           )}
 
           {/* 현장출근/퇴근 */}
-          {activityType !== '개인' && !isProxyBid && !companion && (
+          {supportsFieldCheck && !isProxyBid && !companion && !meetingInternal && (
             <div className="form-group">
               <div className="field-check-group">
                 <label className={`field-check-label ${fieldCheckIn ? 'checked' : ''}`}>
@@ -440,6 +447,32 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
               </div>
               <div className="form-row form-row-inline">
                 <div className="form-group" style={{ flex: 1 }}>
+                  <label>물건종류 대분류 *</label>
+                  <Select
+                    size="sm"
+                    options={PROPERTY_MAIN_OPTS}
+                    value={PROPERTY_MAIN_OPTS.find((o) => o.value === bidPropertyMain) || null}
+                    onChange={(o: any) => {
+                      setBidPropertyMain(o?.value || '');
+                      setBidPropertyType('');
+                    }}
+                    placeholder="대분류 선택"
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>물건종류 세부 *</label>
+                  <Select
+                    size="sm"
+                    options={bidPropertyDetailOptions}
+                    value={bidPropertyDetailOptions.find((o) => o.value === bidPropertyType) || null}
+                    onChange={(o: any) => setBidPropertyType(o?.value || '')}
+                    placeholder="세부 선택"
+                    isDisabled={!bidPropertyMain}
+                  />
+                </div>
+              </div>
+              <div className="form-row form-row-inline">
+                <div className="form-group" style={{ flex: 1 }}>
                   <label>제시입찰가 <span style={{ color: '#9aa0a6', fontWeight: 400, fontSize: '0.7rem' }}>브리핑 제시금액</span></label>
                   <input type="text" value={bidSuggestedPrice} onChange={(e) => setBidSuggestedPrice(fmtCurrency(e.target.value))} placeholder="0" />
                 </div>
@@ -467,7 +500,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
                   </label>
                   {bidWon && <span style={{ fontSize: '0.75rem', color: '#188038' }}>실제입찰가가 낙찰가로 자동 적용됩니다.</span>}
                   {bidProxy && <span style={{ fontSize: '0.75rem', color: '#7b1fa2' }}>외근보고서 제출 불필요</span>}
-                  {bidCancelled && <span style={{ fontSize: '0.75rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용</span>}
+                  {bidCancelled && <span style={{ fontSize: '0.75rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용 · 외근보고서 제출 불필요</span>}
                 </div>
               </div>
               {!bidWon && !bidCancelled && (
@@ -527,6 +560,32 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
               <div className="form-group">
                 <label>법원</label>
                 <Select size="sm" options={COURT_OPTIONS} value={COURT_OPTIONS.find((o) => o.value === inspCourt) || null} onChange={(o: any) => setInspCourt(o?.value || '')} placeholder="법원 검색..." isSearchable formatOptionLabel={formatCourtLabel} />
+              </div>
+              <div className="form-row form-row-inline">
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>물건종류 대분류 *</label>
+                  <Select
+                    size="sm"
+                    options={PROPERTY_MAIN_OPTS}
+                    value={PROPERTY_MAIN_OPTS.find((o) => o.value === inspPropertyMain) || null}
+                    onChange={(o: any) => {
+                      setInspPropertyMain(o?.value || '');
+                      setInspPropertyType('');
+                    }}
+                    placeholder="대분류 선택"
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>물건종류 세부 *</label>
+                  <Select
+                    size="sm"
+                    options={inspPropertyDetailOptions}
+                    value={inspPropertyDetailOptions.find((o) => o.value === inspPropertyType) || null}
+                    onChange={(o: any) => setInspPropertyType(o?.value || '')}
+                    placeholder="세부 선택"
+                    isDisabled={!inspPropertyMain}
+                  />
+                </div>
               </div>
               <div className="form-group">
                 <label>장소</label>

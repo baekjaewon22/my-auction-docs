@@ -7,8 +7,20 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { ensurePayTypeHistoryTable, payTypeAtMonthSql } from '../lib/pay-type-history';
+import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const cases = new Hono<AuthEnv>();
+
+const CASE_ALLOWANCE_EXCLUDED_NAMES = new Set(['임태율', '서정수', '진성헌']);
+
+function normalizeCaseAllowanceName(name: unknown): string {
+  return String(name || '').replace(/["'\s]/g, '').trim();
+}
+
+export function isCaseAllowanceExcludedName(name: unknown): boolean {
+  return CASE_ALLOWANCE_EXCLUDED_NAMES.has(normalizeCaseAllowanceName(name));
+}
 
 async function ensureCaseHiddenTable(db: D1Database): Promise<void> {
   await db.prepare(`
@@ -30,7 +42,7 @@ async function ensureCaseHiddenTable(db: D1Database): Promise<void> {
 //   700만 ~ 1000만 → 40만
 //   1000만 ~ 2000만 → 60만
 //   > 2000만 → 80만 (일괄)
-export function calculateMyungdoBonus(totalAmount: number): number {
+export function calculateCaseAllowance(totalAmount: number): number {
   if (totalAmount <= 0) return 0;
   if (totalAmount <= 2_000_000) return 100_000;
   if (totalAmount <= 5_000_000) return 200_000;
@@ -45,7 +57,7 @@ export function calculateMyungdoBonus(totalAmount: number): number {
 //   실비제(actual): fee / 1.1 (부가세 제외, 공급가액)
 export function adjustedFeeFor(amount: number, type: 'fixed' | 'actual'): number {
   if (type === 'fixed') return Math.max(0, amount - 150_000);
-  return Math.round(amount / 1.1);
+  return Math.trunc(amount / 1.1);
 }
 
 // 2개월 구간 식별: 1~2월 → '2026-01_02', 3~4월 → '2026-03_04', ...
@@ -160,7 +172,7 @@ cases.get('/consultants', async (c) => {
     FROM users u
     LEFT JOIN user_accounting ua ON ua.user_id = u.id
     WHERE ${roleFilter}
-      AND u.branch != '본사 관리'
+      AND REPLACE(u.branch, ' ', '') != '본사관리'
       AND (u.department IS NULL OR u.department NOT IN ('명도팀','지원팀'))
       AND u.id != ?
       AND u.login_type != 'freelancer-old'
@@ -370,11 +382,11 @@ cases.get('/', requireRole(...CASES_VIEW_ROLES), async (c) => {
   if (user.role === 'manager') {
     query += ` AND (consultant_user_id = ? OR (consultant_branch = ? AND consultant_department = ?))`;
     params.push(user.sub, user.branch, user.department);
-  } else if (user.role === 'admin' && user.branch !== '의정부') {
+  } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ` AND consultant_branch = ?`;
     params.push(user.branch);
   } else if (user.role === 'director') {
-    query += ` AND (consultant_branch IN ('대전','부산') OR consultant_user_id = ?)`;
+    query += ` AND (consultant_branch IN ('대전', '대전지사', '부산', '부산지사') OR consultant_user_id = ?)`;
     params.push(user.sub);
   } else if (user.role === 'member' || user.role === 'support') {
     // 일반 컨설턴트: 본인이 컨설턴트로 매칭됐거나 담당자(manager_user_id)인 사건만
@@ -419,13 +431,13 @@ cases.get('/:id', requireRole(...CASES_VIEW_ROLES), async (c) => {
 
   // 권한 체크 — 컨설턴트 기준
   if (user.role === 'manager') {
-    if (r.consultant_user_id !== user.sub && !(r.consultant_branch === user.branch && r.consultant_department === user.department)) {
+    if (r.consultant_user_id !== user.sub && !(sameBranchName(r.consultant_branch, user.branch) && r.consultant_department === user.department)) {
       return c.json({ error: '권한 없음' }, 403);
     }
-  } else if (user.role === 'admin' && user.branch !== '의정부') {
-    if (r.consultant_branch !== user.branch) return c.json({ error: '권한 없음' }, 403);
+  } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
+    if (!sameBranchName(r.consultant_branch, user.branch)) return c.json({ error: '권한 없음' }, 403);
   } else if (user.role === 'director') {
-    if (!['대전', '부산'].includes(r.consultant_branch) && r.consultant_user_id !== user.sub) {
+    if (!['대전지사', '부산지사'].includes(normalizeBranchName(r.consultant_branch)) && r.consultant_user_id !== user.sub) {
       return c.json({ error: '권한 없음' }, 403);
     }
   } else if (user.role === 'member' || user.role === 'support') {
@@ -526,7 +538,7 @@ cases.delete('/:id', requireRole(...CASES_DELETE_ROLES), async (c) => {
   const id = c.req.param('id');
   const reason = c.req.query('reason') || '';
 
-  if (user.role === 'admin' && user.branch !== '의정부') {
+  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     return c.json({ error: '삭제 권한이 없습니다.' }, 403);
   }
 
@@ -552,33 +564,47 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
   await ensureCaseHiddenTable(db);
   const period = c.req.query('period') || '';
+  const salaryOnlyMonth = c.req.query('salary_only_month') || '';
   if (!period) return c.json({ error: 'period is required (e.g. 2026-03_04)' }, 400);
+  if (salaryOnlyMonth) await ensurePayTypeHistoryTable(db);
+  const salaryOnlyFilter = salaryOnlyMonth
+    ? `AND ${payTypeAtMonthSql('c.consultant_user_id', "substr(c.registered_at, 1, 7)", 'ua.pay_type')} = 'salary'`
+    : '';
 
   // 명도성과금은 컨설턴트(consultant) 귀속
   // 조정 금액: 정액제 -150,000원 / 실비제 ÷1.1 (부가세 제외)
   const result = await db.prepare(`
-    SELECT consultant_user_id, consultant_name, consultant_position,
-      consultant_branch, consultant_department,
+    SELECT c.consultant_user_id, c.consultant_name, c.consultant_position,
+      c.consultant_branch, c.consultant_department,
+      MAX(u.name) as consultant_user_name,
       COUNT(*) as cnt,
-      COALESCE(SUM(fee_amount), 0) as total_fee_raw,
+      COALESCE(SUM(c.fee_amount), 0) as total_fee_raw,
       COALESCE(SUM(
         CASE
-          WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-          ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER)
+          WHEN c.fee_type = 'fixed' THEN MAX(0, c.fee_amount - 150000)
+          ELSE CAST(c.fee_amount * 1.0 / 1.1 AS INTEGER)
         END
       ), 0) as total_fee_adjusted
-    FROM cases
-    WHERE bimonthly_period = ? AND consultant_name IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
-    GROUP BY consultant_user_id, consultant_name
+    FROM cases c
+    LEFT JOIN users u ON u.id = c.consultant_user_id
+    LEFT JOIN user_accounting ua ON ua.user_id = c.consultant_user_id
+    WHERE c.bimonthly_period = ? AND c.consultant_name IS NOT NULL
+      ${salaryOnlyFilter}
+      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = c.external_id)
+    GROUP BY c.consultant_user_id, c.consultant_name
     ORDER BY total_fee_adjusted DESC
   `).bind(period).all<any>();
 
-  const summary = (result.results || []).map((r: any) => ({
-    ...r,
-    total_fee: r.total_fee_adjusted, // 호환: 기존 클라이언트가 total_fee 사용
-    bonus: calculateMyungdoBonus(r.total_fee_adjusted),
-  }));
+  const summary = (result.results || []).map((r: any) => {
+    const excluded = isCaseAllowanceExcludedName(r.consultant_name) || isCaseAllowanceExcludedName(r.consultant_user_name);
+    return {
+      ...r,
+      total_fee: r.total_fee_adjusted, // 호환: 기존 클라이언트가 total_fee 사용
+      bonus: excluded ? 0 : calculateCaseAllowance(r.total_fee_adjusted),
+      case_allowance_excluded: excluded,
+      case_allowance_exclusion_reason: excluded ? '안건수당 포상 제외 대상' : null,
+    };
+  });
 
   return c.json({
     period,
@@ -601,7 +627,7 @@ cases.get('/bonus/me', async (c) => {
       COALESCE(SUM(
         CASE
           WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-          ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER)
+          ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER)
         END
       ), 0) as total_fee_adjusted,
       COUNT(*) as cnt
@@ -610,6 +636,8 @@ cases.get('/bonus/me', async (c) => {
       AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
   `).bind(period, user.sub).first<any>();
 
+  const userInfo = await db.prepare('SELECT name FROM users WHERE id = ?').bind(user.sub).first<any>();
+  const excluded = isCaseAllowanceExcludedName(userInfo?.name || user.name);
   const adjusted = result?.total_fee_adjusted || 0;
   return c.json({
     period,
@@ -618,7 +646,9 @@ cases.get('/bonus/me', async (c) => {
     total_fee_adjusted: adjusted,
     total_fee: adjusted, // 호환
     case_count: result?.cnt || 0,
-    bonus: calculateMyungdoBonus(adjusted),
+    bonus: excluded ? 0 : calculateCaseAllowance(adjusted),
+    case_allowance_excluded: excluded,
+    case_allowance_exclusion_reason: excluded ? '안건수당 포상 제외 대상' : null,
   });
 });
 
@@ -631,7 +661,7 @@ cases.get('/bonus/me', async (c) => {
 //   - INSERT OR IGNORE (external_id UNIQUE) — 한 번 들어가면 변동 없음
 //   - contract_date / deposit_date = 마감월 말일 (예: 2026-04-30)
 //   - amount = 등급 성과금 (10/20/30/40/60/80만), 부가세 없음
-export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
+export async function finalizeCaseAllowance(env: any, period: string): Promise<{
   period: string;
   period_label: string;
   inserted: number;
@@ -657,20 +687,22 @@ export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
 
   // 컨설턴트별 합계 (조정 금액 기준)
   const summaryRes = await db.prepare(`
-    SELECT consultant_user_id, consultant_name,
-      consultant_branch, consultant_department,
+    SELECT c.consultant_user_id, c.consultant_name,
+      c.consultant_branch, c.consultant_department,
+      MAX(u.name) as consultant_user_name,
       COUNT(*) as cnt,
       COALESCE(SUM(
         CASE
-          WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-          ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER)
+          WHEN c.fee_type = 'fixed' THEN MAX(0, c.fee_amount - 150000)
+          ELSE CAST(c.fee_amount * 1.0 / 1.1 AS INTEGER)
         END
       ), 0) as total_fee_adjusted
-    FROM cases
-    WHERE bimonthly_period = ?
-      AND consultant_user_id IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
-    GROUP BY consultant_user_id
+    FROM cases c
+    LEFT JOIN users u ON u.id = c.consultant_user_id
+    WHERE c.bimonthly_period = ?
+      AND c.consultant_user_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = c.external_id)
+    GROUP BY c.consultant_user_id
   `).bind(period).all<any>();
 
   let inserted = 0, skipped = 0, ineligible = 0;
@@ -679,7 +711,12 @@ export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
   for (const r of (summaryRes.results || [])) {
     const userId = r.consultant_user_id;
     const userName = r.consultant_name || '';
-    const bonus = calculateMyungdoBonus(r.total_fee_adjusted);
+    if (isCaseAllowanceExcludedName(userName) || isCaseAllowanceExcludedName(r.consultant_user_name)) {
+      details.push({ user_id: userId, user_name: userName || r.consultant_user_name || '', bonus: 0, status: 'ineligible', reason: '안건수당 포상 제외 대상' });
+      ineligible++;
+      continue;
+    }
+    const bonus = calculateCaseAllowance(r.total_fee_adjusted);
     if (bonus <= 0) {
       details.push({ user_id: userId, user_name: userName, bonus: 0, status: 'ineligible', reason: '등급 미달' });
       ineligible++;
@@ -699,7 +736,12 @@ export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
       ineligible++;
       continue;
     }
-    const isHQ = u.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(u.role);
+    if (isCaseAllowanceExcludedName(u.name)) {
+      details.push({ user_id: userId, user_name: u.name || userName, bonus: 0, status: 'ineligible', reason: '안건수당 포상 제외 대상' });
+      ineligible++;
+      continue;
+    }
+    const isHQ = normalizeBranchName(u.branch) === '본사관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(u.role);
     if (isHQ) {
       details.push({ user_id: userId, user_name: userName, bonus, status: 'ineligible', reason: '본사관리' });
       ineligible++;
@@ -707,6 +749,7 @@ export async function finalizeMyungdoBonus(env: any, period: string): Promise<{
     }
 
     // INSERT OR IGNORE — external_id 중복이면 무시
+    // 안건 수당(구 명도포상)의 멱등성 키. 기존 DB 레코드 호환 위해 'myungdo-bonus-' prefix 유지
     const externalId = `myungdo-bonus-${userId}-${period}`;
     const id = `mb-${crypto.randomUUID().slice(0, 12)}`;
     const result = await db.prepare(`
@@ -746,7 +789,7 @@ cases.post('/finalize-bonus', requireRole('master', 'accountant'), async (c) => 
   const { period } = await c.req.json<{ period: string }>();
   if (!period) return c.json({ error: 'period is required' }, 400);
   try {
-    const result = await finalizeMyungdoBonus(c.env, period);
+    const result = await finalizeCaseAllowance(c.env, period);
     return c.json({ success: true, ...result });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);

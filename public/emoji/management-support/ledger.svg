@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+  <defs>
+    <linearGradient id="lg-cover" x1="5" y1="4" x2="31" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3a8fff"/>
+      <stop offset=".5" stop-color="#1a73e8"/>
+      <stop offset="1" stop-color="#0f3a7a"/>
+    </linearGradient>
+    <linearGradient id="lg-gloss" x1="5" y1="4" x2="5" y2="15" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="lg-gold" x1="0" y1="4" x2="0" y2="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset=".5" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="18" cy="32.5" rx="13" ry="1.2" fill="#0f172a" opacity=".18"/>
+  <rect x="6" y="4.5" width="25" height="27.5" rx="2" fill="#e8edf5"/>
+  <rect x="5" y="4" width="26" height="28" rx="2.2" fill="url(#lg-cover)"/>
+  <rect x="8.6" y="4" width="0.9" height="28" fill="#0f172a" opacity=".22"/>
+  <rect x="5" y="4" width="26" height="11" rx="2.2" fill="url(#lg-gloss)"/>
+  <rect x="12.5" y="11.5" width="14.5" height="9.5" rx="1.4" fill="url(#lg-gold)"/>
+  <text x="19.7" y="19" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="8.5" fill="#5a3b00" text-anchor="middle">₩</text>
+  <rect x="11" y="23.6" width="14" height="1.2" rx=".6" fill="#fff" opacity=".55"/>
+  <rect x="11" y="26.6" width="10" height="1.2" rx=".6" fill="#fff" opacity=".4"/>
+  <path d="M22.5 4 L26 4 L26 13.2 L24.25 11.6 L22.5 13.2 Z" fill="url(#lg-gold)"/>
+</svg>

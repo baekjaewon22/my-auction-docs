@@ -87,7 +87,7 @@ export async function evictionQuoteRecipients(db: D1Database): Promise<string[]>
         AND (
           u.department = '명도팀'
           OR t.name = '명도팀'
-          OR (u.branch = '의정부' AND u.position_title = '지사장')
+          OR (REPLACE(u.branch, ' ', '') IN ('의정부', '의정부본사') AND u.position_title = '지사장')
         )
     `).bind().all<{ phone: string }>();
     return (rows.results || []).map(r => r.phone).filter(Boolean);
@@ -132,7 +132,6 @@ export async function sendCommunityNoteCreatedAlimtalk(
       env,
       'COMMUNITY_DIRECT_SHARE',
       {
-        receiver_name: recipient.name,
         author_name: note.is_anonymous ? '익명' : note.author_name,
         title: note.title,
         date: noteDate(note),
@@ -163,7 +162,7 @@ export async function sendCommunityNoteCreatedAlimtalk(
     return { sent: !!result, templateKey: 'COMMUNITY_EVICTION_QUOTE', phones: phones.length };
   }
 
-  if (category === 'legal_support' && (note.legal_subcategory || 'consultation') === 'consultation') {
+  if (category === 'legal_support' && !['legal_terms', 'law_reference'].includes(note.legal_subcategory || 'lawsuit')) {
     const phones = await legalSupportRecipients(db);
     if (phones.length === 0) return { sent: false, phones: 0, reason: 'no legal support recipients' };
     const result = await sendAlimtalkByTemplate(
@@ -212,7 +211,7 @@ export async function sendCommunityCommentAlimtalk(
     return { sent: !!result, templateKey: 'COMMUNITY_EVICTION_QUOTE_ANSWERED', phones: 1 };
   }
 
-  if (category === 'legal_support' && (note.legal_subcategory || 'consultation') === 'consultation') {
+  if (category === 'legal_support' && !['legal_terms', 'law_reference'].includes(note.legal_subcategory || 'lawsuit')) {
     const result = await sendAlimtalkByTemplate(
       env,
       'COMMUNITY_LEGAL_SUPPORT_ANSWERED',

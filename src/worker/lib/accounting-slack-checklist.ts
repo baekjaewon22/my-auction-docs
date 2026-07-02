@@ -111,8 +111,8 @@ async function hasSuccessfulSlackAccountingLog(db: D1Database, runKey: string, g
 }
 
 const BRANCH_GROUPS: BranchGroup[] = [
-  { label: '의정부지사/대전지사', branches: ['의정부', '의정부지사', '대전', '대전지사'] },
-  { label: '서초지사', branches: ['서초', '서초지사'] },
+  { label: '의정부본사/대전지사', branches: ['의정부본사', '의정부', '의정부지사', '본사', '대전지사', '대전'] },
+  { label: '서초지사', branches: ['서초지사', '서초', '강남지사', '강남'] },
   { label: '부산지사', branches: ['부산', '부산지사'] },
 ];
 

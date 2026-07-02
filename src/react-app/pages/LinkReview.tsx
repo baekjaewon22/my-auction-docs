@@ -15,6 +15,7 @@ type Candidate = {
 export default function LinkReview() {
   const { user } = useAuthStore();
   const [items, setItems] = useState<Candidate[]>([]);
+  const [exemptions, setExemptions] = useState<any[]>([]);
   const [tab, setTab] = useState<'pending' | 'resolved' | 'skipped'>('pending');
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Record<string, Set<string>>>({});
@@ -22,8 +23,12 @@ export default function LinkReview() {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await api.links.reviewQueue(tab);
+      const [res, exemptionRes] = await Promise.all([
+        api.links.reviewQueue(tab),
+        tab === 'pending' ? api.links.outdoorExemptions('pending') : Promise.resolve({ items: [] }),
+      ]);
       setItems(res.items);
+      setExemptions(exemptionRes.items || []);
       // 기본 선택: tier가 명확한 후보가 1개면 자동 체크
       const initSel: Record<string, Set<string>> = {};
       for (const it of res.items) {
@@ -82,6 +87,27 @@ export default function LinkReview() {
     }
   };
 
+  const handleApproveExemption = async (id: string) => {
+    const comment = prompt('관리자 의견이 있으면 입력하세요. 없으면 비워두셔도 됩니다.') || '';
+    try {
+      await api.links.approveOutdoorExemption(id, comment);
+      load();
+    } catch (err: any) {
+      alert('승인 실패: ' + (err.message || ''));
+    }
+  };
+
+  const handleRejectExemption = async (id: string) => {
+    const comment = prompt('반려 사유를 입력하세요.');
+    if (!comment?.trim()) return;
+    try {
+      await api.links.rejectOutdoorExemption(id, comment.trim());
+      load();
+    } catch (err: any) {
+      alert('반려 실패: ' + (err.message || ''));
+    }
+  };
+
   const tierColor = (t: number) => t === 3 ? '#f9ab00' : t === 4 ? '#d93025' : '#1a73e8';
   const tierLabel = (t: number) => t === 3 ? 'Tier 3 (±3일)' : t === 4 ? 'Tier 4 (regex 실패)' : `Tier ${t}`;
   const purposeColor = (a: string) => a === '입찰' ? '#d93025' : a === '임장' ? '#188038' : '#1a73e8';
@@ -109,12 +135,45 @@ export default function LinkReview() {
 
       {loading ? (
         <div style={{ padding: 40, textAlign: 'center', color: '#9aa0a6' }}>로딩 중...</div>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && exemptions.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', color: '#9aa0a6' }}>
           {tab === 'pending' ? '검수 대기 항목이 없습니다.' : '항목이 없습니다.'}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {tab === 'pending' && exemptions.length > 0 && (
+            <div style={{ border: '1px solid #f9ab00', borderRadius: 8, padding: 14, background: '#fffdf5' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <AlertTriangle size={16} color="#e65100" />
+                <strong>외근보고서 면제 사유서 승인 대기</strong>
+                <span style={{ fontSize: '0.72rem', color: '#e65100', fontWeight: 700 }}>{exemptions.length}건</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {exemptions.map((ex) => (
+                  <div key={ex.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid #f1e4b8', borderRadius: 6, background: '#fff' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '0.82rem', fontWeight: 700 }}>
+                        {ex.user_name || '-'} · {ex.target_date} · {ex.activity_type}
+                        {ex.time_from && <span style={{ marginLeft: 6, color: '#5f6368', fontWeight: 500 }}>{ex.time_from}{ex.time_to ? `~${ex.time_to}` : ''}</span>}
+                      </div>
+                      <div style={{ fontSize: '0.76rem', color: '#5f6368', marginTop: 3 }}>
+                        {ex.case_no && <span>{ex.case_no} · </span>}{ex.place || ex.client || ''}
+                      </div>
+                      <div style={{ fontSize: '0.76rem', color: '#3c4043', marginTop: 4 }}>
+                        <strong>{ex.reason_type}</strong> — {ex.reason_detail}
+                      </div>
+                    </div>
+                    <button className="btn btn-sm btn-primary" onClick={() => handleApproveExemption(ex.id)}>
+                      <Check size={13} /> 승인
+                    </button>
+                    <button className="btn btn-sm" onClick={() => handleRejectExemption(ex.id)} style={{ color: '#d93025', borderColor: '#d93025' }}>
+                      <X size={13} /> 반려
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {items.map((it) => (
             <div key={it.id} style={{
               border: '1px solid #e8eaed', borderRadius: 8, padding: 14,

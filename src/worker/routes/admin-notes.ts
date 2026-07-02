@@ -4,11 +4,13 @@ import { authMiddleware } from '../middleware/auth';
 import { sendCommunityCommentAlimtalk, sendCommunityNoteCreatedAlimtalk } from '../lib/community-alimtalk';
 import { recheckAlertsAfterEntryDelete, recheckAlertsForJournalEntry } from '../lib/journal-alerts';
 import { articleObjectKey, ensureArticlePdfTable, safePdfFileName, sha256Hex } from '../lib/article-pdfs';
+import { ensureBidAnalysisTable, makeBidDedupeKey, normalizeAmount, normalizeBidResult } from '../lib/bid-analysis';
+import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 const ADMIN_ROLES: Role[] = ['master', 'ceo', 'cc_ref', 'admin'];
-const NOTE_CATEGORIES = ['community', 'article_news', 'briefing_schedule', 'eviction_quote', 'legal_support'] as const;
+const NOTE_CATEGORIES = ['community', 'notice', 'article_news', 'briefing_schedule', 'resource_library', 'eviction_quote', 'legal_support'] as const;
 type NoteCategory = typeof NOTE_CATEGORIES[number];
-const LEGAL_SUBCATEGORIES = ['consultation', 'law_reference'] as const;
+const LEGAL_SUBCATEGORIES = ['auction', 'lawsuit', 'legal_terms', 'fee_calculation'] as const;
 type LegalSubcategory = typeof LEGAL_SUBCATEGORIES[number];
 const KST_NOW_SQL = "datetime('now', '+9 hours')";
 const MAX_ARTICLE_PDF_BYTES = 20 * 1024 * 1024;
@@ -22,12 +24,20 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
     'ALTER TABLE admin_notes ADD COLUMN category TEXT DEFAULT "community"',
     'ALTER TABLE admin_notes ADD COLUMN court TEXT',
     'ALTER TABLE admin_notes ADD COLUMN case_number TEXT',
-    'ALTER TABLE admin_notes ADD COLUMN legal_subcategory TEXT DEFAULT "consultation"',
+    'ALTER TABLE admin_notes ADD COLUMN legal_subcategory TEXT DEFAULT "lawsuit"',
     'ALTER TABLE admin_notes ADD COLUMN assignee_id TEXT',
     'ALTER TABLE admin_notes ADD COLUMN target_date TEXT',
     'ALTER TABLE admin_notes ADD COLUMN item_no TEXT',
     'ALTER TABLE admin_notes ADD COLUMN client_name TEXT',
     'ALTER TABLE admin_notes ADD COLUMN journal_entry_id TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN lawsuit_cost_requested INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE admin_notes ADD COLUMN source_type TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN source_id TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN is_anonymous INTEGER DEFAULT 0',
+    'ALTER TABLE admin_notes ADD COLUMN visibility TEXT DEFAULT "all"',
+    'ALTER TABLE admin_notes ADD COLUMN author_branch TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN author_department TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0',
   ];
   for (const sql of columns) {
     try { await db.prepare(sql).run(); } catch { /* already exists */ }
@@ -44,10 +54,36 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
       FOREIGN KEY (note_id) REFERENCES admin_notes(id) ON DELETE CASCADE
     )
   `).run();
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS admin_note_view_logs (
+      id TEXT PRIMARY KEY,
+      note_id TEXT NOT NULL,
+      viewer_id TEXT NOT NULL,
+      viewed_date TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now', '+9 hours')),
+      FOREIGN KEY (note_id) REFERENCES admin_notes(id) ON DELETE CASCADE
+    )
+  `).run();
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS resource_library_files (
+      id TEXT PRIMARY KEY,
+      note_id TEXT NOT NULL,
+      object_key TEXT NOT NULL UNIQUE,
+      file_name TEXT NOT NULL,
+      file_type TEXT DEFAULT '',
+      file_size INTEGER DEFAULT 0,
+      uploaded_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now', '+9 hours')),
+      FOREIGN KEY (note_id) REFERENCES admin_notes(id) ON DELETE CASCADE
+    )
+  `).run();
+  await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_note_view_logs_daily ON admin_note_view_logs(note_id, viewer_id, viewed_date)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_category ON admin_notes(category)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_legal_subcategory ON admin_notes(legal_subcategory)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_journal_entry ON admin_notes(journal_entry_id)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_attachments_note ON admin_note_attachments(note_id)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_view_logs_note ON admin_note_view_logs(note_id)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_resource_library_files_note ON resource_library_files(note_id)').run();
   await ensureArticlePdfTable(db);
 }
 
@@ -56,19 +92,64 @@ function normalizeCategory(category: unknown): NoteCategory {
 }
 
 function normalizeLegalSubcategory(value: unknown): LegalSubcategory {
-  return LEGAL_SUBCATEGORIES.includes(value as LegalSubcategory) ? value as LegalSubcategory : 'consultation';
+  if (value === 'consultation') return 'lawsuit';
+  if (value === 'law_reference') return 'legal_terms';
+  return LEGAL_SUBCATEGORIES.includes(value as LegalSubcategory) ? value as LegalSubcategory : 'lawsuit';
 }
 
 function canCreateBriefingSchedule(role: string) {
   return ADMIN_ROLES.includes(role as Role);
 }
 
+function canManageBidHistory(role: string) {
+  return ADMIN_ROLES.includes(role as Role);
+}
+
+function normalizeBidAnalysisPayload(raw: any) {
+  const bidResult = normalizeBidResult(raw?.bid_result ?? raw?.is_won);
+  return {
+    bid_datetime: String(raw?.bid_datetime || raw?.bid_date || '').trim(),
+    assignee_name: String(raw?.assignee_name || '').trim(),
+    branch_name: String(raw?.branch_name || '').trim(),
+    case_number: String(raw?.case_number || '').trim(),
+    property_type: String(raw?.property_type || '').trim(),
+    suggested_bid_price: normalizeAmount(raw?.suggested_bid_price),
+    actual_bid_price: normalizeAmount(raw?.actual_bid_price),
+    winning_price: normalizeAmount(raw?.winning_price),
+    bid_result: bidResult,
+    client_name: String(raw?.client_name || '').trim(),
+  };
+}
+
+function canCreateNotice(role: string) {
+  return ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
+}
+
+function canCreateLegalTerms(role: string, department?: string | null) {
+  return ADMIN_ROLES.includes(role as Role) || role === 'support' || String(department || '').includes('법률지원');
+}
+
+function canAnswerLegalSubcategory(legalSubcategory?: string | null) {
+  return normalizeLegalSubcategory(legalSubcategory) !== 'legal_terms';
+}
+
+function shouldTrackLawsuitCost(legalSubcategory?: string | null) {
+  const normalized = normalizeLegalSubcategory(legalSubcategory);
+  return normalized === 'auction' || normalized === 'lawsuit';
+}
+
+const LEGAL_SUBCATEGORY_SQL = `CASE COALESCE(n.legal_subcategory, 'lawsuit')
+  WHEN 'consultation' THEN 'lawsuit'
+  WHEN 'law_reference' THEN 'legal_terms'
+  ELSE COALESCE(n.legal_subcategory, 'lawsuit')
+END`;
+
 function canReadNote(note: any, viewer: any, viewerInfo: { branch?: string | null; department?: string | null } | null, role: string): boolean {
   if (role === 'master' || note.author_id === viewer.sub) return true;
   const v = note.visibility || 'all';
   return v === 'all' ||
-    (v === 'branch' && note.author_branch === viewerInfo?.branch) ||
-    (v === 'department' && note.author_branch === viewerInfo?.branch && note.author_department === viewerInfo?.department) ||
+    (v === 'branch' && sameBranchName(note.author_branch, viewerInfo?.branch)) ||
+    (v === 'department' && sameBranchName(note.author_branch, viewerInfo?.branch) && note.author_department === viewerInfo?.department) ||
     (v.startsWith('team:') && v === 'team:' + viewerInfo?.department) ||
     (v.startsWith('user:') && v === 'user:' + viewer.sub);
 }
@@ -92,6 +173,38 @@ function normalizeArticleDate(raw: unknown): string | null {
 
 function pdfContentDisposition(fileName: string): string {
   return `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
+
+function attachmentContentDisposition(fileName: string): string {
+  return `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
+
+function safeResourceFileName(name: string): string {
+  return String(name || 'download')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160) || 'download';
+}
+
+function resourceObjectKey(noteId: string, fileId: string, fileName: string): string {
+  return `resource-library/${noteId}/${fileId}-${safeResourceFileName(fileName)}`;
+}
+
+function dataUrlToArrayBuffer(dataUrl: string): { buffer: ArrayBuffer; contentType: string } | null {
+  const match = String(dataUrl || '').match(/^data:([^;,]*)(;base64)?,(.*)$/s);
+  if (!match) return null;
+  const contentType = match[1] || 'application/octet-stream';
+  const isBase64 = !!match[2];
+  const payload = match[3] || '';
+  if (isBase64) {
+    const binary = atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return { buffer: bytes.buffer, contentType };
+  }
+  const text = decodeURIComponent(payload);
+  return { buffer: new TextEncoder().encode(text).buffer, contentType };
 }
 
 async function resolveArticleApiAuthor(db: D1Database, user: any) {
@@ -134,10 +247,105 @@ function makeBriefingContent(payload: { targetDate: string; assigneeName: string
   ].join('\n');
 }
 
+export async function syncBriefingSchedulesFromJournal(db: D1Database): Promise<void> {
+  const rows = await db.prepare(`
+    SELECT j.id, j.user_id, j.target_date, j.activity_subtype, j.data, j.branch, j.department, j.created_at,
+      u.name as user_name, u.branch as user_branch, u.department as user_department
+    FROM journal_entries j
+    LEFT JOIN users u ON u.id = j.user_id
+    WHERE j.activity_type = '브리핑자료제출'
+    ORDER BY j.target_date DESC, j.created_at DESC
+  `).all<any>();
+
+  for (const row of rows.results || []) {
+    let data: Record<string, unknown> = {};
+    try {
+      data = JSON.parse(String(row.data || '{}'));
+    } catch {
+      data = {};
+    }
+
+    const targetDate = String(row.target_date || '').trim();
+    const assigneeId = String(row.user_id || '').trim();
+    const assigneeName = String(row.user_name || '').trim();
+    const court = String(data.briefingCourt || data.court || '').trim();
+    const caseNumber = String(data.briefingCaseNo || row.activity_subtype || data.caseNo || '').trim();
+    const itemNo = String(data.briefingItemNo || data.itemNo || '').trim();
+    const clientName = String(data.client || data.clientName || data.bidder || '').trim();
+    if (!targetDate || !assigneeId || !caseNumber) continue;
+
+    const title = `${targetDate} ${assigneeName || '담당자'} 브리핑자료 제출`;
+    const content = makeBriefingContent({
+      targetDate,
+      assigneeName: assigneeName || '담당자',
+      court,
+      caseNumber,
+      itemNo,
+      clientName,
+    });
+    const branch = String(row.branch || row.user_branch || '').trim();
+    const department = String(row.department || row.user_department || '').trim();
+
+    const existing = await db.prepare(`
+      SELECT id
+      FROM admin_notes
+      WHERE COALESCE(category, 'community') = 'briefing_schedule'
+        AND (
+          journal_entry_id = ?
+          OR (
+            target_date = ?
+            AND assignee_id = ?
+            AND case_number = ?
+            AND COALESCE(item_no, '') = ?
+          )
+        )
+      ORDER BY CASE WHEN journal_entry_id = ? THEN 0 ELSE 1 END, created_at DESC
+      LIMIT 1
+    `).bind(row.id, targetDate, assigneeId, caseNumber, itemNo, row.id).first<{ id: string }>();
+
+    if (existing?.id) {
+      await db.prepare(`
+        UPDATE admin_notes
+        SET title = ?, content = ?, author_id = ?, author_name = ?, visibility = 'all',
+          author_branch = ?, author_department = ?, category = 'briefing_schedule',
+          court = ?, case_number = ?, assignee_id = ?, target_date = ?, item_no = ?,
+          client_name = ?, journal_entry_id = ?, source_type = 'journal', source_id = ?,
+          updated_at = ${KST_NOW_SQL}
+        WHERE id = ?
+      `).bind(
+        title, content, assigneeId, assigneeName,
+        branch, department, court, caseNumber, assigneeId, targetDate, itemNo,
+        clientName, row.id, row.id, existing.id,
+      ).run();
+      continue;
+    }
+
+    await db.prepare(`
+      INSERT INTO admin_notes (
+        id, title, content, author_id, author_name, pinned, source_type, source_id,
+        is_anonymous, visibility, author_branch, author_department, category,
+        court, case_number, assignee_id, target_date, item_no, client_name,
+        journal_entry_id, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, 0, 'journal', ?, 0, 'all', ?, ?, 'briefing_schedule',
+        ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ${KST_NOW_SQL}), ${KST_NOW_SQL})
+    `).bind(
+      crypto.randomUUID(), title, content, assigneeId, assigneeName, row.id,
+      branch, department, court, caseNumber, assigneeId, targetDate, itemNo,
+      clientName, row.id, row.created_at,
+    ).run();
+  }
+}
+
 // 익명 처리: 대표/관리자에겐 "익명 (이름 / 직책)", 일반에겐 "익명"
 function maskNote(note: any, viewerRole: string) {
-  if (!note.is_anonymous) return note;
   const isAdmin = ADMIN_ROLES.includes(viewerRole as Role);
+  if (isAdmin) {
+    note.view_count = Math.ceil(Number(note.view_count || 0) * 1.35);
+  } else {
+    delete note.view_count;
+  }
+  if (!note.is_anonymous) return note;
   if (isAdmin) {
     note.display_name = `익명 (${note.author_name}${note.author_position ? ' / ' + note.author_position : ''})`;
   } else {
@@ -165,9 +373,18 @@ function maskComment(comment: any, viewerRole: string) {
 
 // GET /api/admin-notes - 목록 조회
 function myAlertCategoryLabel(category: string | null, legalSubcategory?: string | null): string {
-  if (category === 'legal_support') return legalSubcategory === 'law_reference' ? '법령자료' : '법률지원';
+  if (category === 'legal_support') {
+    const labels: Record<LegalSubcategory, string> = {
+      auction: '경매',
+      lawsuit: '소송',
+      legal_terms: '법률용어',
+      fee_calculation: '보수계산',
+    };
+    return labels[normalizeLegalSubcategory(legalSubcategory)];
+  }
+  if (category === 'notice') return '공지사항';
   if (category === 'eviction_quote') return '명도견적';
-  if (category === 'briefing_schedule') return '브리핑일정';
+  if (category === 'briefing_schedule') return '브리핑자료 제출';
   if (category === 'article_news') return '오늘의 뉴스';
   return '커뮤니티';
 }
@@ -247,8 +464,9 @@ adminNotes.get('/my-alerts', async (c) => {
   const seen = new Set<string>();
   const makeLink = (category: string | null) => {
     if (category === 'legal_support') return '/admin-notes?tab=legal_support';
+    if (category === 'notice') return '/admin-notes?section=notice';
     if (category === 'eviction_quote') return '/admin-notes?tab=eviction_quote';
-    if (category === 'briefing_schedule') return '/admin-notes?section=briefing_schedule';
+    if (category === 'briefing_schedule') return '/bid-history';
     if (category === 'article_news') return '/admin-notes?section=article_news';
     return '/admin-notes';
   };
@@ -290,7 +508,7 @@ adminNotes.get('/', async (c) => {
   const viewer = c.get('user');
   const category = normalizeCategory(c.req.query('category') || 'community');
   const search = (c.req.query('search') || '').trim();
-  const legalSubcategory = normalizeLegalSubcategory(c.req.query('legal_subcategory') || 'consultation');
+  const legalSubcategory = normalizeLegalSubcategory(c.req.query('legal_subcategory') || 'lawsuit');
 
   // 사용자 정보 조회 (branch, department)
   const viewerInfo = await db.prepare(
@@ -302,7 +520,6 @@ adminNotes.get('/', async (c) => {
   if (category === 'briefing_schedule' && !canCreateBriefingSchedule(role)) {
     return c.json({ error: '브리핑자료 제출 카테고리 열람 권한이 없습니다.' }, 403);
   }
-
   // visibility 필터링 — master만 전체 열람, 그 외는 전부 visibility 조건 적용
   let notes;
   if (role === 'master') {
@@ -310,11 +527,11 @@ adminNotes.get('/', async (c) => {
     notes = await db.prepare(
       `SELECT n.*, u.position_title as author_position,
          (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = n.id) as comment_count,
-         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL)) as attachment_count
+         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL) + (SELECT COUNT(*) FROM resource_library_files rf WHERE rf.note_id = n.id)) as attachment_count
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
        WHERE COALESCE(n.category, 'community') = ?
-         AND (? != 'legal_support' OR COALESCE(n.legal_subcategory, 'consultation') = ?)
+         AND (? != 'legal_support' OR ${LEGAL_SUBCATEGORY_SQL} = ?)
          AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ? OR COALESCE(n.client_name, '') LIKE ? OR COALESCE(n.target_date, '') LIKE ?)
        ORDER BY n.pinned DESC, n.created_at DESC`
     ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`).all();
@@ -323,11 +540,11 @@ adminNotes.get('/', async (c) => {
     notes = await db.prepare(
       `SELECT n.*, u.position_title as author_position,
          (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = n.id) as comment_count,
-         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL)) as attachment_count
+         ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL) + (SELECT COUNT(*) FROM resource_library_files rf WHERE rf.note_id = n.id)) as attachment_count
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
        WHERE COALESCE(n.category, 'community') = ?
-         AND (? != 'legal_support' OR COALESCE(n.legal_subcategory, 'consultation') = ?)
+         AND (? != 'legal_support' OR ${LEGAL_SUBCATEGORY_SQL} = ?)
          AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ? OR COALESCE(n.client_name, '') LIKE ? OR COALESCE(n.target_date, '') LIKE ?)
          AND (
            n.visibility = 'all'
@@ -354,12 +571,12 @@ adminNotes.get('/briefing-autofill', async (c) => {
   const caseNumber = (c.req.query('case_number') || '').trim();
 
   const profile = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(viewer.sub).first<{ role: string; branch: string }>();
-  if (!canCreateBriefingSchedule(profile?.role || viewer.role)) return c.json({ error: '브리핑자료 일정 등록 권한이 없습니다.' }, 403);
+  if (!canCreateBriefingSchedule(profile?.role || viewer.role)) return c.json({ error: '브리핑자료 제출 등록 권한이 없습니다.' }, 403);
   if (!assigneeId) return c.json({ match: null });
 
   const assignee = await db.prepare('SELECT id, branch FROM users WHERE id = ? AND approved = 1').bind(assigneeId).first<{ id: string; branch: string }>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
-  if ((profile?.role || viewer.role) === 'admin' && assignee.branch !== profile?.branch) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
+  if ((profile?.role || viewer.role) === 'admin' && !sameBranchName(assignee.branch, profile?.branch)) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
 
   let row: any = null;
   if (caseNumber) {
@@ -568,11 +785,353 @@ adminNotes.get('/articles/:articleId/download', async (c) => {
   });
 });
 
+// GET /api/admin-notes/resource-library/:fileId/download - 자료실 파일 다운로드
+adminNotes.get('/resource-library/:fileId/download', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  await ensureAdminNoteExtensions(db);
+  if (!c.env.ARTICLE_BUCKET) return c.json({ error: 'ARTICLE_BUCKET R2 바인딩이 설정되지 않았습니다.' }, 500);
+
+  const fileId = c.req.param('fileId');
+  const row = await db.prepare(`
+    SELECT rf.*, n.author_id, n.visibility, n.author_branch, n.author_department, n.category
+    FROM resource_library_files rf
+    JOIN admin_notes n ON n.id = rf.note_id
+    WHERE rf.id = ?
+  `).bind(fileId).first<any>();
+  if (!row) return c.json({ error: '자료 파일을 찾을 수 없습니다.' }, 404);
+
+  const viewerInfo = await db.prepare('SELECT role, branch, department FROM users WHERE id = ?').bind(user.sub).first<{ role: string; branch: string; department: string }>();
+  const role = viewerInfo?.role || user.role;
+  if (!canReadNote(row, user, viewerInfo, role)) return c.json({ error: '열람 권한이 없습니다.' }, 403);
+
+  const object = await c.env.ARTICLE_BUCKET.get(row.object_key);
+  if (!object) return c.json({ error: 'R2 객체를 찾을 수 없습니다.' }, 404);
+
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': row.file_type || object.httpMetadata?.contentType || 'application/octet-stream',
+      'Content-Length': String(object.size),
+      'Content-Disposition': attachmentContentDisposition(row.file_name),
+      'Cache-Control': 'private, max-age=300',
+    },
+  });
+});
+
+adminNotes.get('/bid-analysis', async (c) => {
+  const db = c.env.DB;
+  await ensureBidAnalysisTable(db);
+  const user = c.get('user');
+  if (!canManageBidHistory(user.role)) return c.json({ error: '입찰분석 열람 권한이 없습니다.' }, 403);
+
+  const page = Math.max(1, Number(c.req.query('page') || 1) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(c.req.query('page_size') || 15) || 15));
+  const from = String(c.req.query('from') || '').trim();
+  const to = String(c.req.query('to') || '').trim();
+  const branch = normalizeBranchName(c.req.query('branch') || '');
+  const assignee = String(c.req.query('assignee') || '').trim();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+    conditions.push('substr(bid_datetime, 1, 10) >= ?');
+    params.push(from);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    conditions.push('substr(bid_datetime, 1, 10) <= ?');
+    params.push(to);
+  }
+  if (branch) {
+    conditions.push('branch_name = ?');
+    params.push(branch);
+  }
+  if (assignee) {
+    conditions.push('assignee_name = ?');
+    params.push(assignee);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const totalRow = await db.prepare(`SELECT COUNT(*) as total FROM bid_analysis_entries ${where}`).bind(...params).first<{ total: number }>();
+  const rows = await db.prepare(`
+    SELECT id, bid_datetime, assignee_name, branch_name, case_number, property_type,
+           suggested_bid_price, actual_bid_price, winning_price, is_won, bid_result,
+           client_name, source_type, manual_override, created_at
+    FROM bid_analysis_entries
+    ${where}
+    ORDER BY bid_datetime DESC, created_at DESC
+    LIMIT ? OFFSET ?
+  `).bind(...params, pageSize, (page - 1) * pageSize).all();
+  const branchRows = await db.prepare("SELECT DISTINCT branch_name FROM bid_analysis_entries WHERE branch_name != '' ORDER BY branch_name").all<{ branch_name: string }>();
+  const assigneeRows = await db.prepare("SELECT DISTINCT assignee_name FROM bid_analysis_entries WHERE assignee_name != '' ORDER BY assignee_name").all<{ assignee_name: string }>();
+
+  return c.json({
+    rows: rows.results || [],
+    total: totalRow?.total || 0,
+    page,
+    page_size: pageSize,
+    filters: {
+      branches: (branchRows.results || []).map(r => r.branch_name),
+      assignees: (assigneeRows.results || []).map(r => r.assignee_name),
+    },
+  });
+});
+
+adminNotes.get('/bid-analysis/stats', async (c) => {
+  const db = c.env.DB;
+  await ensureBidAnalysisTable(db);
+  const user = c.get('user');
+  if (!canManageBidHistory(user.role)) return c.json({ error: '입찰분석 열람 권한이 없습니다.' }, 403);
+
+  const from = String(c.req.query('from') || '').trim();
+  const to = String(c.req.query('to') || '').trim();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+    conditions.push('substr(bid_datetime, 1, 10) >= ?');
+    params.push(from);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    conditions.push('substr(bid_datetime, 1, 10) <= ?');
+    params.push(to);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = await db.prepare(`
+    SELECT id, bid_datetime, assignee_name, branch_name, case_number, property_type,
+           suggested_bid_price, actual_bid_price, winning_price, is_won, bid_result,
+           client_name, source_type, manual_override, created_at
+    FROM bid_analysis_entries
+    ${where}
+    ORDER BY bid_datetime DESC, created_at DESC
+    LIMIT 10000
+  `).bind(...params).all();
+  return c.json({ rows: rows.results || [] });
+});
+
+adminNotes.post('/bid-analysis', async (c) => {
+  const db = c.env.DB;
+  await ensureBidAnalysisTable(db);
+  const user = c.get('user');
+  if (!canManageBidHistory(user.role)) return c.json({ error: '입찰분석 입력 권한이 없습니다.' }, 403);
+
+  const payload = normalizeBidAnalysisPayload(await c.req.json());
+  if (!payload.bid_datetime) return c.json({ error: '입찰일을 입력하세요.' }, 400);
+  if (!payload.case_number) return c.json({ error: '사건번호를 입력하세요.' }, 400);
+  const id = crypto.randomUUID();
+  await db.prepare(`
+    INSERT INTO bid_analysis_entries (
+      id, bid_datetime, assignee_name, branch_name, case_number, property_type,
+      suggested_bid_price, actual_bid_price, winning_price, is_won, bid_result,
+      client_name, source_type, source_id, dedupe_key, uploaded_by, manual_override,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, 1, ${KST_NOW_SQL}, ${KST_NOW_SQL})
+  `).bind(
+    id,
+    payload.bid_datetime,
+    payload.assignee_name,
+    payload.branch_name,
+    payload.case_number,
+    payload.property_type,
+    payload.suggested_bid_price,
+    payload.actual_bid_price,
+    payload.winning_price,
+    payload.bid_result === '낙찰' ? 1 : 0,
+    payload.bid_result,
+    payload.client_name,
+    id,
+    `manual|${id}`,
+    user.sub,
+  ).run();
+  return c.json({ success: true, id });
+});
+
+adminNotes.put('/bid-analysis/:id', async (c) => {
+  const db = c.env.DB;
+  await ensureBidAnalysisTable(db);
+  const user = c.get('user');
+  if (!canManageBidHistory(user.role)) return c.json({ error: '입찰분석 수정 권한이 없습니다.' }, 403);
+  const id = c.req.param('id');
+  const existing = await db.prepare('SELECT id FROM bid_analysis_entries WHERE id = ?').bind(id).first<{ id: string }>();
+  if (!existing) return c.json({ error: '입찰분석 내역을 찾을 수 없습니다.' }, 404);
+  const payload = normalizeBidAnalysisPayload(await c.req.json());
+  if (!payload.bid_datetime) return c.json({ error: '입찰일을 입력하세요.' }, 400);
+  if (!payload.case_number) return c.json({ error: '사건번호를 입력하세요.' }, 400);
+  await db.prepare(`
+    UPDATE bid_analysis_entries
+    SET bid_datetime = ?, assignee_name = ?, branch_name = ?, case_number = ?, property_type = ?,
+      suggested_bid_price = ?, actual_bid_price = ?, winning_price = ?, is_won = ?, bid_result = ?,
+      client_name = ?, manual_override = 1, uploaded_by = COALESCE(uploaded_by, ?), updated_at = ${KST_NOW_SQL}
+    WHERE id = ?
+  `).bind(
+    payload.bid_datetime,
+    payload.assignee_name,
+    payload.branch_name,
+    payload.case_number,
+    payload.property_type,
+    payload.suggested_bid_price,
+    payload.actual_bid_price,
+    payload.winning_price,
+    payload.bid_result === '낙찰' ? 1 : 0,
+    payload.bid_result,
+    payload.client_name,
+    user.sub,
+    id,
+  ).run();
+  return c.json({ success: true });
+});
+
+adminNotes.post('/bid-analysis/bulk', async (c) => {
+  const db = c.env.DB;
+  await ensureBidAnalysisTable(db);
+  const user = c.get('user');
+  if (!canManageBidHistory(user.role)) return c.json({ error: '입찰분석 업로드 권한이 없습니다.' }, 403);
+
+  const { rows, source_file_name } = await c.req.json();
+  if (!Array.isArray(rows) || rows.length === 0) return c.json({ error: '업로드할 행이 없습니다.' }, 400);
+  if (rows.length > 2000) return c.json({ error: '한 번에 최대 2,000건까지 업로드할 수 있습니다.' }, 400);
+
+  const batchId = crypto.randomUUID();
+  let inserted = 0;
+  const seen = new Set<string>();
+  const users = await db.prepare("SELECT name, branch FROM users WHERE approved = 1 AND name != ''").all<{ name: string; branch: string }>();
+  const branchByName = new Map((users.results || []).map(row => [String(row.name).trim(), row.branch || '']));
+  const statements: D1PreparedStatement[] = [];
+  for (const raw of rows) {
+    const bidDatetime = String(raw?.bid_datetime || '').trim();
+    if (!bidDatetime) continue;
+    const assigneeName = String(raw?.assignee_name || '').trim();
+    const input = {
+      bid_datetime: bidDatetime,
+      assignee_name: assigneeName,
+      branch_name: String(raw?.branch_name || '').trim() || branchByName.get(assigneeName) || '',
+      case_number: String(raw?.case_number || '').trim(),
+      property_type: String(raw?.property_type || '').trim(),
+      suggested_bid_price: normalizeAmount(raw?.suggested_bid_price),
+      actual_bid_price: normalizeAmount(raw?.actual_bid_price),
+      winning_price: normalizeAmount(raw?.winning_price),
+      bid_result: normalizeBidResult(raw?.bid_result ?? raw?.is_won),
+      client_name: String(raw?.client_name || '').trim(),
+      source_type: 'excel',
+      source_file_name: String(source_file_name || '').trim() || null,
+      upload_batch: batchId,
+      uploaded_by: user.sub,
+    } as const;
+    const dedupeKey = makeBidDedupeKey(input);
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const bidResult = normalizeBidResult(input.bid_result);
+    statements.push(db.prepare(`
+      INSERT INTO bid_analysis_entries (
+        id, bid_datetime, assignee_name, branch_name, case_number, property_type,
+        suggested_bid_price, actual_bid_price, winning_price, is_won, bid_result,
+        client_name, source_type, source_id, dedupe_key, source_file_name, upload_batch, uploaded_by,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})
+      ON CONFLICT(dedupe_key) DO UPDATE SET
+        bid_datetime = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.bid_datetime ELSE excluded.bid_datetime END,
+        assignee_name = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.assignee_name ELSE COALESCE(NULLIF(excluded.assignee_name, ''), bid_analysis_entries.assignee_name) END,
+        branch_name = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.branch_name ELSE COALESCE(NULLIF(excluded.branch_name, ''), bid_analysis_entries.branch_name) END,
+        case_number = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.case_number ELSE COALESCE(NULLIF(excluded.case_number, ''), bid_analysis_entries.case_number) END,
+        property_type = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.property_type ELSE COALESCE(NULLIF(excluded.property_type, ''), bid_analysis_entries.property_type) END,
+        suggested_bid_price = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.suggested_bid_price ELSE COALESCE(excluded.suggested_bid_price, bid_analysis_entries.suggested_bid_price) END,
+        actual_bid_price = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.actual_bid_price ELSE COALESCE(excluded.actual_bid_price, bid_analysis_entries.actual_bid_price) END,
+        winning_price = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.winning_price ELSE COALESCE(excluded.winning_price, bid_analysis_entries.winning_price) END,
+        is_won = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.is_won ELSE excluded.is_won END,
+        bid_result = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.bid_result ELSE excluded.bid_result END,
+        client_name = CASE WHEN bid_analysis_entries.manual_override = 1 OR bid_analysis_entries.source_type = 'journal' THEN bid_analysis_entries.client_name ELSE COALESCE(NULLIF(excluded.client_name, ''), bid_analysis_entries.client_name) END,
+        source_type = CASE WHEN bid_analysis_entries.source_type IN ('journal', 'freelancer') THEN bid_analysis_entries.source_type ELSE excluded.source_type END,
+        source_id = COALESCE(bid_analysis_entries.source_id, excluded.source_id),
+        source_file_name = COALESCE(excluded.source_file_name, bid_analysis_entries.source_file_name),
+        upload_batch = COALESCE(excluded.upload_batch, bid_analysis_entries.upload_batch),
+        uploaded_by = COALESCE(excluded.uploaded_by, bid_analysis_entries.uploaded_by),
+        updated_at = ${KST_NOW_SQL}
+    `).bind(
+      crypto.randomUUID(),
+      input.bid_datetime,
+      input.assignee_name,
+      input.branch_name,
+      input.case_number,
+      input.property_type,
+      input.suggested_bid_price,
+      input.actual_bid_price,
+      input.winning_price,
+      bidResult === normalizeBidResult('1') ? 1 : 0,
+      bidResult,
+      input.client_name,
+      input.source_type,
+      null,
+      dedupeKey,
+      input.source_file_name,
+      input.upload_batch,
+      input.uploaded_by,
+    ));
+    inserted++;
+  }
+  const batchSize = 100;
+  for (let i = 0; i < statements.length; i += batchSize) {
+    await db.batch(statements.slice(i, i + batchSize));
+  }
+
+  return c.json({ success: true, inserted, batch_id: batchId });
+});
+
+adminNotes.get('/bid-match-check', async (c) => {
+  const db = c.env.DB;
+  await ensureAdminNoteExtensions(db);
+  await ensureBidAnalysisTable(db);
+  const user = c.get('user');
+  if (!canManageBidHistory(user.role)) return c.json({ error: '자료.입찰 확인 권한이 없습니다.' }, 403);
+
+  const normalizeCase = (value: unknown) => String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/[()]/g, '')
+    .toLowerCase();
+  const briefingKeys = (row: any) => {
+    const base = normalizeCase(row.case_number);
+    const item = normalizeCase(row.item_no);
+    return new Set([base, item ? `${base}${item}` : base].filter(Boolean));
+  };
+  const analysisKeys = (row: any) => {
+    const full = normalizeCase(row.case_number);
+    const base = normalizeCase(String(row.case_number || '').replace(/\(\s*\d+\s*\)$/, ''));
+    return new Set([full, base].filter(Boolean));
+  };
+
+  const briefing = await db.prepare(`
+    SELECT id, title, target_date, assignee_id, case_number, item_no, client_name, court, created_at
+    FROM admin_notes
+    WHERE category = 'briefing_schedule'
+    ORDER BY target_date DESC, created_at DESC
+  `).all<any>();
+  const analysis = await db.prepare(`
+    SELECT id, bid_datetime, assignee_name, branch_name, case_number, property_type, bid_result, client_name, source_type, created_at
+    FROM bid_analysis_entries
+    ORDER BY bid_datetime DESC, created_at DESC
+  `).all<any>();
+
+  const analysisKeySet = new Set<string>();
+  for (const row of analysis.results || []) for (const key of analysisKeys(row)) analysisKeySet.add(key);
+
+  const briefing_unmatched = (briefing.results || []).filter((row: any) => {
+    for (const key of briefingKeys(row)) if (analysisKeySet.has(key)) return false;
+    return true;
+  });
+
+  return c.json({
+    briefing_unmatched,
+    analysis_unmatched: [],
+    counts: {
+      briefing_total: briefing.results?.length || 0,
+      analysis_total: analysis.results?.length || 0,
+      briefing_unmatched: briefing_unmatched.length,
+      analysis_unmatched: 0,
+    },
+  });
+});
+
 adminNotes.get('/:id', async (c) => {
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);
   const viewer = c.get('user');
   const id = c.req.param('id');
+  const shouldTrackView = c.req.query('view') === '1';
 
   const viewerInfo = await db.prepare('SELECT role, branch, department FROM users WHERE id = ?').bind(viewer.sub).first<{ role: string; branch: string; department: string }>();
   const role = viewerInfo?.role || viewer.role;
@@ -589,6 +1148,17 @@ adminNotes.get('/:id', async (c) => {
   // visibility 체크 (master는 예외)
   if (!canReadNote(note, viewer, viewerInfo, role)) return c.json({ error: '열람 권한이 없습니다.' }, 403);
 
+  if (shouldTrackView) {
+    const viewLog = await db.prepare(`
+      INSERT OR IGNORE INTO admin_note_view_logs (id, note_id, viewer_id, viewed_date)
+      VALUES (?, ?, ?, date('now', '+9 hours'))
+    `).bind(crypto.randomUUID(), id, viewer.sub).run();
+    if ((viewLog.meta?.changes || 0) > 0) {
+      await db.prepare('UPDATE admin_notes SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?').bind(id).run();
+      note.view_count = Number(note.view_count || 0) + 1;
+    }
+  }
+
   const comments = await db.prepare(
     `SELECT c.*, u.position_title as author_position
      FROM admin_note_comments c
@@ -604,6 +1174,12 @@ adminNotes.get('/:id', async (c) => {
     `SELECT id, note_id, file_name, file_size, source_name, article_date, expires_at, created_at
      FROM article_pdf_uploads
      WHERE note_id = ? AND deleted_at IS NULL
+     ORDER BY created_at ASC`
+  ).bind(id).all<any>();
+  const resourceFiles = await db.prepare(
+    `SELECT id, note_id, file_name, file_type, file_size, created_at
+     FROM resource_library_files
+     WHERE note_id = ?
      ORDER BY created_at ASC`
   ).bind(id).all<any>();
 
@@ -624,8 +1200,19 @@ adminNotes.get('/:id', async (c) => {
     expires_at: file.expires_at,
     created_at: file.created_at,
   }));
+  const resourceAttachments = (resourceFiles.results || []).map((file: any) => ({
+    id: file.id,
+    note_id: file.note_id,
+    file_name: file.file_name,
+    file_type: file.file_type || 'application/octet-stream',
+    file_size: file.file_size || 0,
+    file_data: '',
+    download_url: `/api/admin-notes/resource-library/${file.id}/download`,
+    storage: 'r2',
+    created_at: file.created_at,
+  }));
 
-  return c.json({ note: maskedNote, comments: maskedComments, attachments: [...(attachments.results || []), ...r2Attachments] });
+  return c.json({ note: maskedNote, comments: maskedComments, attachments: [...(attachments.results || []), ...r2Attachments, ...resourceAttachments] });
 });
 
 // POST /api/admin-notes - 생성
@@ -635,14 +1222,25 @@ adminNotes.post('/', async (c) => {
   await ensureAdminNoteExtensions(db);
   const {
     title, content, pinned, source_type, source_id, is_anonymous, visibility,
-    category: rawCategory, court, case_number, legal_subcategory, attachments,
-    assignee_id, target_date, item_no, client_name,
+    category: rawCategory, court, case_number, no_case_number, legal_subcategory, attachments,
+    assignee_id, target_date, item_no, client_name, lawsuit_cost_requested,
   } = await c.req.json();
   const category = normalizeCategory(rawCategory);
   const legalSubcategory = category === 'legal_support' ? normalizeLegalSubcategory(legal_subcategory) : null;
+  const legalAuctionCaseNumber = no_case_number ? '사건번호없음' : String(case_number || '').trim().replace(/\s+/g, '');
   if (category !== 'briefing_schedule' && (!title?.trim() || !content?.trim())) return c.json({ error: '제목과 내용을 입력하세요.' }, 400);
+  const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5) : [];
+  if (category === 'resource_library' && safeAttachments.length === 0) {
+    return c.json({ error: '자료실은 다운로드할 첨부파일을 1개 이상 등록하세요.' }, 400);
+  }
+  if (category === 'resource_library' && !c.env.ARTICLE_BUCKET) {
+    return c.json({ error: 'ARTICLE_BUCKET R2 바인딩이 설정되지 않았습니다.' }, 500);
+  }
   if (category === 'eviction_quote' && (!court?.trim() || !case_number?.trim())) {
     return c.json({ error: '법원과 사건번호를 입력하세요.' }, 400);
+  }
+  if (category === 'legal_support' && legalSubcategory === 'auction' && (!court?.trim() || !legalAuctionCaseNumber)) {
+    return c.json({ error: '경매 상담은 법원과 사건번호를 입력하세요.' }, 400);
   }
 
   // 사용자 정보
@@ -650,6 +1248,12 @@ adminNotes.post('/', async (c) => {
     'SELECT branch, department, position_title, role FROM users WHERE id = ?'
   ).bind(user.sub).first<{ branch: string; department: string; position_title: string; role: string }>();
   const role = profile?.role || user.role;
+  if (category === 'notice' && !canCreateNotice(role)) {
+    return c.json({ error: '공지사항 등록 권한이 없습니다.' }, 403);
+  }
+  if (category === 'legal_support' && legalSubcategory === 'legal_terms' && !canCreateLegalTerms(role, profile?.department)) {
+    return c.json({ error: '법률용어는 법률지원팀 및 관리자급 이상만 작성할 수 있습니다.' }, 403);
+  }
 
   let assignee: { id: string; name: string; branch: string; department: string; approved: number } | null = null;
   let journalEntryId: string | null = null;
@@ -657,7 +1261,7 @@ adminNotes.post('/', async (c) => {
   let finalContent = content?.trim() || '';
 
   if (category === 'briefing_schedule') {
-    if (!canCreateBriefingSchedule(role)) return c.json({ error: '브리핑자료 일정 등록 권한이 없습니다.' }, 403);
+    if (!canCreateBriefingSchedule(role)) return c.json({ error: '브리핑자료 제출 등록 권한이 없습니다.' }, 403);
     if (!assignee_id) return c.json({ error: '담당자를 목록에서 선택하세요.' }, 400);
     if (!target_date) return c.json({ error: '일정일을 입력하세요.' }, 400);
     if (!court?.trim() || !case_number?.trim() || !client_name?.trim()) return c.json({ error: '법원, 사건번호, 계약자명은 필수입니다.' }, 400);
@@ -666,7 +1270,7 @@ adminNotes.post('/', async (c) => {
       'SELECT id, name, branch, department, approved FROM users WHERE id = ?'
     ).bind(assignee_id).first<{ id: string; name: string; branch: string; department: string; approved: number }>();
     if (!assignee || assignee.approved !== 1) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
-    if (role === 'admin' && assignee.branch !== profile?.branch) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
+    if (role === 'admin' && !sameBranchName(assignee.branch, profile?.branch)) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
 
     finalTitle = `${target_date} ${assignee.name} 브리핑자료 제출`;
     finalContent = makeBriefingContent({
@@ -720,19 +1324,20 @@ adminNotes.post('/', async (c) => {
   }
 
   await db.prepare(
-    `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, court, case_number, legal_subcategory, assignee_id, target_date, item_no, client_name, journal_entry_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
+    `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, court, case_number, legal_subcategory, lawsuit_cost_requested, assignee_id, target_date, item_no, client_name, journal_entry_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
   ).bind(
     id, finalTitle, finalContent, user.sub, user.name,
     canPin && pinned ? 1 : 0,
     source_type || null, source_id || null,
     is_anonymous ? 1 : 0,
-    category === 'briefing_schedule' ? 'all' : visibility || 'all',
+    category === 'briefing_schedule' || category === 'notice' ? 'all' : visibility || 'all',
     profile?.branch || '', profile?.department || '',
     category,
-    category === 'eviction_quote' || category === 'briefing_schedule' ? court.trim() : null,
-    category === 'eviction_quote' || category === 'briefing_schedule' ? case_number.trim() : null,
+    category === 'eviction_quote' || category === 'briefing_schedule' || (category === 'legal_support' && legalSubcategory === 'auction') ? String(court || '').trim() : null,
+    category === 'eviction_quote' || category === 'briefing_schedule' ? String(case_number || '').trim().replace(/\s+/g, '') : (category === 'legal_support' && legalSubcategory === 'auction') ? legalAuctionCaseNumber : null,
     legalSubcategory,
+    category === 'legal_support' && shouldTrackLawsuitCost(legalSubcategory) && lawsuit_cost_requested ? 1 : 0,
     category === 'briefing_schedule' ? assignee?.id : null,
     category === 'briefing_schedule' ? target_date : null,
     category === 'briefing_schedule' ? item_no?.trim() || '' : null,
@@ -740,20 +1345,44 @@ adminNotes.post('/', async (c) => {
     journalEntryId
   ).run();
 
-  const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5) : [];
   for (const file of safeAttachments) {
     if (!file?.file_name || !file?.file_data) continue;
-    await db.prepare(
-      `INSERT INTO admin_note_attachments (id, note_id, file_name, file_type, file_size, file_data, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})`
-    ).bind(
-      crypto.randomUUID(),
-      id,
-      String(file.file_name).slice(0, 160),
-      String(file.file_type || '').slice(0, 100),
-      Number(file.file_size || 0),
-      String(file.file_data),
-    ).run();
+    const fileName = safeResourceFileName(file.file_name);
+    const fileType = String(file.file_type || '').slice(0, 100) || 'application/octet-stream';
+    if (category === 'resource_library') {
+      if (!c.env.ARTICLE_BUCKET) return c.json({ error: 'ARTICLE_BUCKET R2 바인딩이 설정되지 않았습니다.' }, 500);
+      const parsed = dataUrlToArrayBuffer(String(file.file_data));
+      if (!parsed) return c.json({ error: `${fileName} 파일 데이터를 읽을 수 없습니다.` }, 400);
+      const fileId = crypto.randomUUID();
+      const objectKey = resourceObjectKey(id, fileId, fileName);
+      await c.env.ARTICLE_BUCKET.put(objectKey, parsed.buffer, {
+        httpMetadata: {
+          contentType: fileType || parsed.contentType,
+          contentDisposition: attachmentContentDisposition(fileName),
+        },
+      });
+      try {
+        await db.prepare(
+          `INSERT INTO resource_library_files (id, note_id, object_key, file_name, file_type, file_size, uploaded_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})`
+        ).bind(fileId, id, objectKey, fileName, fileType || parsed.contentType, parsed.buffer.byteLength, user.sub).run();
+      } catch (err) {
+        await c.env.ARTICLE_BUCKET.delete(objectKey).catch(() => undefined);
+        throw err;
+      }
+    } else {
+      await db.prepare(
+        `INSERT INTO admin_note_attachments (id, note_id, file_name, file_type, file_size, file_data, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})`
+      ).bind(
+        crypto.randomUUID(),
+        id,
+        fileName,
+        fileType,
+        Number(file.file_size || 0),
+        String(file.file_data),
+      ).run();
+    }
   }
 
   c.executionCtx.waitUntil(sendCommunityNoteCreatedAlimtalk(
@@ -763,7 +1392,7 @@ adminNotes.post('/', async (c) => {
       id,
       title: finalTitle,
       category,
-      visibility: category === 'briefing_schedule' ? 'all' : visibility || 'all',
+      visibility: category === 'briefing_schedule' || category === 'notice' ? 'all' : visibility || 'all',
       legal_subcategory: legalSubcategory,
       court: category === 'eviction_quote' ? court.trim() : null,
       case_number: category === 'eviction_quote' ? case_number.trim() : null,
@@ -782,7 +1411,7 @@ adminNotes.put('/:id', async (c) => {
   const db = c.env.DB;
   await ensureAdminNoteExtensions(db);
   const id = c.req.param('id');
-  const { title, content, pinned } = await c.req.json();
+  const { title, content, pinned, legal_subcategory, lawsuit_cost_requested, court, case_number, no_case_number } = await c.req.json();
 
   const note = await db.prepare('SELECT * FROM admin_notes WHERE id = ?').bind(id).first<any>();
   if (!note) return c.json({ error: '노트를 찾을 수 없습니다.' }, 404);
@@ -791,13 +1420,38 @@ adminNotes.put('/:id', async (c) => {
     return c.json({ error: '본인 글만 수정할 수 있습니다.' }, 403);
   }
 
+  const profile = await db.prepare(
+    'SELECT role, department FROM users WHERE id = ?'
+  ).bind(user.sub).first<{ role: string; department: string | null }>();
+  const role = profile?.role || user.role;
+  const nextLegalSubcategory = note.category === 'legal_support'
+    ? normalizeLegalSubcategory(legal_subcategory ?? note.legal_subcategory)
+    : note.legal_subcategory || null;
+  if (note.category === 'legal_support' && nextLegalSubcategory === 'legal_terms' && !canCreateLegalTerms(role, profile?.department)) {
+    return c.json({ error: '법률용어는 법률지원팀 및 관리자급 이상만 작성할 수 있습니다.' }, 403);
+  }
+  const incomingCaseNumber = case_number !== undefined ? String(case_number || '').trim().replace(/\s+/g, '') : String(note.case_number || '').trim().replace(/\s+/g, '');
+  const nextAuctionCaseNumber = no_case_number ? '사건번호없음' : incomingCaseNumber;
+  if (note.category === 'legal_support' && nextLegalSubcategory === 'auction' && (!String(court || note.court || '').trim() || !nextAuctionCaseNumber)) {
+    return c.json({ error: '경매 상담은 법원과 사건번호를 입력하세요.' }, 400);
+  }
+
   // pinned 수정은 master만
-  const canPin = user.role === 'master';
+  const canPin = role === 'master';
   const newPinned = pinned !== undefined ? (canPin ? (pinned ? 1 : 0) : note.pinned) : note.pinned;
+  const nextCostRequested = note.category === 'legal_support' && shouldTrackLawsuitCost(nextLegalSubcategory)
+    ? (lawsuit_cost_requested === undefined ? (note.lawsuit_cost_requested ? 1 : 0) : lawsuit_cost_requested ? 1 : 0)
+    : 0;
+  const nextCourt = note.category === 'legal_support' && nextLegalSubcategory === 'auction'
+    ? String(court || note.court || '').trim()
+    : note.category === 'legal_support' ? null : note.court;
+  const nextCaseNumber = note.category === 'legal_support' && nextLegalSubcategory === 'auction'
+    ? nextAuctionCaseNumber
+    : note.category === 'legal_support' ? null : note.case_number;
 
   await db.prepare(
-    `UPDATE admin_notes SET title = ?, content = ?, pinned = ?, updated_at = ${KST_NOW_SQL} WHERE id = ?`
-  ).bind(title?.trim() || note.title, content?.trim() || note.content, newPinned, id).run();
+    `UPDATE admin_notes SET title = ?, content = ?, pinned = ?, legal_subcategory = ?, lawsuit_cost_requested = ?, court = ?, case_number = ?, updated_at = ${KST_NOW_SQL} WHERE id = ?`
+  ).bind(title?.trim() || note.title, content?.trim() || note.content, newPinned, nextLegalSubcategory, nextCostRequested, nextCourt, nextCaseNumber, id).run();
 
   return c.json({ success: true });
 });
@@ -825,6 +1479,11 @@ adminNotes.delete('/:id', async (c) => {
       await recheckAlertsAfterEntryDelete(db, entry.user_id, entry.target_date)
         .catch((err) => console.error('[recheckAlerts on briefing schedule delete]', err));
     }
+  }
+  if (note.category === 'resource_library' && c.env.ARTICLE_BUCKET) {
+    const bucket = c.env.ARTICLE_BUCKET;
+    const files = await db.prepare('SELECT object_key FROM resource_library_files WHERE note_id = ?').bind(id).all<{ object_key: string }>();
+    await Promise.all((files.results || []).map(file => bucket.delete(file.object_key).catch(() => undefined)));
   }
   await db.prepare('DELETE FROM admin_notes WHERE id = ?').bind(id).run();
   return c.json({ success: true });
@@ -858,6 +1517,9 @@ adminNotes.post('/:id/comments', async (c) => {
     receiver_phone: string | null;
   }>();
   if (!note) return c.json({ error: '게시글을 찾을 수 없습니다.' }, 404);
+  if (note.category === 'legal_support' && !canAnswerLegalSubcategory(note.legal_subcategory)) {
+    return c.json({ error: '법률용어 게시글은 답변을 받지 않습니다.' }, 400);
+  }
 
   const id = crypto.randomUUID();
   await db.prepare(

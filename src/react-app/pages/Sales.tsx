@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, setSourcePage } from '../api';
 import { useAuthStore } from '../store';
 import type { SalesRecord, DepositNotice } from '../types';
@@ -7,7 +8,10 @@ import Select from '../components/Select';
 import {
   DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity, ChevronDown, ChevronUp, Trash2
 } from 'lucide-react';
+import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { JournalEntry } from '../journal/types';
+import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 const TYPE_OPTIONS = [
   { value: '계약', label: '계약' },
@@ -56,6 +60,164 @@ function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
 }
 
+type ManagerPerformanceRow = {
+  user_id: string;
+  name: string;
+  branch: string;
+  department: string;
+  position_title: string;
+  monthly_target: number;
+  total_amount: number;
+  average_amount: number;
+  met_count: number;
+  miss_count: number;
+  months: { month: string; amount: number; target: number; met: boolean }[];
+};
+
+function monthLabel(ym: string): string {
+  const [, month] = String(ym || '').split('-');
+  return month ? `${Number(month)}월` : ym;
+}
+
+function marchStartForMonth(monthEnd: string): string {
+  const match = String(monthEnd || '').match(/^(\d{4})-(\d{2})$/);
+  if (!match) return '';
+  const year = match[1];
+  const month = Number(match[2]);
+  return month >= 3 ? `${year}-03` : `${year}-${String(month).padStart(2, '0')}`;
+}
+
+function ManagerPerformancePanel() {
+  const { branches } = useBranches();
+  const [monthEnd, setMonthEnd] = useState(() => new Date().toISOString().slice(0, 7));
+  const [branch, setBranch] = useState('');
+  const [rows, setRows] = useState<ManagerPerformanceRow[]>([]);
+  const [scope, setScope] = useState<'all' | 'branch' | 'team'>('team');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await api.sales.managerPerformance({ month_start: marchStartForMonth(monthEnd), month_end: monthEnd, branch: branch || undefined });
+      setRows(res.rows || []);
+      setScope(res.scope);
+    } catch (err: any) {
+      setRows([]);
+      setError(err?.message || '담당자 매출성과를 불러오지 못했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [monthEnd, branch]);
+
+  const totals = useMemo(() => ({
+    people: rows.length,
+    total: rows.reduce((sum, row) => sum + row.total_amount, 0),
+    missed: rows.filter(row => row.miss_count > 0).length,
+  }), [rows]);
+
+  const scopeLabel = scope === 'all' ? '전체 공개' : scope === 'branch' ? '본인 지사' : '본인 팀';
+  const branchOptions = [{ value: '', label: '전체 지사' }, ...branches.map((value) => ({ value, label: value }))];
+  const canFilterBranch = scope === 'all';
+
+  return (
+    <div className="manager-performance-panel">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: '1rem', color: '#1a2744' }}>담당자 매출성과</h3>
+          <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: '#5f6368' }}>
+            월 기준매출 대비 달성 여부를 사람별 실선 그래프로 확인합니다. 정렬은 매출 낮은 순입니다.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.75rem', color: '#5f6368' }}>{scopeLabel}</span>
+          {canFilterBranch && (
+            <div style={{ width: 150 }}>
+              <Select size="sm" options={branchOptions} value={branchOptions.find((opt) => opt.value === branch) || branchOptions[0]} onChange={(opt: any) => setBranch(opt?.value || '')} />
+            </div>
+          )}
+          <input type="month" className="form-input" value={monthEnd} onChange={(e) => setMonthEnd(e.target.value)} style={{ width: 140 }} />
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 14 }}>
+        <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>대상 인원</div><div style={{ fontSize: 20, fontWeight: 800 }}>{totals.people}명</div></div>
+        <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>기간 총매출</div><div style={{ fontSize: 20, fontWeight: 800, color: '#1a73e8' }}>{formatCurrency(totals.total)}</div></div>
+        <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>미달 월 보유</div><div style={{ fontSize: 20, fontWeight: 800, color: '#d93025' }}>{totals.missed}명</div></div>
+      </div>
+
+      {loading && <div className="page-loading">불러오는 중...</div>}
+      {error && <div className="empty-state">{error}</div>}
+      {!loading && !error && rows.length === 0 && <div className="empty-state">표시할 담당자 매출성과가 없습니다.</div>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 12 }}>
+        {rows.map(row => {
+          const chartData = row.months.map(item => ({
+            month: monthLabel(item.month),
+            amount: item.amount,
+            target: item.target,
+            result: item.met ? '달성' : '미달성',
+          }));
+          const target = row.monthly_target || 0;
+          const average = row.average_amount || 0;
+          const maxAmount = row.months.reduce((max, item) => Math.max(max, item.amount), 0);
+          const yMax = Math.max(target, average, maxAmount);
+          const yDomain: [number, number] | undefined = yMax > 0 ? [0, Math.ceil(yMax * 1.18)] : undefined;
+          const labelsAreClose = yMax > 0 && Math.abs(target - average) < yMax * 0.12;
+          return (
+            <div key={row.user_id} className="card" style={{ padding: 14, borderRadius: 10, border: '1px solid #e0e0e0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#202124' }}>{row.name}</div>
+                  <div style={{ fontSize: 11, color: '#5f6368' }}>{row.position_title || '담당자'} · {row.branch}{row.department ? ` · ${row.department}` : ''}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 11, color: '#5f6368' }}>월 기준</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: '#1a73e8' }}>{formatCurrency(target)}</div>
+                  <div style={{ fontSize: 11, color: '#f57c00', fontWeight: 700 }}>평균 {formatCurrency(average)}</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8, fontSize: 11 }}>
+                <span style={{ color: '#188038', fontWeight: 700 }}>달성 {row.met_count}개월</span>
+                <span style={{ color: '#d93025', fontWeight: 700 }}>미달성 {row.miss_count}개월</span>
+                <span style={{ color: '#5f6368' }}>총 {formatCurrency(row.total_amount)}</span>
+              </div>
+              <div style={{ width: '100%', height: 190 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData} margin={{ top: 12, right: 14, left: 6, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#edf0f5" />
+                    <XAxis dataKey="month" fontSize={11} tickLine={false} axisLine={{ stroke: '#dfe3eb' }} />
+                    <YAxis width={54} fontSize={10} domain={yDomain} allowDataOverflow tickFormatter={(v) => `${Math.round(Number(v) / 10000)}만`} tickLine={false} axisLine={{ stroke: '#dfe3eb' }} />
+                    <Tooltip
+                      formatter={(value: any, name: any) => [formatCurrency(Number(value || 0)), name === 'amount' ? '달성금액' : '월 기준매출']}
+                      labelFormatter={(label) => `${label}`}
+                      contentStyle={{ borderRadius: 8, border: '1px solid #dfe3eb', fontSize: 12 }}
+                    />
+                    <ReferenceLine y={target} stroke="#1a73e8" strokeDasharray="3 3" label={{ value: '월 기준매출', fill: '#1a73e8', fontSize: 11, position: 'insideTopRight' }} />
+                    <ReferenceLine y={average} stroke="#f57c00" strokeDasharray="3 3" label={{ value: '평균 매출', fill: '#f57c00', fontSize: 11, position: labelsAreClose ? 'insideBottomLeft' : 'insideBottomRight' }} />
+                    <Line type="linear" dataKey="amount" name="달성금액" stroke="#e53935" strokeWidth={2.4} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(1, row.months.length)}, 1fr)`, gap: 4, marginTop: 8 }}>
+                {row.months.map(item => (
+                  <div key={item.month} title={`${item.month}: ${formatCurrency(item.amount)} / 기준 ${formatCurrency(item.target)}`}
+                    style={{ textAlign: 'center', borderRadius: 6, padding: '4px 2px', fontSize: 10, fontWeight: 700, background: item.met ? '#e6f4ea' : '#fce8e6', color: item.met ? '#188038' : '#d93025' }}>
+                    {monthLabel(item.month)} {item.met ? '달성' : '미달'}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function contractCustomerKey(r: SalesRecord): string {
   const phone = (r.client_phone || '').replace(/\D/g, '');
   if (!phone || !r.client_name) return `row:${r.id}`;
@@ -80,6 +242,11 @@ function isMissingAction(r: SalesRecord): boolean {
   return false;
 }
 
+function compactSalesName(value: string | null | undefined, max = 6): string {
+  const text = String(value || '').trim();
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
 const CONFIRM_WAITING_STATUSES = ['pending', 'card_pending', 'refund_requested'];
 
 export default function Sales() {
@@ -97,7 +264,7 @@ export default function Sales() {
   const [showBranchSummary, setShowBranchSummary] = useState(false);
   const [filterBranch, setFilterBranch] = useState(() => {
     // 총괄이사는 대전 디폴트
-    if (currentUser?.role === 'director') return '대전';
+    if (currentUser?.role === 'director') return '대전지사';
     return '';
   });
   const [branchDefaultApplied, setBranchDefaultApplied] = useState(false);
@@ -112,15 +279,15 @@ export default function Sales() {
       setFilterBranch(prev => {
         if (prev) return prev; // 사용자 수동 선택 우선
         const branches = (res.branches || '').split(',').filter(Boolean);
-        if (branches.length > 0) return branches[0];
-        if (currentUser.branch) return currentUser.branch;
+        if (branches.length > 0) return normalizeBranchName(branches[0]);
+        if (currentUser.branch) return normalizeBranchName(currentUser.branch);
         return prev;
       });
       setBranchDefaultApplied(true);
     }).catch(() => {
       setFilterBranch(prev => {
         if (prev) return prev;
-        if (currentUser.branch) return currentUser.branch;
+        if (currentUser.branch) return normalizeBranchName(currentUser.branch);
         return prev;
       });
       setBranchDefaultApplied(true);
@@ -193,7 +360,6 @@ export default function Sales() {
 
   // 랭킹 모드: 2달 단위(기본) vs 연간
   const [rankingYearly, setRankingYearly] = useState(false);
-  const [rankingRecords, setRankingRecords] = useState<SalesRecord[]>([]);
   const [rankingData, setRankingData] = useState<Array<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>>([]);
   const [settleDate, setSettleDate] = useState('');
   const [invoiceDrafts, setInvoiceDrafts] = useState<Record<string, string>>({});
@@ -221,7 +387,7 @@ export default function Sales() {
   const [claimClient, setClaimClient] = useState('');
 
   // [6-3] 활동내역
-  const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'myungdo' | 'upload' | 'auditlog'>('list');
+  const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'managerPerformance' | 'myungdo' | 'upload' | 'auditlog'>('list');
   // 명도계약 (외부 명승 사건 — 매출 시스템과 분리, 표시만)
   const [myungdoCases, setMyungdoCases] = useState<any[]>([]);
   const [myungdoLoading, setMyungdoLoading] = useState(false);
@@ -251,6 +417,7 @@ export default function Sales() {
   const isDirector = role === 'director';
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const isManager = role === 'manager';
+  const canViewManagerPerformance = role === 'master' || role === 'admin' || role === 'manager';
   const showUserFilter = isAdminPlus || isAccountant || isManager || isDirector;
 
   const load = async (silent = false) => {
@@ -288,32 +455,6 @@ export default function Sales() {
         const rk = await api.sales.ranking(startMonth, endMonth);
         setRankingData(rk.ranking || []);
       } catch { setRankingData([]); }
-      // 관리자/총괄이사용 원본 레코드 (상단 계약건수 카드 집계 소스)
-      if (isAdminPlus || isDirector) {
-        try {
-          const year = new Date().getFullYear();
-          if (rankingYearly) {
-            const periods = Array.from({ length: 6 }, (_, i) => {
-              const m = i * 2 + 1;
-              return [`${year}-${String(m).padStart(2, '0')}`, `${year}-${String(m + 1).padStart(2, '0')}`];
-            });
-            const results = await Promise.all(
-              periods.flat().map(m => api.sales.list({ month: m, date_mode: 'settle' }))
-            );
-            const all = results.flatMap(r => r.records || []);
-            setRankingRecords(all);
-          } else {
-            const pStart = rankingPeriodIdx * 2 + 1;
-            const startMonth = `${year}-${String(pStart).padStart(2, '0')}`;
-            const endMonth = `${year}-${String(pStart + 1).padStart(2, '0')}`;
-            const [m1, m2] = await Promise.all([
-              api.sales.list({ month: startMonth, date_mode: 'settle' }),
-              api.sales.list({ month: endMonth, date_mode: 'settle' }),
-            ]);
-            setRankingRecords([...m1.records, ...m2.records]);
-          }
-        } catch { setRankingRecords([]); }
-      }
     } catch (err: any) { console.error(err); }
     finally { if (!silent) setLoading(false); }
   };
@@ -334,6 +475,31 @@ export default function Sales() {
   const handleAdd = async () => {
     if (!formClientName) { alert('계약자명을 입력하세요.'); return; }
     if (!fromMoneyDisplay(formAmount) || Number(fromMoneyDisplay(formAmount)) <= 0) { alert('금액을 입력하세요.'); return; }
+    const rawAmount = Number(fromMoneyDisplay(formAmount)) || 0;
+    try {
+      const dupRes = await api.sales.duplicateByClientAmount({ client_name: formClientName, amount: rawAmount });
+      const duplicates = dupRes.duplicates || [];
+      if (duplicates.length > 0) {
+        const detail = duplicates.slice(0, 5).map((d, i) =>
+          `${i + 1}. ${d.contract_date || '-'} / ${d.type || '-'} / ${d.user_name || '-'} / ${d.branch || '-'} / ${Number(d.amount || 0).toLocaleString()}원`
+        ).join('\n');
+        if (!confirm(
+          `동일한 계약자명과 금액의 기존 매출이 있습니다.\n\n` +
+          `계약자명: ${formClientName}\n금액: ${rawAmount.toLocaleString()}원\n\n` +
+          `${detail}\n\n` +
+          `낙찰 자동 반영 또는 기존 등록 건일 수 있습니다.\n그래도 중복으로 등록하시겠습니까?`
+        )) return;
+      }
+    } catch {
+      const localDup = records.find(r =>
+        (r.client_name || '').trim().replace(/\s+/g, '').toLowerCase() === formClientName.trim().replace(/\s+/g, '').toLowerCase() &&
+        Number(r.amount || 0) === rawAmount &&
+        r.status !== 'refunded'
+      );
+      if (localDup) {
+        if (!confirm(`동일한 계약자명과 금액의 기존 매출이 있습니다.\n\n계약자명: ${formClientName}\n금액: ${rawAmount.toLocaleString()}원\n기존: ${localDup.contract_date || '-'} / ${localDup.type || '-'}\n\n그래도 중복으로 등록하시겠습니까?`)) return;
+      }
+    }
     // [6-1] 계약 타입이면 감정가%/낙찰가% 및 전화번호 필수
     if (formType === '계약') {
       if (!formAppraisalRate || !formWinningRate) { alert('감정가 %와 낙찰가 %를 모두 입력하세요.'); return; }
@@ -370,17 +536,15 @@ export default function Sales() {
       }
     }
     try {
-      const rawAmount = Number(fromMoneyDisplay(formAmount)) || 0;
       const proxyCost = formType === '매수신청대리' ? (Number(fromMoneyDisplay(formProxyCost)) || 0) : 0;
-      const proxyProfit = rawAmount - proxyCost; // 매수신청대리: 수익금액 (음수 가능)
-      const finalAmount = formType === '매수신청대리' ? Math.abs(proxyProfit) : rawAmount;
-      const finalDirection = formType === '매수신청대리' && proxyProfit < 0 ? 'expense' : undefined;
+      const proxySupply = Math.round(rawAmount / 1.1);
+      const proxyPayrollAmount = proxySupply - proxyCost;
+      const finalAmount = rawAmount;
       await api.sales.create({
-        type: formType, type_detail: formType === '기타' ? formTypeDetail : (formType === '매수신청대리' ? `대리비용 ${proxyCost.toLocaleString()}원 / 수익 ${proxyProfit >= 0 ? '' : '-'}${Math.abs(proxyProfit).toLocaleString()}원` : rateDeviationReason),
+        type: formType, type_detail: formType === '기타' ? formTypeDetail : (formType === '매수신청대리' ? `대리비용 ${proxyCost.toLocaleString()}원 / 급여반영 ${proxyPayrollAmount >= 0 ? '' : '-'}${Math.abs(proxyPayrollAmount).toLocaleString()}원` : rateDeviationReason),
         client_name: formClientName, depositor_name: formDepositorDiff ? formDepositorName : '',
         depositor_different: formDepositorDiff, amount: finalAmount,
         contract_date: formContractDate,
-        direction: finalDirection,
         payment_type: formPaymentType,
         receipt_type: formPaymentType === '이체' ? formReceiptType : '',
         receipt_phone: formReceiptType === '현금영수증' ? formReceiptPhone : '',
@@ -468,16 +632,16 @@ export default function Sales() {
   }, [salesTab, auditMonth, auditAction, auditActor, canViewAuditLog]);
 
   const resignedWithSales = new Set(records.filter(r => r.user_id).map(r => r.user_id));
-  const filteredMembers = (filterBranch ? members.filter(m => m.branch === filterBranch) : members)
+  const filteredMembers = (filterBranch ? members.filter(m => sameBranchName(m.branch, filterBranch)) : members)
     .filter(m => m.role !== 'master')
     .filter(m => (m.role as string) !== 'resigned' || resignedWithSales.has(m.id));
-  const memberOpts = filteredMembers.map(m => ({ value: m.id, label: `${m.name} (${m.department})${(m.role as string) === 'resigned' ? ' [퇴사]' : ''}` }));
+  const memberOpts = groupUserOptions(filteredMembers, m => ` (${m.department || ''})`);
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
 
   // 지사 + 유형 + 담당자 + 상태 필터 적용된 records
   // 지사 집계는 attribution_branch(매출 귀속 지사)가 있으면 그걸 우선 사용
   const effectiveBranch = (r: SalesRecord) => r.attribution_branch || r.branch;
-  let branchRecords = filterBranch ? records.filter(r => effectiveBranch(r) === filterBranch) : records;
+  let branchRecords = filterBranch ? records.filter(r => sameBranchName(effectiveBranch(r), filterBranch)) : records;
   if (filterUser) branchRecords = branchRecords.filter(r => r.user_id === filterUser);
   if (filterType) branchRecords = branchRecords.filter(r => r.type === filterType);
   if (filterStatus === 'confirm_waiting') branchRecords = branchRecords.filter(r => CONFIRM_WAITING_STATUSES.includes(r.status));
@@ -495,18 +659,16 @@ export default function Sales() {
   dupCounter.forEach((cnt, k) => { if (cnt >= 2) duplicateKeys.add(k); });
   const isDuplicate = (r: SalesRecord) => !!(r.client_name && r.client_phone && duplicateKeys.has(`${r.client_name}|${r.client_phone}`));
 
-  // 계약건수: 2개월 기준 (랭킹 데이터 활용), 220만원 이상이면 2건으로 카운트, exclude_from_count=1은 제외
-  const contractCountSource = rankingRecords.length > 0 ? rankingRecords : branchRecords;
-  let contractCountFiltered = filterBranch
-    ? contractCountSource.filter(r => r.branch === filterBranch)
-    : contractCountSource;
-  if (filterUser) contractCountFiltered = contractCountFiltered.filter(r => r.user_id === filterUser);
-  const contractCount = calculateContractCount(contractCountFiltered);
+  // 상단 계약건수는 매출월 SELECT 기준으로 표시한다. 2개월 기준은 하단 계약 랭킹에서만 사용한다.
+  const contractCount = calculateContractCount(branchRecords);
   // 확정매출/카드대기/입금신청: 공급가액 기준 (÷1.1)
   const toSupply = (amount: number) => Math.round(amount / 1.1);
   const confirmedTotal = branchRecords.filter(r => r.status === 'confirmed').reduce((sum, r) => sum + toSupply(r.amount), 0);
   const cardPendingTotal = branchRecords.filter(r => r.status === 'card_pending').reduce((sum, r) => sum + toSupply(r.amount), 0);
   const pendingTotal = branchRecords.filter(r => r.status === 'pending').reduce((sum, r) => sum + toSupply(r.amount), 0);
+  const summaryPeriodLabel = filterMonthEnd && filterMonthEnd !== filterMonth
+    ? `${Number(filterMonth.slice(5, 7))}~${Number(filterMonthEnd.slice(5, 7))}월`
+    : `${Number(filterMonth.slice(5, 7))}월`;
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -521,17 +683,22 @@ export default function Sales() {
           {canDepositUpload && (
             <button className="btn btn-sm" onClick={() => setShowDepositForm(true)}>입금등록</button>
           )}
+          {(isAdminPlus || isAccountant || isDirector || isManager) && (
+            <Link to="/missing-documents" className="premium-filter-btn">
+              미제출 현황
+            </Link>
+          )}
         </div>
       </div>
 
       {/* 요약 카드 */}
       <div className="sales-summary-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #1a73e8' }}>
-          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>계약건수 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({rankingYearly ? `${new Date().getFullYear()}년` : `${rankingPeriodIdx * 2 + 1}~${rankingPeriodIdx * 2 + 2}월`})</span></div>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>계약건수 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({summaryPeriodLabel})</span></div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#1a73e8' }}>{contractCount}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>건</span></div>
         </div>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #188038' }}>
-          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>확정매출</div>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>확정매출 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({summaryPeriodLabel})</span></div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#188038' }}>{formatCurrency(confirmedTotal)}</div>
         </div>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #7b1fa2' }}>
@@ -697,8 +864,8 @@ export default function Sales() {
         {/* 총괄이사: 대전/부산만 선택 */}
         {isDirector && (
           <div style={{ minWidth: 120 }}>
-            <Select size="sm" options={[{ value: '', label: '대전/부산' }, { value: '대전', label: '대전' }, { value: '부산', label: '부산' }]}
-              value={[{ value: '대전', label: '대전' }, { value: '부산', label: '부산' }].find(o => o.value === filterBranch) || { value: '', label: '대전/부산' }}
+            <Select size="sm" options={[{ value: '', label: '대전/부산' }, { value: '대전지사', label: '대전지사' }, { value: '부산지사', label: '부산지사' }]}
+              value={[{ value: '대전지사', label: '대전지사' }, { value: '부산지사', label: '부산지사' }].find(o => o.value === filterBranch) || { value: '', label: '대전/부산' }}
               onChange={(o: any) => { setFilterBranch(o?.value || ''); setFilterUser(''); }} placeholder="지사" isClearable />
           </div>
         )}
@@ -706,7 +873,7 @@ export default function Sales() {
         {showUserFilter && (
           <div style={{ minWidth: 200 }}>
             <Select size="sm" options={[{ value: '', label: '전체 담당자' }, ...memberOpts]}
-              value={memberOpts.find(o => o.value === filterUser) || { value: '', label: '전체 담당자' }}
+              value={findUserOption(memberOpts, filterUser) || { value: '', label: '전체 담당자' }}
               onChange={(o: any) => setFilterUser(o?.value || '')} placeholder="담당자" isClearable />
           </div>
         )}
@@ -748,6 +915,11 @@ export default function Sales() {
               <Activity size={14} style={{ marginRight: 4 }} /> 활동내역
             </button>
           )}
+          {canViewManagerPerformance && (
+            <button className={`premium-filter-btn ${salesTab === 'managerPerformance' ? 'active' : ''}`} onClick={() => setSalesTab('managerPerformance')}>
+              담당자 매출성과
+            </button>
+          )}
           <button className={`premium-filter-btn ${salesTab === 'myungdo' ? 'active' : ''}`} onClick={() => setSalesTab('myungdo')} title="외부 명승 사건 (매출 합계와 별개)">
             명도계약
           </button>
@@ -768,12 +940,14 @@ export default function Sales() {
         )}
       </div>
 
+      {salesTab === 'managerPerformance' && <ManagerPerformancePanel />}
+
       {/* ━━━ 활동내역 탭 [6-3] ━━━ */}
       {salesTab === 'activity' && (() => {
         // 지사+담당자 필터 적용된 계약자 목록
         let userSales = allRecords;
         let userJournals = activityEntries;
-        if (activityBranch) { userSales = userSales.filter(r => r.branch === activityBranch); userJournals = userJournals.filter(e => e.branch === activityBranch); }
+        if (activityBranch) { userSales = userSales.filter(r => sameBranchName(r.branch, activityBranch)); userJournals = userJournals.filter(e => sameBranchName(e.branch, activityBranch)); }
         if (activityUser) { userSales = userSales.filter(r => r.user_id === activityUser); userJournals = userJournals.filter(e => e.user_id === activityUser); }
         // 검색 필터
         const sq = searchQuery.toLowerCase();
@@ -871,10 +1045,12 @@ export default function Sales() {
               <div style={{ minWidth: 260 }}>
                 <label className="form-label">담당자</label>
                 {(() => {
-                  const opts = activityBranch ? memberOpts.filter(o => members.find(m => m.id === o.value && m.branch === activityBranch)) : memberOpts;
+                  const opts = activityBranch
+                    ? groupUserOptions(filteredMembers.filter(m => sameBranchName(m.branch, activityBranch)), m => ` (${m.department || ''})`)
+                    : memberOpts;
                   return (
                     <Select options={[{ value: '', label: '전체 담당자' }, ...opts]}
-                      value={opts.find(o => o.value === activityUser) || { value: '', label: '전체 담당자' }}
+                      value={findUserOption(opts, activityUser) || { value: '', label: '전체 담당자' }}
                       onChange={(o: any) => { setActivityUser(o?.value || ''); setActivityPage(0); }}
                       placeholder="담당자 선택" isSearchable />
                   );
@@ -935,7 +1111,7 @@ export default function Sales() {
         // 검색/지사 필터
         const filtered = scopedCases.filter((r: any) => {
           if (filterUser && r.consultant_user_id !== filterUser) return false;
-          if (filterBranch && r.consultant_branch !== filterBranch) return false;
+          if (filterBranch && !sameBranchName(r.consultant_branch, filterBranch)) return false;
           if (searchQuery) {
             const q = searchQuery.toLowerCase();
             const hay = `${r.consultant_name || ''} ${r.client_name || ''} ${r.manager_name || ''} ${r.external_id || ''}`.toLowerCase();
@@ -1067,7 +1243,7 @@ export default function Sales() {
                 </thead>
                 <tbody>
                   <tr><td>A</td><td>날짜</td><td>환불일자(환불건만 사용)</td></tr>
-                  <tr><td>B</td><td>지사</td><td>본사→의정부, 강남지사→서초, 대전→대전, 부산→부산</td></tr>
+                  <tr><td>B</td><td>지사</td><td>본사→의정부본사, 강남지사→서초지사, 대전→대전지사, 부산→부산지사</td></tr>
                   <tr><td>C</td><td>담당자</td><td>이름으로 사용자 매칭</td></tr>
                   <tr><td>D</td><td>고객명</td><td>입금자명 매칭에 사용</td></tr>
                   <tr><td>E</td><td>전화번호</td><td>고객 전화번호</td></tr>
@@ -1406,7 +1582,8 @@ export default function Sales() {
           {formType === '매수신청대리' && (() => {
             const amt = Number(fromMoneyDisplay(formAmount)) || 0;
             const cost = Number(fromMoneyDisplay(formProxyCost)) || 0;
-            const profit = amt - cost;
+            const supply = Math.round(amt / 1.1);
+            const profit = supply - cost;
             return (
               <div style={{ marginTop: 14, padding: 16, background: '#f0f4ff', borderRadius: 8, border: '1px solid #c8d6e5' }}>
                 <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: 10, color: '#3c4043' }}>매수신청대리비용</div>
@@ -1416,12 +1593,12 @@ export default function Sales() {
                     <input className="form-input" value={toMoneyDisplay(formProxyCost)} onChange={(e) => setFormProxyCost(fromMoneyDisplay(e.target.value))} style={{ width: '100%' }} placeholder="대리비용" />
                   </div>
                   <div style={{ textAlign: 'center', padding: '8px 0' }}>
-                    <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginBottom: 4 }}>담당자 수익금액</div>
+                    <div style={{ fontSize: '0.75rem', color: '#9aa0a6', marginBottom: 4 }}>급여반영액</div>
                     <div style={{ fontSize: '1.2rem', fontWeight: 700, color: profit >= 0 ? '#188038' : '#d93025' }}>
                       {profit >= 0 ? formatCurrency(profit) : '-' + formatCurrency(Math.abs(profit))}
                     </div>
                     <div style={{ fontSize: '0.68rem', color: '#9aa0a6', marginTop: 4 }}>
-                      매수신청대리비용 - 대리비용
+                      매수신청대리비용 ÷ 1.1 - 대리비용
                     </div>
                     {profit < 0 && (
                       <div style={{ fontSize: '0.7rem', color: '#d93025', marginTop: 4, fontWeight: 600 }}>
@@ -1451,40 +1628,42 @@ export default function Sales() {
             </div>
           )}
 
-          {/* 결제방식 / 지출증빙 */}
-          <div style={{ marginTop: 14, padding: 16, background: '#f0f4ff', borderRadius: 8, border: '1px solid #c8d6e5' }}>
-            <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: 10, color: '#3c4043' }}>결제 정보</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-              <div>
-                <label className="form-label">결제방식</label>
-                <select className="form-input" value={formPaymentType} onChange={(e) => setFormPaymentType(e.target.value as any)} style={{ width: '100%' }}>
-                  <option value="이체">이체</option>
-                  <option value="카드">카드</option>
-                </select>
-              </div>
-              {formPaymentType === '이체' && (
+          {/* 결제방식 / 지출증빙 — 총무급 이상 전용 */}
+          {canApproveAccounting && (
+            <div style={{ marginTop: 14, padding: 16, background: '#f0f4ff', borderRadius: 8, border: '1px solid #c8d6e5' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: 10, color: '#3c4043' }}>결제 정보</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
                 <div>
-                  <label className="form-label">지출증빙</label>
-                  <select className="form-input" value={formReceiptType} onChange={(e) => setFormReceiptType(e.target.value as any)} style={{ width: '100%' }}>
-                    <option value="">선택</option>
-                    <option value="현금영수증">현금영수증</option>
-                    <option value="세금계산서">세금계산서</option>
+                  <label className="form-label">결제방식</label>
+                  <select className="form-input" value={formPaymentType} onChange={(e) => setFormPaymentType(e.target.value as any)} style={{ width: '100%' }}>
+                    <option value="이체">이체</option>
+                    <option value="카드">카드</option>
                   </select>
                 </div>
-              )}
-              {formPaymentType === '이체' && formReceiptType === '현금영수증' && (
-                <div>
-                  <label className="form-label">현금영수증 전화번호</label>
-                  <input className="form-input" value={formReceiptPhone} onChange={(e) => setFormReceiptPhone(e.target.value)} style={{ width: '100%' }} placeholder="010-0000-0000" />
+                {formPaymentType === '이체' && (
+                  <div>
+                    <label className="form-label">지출증빙</label>
+                    <select className="form-input" value={formReceiptType} onChange={(e) => setFormReceiptType(e.target.value as any)} style={{ width: '100%' }}>
+                      <option value="">선택</option>
+                      <option value="현금영수증">현금영수증</option>
+                      <option value="세금계산서">세금계산서</option>
+                    </select>
+                  </div>
+                )}
+                {formPaymentType === '이체' && formReceiptType === '현금영수증' && (
+                  <div>
+                    <label className="form-label">현금영수증 전화번호</label>
+                    <input className="form-input" value={formReceiptPhone} onChange={(e) => setFormReceiptPhone(e.target.value)} style={{ width: '100%' }} placeholder="010-0000-0000" />
+                  </div>
+                )}
+              </div>
+              {formPaymentType === '이체' && formReceiptType === '세금계산서' && (
+                <div style={{ marginTop: 10, padding: '8px 12px', background: '#fff3e0', borderRadius: 6, fontSize: '0.78rem', color: '#e65100', border: '1px solid #ffcc80' }}>
+                  총무담당자님에게 카카오톡으로 세금계산서를 발송해주세요.
                 </div>
               )}
             </div>
-            {formPaymentType === '이체' && formReceiptType === '세금계산서' && (
-              <div style={{ marginTop: 10, padding: '8px 12px', background: '#fff3e0', borderRadius: 6, fontSize: '0.78rem', color: '#e65100', border: '1px solid #ffcc80' }}>
-                총무담당자님에게 카카오톡으로 세금계산서를 발송해주세요.
-              </div>
-            )}
-          </div>
+          )}
 
           <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
             <button className="btn btn-primary" onClick={handleAdd}>등록</button>
@@ -1649,11 +1828,18 @@ export default function Sales() {
                       </div>
                     )}
                   </td>
-                  <td style={{ whiteSpace: 'nowrap', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.client_name + (r.client_phone ? ' / ' + r.client_phone : '') + (r.depositor_different === 1 && r.depositor_name ? ' / 입금자: ' + r.depositor_name : '')}>
-                    {r.client_name}
-                    {isDuplicate(r) && <span style={{ fontSize: '0.66rem', padding: '0 4px', borderRadius: 6, background: '#fce4ec', color: '#d93025', fontWeight: 700, marginLeft: 4 }}>중복</span>}
-                    {r.exclude_from_count ? <span style={{ fontSize: '0.66rem', padding: '0 4px', borderRadius: 6, background: '#f5f5f5', color: '#5f6368', marginLeft: 3 }}>미포함</span> : null}
-                    {r.depositor_different === 1 && r.depositor_name && <span style={{ fontSize: '0.7rem', color: '#e65100', marginLeft: 4 }}>({r.depositor_name})</span>}
+                  <td className="sales-client-cell" title={r.client_name + (r.client_phone ? ' / ' + r.client_phone : '') + (r.depositor_different === 1 && r.depositor_name ? ' / 입금자: ' + r.depositor_name : '')}>
+                    <div className="sales-client-main-line">
+                      <span className="sales-client-name">{compactSalesName(r.client_name)}</span>
+                      {isDuplicate(r) && <span className="sales-client-chip duplicate">중복</span>}
+                      {r.exclude_from_count ? <span className="sales-client-chip muted">미포함</span> : null}
+                    </div>
+                    {r.depositor_different === 1 && r.depositor_name && (
+                      <div className="sales-depositor-line">
+                        <span>입금자</span>
+                        <strong>{compactSalesName(r.depositor_name)}</strong>
+                      </div>
+                    )}
                   </td>
                   <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{formatCurrency(r.amount)}</td>
                   <td style={{ fontSize: '0.72rem', whiteSpace: 'nowrap', textAlign: 'center' }}>
@@ -1747,7 +1933,7 @@ export default function Sales() {
                         </div>
                       )}
                       {/* 세금계산서/현금영수증 발행 기록 (이체/현금 — 총무 메모용) */}
-                      {r.payment_type === '이체' && r.status !== 'refunded' && canApproveAccounting && (() => {
+                      {(r.payment_type === '이체' || r.payment_type === '현금') && r.status !== 'refunded' && canApproveAccounting && (() => {
                         const taxType = r.tax_invoice_type || '';
                         const taxDate = r.tax_invoice_date || '';
                         const isSet = !!taxDate;
@@ -1804,6 +1990,15 @@ export default function Sales() {
                                 const next = taxType === '계산' ? '' : '계산';
                                 try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
                               }}>계산</button>
+                            <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
+                              background: taxType === '자진' ? '#eef2ff' : '#fff',
+                              color: taxType === '자진' ? '#4338ca' : '#5f6368',
+                              fontWeight: taxType === '자진' ? 700 : 400,
+                              border: taxType === '자진' ? '1px solid #a5b4fc' : '1px solid #dadce0' }}
+                              onClick={async () => {
+                                const next = taxType === '자진' ? '' : '자진';
+                                try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
+                              }}>자진</button>
                           </div>
                         );
                       })()}
@@ -2120,10 +2315,10 @@ export default function Sales() {
                 {detailRecord.deposit_date && (
                   <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>결제일</span><div style={{ color: '#188038' }}>{detailRecord.deposit_date}</div></div>
                 )}
-                {(detailRecord.payment_type || canApproveAccounting || isMaster) && (
+                {(detailRecord.payment_type || canApproveAccounting) && (
                   <div>
                     <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>결제방식 {!detailRecord.payment_type && <span style={{ color: '#d93025', fontSize: '0.68rem' }}>(미입력)</span>}</span>
-                    {(isMaster || canApproveAccounting) ? (
+                    {canApproveAccounting ? (
                       <select className="form-input" defaultValue={detailRecord.payment_type || ''} style={{ width: '100%', fontSize: '0.9rem', fontWeight: 600, marginTop: 2 }}
                         onChange={async (e) => {
                           if (!e.target.value) return;
@@ -2266,7 +2461,7 @@ export default function Sales() {
                               try { await api.sales.update(detailRecord.id, { proxy_cost: val } as any); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
                             }
                           }} />
-                        <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 4 }}>수익 = 매출금액({formatCurrency(detailRecord.amount)}) - 대리비용</div>
+                        <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 4 }}>급여반영액 = 매출금액({formatCurrency(detailRecord.amount)}) ÷ 1.1 - 대리비용</div>
                       </div>
                     )}
                     {detailRecord.type === '계약' && (

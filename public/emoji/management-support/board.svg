@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+  <defs>
+    <linearGradient id="bd-cover" x1="5" y1="5" x2="31" y2="33" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3a8fff"/>
+      <stop offset=".5" stop-color="#1a73e8"/>
+      <stop offset="1" stop-color="#0f3a7a"/>
+    </linearGradient>
+    <linearGradient id="bd-gloss" x1="0" y1="5" x2="0" y2="16" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".4"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="bd-page" x1="0" y1="6" x2="0" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e8edf5"/>
+    </linearGradient>
+    <linearGradient id="bd-gold" x1="0" y1="0" x2="0" y2="10" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset=".5" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="18" cy="32.5" rx="13" ry="1.2" fill="#0f172a" opacity=".18"/>
+  <rect x="5" y="5" width="26" height="27" rx="2.2" fill="url(#bd-cover)"/>
+  <rect x="5" y="5" width="26" height="11" rx="2.2" fill="url(#bd-gloss)"/>
+  <rect x="8" y="9.5" width="20" height="20.5" rx="1.4" fill="url(#bd-page)"/>
+  <rect x="14.5" y="2.5" width="7" height="5" rx="1.4" fill="url(#bd-gold)"/>
+  <rect x="16" y="1.5" width="4" height="2.2" rx=".7" fill="#7c2d12"/>
+  <rect x="10.5" y="12.5" width="11" height="1.6" rx=".8" fill="#1a73e8"/>
+  <rect x="10.5" y="16" width="15.5" height="1" rx=".5" fill="#94a3b8"/>
+  <rect x="10.5" y="18.3" width="13" height="1" rx=".5" fill="#94a3b8"/>
+  <rect x="10.5" y="20.6" width="14.5" height="1" rx=".5" fill="#94a3b8"/>
+  <rect x="10.5" y="22.9" width="11" height="1" rx=".5" fill="#94a3b8"/>
+  <circle cx="24.2" cy="25.5" r="2.9" fill="url(#bd-gold)"/>
+  <path d="M 22.8 25.6 L 23.8 26.7 L 25.6 24.3" stroke="#fff" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

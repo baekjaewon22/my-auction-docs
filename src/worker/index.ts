@@ -16,7 +16,7 @@ import minutes from './routes/minutes';
 import commissions from './routes/commissions';
 import accounting from './routes/accounting';
 import salesRoute from './routes/sales';
-import payrollRoute from './routes/payroll';
+import payrollRoute, { lockPaidPayrollSaves } from './routes/payroll';
 import cardRoute from './routes/card';
 import analyticsRoute from './routes/analytics';
 import comprehensiveRoute from './routes/analytics-comprehensive';
@@ -29,6 +29,10 @@ import linksRoute from './routes/links';
 import approvalAlertsRoute from './routes/approval-alerts';
 import journalAlertsRoute from './routes/journal-alerts';
 import serviceTokensRoute from './routes/service-tokens';
+import freelancerBidsRoute from './routes/freelancer-bids';
+import systemSettingsRoute from './routes/system-settings';
+import reportRoute from './routes/report';
+import auctionReferenceRoute from './routes/auction-reference';
 import { jwtVerify } from 'jose';
 import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
@@ -101,6 +105,10 @@ app.route('/api/links', linksRoute);
 app.route('/api/approval-alerts', approvalAlertsRoute);
 app.route('/api/journal-alerts', journalAlertsRoute);
 app.route('/api/service-tokens', serviceTokensRoute);
+app.route('/api/freelancer-bids', freelancerBidsRoute);
+app.route('/api/system', systemSettingsRoute);
+app.route('/api/report', reportRoute);
+app.route('/api/auction-reference', auctionReferenceRoute);
 
 // OAuth 콜백 — Google이 /oauth/drive/callback 으로 redirect (최상위 경로)
 app.get('/oauth/drive/callback', async (c) => {
@@ -252,6 +260,23 @@ app.post('/api/_test-slack-accounting-checklist', async (c) => {
     skipSuccessfulGroups: !force,
   });
   return c.json({ success: true, ...result });
+});
+
+app.post('/api/_test-slack-room-reservation', async (c) => {
+  const token = c.req.query('token') || '';
+  const expectedTokens = [
+    (c.env as any).SLACK_ACCOUNTING_MANUAL_TOKEN,
+    (c.env as any).SLACK_ACCOUNTING_TEST_TOKEN,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+  if (!expectedTokens.includes(token)) return c.json({ error: '권한 없음' }, 403);
+
+  try {
+    const { sendRoomReservationSlackTest } = await import('./lib/room-reservation-slack');
+    const result = await sendRoomReservationSlackTest(c.env as any);
+    return c.json({ success: true, ...result });
+  } catch (err: any) {
+    return c.json({ success: false, error: err?.message || String(err) }, 500);
+  }
 });
 
 // 법률지원/명도견적 알림톡 수동 재발송. ALIMTALK_MANUAL_TOKEN secret과 query token이 일치해야 실행된다.
@@ -413,6 +438,10 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
         (err) => console.error('[cron analytics-daily] error', err),
       ),
     ));
+    ctx.waitUntil(lockPaidPayrollSaves(env.DB).then(
+      (r) => { if (r.locked > 0) console.log('[cron payroll-lock] done', r); },
+      (err) => console.error('[cron payroll-lock] error', err),
+    ));
     ctx.waitUntil(cleanupExpiredArticlePdfs(env, 100).then(
       (r) => { if (r.scanned > 0) console.log('[cron article-pdf-cleanup] done', r); },
       (err) => console.error('[cron article-pdf-cleanup] error', err),
@@ -425,7 +454,7 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
       ),
     ));
   } else if (cron === '45 15 1 * *') {
-    // 매월 1일 00:45 KST: 전월이 짝수월이면 명도성과금 매출 자동 INSERT
+    // 매월 1일 00:45 KST: 전월이 짝수월이면 안건 수당(구 명도성과금) 매출 자동 INSERT
     const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
     const prevMonth = nowKst.getUTCMonth(); // 0=1월. 5월 1일 KST면 0-base 4=5월 → prev=3=4월
     // 1일 00:45 KST 시점에선 이미 다음달 1일이므로, "방금 끝난 달" = (현재 - 1달)
@@ -437,14 +466,14 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
     if (pm % 2 === 0) {
       const m1 = pm - 1;
       const period = `${py}-${String(m1).padStart(2, '0')}_${String(pm).padStart(2, '0')}`;
-      ctx.waitUntil(import('./routes/cases').then(({ finalizeMyungdoBonus }) =>
-        finalizeMyungdoBonus(env, period).then(
-          (r) => console.log('[cron myungdo-bonus] done', r),
-          (err) => console.error('[cron myungdo-bonus] error', err),
+      ctx.waitUntil(import('./routes/cases').then(({ finalizeCaseAllowance }) =>
+        finalizeCaseAllowance(env, period).then(
+          (r) => console.log('[cron case-allowance] done', r),
+          (err) => console.error('[cron case-allowance] error', err),
         ),
       ));
     } else {
-      console.log('[cron myungdo-bonus] skipped (전월이 홀수월)');
+      console.log('[cron case-allowance] skipped (전월이 홀수월)');
     }
   } else {
     console.warn('[scheduled] unknown cron pattern', cron);

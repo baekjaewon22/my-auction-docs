@@ -2,11 +2,26 @@ import { Hono } from 'hono';
 import type { AuthEnv, User } from '../types';
 import { createToken, hashPassword, verifyPassword, authMiddleware } from '../middleware/auth';
 import { sendAlimtalkByTemplate, normalizePhone } from '../alimtalk';
+import { normalizeBranchName } from '../lib/branchAliases';
 
 const auth = new Hono<AuthEnv>();
 
 // 인증코드 저장소 (메모리 — Worker 인스턴스 수명 동안 유지)
 const verifyStore = new Map<string, { code: string; expires: number; userId: string }>();
+
+async function ensureUserReportSettingColumns(db: D1Database): Promise<void> {
+  const columns = await db.prepare('PRAGMA table_info(users)').all<{ name: string }>();
+  const names = new Set((columns.results || []).map((col) => col.name));
+  if (!names.has('myauction_id')) {
+    await db.prepare("ALTER TABLE users ADD COLUMN myauction_id TEXT NOT NULL DEFAULT ''").run();
+  }
+  if (!names.has('myauction_pw')) {
+    await db.prepare("ALTER TABLE users ADD COLUMN myauction_pw TEXT NOT NULL DEFAULT ''").run();
+  }
+  if (!names.has('report_permission')) {
+    await db.prepare("ALTER TABLE users ADD COLUMN report_permission TEXT NOT NULL DEFAULT 'basic'").run();
+  }
+}
 
 // POST /api/auth/register
 auth.post('/register', async (c) => {
@@ -28,7 +43,7 @@ auth.post('/register', async (c) => {
 
   await db.prepare(
     'INSERT INTO users (id, email, password_hash, name, phone, role, branch, department, login_type, approved, hire_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, email, password_hash, name, phone, 'member', branch || '', '', login_type || 'employee', 0, '2026-03-01').run();
+  ).bind(id, email, password_hash, name, phone, 'member', normalizeBranchName(branch), '', login_type || 'employee', 0, '2026-03-01').run();
 
   const typeLabel = login_type === 'freelancer' ? '프리랜서' : '일반';
   return c.json({ message: `${typeLabel} 회원가입이 완료되었습니다. 관리자 승인 후 로그인할 수 있습니다.` }, 201);
@@ -60,13 +75,19 @@ auth.post('/login', async (c) => {
   const token = await createToken({
     sub: user.id, email: user.email, name: user.name, phone: user.phone,
     role: user.role, team_id: user.team_id, branch: user.branch, department: user.department,
+    position_title: user.position_title,
+    login_type: userLoginType,
   });
 
   return c.json({
     token,
     user: { id: user.id, email: user.email, name: user.name, phone: user.phone,
       role: user.role, team_id: user.team_id, branch: user.branch, department: user.department,
-      login_type: userLoginType },
+      position_title: user.position_title,
+      login_type: userLoginType,
+      myauction_id: (user as any).myauction_id || '',
+      has_myauction_credentials: (user as any).myauction_id && (user as any).myauction_pw ? 1 : 0,
+      report_permission: (user as any).report_permission || 'basic' },
   });
 });
 
@@ -91,9 +112,15 @@ auth.get('/me', authMiddleware, async (c) => {
   }
 
   const db = c.env.DB;
-  const user = await db.prepare(
-    'SELECT id, email, name, phone, role, team_id, branch, department, position_title, saved_signature, login_type, created_at FROM users WHERE id = ?'
-  ).bind(payload.sub).first();
+  await ensureUserReportSettingColumns(db);
+  const user = await db.prepare(`
+    SELECT id, email, name, phone, role, team_id, branch, department, position_title,
+      saved_signature, login_type, created_at,
+      COALESCE(myauction_id, '') AS myauction_id,
+      CASE WHEN COALESCE(myauction_id, '') != '' AND COALESCE(myauction_pw, '') != '' THEN 1 ELSE 0 END AS has_myauction_credentials,
+      COALESCE(report_permission, 'basic') AS report_permission
+    FROM users WHERE id = ?
+  `).bind(payload.sub).first();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
   return c.json({ user });
 });

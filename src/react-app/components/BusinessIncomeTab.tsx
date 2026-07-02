@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Save, RefreshCw, FileText, Users, X, Pencil, Download } from 'lucide-react';
 import { api } from '../api';
+import { useAuthStore } from '../store';
 
 type Entry = {
   id: string; user_id: string | null; name: string; ssn: string; address: string;
@@ -13,8 +14,11 @@ type PoolItem = { id: string; name: string; ssn: string; address: string; note: 
 
 function fmt(n: number): string { return (n || 0).toLocaleString('ko-KR'); }
 function parseMoney(s: string): number { return Number(String(s).replace(/[^0-9-]/g, '')) || 0; }
+function truncMoney(n: number): number { return Math.trunc(Number(n) || 0); }
 
 export default function BusinessIncomeTab({ month }: { month: string }) {
+  const currentUser = useAuthStore((state) => state.user);
+  const canEditBusinessIncome = ['master', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   const [loading, setLoading] = useState(false);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [dirty, setDirty] = useState<Set<string>>(new Set());
@@ -47,7 +51,7 @@ export default function BusinessIncomeTab({ month }: { month: string }) {
       const next = { ...e, ...patch };
       // 금액 변경 시 세금·실지급 자동 계산
       if (patch.amount !== undefined) {
-        next.tax = Math.round(next.amount * 0.033);
+        next.tax = truncMoney(next.amount * 0.033);
         next.net_amount = next.amount - next.tax;
       }
       return next;
@@ -271,7 +275,7 @@ export default function BusinessIncomeTab({ month }: { month: string }) {
           <button className="btn btn-sm" onClick={exportExcel} disabled={loading || entries.length === 0} title="월별 사업소득신고 엑셀 다운로드">
             <Download size={13} /> 엑셀 저장
           </button>
-          <div className="bi-addmenu-wrap">
+          {canEditBusinessIncome && <div className="bi-addmenu-wrap">
             <button className="btn btn-sm" onClick={() => setPoolMenuOpen(v => !v)}>
               <Plus size={13} /> 인원 추가 ▾
             </button>
@@ -302,7 +306,7 @@ export default function BusinessIncomeTab({ month }: { month: string }) {
                 </div>
               </>
             )}
-          </div>
+          </div>}
           <button className="btn btn-sm btn-primary" onClick={saveAll} disabled={saving || dirty.size === 0}>
             <Save size={13} /> 저장 {dirty.size > 0 && `(${dirty.size})`}
           </button>
@@ -371,7 +375,7 @@ export default function BusinessIncomeTab({ month }: { month: string }) {
                       : <span className="bi-badge auto">자동</span>}
                   </td>
                   <td>
-                    <button className="bi-delete-btn" onClick={() => removeEntry(idx)} title="삭제"><Trash2 size={12} /></button>
+                    {canEditBusinessIncome && <button className="bi-delete-btn" onClick={() => removeEntry(idx)} title="삭제"><Trash2 size={12} /></button>}
                   </td>
                 </tr>
               ))}

@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import type { JournalEntry } from './types';
-import { ACTIVITY_COLORS, formatShortDate, type ActivityType } from './types';
+import { ACTIVITY_COLORS, BID_PROPERTY_CATEGORIES, formatShortDate, type ActivityType } from './types';
 import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import { api } from '../api';
 import { Trash2, CheckCircle, XCircle, MapPin, Pencil, Save, X, Trophy } from 'lucide-react';
+import { groupUserOptions } from '../lib/userSelectOptions';
 
 interface Props {
   entries: JournalEntry[];
@@ -22,6 +23,10 @@ interface Props {
 }
 
 export default function JournalCard({ entries, userName, userRole, positionTitle, date, readonly, currentUserRole, onDelete, onToggleComplete, onUpdate, assignableMembers = [], canReassign = false }: Props) {
+  const assignableGroups = groupUserOptions(
+    assignableMembers,
+    m => `${m.position_title ? ` · ${m.position_title}` : ''}${m.department ? ` · ${m.department}` : ''}`,
+  );
   // 시간순 정렬
   const sortedEntries = [...entries].sort((a, b) => {
     try {
@@ -31,6 +36,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
   });
 
   const isMaster = currentUserRole === 'master';
+  const canViewSuggestedPrice = ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUserRole || '');
   const [showPopup, setShowPopup] = useState(false);
   const [failId, setFailId] = useState<string | null>(null);
   const [failReason, setFailReason] = useState('');
@@ -53,6 +59,18 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
   const calculateWinningFee = (winningPrice: number) => {
     if (winningPrice <= 0) return 0;
     return Math.max(Math.round(winningPrice * 0.01), 2_200_000);
+  };
+
+  const isFieldActivityType = (activityType: string) => activityType === '입찰' || activityType === '임장' || activityType === '미팅';
+
+  const normalizeFieldChecks = (activityType: string, data: Record<string, any>) => {
+    const isExcluded = !!data.companion || !!data.bidProxy || !!data.internalMeeting;
+    const isFieldType = isFieldActivityType(activityType);
+    return {
+      ...data,
+      fieldCheckIn: isFieldType && !isExcluded && data.timeFrom === '09:00',
+      fieldCheckOut: isFieldType && !isExcluded && data.timeTo === '18:00',
+    };
   };
 
   const hasFieldCheck = entries.some((e) => {
@@ -78,9 +96,10 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     try {
       // 사건번호 변경 시 activity_subtype도 갱신
       const { __assigneeId, ...rawDataToSave } = editData;
+      const dataToSaveBase = normalizeFieldChecks(entry.activity_type, rawDataToSave);
       const dataToSave = rawDataToSave.companion
         ? { ...rawDataToSave, companionPerson: rawDataToSave.client || rawDataToSave.companionPerson || '', fieldCheckIn: false, fieldCheckOut: false }
-        : rawDataToSave;
+        : dataToSaveBase;
       const updatePayload: { data: Record<string, any>; activity_subtype?: string; bid_field_only?: boolean; user_id?: string } = { data: dataToSave };
       if (editData.caseNo && (entry.activity_type === '입찰' || entry.activity_type === '임장')) {
         updatePayload.activity_subtype = editData.caseNo;
@@ -108,7 +127,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
     // 낙찰 시 낙찰가 미입력 상태라면 실제입찰가를 기본 낙찰가로 자동 적용
     if (newWon && !updated.winPrice) updated.winPrice = d.bidPrice || '';
     try {
-      await api.journal.update(entry.id, { data: updated });
+      await api.journal.update(entry.id, { data: updated, bid_field_only: true });
       // 수수료 자동 생성/삭제
       if (newWon) {
         const winningPrice = parseMoney(updated.winPrice);
@@ -162,7 +181,11 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
   };
 
   const ed = (key: string) => editData[key] || '';
-  const setEd = (key: string, val: any) => setEditData({ ...editData, [key]: val });
+  const setEd = (key: string, val: any) => setEditData(prev => {
+    const editingEntry = entries.find((entry) => entry.id === editingId);
+    const next = { ...prev, [key]: val };
+    return editingEntry ? normalizeFieldChecks(editingEntry.activity_type, next) : next;
+  });
 
   // 읽기 모드에서 값 표시
   const showVal = (val: string, unit?: string) => {
@@ -268,10 +291,12 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       <div className="journal-edit-row">
                         <label>담당자</label>
                         <select value={ed('__assigneeId')} onChange={(e) => setEd('__assigneeId', e.target.value)}>
-                          {assignableMembers.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name}{m.position_title ? ` · ${m.position_title}` : ''}{m.department ? ` · ${m.department}` : ''}
-                            </option>
+                          {assignableGroups.map((group) => (
+                            <optgroup key={group.label} label={group.label}>
+                              {group.options.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </optgroup>
                           ))}
                         </select>
                       </div>
@@ -281,14 +306,16 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                       {/* === 입찰 === */}
                       {entry.activity_type === '입찰' && (
                         isEditing ? (
-                          <BidEditForm ed={ed} setEd={setEd} fmtCurrency={fmtCurrency} />
+                          <BidEditForm ed={ed} setEd={setEd} fmtCurrency={fmtCurrency} canViewSuggestedPrice={canViewSuggestedPrice} />
                         ) : (
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">물건번호</span>{showVal(d.itemNo)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">고객명</span>{showVal(d.bidder)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>
-                            <div className="journal-detail-row"><span className="journal-detail-label">제시입찰가</span>{showVal(d.suggestedPrice, '원')}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">물건종류</span>{showVal(d.propertyType)}</div>
+                            {canViewSuggestedPrice && <div className="journal-detail-row"><span className="journal-detail-label">제시입찰가</span>{showVal(d.suggestedPrice, '원')}</div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">작성입찰가</span>{showVal(d.bidPrice, '원')}</div>
                             <div className="journal-detail-row">
                               <span className="journal-detail-label">낙찰가</span>
@@ -347,17 +374,21 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                             <CompanionEdit ed={ed} setEditData={setEditData} editData={editData} />
                             <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
+                            <div className="journal-edit-row"><label>물건번호</label><input value={ed('itemNo')} onChange={(e) => setEd('itemNo', e.target.value.replace(/[^0-9]/g, ''))} /></div>
                             <div className="journal-edit-row"><label>{ed('companion') ? '담당자' : '고객명'}</label><input value={ed('client')} onChange={(e) => setEd('client', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
+                            <PropertyTypeEdit ed={ed} setEd={setEd} />
                             <div className="journal-edit-row"><label>장소</label><input value={ed('place')} onChange={(e) => setEd('place', e.target.value)} /></div>
-                            {!ed('companion') && <FieldCheckEdit ed={ed} setEd={setEd} />}
+                            {!ed('companion') && isFieldActivityType(entry.activity_type) && <FieldCheckEdit ed={ed} setEd={setEd} />}
                           </div>
                         ) : (
                           <>
                             {d.timeFrom && <div className="journal-detail-row"><span className="journal-detail-label">시간</span><span>{d.timeFrom} ~ {d.timeTo}</span></div>}
                             <div className="journal-detail-row"><span className="journal-detail-label">사건번호</span>{showVal(d.caseNo)}</div>
+                            <div className="journal-detail-row"><span className="journal-detail-label">물건번호</span>{showVal(d.itemNo)}</div>
                             {d.client && <div className="journal-detail-row"><span className="journal-detail-label">{d.companion ? '담당자' : '고객명'}</span>{showVal(d.client)}</div>}
                             {d.court && <div className="journal-detail-row"><span className="journal-detail-label">법원</span>{showVal(d.court)}</div>}
+                            <div className="journal-detail-row"><span className="journal-detail-label">물건종류</span>{showVal(d.propertyType)}</div>
                             <div className="journal-detail-row"><span className="journal-detail-label">장소</span>{showVal(d.place)}</div>
                             {entry.completed === 1 && <div className="journal-detail-row"><span className="journal-detail-label">상태</span><span style={{ color: '#188038' }}>완료</span></div>}
                             {entry.completed === 0 && entry.fail_reason && <div className="journal-detail-row"><span className="journal-detail-label">미완료</span><span style={{ color: '#d93025' }}>{entry.fail_reason}</span></div>}
@@ -396,7 +427,7 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                                 {ed('internalMeeting') ? '✓ 회사 미팅 (외근 X)' : '회사 미팅'}
                               </button>
                             </div>
-                            {!ed('companion') && <FieldCheckEdit ed={ed} setEd={setEd} />}
+                            {!ed('companion') && isFieldActivityType(entry.activity_type) && <FieldCheckEdit ed={ed} setEd={setEd} />}
                           </div>
                         ) : (
                           <>
@@ -415,7 +446,6 @@ export default function JournalCard({ entries, userName, userRole, positionTitle
                           <div className="journal-edit-form">
                             <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
                             <div className="journal-edit-row"><label>유형</label><input value={ed('officeType')} onChange={(e) => setEd('officeType', e.target.value)} /></div>
-                            <FieldCheckEdit ed={ed} setEd={setEd} />
                           </div>
                         ) : (
                           <>
@@ -526,19 +556,74 @@ function FieldCheckEdit({ ed, setEd }: { ed: (k: string) => any; setEd: (k: stri
   );
 }
 
+function PropertyTypeEdit({ ed, setEd }: { ed: (k: string) => any; setEd: (k: string, v: any) => void }) {
+  const propertyMain = ed('propertyCategory') || BID_PROPERTY_CATEGORIES.find((category) => (category.details as readonly string[]).includes(ed('propertyType')))?.main || '';
+  const propertyDetails = BID_PROPERTY_CATEGORIES.find((category) => category.main === propertyMain)?.details || [];
+
+  return (
+    <div className="journal-edit-row">
+      <label>물건종류</label>
+      <div style={{ display: 'flex', gap: 4, flex: 1 }}>
+        <select
+          value={propertyMain}
+          onChange={(e) => {
+            setEd('propertyCategory', e.target.value);
+            setEd('propertyType', '');
+          }}
+        >
+          <option value="">대분류</option>
+          {BID_PROPERTY_CATEGORIES.map((category) => (
+            <option key={category.main} value={category.main}>{category.main}</option>
+          ))}
+        </select>
+        <select value={ed('propertyType')} onChange={(e) => setEd('propertyType', e.target.value)} disabled={!propertyMain}>
+          <option value="">세부</option>
+          {propertyDetails.map((detail) => (
+            <option key={detail} value={detail}>{detail}</option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
 // 입찰 수정 폼 (5% 차이 사유 포함)
-function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd: (k: string, v: any) => void; fmtCurrency: (v: string) => string }) {
+function BidEditForm({ ed, setEd, fmtCurrency, canViewSuggestedPrice }: { ed: (k: string) => any; setEd: (k: string, v: any) => void; fmtCurrency: (v: string) => string; canViewSuggestedPrice: boolean }) {
   const s = Number((ed('suggestedPrice') || '').replace(/[^0-9]/g, ''));
   const a = Number((ed('bidPrice') || '').replace(/[^0-9]/g, ''));
-  const hasDeviation = s > 0 && a > 0 && (s - a) / s >= 0.05;
+  const hasDeviation = canViewSuggestedPrice && s > 0 && a > 0 && (s - a) / s >= 0.05;
+  const propertyMain = ed('propertyCategory') || BID_PROPERTY_CATEGORIES.find((category) => (category.details as readonly string[]).includes(ed('propertyType')))?.main || '';
+  const propertyDetails = BID_PROPERTY_CATEGORIES.find((category) => category.main === propertyMain)?.details || [];
 
   return (
     <div className="journal-edit-form">
       <div className="journal-edit-row"><label>시간</label><input value={ed('timeFrom')} onChange={(e) => setEd('timeFrom', e.target.value)} /> ~ <input value={ed('timeTo')} onChange={(e) => setEd('timeTo', e.target.value)} /></div>
       <div className="journal-edit-row"><label>사건번호</label><input value={ed('caseNo')} onChange={(e) => setEd('caseNo', e.target.value)} /></div>
+      <div className="journal-edit-row"><label>물건번호</label><input value={ed('itemNo')} onChange={(e) => setEd('itemNo', e.target.value.replace(/[^0-9]/g, ''))} /></div>
       <div className="journal-edit-row"><label>고객명</label><input value={ed('bidder')} onChange={(e) => setEd('bidder', e.target.value)} /></div>
       <div className="journal-edit-row"><label>법원</label><input value={ed('court')} onChange={(e) => setEd('court', e.target.value)} /></div>
-      <div className="journal-edit-row"><label>제시입찰가</label><input value={ed('suggestedPrice')} onChange={(e) => setEd('suggestedPrice', fmtCurrency(e.target.value))} /></div>
+      <div className="journal-edit-row">
+        <label>물건종류</label>
+        <select
+          value={propertyMain}
+          onChange={(e) => {
+            setEd('propertyCategory', e.target.value);
+            setEd('propertyType', '');
+          }}
+        >
+          <option value="">대분류</option>
+          {BID_PROPERTY_CATEGORIES.map((category) => (
+            <option key={category.main} value={category.main}>{category.main}</option>
+          ))}
+        </select>
+        <select value={ed('propertyType')} onChange={(e) => setEd('propertyType', e.target.value)} disabled={!propertyMain}>
+          <option value="">세부</option>
+          {propertyDetails.map((detail) => (
+            <option key={detail} value={detail}>{detail}</option>
+          ))}
+        </select>
+      </div>
+      {canViewSuggestedPrice && <div className="journal-edit-row"><label>제시입찰가</label><input value={ed('suggestedPrice')} onChange={(e) => setEd('suggestedPrice', fmtCurrency(e.target.value))} /></div>}
       <div className="journal-edit-row"><label>작성입찰가</label><input value={ed('bidPrice')} onChange={(e) => setEd('bidPrice', fmtCurrency(e.target.value))} /></div>
       {hasDeviation && (
         <div className="journal-edit-row" style={{ background: '#fef2f2', borderRadius: 6, padding: '6px 8px' }}>
@@ -552,7 +637,7 @@ function BidEditForm({ ed, setEd, fmtCurrency }: { ed: (k: string) => any; setEd
         <label className={`field-check-label ${ed('bidCancelled') ? 'checked' : ''}`} style={{ cursor: 'pointer', fontSize: '0.78rem', padding: '4px 8px' }}>
           <input type="checkbox" checked={!!ed('bidCancelled')} onChange={(e) => setEd('bidCancelled', e.target.checked)} /> 취하/변경
         </label>
-        {ed('bidCancelled') && <span style={{ marginLeft: 6, fontSize: '0.72rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용</span>}
+        {ed('bidCancelled') && <span style={{ marginLeft: 6, fontSize: '0.72rem', color: '#e65100' }}>작성입찰가/낙찰가 미입력 허용 · 외근보고서 제출 불필요</span>}
       </div>
       <FieldCheckEdit ed={ed} setEd={setEd} />
     </div>

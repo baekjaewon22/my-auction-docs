@@ -72,6 +72,20 @@ export const api = {
     me: () => request<{ user: import('./types').User }>('/auth/me'),
   },
 
+  auctionReference: {
+    list: (type: 'rights' | 'legal' | 'checklist') =>
+      request<{ items: Array<{ id: string; type: 'rights' | 'legal' | 'checklist'; category?: string; title: string; content: string; created_at?: string; updated_at?: string }> }>(
+        '/auction-reference/items?type=' + encodeURIComponent(type)
+      ),
+    save: (data: { id?: string; type: 'rights' | 'legal' | 'checklist'; category?: string; title: string; content: string }) =>
+      request<{ success: boolean; item: { id: string; type: 'rights' | 'legal' | 'checklist'; category?: string; title: string; content: string } }>(
+        '/auction-reference/items',
+        { method: 'POST', body: JSON.stringify(data) }
+      ),
+    remove: (id: string) =>
+      request<{ success: boolean }>('/auction-reference/items/' + encodeURIComponent(id), { method: 'DELETE' }),
+  },
+
   users: {
     list: () => request<{ users: import('./types').User[] }>('/users'),
     pending: () => request<{ users: import('./types').User[] }>('/users/pending'),
@@ -79,13 +93,23 @@ export const api = {
       request('/users/' + id + '/approve', { method: 'POST', body: JSON.stringify({ department }) }),
     reject: (id: string) =>
       request('/users/' + id + '/reject', { method: 'POST' }),
-    updateRole: (id: string, role: string, branch?: string, department?: string) =>
-      request('/users/' + id + '/role', { method: 'PUT', body: JSON.stringify({ role, branch, department }) }),
+    updateRole: (id: string, role: string, branch?: string, department?: string, resigned_at?: string) =>
+      request('/users/' + id + '/role', { method: 'PUT', body: JSON.stringify({ role, branch, department, resigned_at }) }),
     delete: (id: string) =>
       request('/users/' + id, { method: 'DELETE' }),
-    update: (id: string, data: { name?: string; password?: string; phone?: string; branch?: string; department?: string; position_title?: string }) =>
+    update: (id: string, data: {
+      name?: string;
+      password?: string;
+      phone?: string;
+      branch?: string;
+      department?: string;
+      position_title?: string;
+      myauction_id?: string;
+      myauction_pw?: string;
+      report_permission?: 'basic' | 'special';
+    }) =>
       request('/users/' + id, { method: 'PUT', body: JSON.stringify(data) }),
-    convertToEmployee: (id: string, data: { salary: number; grade?: string; position_allowance?: number }) =>
+    convertToEmployee: (id: string, data: { salary: number; grade?: string; position_allowance?: number; effective_month?: string }) =>
       request<{ success: boolean; user: import('./types').User; account: import('./types').UserAccounting }>(
         '/users/' + id + '/convert-to-employee',
         { method: 'PUT', body: JSON.stringify(data) },
@@ -162,7 +186,11 @@ export const api = {
       request('/documents/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request('/documents/' + id, { method: 'DELETE' }),
     submit: (id: string) => request('/documents/' + id + '/submit', { method: 'POST' }),
-    approve: (id: string) => request('/documents/' + id + '/approve', { method: 'POST' }),
+    approve: (id: string, data?: { step_id?: string }) =>
+      request('/documents/' + id + '/approve', {
+        method: 'POST',
+        body: data ? JSON.stringify(data) : undefined,
+      }),
     reject: (id: string, reason?: string) =>
       request('/documents/' + id + '/reject', {
         method: 'POST',
@@ -198,6 +226,10 @@ export const api = {
       request<{ success: boolean; count: number }>('/org/sync', { method: 'PUT', body: JSON.stringify({ nodes }) }),
     chain: (userId: string) =>
       request<{ chain: { user_id: string; name: string; tier: number; label: string }[]; type: string }>('/org/chain/' + userId),
+    branchApprovers: () =>
+      request<{ overrides: Array<{ id: string; branch: string; approver_id: string; approver_name: string; approver_email: string; approver_role: string; approver_title: string }> }>('/org/branch-approvers'),
+    saveBranchApprovers: (overrides: Array<{ branch: string; approver_id?: string | null }>) =>
+      request<{ success: boolean }>('/org/branch-approvers', { method: 'PUT', body: JSON.stringify({ overrides }) }),
     ccList: () => request<{ ccList: (import('./types').ApprovalCC & { cc_user_name: string; cc_user_email: string })[] }>('/org/cc'),
     ccAdd: (cc_user_id: string) =>
       request<{ success: boolean; id: string }>('/org/cc', { method: 'POST', body: JSON.stringify({ cc_user_id }) }),
@@ -227,10 +259,12 @@ export const api = {
       request('/leave/init', { method: 'POST', body: JSON.stringify({ user_id: userId, total_days: totalDays }) }),
     update: (userId: string, data: { total_days?: number; used_days?: number; monthly_days?: number; monthly_used?: number; leave_type?: string }) =>
       request('/leave/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
+    adjust: (userId: string, data: { field: 'total' | 'used'; delta_days: number }) =>
+      request<{ success: boolean; leave: any }>('/leave/' + userId + '/adjust', { method: 'POST', body: JSON.stringify(data) }),
     // 휴가 신청
-    createRequest: (data: { leave_type: string; start_date: string; end_date: string; hours?: number; reason: string }) =>
+    createRequest: (data: { leave_type: string; start_date: string; end_date: string; hours?: number; reason: string; user_id?: string; half_day_period?: '오전' | '오후' | '' }) =>
       request('/leave/request', { method: 'POST', body: JSON.stringify(data) }),
-    listRequests: (params?: { status?: string; month?: string }) =>
+    listRequests: (params?: { status?: string; month?: string; user_id?: string }) =>
       request<{ requests: any[] }>('/leave/requests' + (params ? '?' + new URLSearchParams(params as any).toString() : '')),
     approveRequest: (id: string) =>
       request('/leave/requests/' + id + '/approve', { method: 'POST' }),
@@ -306,7 +340,8 @@ export const api = {
       Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
       return request<{ notes: any[] }>('/admin-notes' + (q.toString() ? '?' + q.toString() : ''));
     },
-    get: (id: string) => request<{ note: any; comments: any[]; attachments: any[] }>('/admin-notes/' + id),
+    get: (id: string, options: { trackView?: boolean } = {}) =>
+      request<{ note: any; comments: any[]; attachments: any[] }>('/admin-notes/' + id + (options.trackView ? '?view=1' : '')),
     downloadAttachment: async (url: string) => {
       const token = getToken();
       const res = await fetch(url, {
@@ -327,7 +362,7 @@ export const api = {
       }
       return res.blob();
     },
-    create: (data: { title?: string; content?: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; legal_subcategory?: string; attachments?: any[]; assignee_id?: string; target_date?: string; item_no?: string; client_name?: string }) =>
+    create: (data: { title?: string; content?: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; no_case_number?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean; attachments?: any[]; assignee_id?: string; target_date?: string; item_no?: string; client_name?: string }) =>
       request<{ success: boolean; id: string }>('/admin-notes', { method: 'POST', body: JSON.stringify(data) }),
     briefingAutofill: (params: { assignee_id: string; client_name?: string; case_number?: string }) => {
       const q = new URLSearchParams();
@@ -336,13 +371,51 @@ export const api = {
     },
     myAlerts: () =>
       request<{ alerts: Array<{ type: string; priority: number; label: string; note_id?: string; title: string; message: string; comment_count?: number; link: string; created_at: string }> }>('/admin-notes/my-alerts'),
-    update: (id: string, data: { title?: string; content?: string; pinned?: boolean }) =>
+    update: (id: string, data: { title?: string; content?: string; pinned?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean; court?: string; case_number?: string; no_case_number?: boolean }) =>
       request('/admin-notes/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request('/admin-notes/' + id, { method: 'DELETE' }),
     addComment: (noteId: string, content: string, is_anonymous?: boolean) =>
       request('/admin-notes/' + noteId + '/comments', { method: 'POST', body: JSON.stringify({ content, is_anonymous }) }),
     deleteComment: (commentId: string) =>
       request('/admin-notes/comments/' + commentId, { method: 'DELETE' }),
+    bidAnalysisList: (params: { from?: string; to?: string; branch?: string; assignee?: string; page?: number; page_size?: number } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
+      return request<{
+        rows: Array<{
+          id: string; bid_datetime: string; assignee_name: string; branch_name?: string; case_number: string; property_type: string;
+          suggested_bid_price: number | null; actual_bid_price: number | null; winning_price: number | null;
+          is_won: number; bid_result?: '실패' | '낙찰' | '취소' | '취하/변경'; client_name: string; source_type?: string; manual_override?: number; created_at: string;
+        }>;
+        total: number; page: number; page_size: number; filters?: { branches: string[]; assignees: string[] };
+      }>('/admin-notes/bid-analysis' + (q.toString() ? '?' + q.toString() : ''));
+    },
+    bidAnalysisStats: (params: { from?: string; to?: string } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
+      return request<{
+        rows: Array<{
+          id: string; bid_datetime: string; assignee_name: string; branch_name?: string; case_number: string; property_type: string;
+          suggested_bid_price: number | null; actual_bid_price: number | null; winning_price: number | null;
+          is_won: number; bid_result?: '실패' | '낙찰' | '취소' | '취하/변경'; client_name: string; source_type?: string; manual_override?: number; created_at: string;
+        }>;
+      }>('/admin-notes/bid-analysis/stats' + (q.toString() ? '?' + q.toString() : ''));
+    },
+    bidAnalysisCreate: (data: Record<string, unknown>) =>
+      request<{ success: boolean; id: string }>('/admin-notes/bid-analysis', { method: 'POST', body: JSON.stringify(data) }),
+    bidAnalysisUpdate: (id: string, data: Record<string, unknown>) =>
+      request<{ success: boolean }>('/admin-notes/bid-analysis/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    bidAnalysisUpload: (rows: any[], source_file_name?: string) =>
+      request<{ success: boolean; inserted: number; batch_id: string }>('/admin-notes/bid-analysis/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ rows, source_file_name }),
+      }),
+    bidMatchCheck: () =>
+      request<{
+        briefing_unmatched: any[];
+        analysis_unmatched: any[];
+        counts: { briefing_total: number; analysis_total: number; briefing_unmatched: number; analysis_unmatched: number };
+      }>('/admin-notes/bid-match-check'),
   },
 
   commissions: {
@@ -398,7 +471,27 @@ export const api = {
         total_count: number; total_amount: number;
       }>('/sales/contract-tracker?' + q.toString());
     },
-    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number }) =>
+    missingDocuments: (params?: { month?: string }) => {
+      const q = new URLSearchParams();
+      if (params?.month) q.set('month', params.month);
+      const qs = q.toString();
+      return request<{
+        month: string | null;
+        totals: { consultants: number; contract_missing: number; property_report_missing: number; total_missing: number };
+        users: Array<{
+          user_id: string; user_name: string; position_title: string; branch: string; department: string;
+          contract_missing: number; property_report_missing: number; total_missing: number;
+          records: Array<{ id: string; type: string; doc_type: string; client_name: string; amount: number; contract_date: string; status: string }>;
+        }>;
+      }>('/sales/missing-documents' + (qs ? '?' + qs : ''));
+    },
+    duplicateByClientAmount: (params: { client_name: string; amount: number }) => {
+      const q = new URLSearchParams();
+      q.set('client_name', params.client_name);
+      q.set('amount', String(params.amount || 0));
+      return request<{ duplicates: Array<{ id: string; type: string; client_name: string; amount: number; contract_date: string; status: string; user_name?: string; branch?: string }> }>('/sales/duplicate-check?' + q.toString());
+    },
+    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; deposit_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
@@ -438,6 +531,23 @@ export const api = {
       const qs = q.toString();
       return request<{ records: import('./types').SalesRecord[] }>('/sales/stats' + (qs ? '?' + qs : ''));
     },
+    managerPerformance: (params?: { month_start?: string; month_end?: string; months?: number; branch?: string }) => {
+      const q = new URLSearchParams();
+      if (params?.month_start) q.set('month_start', params.month_start);
+      if (params?.month_end) q.set('month_end', params.month_end);
+      if (params?.months) q.set('months', String(params.months));
+      if (params?.branch) q.set('branch', params.branch);
+      const qs = q.toString();
+      return request<{
+        months: string[];
+        scope: 'all' | 'branch' | 'team';
+        rows: Array<{
+          user_id: string; name: string; branch: string; department: string; position_title: string;
+          monthly_target: number; total_amount: number; average_amount: number; met_count: number; miss_count: number;
+          months: Array<{ month: string; amount: number; target: number; met: boolean }>;
+        }>;
+      }>('/sales/manager-performance' + (qs ? '?' + qs : ''));
+    },
     deposits: () => request<{ deposits: import('./types').DepositNotice[] }>('/sales/deposits'),
     createDeposit: (data: { depositor: string; amount: number; deposit_date: string }) =>
       request<{ success: boolean; id: string }>('/sales/deposits', { method: 'POST', body: JSON.stringify(data) }),
@@ -447,7 +557,7 @@ export const api = {
       request('/sales/deposits/' + id + '/approve', { method: 'POST' }),
     deleteDeposit: (id: string) =>
       request('/sales/deposits/' + id, { method: 'DELETE' }),
-    createAccountingEntry: (data: { amount: number; content: string; date: string; assignee_id: string; direction?: string }) =>
+    createAccountingEntry: (data: { amount: number; content: string; date: string; assignee_id: string; direction?: string; payment_method?: string }) =>
       request<{ success: boolean; id: string }>('/sales/accounting-entry', { method: 'POST', body: JSON.stringify(data) }),
     contractCheck: (id: string, data: { contract_submitted?: number; contract_not_submitted?: number; contract_not_reason?: string; contract_not_approved?: number }) =>
       request('/sales/' + id + '/contract-check', { method: 'PUT', body: JSON.stringify(data) }),
@@ -484,8 +594,10 @@ export const api = {
   card: {
     updateUserCard: (userId: string, card_number: string) =>
       request('/card/user/' + userId, { method: 'PUT', body: JSON.stringify({ card_number }) }),
-    upload: (rows: { card_number: string; transaction_date: string; merchant_name: string; amount: number; description: string; is_cancellation?: boolean; raw_text?: string }[]) =>
+    upload: (rows: { card_number: string; transaction_date: string; merchant_name: string; amount: number; description: string; usage_category?: string; usage_item?: string; is_cancellation?: boolean; raw_text?: string }[]) =>
       request<{ success: boolean; inserted: number; batch_id: string }>('/card/upload', { method: 'POST', body: JSON.stringify({ rows }) }),
+    updateTransaction: (id: string, data: { merchant_name?: string; description?: string; usage_category?: string; usage_item?: string }) =>
+      request<{ success: boolean }>('/card/transaction/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     transactions: (params?: { month?: string; branch?: string; user_id?: string }) => {
       const q = new URLSearchParams();
       if (params?.month) q.set('month', params.month);
@@ -510,8 +622,8 @@ export const api = {
       request<{ success: boolean; count: number }>('/card/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
     rematch: () =>
       request<{ success: boolean; total: number; updated: number }>('/card/rematch', { method: 'POST' }),
-    lastUpload: () =>
-      request<{ last_upload: string | null; count: number; batch_id: string | null }>('/card/last-upload'),
+    lastUpload: (month?: string) =>
+      request<{ last_upload: string | null; count: number; batch_id: string | null }>('/card/last-upload' + (month ? '?month=' + encodeURIComponent(month) : '')),
   },
 
   serviceTokens: {
@@ -523,12 +635,23 @@ export const api = {
       request<{ success: boolean; already_revoked?: boolean }>('/service-tokens/' + id + '/revoke', { method: 'POST' }),
   },
 
+  system: {
+    holidays: (year?: string) =>
+      request<{ holidays: any[] }>('/system/holidays' + (year ? '?year=' + encodeURIComponent(year) : '')),
+    createHoliday: (data: Record<string, unknown>) =>
+      request<{ holiday: any }>('/system/holidays', { method: 'POST', body: JSON.stringify(data) }),
+    updateHoliday: (id: string, data: Record<string, unknown>) =>
+      request<{ holiday: any }>('/system/holidays/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteHoliday: (id: string) =>
+      request<{ success: boolean }>('/system/holidays/' + id, { method: 'DELETE' }),
+  },
+
   links: {
     myOutdoorEntries: (forDocId?: string) => {
       const q = forDocId ? '?for_doc_id=' + encodeURIComponent(forDocId) : '';
       return request<{ entries: Array<{
         id: string; target_date: string; activity_type: string; activity_subtype: string;
-        time_from: string; time_to: string; place: string; case_no: string; client: string; court: string;
+        time_from: string; time_to: string; place: string; case_no: string; property_type: string; client: string; court: string;
         linked_to_other_doc: string | null; linked_to_current_doc: boolean;
       }> }>('/links/my-outdoor-entries' + q);
     },
@@ -557,6 +680,20 @@ export const api = {
     resolveReview: (id: string, journalEntryIds: string[]) =>
       request<{ success: boolean; action: string; linked_count?: number }>('/links/review/' + id + '/resolve', {
         method: 'POST', body: JSON.stringify({ journal_entry_ids: journalEntryIds })
+      }),
+    requestOutdoorExemption: (data: { journal_entry_ids: string[]; reason_type: string; reason_detail: string }) =>
+      request<{ success: boolean; requested: number; skipped: number }>('/links/outdoor-exemptions', {
+        method: 'POST', body: JSON.stringify(data)
+      }),
+    outdoorExemptions: (status: 'pending' | 'approved' | 'rejected' | 'mine' = 'pending') =>
+      request<{ items: any[] }>('/links/outdoor-exemptions?status=' + status),
+    approveOutdoorExemption: (id: string, comment?: string) =>
+      request<{ success: boolean }>('/links/outdoor-exemptions/' + id + '/approve', {
+        method: 'POST', body: JSON.stringify({ comment })
+      }),
+    rejectOutdoorExemption: (id: string, comment: string) =>
+      request<{ success: boolean }>('/links/outdoor-exemptions/' + id + '/reject', {
+        method: 'POST', body: JSON.stringify({ comment })
       }),
   },
 
@@ -594,7 +731,10 @@ export const api = {
       request<{ save: any }>('/payroll/save/' + userId + '?period=' + encodeURIComponent(period)),
     save: (data: { user_id: string; period: string; pay_type: string; data: Record<string, unknown> }) =>
       request('/payroll/save', { method: 'POST', body: JSON.stringify(data) }),
-    lock: () => request('/payroll/lock', { method: 'POST' }),
+    lock: (data?: { user_id?: string; period?: string }) =>
+      request('/payroll/lock', { method: 'POST', body: JSON.stringify(data || {}) }),
+    unlock: (data: { user_id: string; period: string }) =>
+      request('/payroll/unlock', { method: 'POST', body: JSON.stringify(data) }),
     businessIncome: (month: string) =>
       request<{
         month: string;
@@ -622,6 +762,22 @@ export const api = {
       request<{ success: boolean; salary: number; standard_sales: number; grade: string }>('/accounting/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
     updateGrade: (userId: string, grade: string) =>
       request('/accounting/' + userId + '/grade', { method: 'PUT', body: JSON.stringify({ grade }) }),
+    laborCostReport: () =>
+      request<{ rows: any[]; summary: { total_salary: number; total_allowance: number; total_labor_cost: number; staff_count: number } }>('/accounting/reports/labor-cost'),
+    checkCardRules: () =>
+      request<{ card_rules: any[]; keyword_rules: any[] }>('/accounting/rules/check-card'),
+    createCheckCardRule: (data: { card_last4: string; branch: string; owner_name: string; memo?: string }) =>
+      request<{ rule: any }>('/accounting/rules/check-card/card', { method: 'POST', body: JSON.stringify(data) }),
+    updateCheckCardRule: (id: string, data: { card_last4: string; branch: string; owner_name: string; memo?: string }) =>
+      request<{ rule: any }>('/accounting/rules/check-card/card/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteCheckCardRule: (id: string) =>
+      request<{ success: boolean }>('/accounting/rules/check-card/card/' + id, { method: 'DELETE' }),
+    createMerchantKeywordRule: (data: { keyword: string; category: string; item: string; memo?: string }) =>
+      request<{ rule: any }>('/accounting/rules/check-card/keyword', { method: 'POST', body: JSON.stringify(data) }),
+    updateMerchantKeywordRule: (id: string, data: { keyword: string; category: string; item: string; memo?: string }) =>
+      request<{ rule: any }>('/accounting/rules/check-card/keyword/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteMerchantKeywordRule: (id: string) =>
+      request<{ success: boolean }>('/accounting/rules/check-card/keyword/' + id, { method: 'DELETE' }),
     evaluations: (userId: string) =>
       request<{ evaluations: import('./types').SalesEvaluation[] }>('/accounting/evaluations/' + userId),
     evaluate: (periodStart: string, periodEnd: string) =>
@@ -632,6 +788,29 @@ export const api = {
       request<{ pending_sales: import('./types').SalesRecord[]; settlement_deposits: any[] }>('/accounting/card-settlements/list' + (month ? '?month=' + month : '')),
     confirmCardSettlement: (id: string, data: { settlement_date?: string; settlement_amount?: number; staging_id?: string; note?: string }) =>
       request<{ success: boolean; sales_id: string; settlement_amount: number; fee_amount: number; settlement_date: string }>('/accounting/card-settlements/' + id + '/confirm', { method: 'POST', body: JSON.stringify(data) }),
+    commitSession2: (data: { batch_hash: string; file_name?: string; rows: any[] }) =>
+      request<{ success: boolean; batch_id: string; source_inserted: number; source_skipped: number; reconciliation_upserted: number; ledger_inserted: number; ledger_skipped: number }>('/accounting/session2/commit', { method: 'POST', body: JSON.stringify(data) }),
+    createSession2LedgerRow: (data: Record<string, unknown>) =>
+      request<{ success: boolean; id: string }>('/accounting/session2/ledger-row', { method: 'POST', body: JSON.stringify(data) }),
+    updateSession2LedgerRow: (id: string, data: Record<string, unknown>) =>
+      request<{ success: boolean }>('/accounting/session2/ledger-row/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteSession2LedgerRow: (id: string) =>
+      request<{ success: boolean }>('/accounting/session2/ledger-row/' + id, { method: 'DELETE' }),
+    session2Report: (params: { report_type: string; month?: string; branch?: string }) => {
+      const query = new URLSearchParams();
+      query.set('report_type', params.report_type);
+      if (params.month) query.set('month', params.month);
+      if (params.branch) query.set('branch', params.branch);
+        return request<{ rows: any[]; summary: any; months: string[]; latest_import?: any; profit_loss_statement?: any }>('/accounting/session2/reports?' + query.toString());
+      },
+    forecastAdjustments: (params: { month: string; branch?: string }) => {
+      const query = new URLSearchParams();
+      query.set('month', params.month);
+      if (params.branch) query.set('branch', params.branch);
+      return request<{ rows: any[]; updated_at?: string; updated_by?: string }>('/accounting/session2/forecast-adjustments?' + query.toString());
+    },
+    saveForecastAdjustments: (data: { month: string; branch?: string; rows: any[] }) =>
+      request<{ success: boolean; rows: any[] }>('/accounting/session2/forecast-adjustments', { method: 'PUT', body: JSON.stringify(data) }),
     uploadBank: (rows: any[]) =>
       request<{ success: boolean; total: number; inserted: number; autoExpenses: number; dupSales: number; dupStaging: number; skipped: string[] }>('/accounting/upload-bank', { method: 'POST', body: JSON.stringify({ rows }) }),
     staging: (month?: string) =>
@@ -706,8 +885,12 @@ export const api = {
     detail: (id: string) => request<{ case: any }>(`/cases/${id}`),
     update: (id: string, data: { registered_at?: string; consultant_name?: string | null; consultant_position?: string | null; manager_username?: string; manager_name?: string; client_name?: string; fee_type?: 'fixed' | 'actual'; fee_amount?: number }) =>
       request<{ success: boolean; case: any }>(`/cases/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    bonusSummary: (period: string) => request<{ period: string; period_label: string; summary: Array<{ consultant_user_id: string | null; consultant_name: string; consultant_position: string | null; consultant_branch: string | null; consultant_department: string | null; cnt: number; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; bonus: number }> }>(`/cases/bonus/summary?period=${period}`),
-    bonusMe: (period: string) => request<{ period: string; period_label: string; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number }>(`/cases/bonus/me?period=${period}`),
+    bonusSummary: (period: string, opts?: { salary_only_month?: string }) => {
+      const q = new URLSearchParams({ period });
+      if (opts?.salary_only_month) q.set('salary_only_month', opts.salary_only_month);
+      return request<{ period: string; period_label: string; summary: Array<{ consultant_user_id: string | null; consultant_name: string; consultant_position: string | null; consultant_branch: string | null; consultant_department: string | null; cnt: number; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; bonus: number; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null }> }>(`/cases/bonus/summary?${q.toString()}`);
+    },
+    bonusMe: (period: string) => request<{ period: string; period_label: string; total_fee: number; total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null }>(`/cases/bonus/me?period=${period}`),
     delete: (id: string, reason?: string) =>
       request<{ success: boolean }>(`/cases/${id}${reason ? '?reason=' + encodeURIComponent(reason) : ''}`, { method: 'DELETE' }),
     finalizeBonus: (period: string) =>
@@ -762,6 +945,30 @@ export const api = {
     },
     duplicateInspections: (all?: boolean) =>
       request<{ duplicates: { case_no: string; court: string; branch: string; user_names: string; user_count: number; first_date: string; last_date: string }[] }>('/journal/duplicate-inspections' + (all ? '?all=true' : '')),
+  },
+
+  freelancerBids: {
+    list: (params: { branch?: string; assignee?: string } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
+      return request<{ rows: Array<{
+        id: string; user_id: string; owner_name?: string; owner_branch?: string; owner_department?: string;
+        can_edit?: number; can_delete?: number;
+        bid_date: string; court: string; case_number: string; item_no: string;
+        client_name: string; bidder_name: string; property_type: string;
+        suggested_price: number | null; actual_bid_price: number | null; winning_price: number | null;
+        bid_result: '실패' | '낙찰' | '취소'; deviation_reason: string; created_at: string; updated_at: string;
+      }>; filters?: {
+        branches: Array<{ branch: string }>;
+        assignees: Array<{ id: string; name: string; branch: string }>;
+      } }>(`/freelancer-bids${q.toString() ? '?' + q.toString() : ''}`);
+    },
+    create: (data: Record<string, unknown>) =>
+      request<{ success: boolean; id: string }>('/freelancer-bids', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Record<string, unknown>) =>
+      request<{ success: boolean }>('/freelancer-bids/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      request<{ success: boolean }>('/freelancer-bids/' + id, { method: 'DELETE' }),
   },
 
   alimtalk: {

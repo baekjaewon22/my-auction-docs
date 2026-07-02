@@ -1,0 +1,5 @@
+task mode: create
+primary deck-profile: strategy-leadership
+secondary gates: team guide clarity, no external identity assets
+required proof objects: writing formula, examples, checklist
+known missing inputs: exact company policy wording not supplied; generic internal guide used

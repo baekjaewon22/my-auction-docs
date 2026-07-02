@@ -5,6 +5,8 @@ import { useBranches } from '../hooks/useBranches';
 import Select from '../components/Select';
 import { Handshake, Send, Check, Camera, Download, X, Plus, Trash2 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
+import { sameBranchName } from '../lib/branchAliases';
+import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 const COURTS = ['의정부지방법원', '서울중앙지방법원', '서울남부지방법원', '서울동부지방법원', '서울서부지방법원', '서울북부지방법원', '인천지방법원', '수원지방법원', '대전지방법원', '대구지방법원', '부산지방법원', '울산지방법원', '창원지방법원', '광주지방법원', '전주지방법원', '청주지방법원', '춘천지방법원', '제주지방법원'];
 const DEFAULT_CONTENT = `임장 사진 촬영 요청 / 임장 후 특이사항 공유 /
@@ -164,8 +166,11 @@ export default function Cooperation({ embedded = false }: { embedded?: boolean }
     } catch (err: any) { alert(err.message); }
   };
 
-  const filteredMembers = formBranch ? members.filter(m => m.branch === formBranch) : members;
-  const receiverOpts = filteredMembers.filter(m => m.id !== user?.id).map(m => ({ value: m.id, label: `${m.name} ${m.position_title || ''} (${m.branch})` }));
+  const filteredMembers = formBranch ? members.filter(m => sameBranchName(m.branch, formBranch)) : members;
+  const receiverOpts = groupUserOptions(
+    filteredMembers.filter(m => m.id !== user?.id),
+    m => ` ${m.position_title || ''} (${m.branch || ''})`,
+  );
 
   const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> = {
     pending: { label: '대기', color: '#e65100', bg: '#fff3e0' },
@@ -232,7 +237,7 @@ export default function Cooperation({ embedded = false }: { embedded?: boolean }
             <div>
               <label className="form-label">수신자</label>
               <Select size="sm" options={receiverOpts}
-                value={receiverOpts.find(o => o.value === formReceiver) || null}
+                value={findUserOption(receiverOpts, formReceiver)}
                 onChange={(o: any) => setFormReceiver(o?.value || '')} placeholder="담당자 선택" isSearchable />
             </div>
           </div>

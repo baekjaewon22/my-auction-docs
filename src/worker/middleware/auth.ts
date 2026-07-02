@@ -106,8 +106,8 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
     const payload = await verifyToken(token);
     const db = c.env.DB;
     const freshUser = await db.prepare(
-      'SELECT id, role, team_id, branch, department FROM users WHERE id = ?'
-    ).bind(payload.sub).first<{ id: string; role: Role; team_id: string | null; branch: string; department: string }>();
+      'SELECT id, role, team_id, branch, department, login_type FROM users WHERE id = ?'
+    ).bind(payload.sub).first<{ id: string; role: Role; team_id: string | null; branch: string; department: string; login_type?: string }>();
 
     if (freshUser) {
       if (freshUser.role === 'resigned') {
@@ -117,6 +117,7 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
       payload.team_id = freshUser.team_id;
       payload.branch = freshUser.branch;
       payload.department = freshUser.department;
+      payload.login_type = freshUser.login_type || 'employee';
     }
 
     payload.auth_type = 'user';

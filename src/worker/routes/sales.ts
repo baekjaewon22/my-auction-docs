@@ -2,21 +2,30 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
+import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 
 const sales = new Hono<AuthEnv>();
 sales.use('*', authMiddleware);
 
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 const EDIT_ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+const TEST_ACCOUNT_KEYWORDS = ['test', '테스트', 'dummy', 'sample', 'example', '임시'];
 
 // admin 권한 확장: 본인 지사 외 추가 지사 열람 가능 (특정 사용자 예외)
 // 진성헌(서초·admin·본부장): 서초 + 대전 매출 열람
 const ADMIN_EXTRA_BRANCHES: Record<string, string[]> = {
-  'c32c3021-b8f6-42f8-b977-7e6e53a7e6f6': ['대전'], // 진성헌
+  'c32c3021-b8f6-42f8-b977-7e6e53a7e6f6': ['대전지사'], // 진성헌
 };
 
 // 활동 내역 로그 기록 대상 역할 (총무/총무보조만)
 const LOGGED_ROLES = new Set(['accountant', 'accountant_asst']);
+
+function hasAlimtalkBranch(settings: string | null | undefined, branch: string | null | undefined): boolean {
+  const normalizedBranch = normalizeBranchName(branch);
+  if (!settings || !normalizedBranch) return false;
+  return settings.split(',').some((value) => sameBranchName(value, normalizedBranch));
+}
 
 type LogUser = { sub: string; name?: string; role: string };
 type LogInput = {
@@ -78,6 +87,37 @@ function buildDiff(before: any, after: any, fields: { key: string; label: string
   return parts.join(', ');
 }
 
+function monthKey(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function monthRange(endMonth: string, count: number): string[] {
+  const match = String(endMonth || '').match(/^(\d{4})-(\d{2})$/);
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const end = match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1)) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - (count - 1 - i), 1));
+    return monthKey(d);
+  });
+}
+
+function monthRangeBetween(startMonth: string, endMonth: string): string[] | null {
+  const startMatch = String(startMonth || '').match(/^(\d{4})-(\d{2})$/);
+  if (!startMatch) return null;
+  const endMatch = String(endMonth || '').match(/^(\d{4})-(\d{2})$/);
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const start = new Date(Date.UTC(Number(startMatch[1]), Number(startMatch[2]) - 1, 1));
+  const end = endMatch ? new Date(Date.UTC(Number(endMatch[1]), Number(endMatch[2]) - 1, 1)) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  if (start > end) return [];
+  const months: string[] = [];
+  const cursor = new Date(start);
+  while (cursor <= end && months.length < 12) {
+    months.push(monthKey(cursor));
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+  return months;
+}
+
 const SALES_DIFF_FIELDS = [
   { key: 'type', label: '유형' },
   { key: 'type_detail', label: '사건내용' },
@@ -87,6 +127,8 @@ const SALES_DIFF_FIELDS = [
   { key: 'contract_date', label: '계약일' },
   { key: 'deposit_date', label: '입금일' },
   { key: 'card_deposit_date', label: '카드정산일' },
+  { key: 'tax_invoice_date', label: '증빙일자' },
+  { key: 'tax_invoice_type', label: '증빙구분' },
   { key: 'payment_type', label: '결제방식' },
   { key: 'status', label: '상태' },
   { key: 'memo', label: '메모' },
@@ -117,29 +159,28 @@ sales.get('/', async (c) => {
 
   if (role === 'director') {
     // 총괄이사: 본인 건 + 대전/부산 (담당자 지사 또는 매출귀속 지사 기준)
-    conditions.push(`(sr.user_id = ? OR sr.branch IN ('대전', '부산') OR sr.attribution_branch IN ('대전', '부산'))`);
+    conditions.push(`(sr.user_id = ? OR sr.branch IN ('대전', '대전지사', '부산', '부산지사') OR sr.attribution_branch IN ('대전', '대전지사', '부산', '부산지사'))`);
     params.push(user.sub);
   } else if (!isAdmin && !isAccountant) {
     if (role === 'manager') {
       // 팀장: 본인 팀 전체
-      conditions.push('(sr.user_id = ? OR (sr.branch = ? AND sr.department = ?))');
+      conditions.push('(sr.user_id = ? OR (u.branch = ? AND u.department = ?))');
       params.push(user.sub, user.branch, user.department);
     } else {
       // 팀원: 본인만
       conditions.push('sr.user_id = ?');
       params.push(user.sub);
     }
-  } else if (role === 'admin' && user.branch !== '의정부') {
+  } else if (role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     // 일반 관리자: 본인 지사 (+ 예외 사용자에겐 추가 지사 허용)
-    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
-    if (extra.length > 0) {
-      const allBranches = [user.branch, ...extra];
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 1) {
       const placeholders = allBranches.map(() => '?').join(',');
       conditions.push(`(sr.branch IN (${placeholders}) OR sr.attribution_branch IN (${placeholders}))`);
       params.push(...allBranches, ...allBranches);
     } else {
       conditions.push('sr.branch = ?');
-      params.push(user.branch);
+      params.push(allBranches[0] || user.branch);
     }
   }
 
@@ -244,7 +285,7 @@ sales.get('/contract-tracker', async (c) => {
     SELECT id, name, branch, department, position_title, role, login_type
     FROM users
     WHERE approved = 1
-      AND branch != '본사 관리'
+      AND REPLACE(branch, ' ', '') != '본사관리'
       AND department != '명도팀'
       AND (
         role IN ('member', 'manager')
@@ -316,6 +357,100 @@ sales.get('/contract-tracker', async (c) => {
   return c.json({
     period: monthFromParam || monthToParam ? 'month_range' : period, from: fromDate, to: toDate,
     users, total_count: totalCount, total_amount: totalAmount,
+  });
+});
+
+// GET /api/sales/missing-documents — 컨설팅 계약서/물건분석보고서 미제출 현황
+sales.get('/missing-documents', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const month = c.req.query('month') || '';
+  const role = user.role;
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant', 'accountant_asst'];
+  if (!allowed.includes(role)) return c.json({ error: '권한이 없습니다.' }, 403);
+
+  let query = `
+    SELECT sr.id, sr.type, sr.client_name, sr.amount, sr.contract_date, sr.status,
+      sr.branch, sr.department, sr.user_id,
+      u.name as user_name, u.position_title
+    FROM sales_records sr
+    JOIN users u ON u.id = sr.user_id
+    WHERE sr.status != 'refunded'
+      AND sr.type IN ('계약', '낙찰')
+      AND COALESCE(sr.contract_submitted, 0) = 0
+      AND COALESCE(sr.contract_not_submitted, 0) = 0
+  `;
+  const params: any[] = [];
+
+  if (month && /^\d{4}-\d{2}$/.test(month)) {
+    const [y, m] = month.split('-').map(Number);
+    query += ' AND sr.contract_date >= ? AND sr.contract_date <= ?';
+    params.push(`${month}-01`, `${month}-${new Date(y, m, 0).getDate()}`);
+  }
+
+  if (role === 'manager') {
+    query += ' AND (sr.user_id = ? OR (u.branch = ? AND u.department = ?))';
+    params.push(user.sub, user.branch, user.department);
+  } else if (role === 'director') {
+    query += " AND (sr.user_id = ? OR sr.branch IN ('대전', '대전지사', '부산', '부산지사') OR sr.attribution_branch IN ('대전', '대전지사', '부산', '부산지사'))";
+    params.push(user.sub);
+  } else if (role === 'admin' && !isHeadOfficeBranch(user.branch)) {
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 1) {
+      const placeholders = allBranches.map(() => '?').join(',');
+      query += ` AND (sr.branch IN (${placeholders}) OR sr.attribution_branch IN (${placeholders}))`;
+      params.push(...allBranches, ...allBranches);
+    } else {
+      query += ' AND sr.branch = ?';
+      params.push(allBranches[0] || user.branch);
+    }
+  }
+  query += ' ORDER BY u.branch, u.department, u.name, sr.contract_date DESC';
+
+  const result = params.length ? await db.prepare(query).bind(...params).all<any>() : await db.prepare(query).all<any>();
+  const grouped = new Map<string, any>();
+  for (const row of result.results || []) {
+    const key = row.user_id;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        user_id: row.user_id,
+        user_name: row.user_name,
+        position_title: row.position_title || '',
+        branch: row.branch || '',
+        department: row.department || '',
+        contract_missing: 0,
+        property_report_missing: 0,
+        total_missing: 0,
+        records: [],
+      });
+    }
+    const item = grouped.get(key);
+    if (row.type === '낙찰') item.property_report_missing += 1;
+    else item.contract_missing += 1;
+    item.total_missing += 1;
+    item.records.push({
+      id: row.id,
+      type: row.type,
+      doc_type: row.type === '낙찰' ? '물건분석보고서' : '컨설팅 계약서',
+      client_name: row.client_name || '',
+      amount: row.amount || 0,
+      contract_date: row.contract_date || '',
+      status: row.status || '',
+    });
+  }
+
+  const users = Array.from(grouped.values()).sort((a, b) =>
+    (b.total_missing - a.total_missing) || String(a.branch).localeCompare(String(b.branch), 'ko') || String(a.user_name).localeCompare(String(b.user_name), 'ko')
+  );
+  return c.json({
+    month: month || null,
+    users,
+    totals: {
+      consultants: users.length,
+      contract_missing: users.reduce((s, u) => s + u.contract_missing, 0),
+      property_report_missing: users.reduce((s, u) => s + u.property_report_missing, 0),
+      total_missing: users.reduce((s, u) => s + u.total_missing, 0),
+    },
   });
 });
 
@@ -405,7 +540,7 @@ sales.post('/', async (c) => {
 
     const canCreateForLinkedEntry = linkedEntry.user_id === user.sub
       || ['master', 'ceo', 'cc_ref'].includes(user.role)
-      || (user.role === 'admin' && linkedEntry.branch === user.branch);
+      || (user.role === 'admin' && sameBranchName(linkedEntry.branch, user.branch));
     if (!canCreateForLinkedEntry) {
       return c.json({ error: '연결된 일지의 매출을 등록할 권한이 없습니다.' }, 403);
     }
@@ -442,7 +577,7 @@ sales.post('/', async (c) => {
       "SELECT phone, alimtalk_branches FROM users WHERE role IN ('accountant', 'accountant_asst') AND approved = 1 AND phone != ''"
     ).all<{ phone: string; alimtalk_branches: string }>();
     const phones = (accountants.results || [])
-      .filter(r => r.alimtalk_branches && r.alimtalk_branches.split(',').includes(creatorBranch))
+      .filter(r => hasAlimtalkBranch(r.alimtalk_branches, creatorBranch))
       .map(r => r.phone)
       .filter(Boolean);
     if (phones.length > 0) {
@@ -455,6 +590,30 @@ sales.post('/', async (c) => {
   }
 
   return c.json({ success: true, id });
+});
+
+// GET /api/sales/duplicate-check — 계약자명+금액 기준 중복 매출 확인
+sales.get('/duplicate-check', async (c) => {
+  const db = c.env.DB;
+  const clientName = (c.req.query('client_name') || '').trim();
+  const amount = Number(c.req.query('amount') || 0);
+  if (!clientName || amount <= 0) return c.json({ duplicates: [] });
+
+  const normalizedClient = clientName.replace(/\s+/g, '').toLowerCase();
+  const rows = await db.prepare(`
+    SELECT sr.id, sr.type, sr.client_name, sr.amount, sr.contract_date, sr.status,
+           sr.branch, u.name as user_name
+    FROM sales_records sr
+    LEFT JOIN users u ON u.id = sr.user_id
+    WHERE LOWER(REPLACE(TRIM(sr.client_name), ' ', '')) = ?
+      AND CAST(sr.amount AS INTEGER) = ?
+      AND COALESCE(sr.status, '') != 'refunded'
+      AND COALESCE(sr.direction, 'income') != 'expense'
+    ORDER BY sr.contract_date DESC, sr.created_at DESC
+    LIMIT 10
+  `).bind(normalizedClient, amount).all();
+
+  return c.json({ duplicates: rows.results || [] });
 });
 
 // PUT /api/sales/:id — 매출 내역 수정 (본인 건, pending 상태만)
@@ -492,17 +651,34 @@ sales.put('/:id', async (c) => {
     statusUpdate = 'card_pending';
   }
 
+  // 매수신청대리: amount 또는 proxy_cost 변경 시 type_detail 자동 갱신
+  // (총무가 detail 뷰에서 proxy_cost를 편집할 때 type_detail이 stale로 남는 문제 방지)
+  let resolvedTypeDetail = body.type_detail ?? record.type_detail;
+  const resolvedType = body.type || record.type;
+  const resolvedAmount = body.amount ?? record.amount;
+  const resolvedProxyCost = body.proxy_cost ?? record.proxy_cost ?? 0;
+  if (
+    resolvedType === '매수신청대리' &&
+    body.type_detail === undefined &&
+    (body.proxy_cost !== undefined || body.amount !== undefined)
+  ) {
+    const payroll = Math.round((resolvedAmount || 0) / 1.1) - resolvedProxyCost;
+    resolvedTypeDetail = `대리비용 ${resolvedProxyCost.toLocaleString()}원 / 급여반영 ${payroll >= 0 ? '' : '-'}${Math.abs(payroll).toLocaleString()}원`;
+  }
+
   const nextRecord = {
     ...record,
-    type: body.type || record.type,
-    type_detail: body.type_detail ?? record.type_detail,
+    type: resolvedType,
+    type_detail: resolvedTypeDetail,
     client_name: body.client_name ?? record.client_name,
     depositor_name: body.depositor_name ?? record.depositor_name,
-    amount: body.amount ?? record.amount,
+    amount: resolvedAmount,
     contract_date: body.contract_date ?? record.contract_date,
     deposit_date: body.deposit_date ?? record.deposit_date,
     payment_type: body.payment_type ?? record.payment_type ?? '',
     card_deposit_date: newCardDepDate,
+    tax_invoice_date: body.tax_invoice_date ?? record.tax_invoice_date ?? '',
+    tax_invoice_type: body.tax_invoice_type ?? record.tax_invoice_type ?? '',
     status: statusUpdate,
   };
 
@@ -515,10 +691,10 @@ sales.put('/:id', async (c) => {
       status = ?, updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(
-    body.type || record.type, body.type_detail ?? record.type_detail,
+    resolvedType, resolvedTypeDetail,
     body.client_name ?? record.client_name, body.depositor_name ?? record.depositor_name,
     body.depositor_different !== undefined ? (body.depositor_different ? 1 : 0) : record.depositor_different,
-    body.amount ?? record.amount, body.contract_date ?? record.contract_date,
+    resolvedAmount, body.contract_date ?? record.contract_date,
     body.deposit_date ?? record.deposit_date ?? '',
     body.payment_type ?? record.payment_type ?? '', body.receipt_type ?? record.receipt_type ?? '',
     body.receipt_phone ?? record.receipt_phone ?? '', newCardDepDate,
@@ -526,7 +702,7 @@ sales.put('/:id', async (c) => {
     body.tax_invoice_type ?? record.tax_invoice_type ?? '',
     body.appraisal_rate ?? record.appraisal_rate ?? 0, body.winning_rate ?? record.winning_rate ?? 0,
     body.client_phone ?? record.client_phone ?? '',
-    body.proxy_cost ?? record.proxy_cost ?? 0,
+    resolvedProxyCost,
     statusUpdate, id
   ).run();
 
@@ -676,7 +852,7 @@ sales.post('/:id/refund-approve', requireRole(...EDIT_ACCOUNTING_ROLES), async (
       "SELECT phone, alimtalk_branches FROM users WHERE role IN ('accountant', 'accountant_asst') AND approved = 1 AND phone != ''"
     ).all<{ phone: string; alimtalk_branches: string }>();
     const phones = (accountants.results || [])
-      .filter(r => r.alimtalk_branches && r.alimtalk_branches.split(',').includes(recordBranch))
+      .filter(r => hasAlimtalkBranch(r.alimtalk_branches, recordBranch))
       .map(r => r.phone)
       .filter(Boolean);
     if (phones.length > 0) {
@@ -765,16 +941,15 @@ sales.get('/dashboard/pending', async (c) => {
   `;
   const params: any[] = [];
 
-  if (user.role === 'admin' && user.branch !== '의정부') {
-    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
-    if (extra.length > 0) {
-      const allBranches = [user.branch, ...extra];
+  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 1) {
       const placeholders = allBranches.map(() => '?').join(',');
       query += ` AND sr.branch IN (${placeholders})`;
       params.push(...allBranches);
     } else {
       query += ' AND sr.branch = ?';
-      params.push(user.branch);
+      params.push(allBranches[0] || user.branch);
     }
   }
 
@@ -892,7 +1067,8 @@ sales.get('/dashboard/refund-requests', async (c) => {
 sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  const { month, month_end, branch, department, user_id: filterUserId } = c.req.query();
+  const { month, month_end, department, user_id: filterUserId } = c.req.query();
+  const branch = normalizeBranchName(c.req.query('branch') || '');
 
   let query = `
     SELECT sr.*, u.name as user_name, u.branch as user_branch, u.department as user_department
@@ -915,16 +1091,15 @@ sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'
   if (filterUserId) { query += " AND sr.user_id = ?"; params.push(filterUserId); }
 
   // 관리자 지사 제한
-  if (user.role === 'admin' && user.branch !== '의정부') {
-    const extra = ADMIN_EXTRA_BRANCHES[user.sub] || [];
-    if (extra.length > 0) {
-      const allBranches = [user.branch, ...extra];
+  if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 1) {
       const placeholders = allBranches.map(() => '?').join(',');
       query += ` AND sr.branch IN (${placeholders})`;
       params.push(...allBranches);
     } else {
       query += ' AND sr.branch = ?';
-      params.push(user.branch);
+      params.push(allBranches[0] || user.branch);
     }
   }
 
@@ -939,6 +1114,135 @@ sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'
 // ━━━ 입금 등록 (역방향: 회계 → 담당자) ━━━
 
 // GET /api/sales/deposits — 입금 등록 목록
+// GET /api/sales/manager-performance - 담당자 월별 매출 달성 추이
+sales.get('/manager-performance', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const role = user.role;
+  const canViewAll = role === 'master' || (role === 'admin' && isHeadOfficeBranch(user.branch));
+  const canViewBranch = role === 'admin' && !isHeadOfficeBranch(user.branch);
+  const canViewTeam = role === 'manager';
+
+  if (!canViewAll && !canViewBranch && !canViewTeam) {
+    return c.json({ error: '담당자 매출성과 열람 권한이 없습니다.' }, 403);
+  }
+
+  const monthEnd = c.req.query('month_end') || '';
+  const monthStart = c.req.query('month_start') || '';
+  const requestedMonths = monthRangeBetween(monthStart, monthEnd);
+  const months = requestedMonths !== null
+    ? requestedMonths
+    : monthRange(monthEnd, Math.min(12, Math.max(3, Number(c.req.query('months') || 6) || 6)));
+  const requestedBranch = (c.req.query('branch') || '').trim();
+  if (months.length === 0) return c.json({ months, rows: [], scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team' });
+  const startDate = `${months[0]}-01`;
+  const [endYear, endMonth] = months[months.length - 1].split('-').map(Number);
+  const endDate = `${months[months.length - 1]}-${new Date(endYear, endMonth, 0).getDate()}`;
+
+  const memberConditions = [
+    "u.approved = 1",
+    "u.role IN ('member', 'manager')",
+    "COALESCE(u.login_type, 'employee') != 'freelancer'",
+  ];
+  const memberParams: any[] = [];
+  memberConditions.push(`NOT (${TEST_ACCOUNT_KEYWORDS.map(() =>
+    "(LOWER(COALESCE(u.name, '')) LIKE ? OR LOWER(COALESCE(u.email, '')) LIKE ? OR LOWER(COALESCE(u.branch, '')) LIKE ? OR LOWER(COALESCE(u.department, '')) LIKE ?)"
+  ).join(' OR ')})`);
+  for (const keyword of TEST_ACCOUNT_KEYWORDS) {
+    const pattern = `%${keyword.toLowerCase()}%`;
+    memberParams.push(pattern, pattern, pattern, pattern);
+  }
+  const addBranchCondition = (branch: string | null | undefined) => {
+    const aliases = branchAliases(branch);
+    if (aliases.length > 0) {
+      memberConditions.push(`u.branch IN (${aliases.map(() => '?').join(',')})`);
+      memberParams.push(...aliases);
+    } else {
+      memberConditions.push('u.branch = ?');
+      memberParams.push(branch || '');
+    }
+  };
+  if (canViewBranch) {
+    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
+    if (allBranches.length > 0) {
+      memberConditions.push(`u.branch IN (${allBranches.map(() => '?').join(',')})`);
+      memberParams.push(...allBranches);
+    } else {
+      addBranchCondition(user.branch);
+    }
+  }
+  if (canViewAll && requestedBranch) {
+    addBranchCondition(requestedBranch);
+  }
+  if (canViewTeam) {
+    addBranchCondition(user.branch);
+    memberConditions.push('u.department = ?');
+    memberParams.push(user.department);
+  }
+
+  const membersResult = await db.prepare(`
+    SELECT u.id, u.name, u.branch, u.department, u.position_title,
+           COALESCE(ua.standard_sales, 0) as standard_sales
+    FROM users u
+    LEFT JOIN user_accounting ua ON ua.user_id = u.id
+    WHERE ${memberConditions.join(' AND ')}
+    ORDER BY u.branch, u.department, u.name
+  `).bind(...memberParams).all<any>();
+  const members = membersResult.results || [];
+  if (members.length === 0) return c.json({ months, rows: [], scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team' });
+
+  const ids = members.map((m: any) => m.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const salesResult = await db.prepare(`
+    SELECT sr.user_id, substr(sr.contract_date, 1, 7) as month,
+      SUM(
+        CASE
+          WHEN sr.type = '매수신청대리'
+            THEN MAX(ROUND(sr.amount / 1.1) - COALESCE(sr.proxy_cost, 0), 0)
+          ELSE sr.amount
+        END
+      ) as amount
+    FROM sales_records sr
+    WHERE sr.status IN ('confirmed', 'card_pending')
+      AND sr.direction != 'expense'
+      AND COALESCE(sr.exclude_from_count, 0) = 0
+      AND sr.contract_date >= ?
+      AND sr.contract_date <= ?
+      AND sr.user_id IN (${placeholders})
+    GROUP BY sr.user_id, substr(sr.contract_date, 1, 7)
+  `).bind(startDate, endDate, ...ids).all<any>();
+
+  const amountMap = new Map<string, number>();
+  for (const row of salesResult.results || []) {
+    amountMap.set(`${row.user_id}|${row.month}`, Number(row.amount || 0));
+  }
+
+  const rows = members.map((m: any) => {
+    const target = Math.round(Number(m.standard_sales || 0) / 2);
+    const monthly = months.map((month) => {
+      const amount = amountMap.get(`${m.id}|${month}`) || 0;
+      return { month, amount, target, met: target > 0 ? amount >= target : amount > 0 };
+    });
+    const totalAmount = monthly.reduce((sum, item) => sum + item.amount, 0);
+    const metCount = monthly.filter((item) => item.met).length;
+    return {
+      user_id: m.id,
+      name: m.name,
+      branch: m.branch,
+      department: m.department,
+      position_title: m.position_title,
+      monthly_target: target,
+      total_amount: totalAmount,
+      average_amount: Math.round(totalAmount / months.length),
+      met_count: metCount,
+      miss_count: months.length - metCount,
+      months: monthly,
+    };
+  }).sort((a: any, b: any) => a.total_amount - b.total_amount || a.average_amount - b.average_amount || String(a.name).localeCompare(String(b.name)));
+
+  return c.json({ months, rows, scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team' });
+});
+
 sales.get('/deposits', async (c) => {
   const db = c.env.DB;
   const result = await db.prepare(`
@@ -1005,7 +1309,7 @@ sales.post('/deposits/:id/claim', async (c) => {
     "SELECT phone, alimtalk_branches FROM users WHERE role IN ('accountant', 'accountant_asst') AND approved = 1 AND phone != ''"
   ).all<{ phone: string; alimtalk_branches: string }>();
   const phones = (accountants.results || [])
-    .filter(r => r.alimtalk_branches && r.alimtalk_branches.split(',').includes(claimerBranch))
+    .filter(r => hasAlimtalkBranch(r.alimtalk_branches, claimerBranch))
     .map(r => r.phone)
     .filter(Boolean);
   if (phones.length > 0) {
@@ -1080,11 +1384,12 @@ sales.delete('/deposits/:id', requireRole('master', 'accountant', 'accountant_as
 sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  const { amount, content, date, assignee_id, direction } = await c.req.json<{
-    amount: number; content: string; date: string; assignee_id: string; direction?: string;
+  const { amount, content, date, assignee_id, direction, payment_method } = await c.req.json<{
+    amount: number; content: string; date: string; assignee_id: string; direction?: string; payment_method?: string;
   }>();
 
   const dir = direction === 'expense' ? 'expense' : 'income';
+  const paymentType = payment_method === '카드' ? '카드' : '이체';
   const actualAssignee = assignee_id === '__all__' ? user.sub : assignee_id;
   const assignee = await db.prepare('SELECT id, branch, department FROM users WHERE id = ?').bind(actualAssignee).first<any>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
@@ -1092,8 +1397,8 @@ sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
   const id = crypto.randomUUID();
   await db.prepare(`
     INSERT INTO sales_records (id, user_id, type, type_detail, client_name, amount, contract_date, status, confirmed_at, confirmed_by, direction, branch, department, payment_type)
-    VALUES (?, ?, '기타', ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, '이체')
-  `).bind(id, actualAssignee, content, content, amount, date, user.sub, dir, assignee.branch || '', assignee.department || '').run();
+    VALUES (?, ?, '기타', ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, ?)
+  `).bind(id, actualAssignee, content, content, amount, date, user.sub, dir, assignee.branch || '', assignee.department || '', paymentType).run();
 
   return c.json({ success: true, id });
 });
@@ -1231,14 +1536,15 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   // 공백 정규화 (다중 공백 → 제거)
   const normalize = (raw: string): string => (raw || '').replace(/\s+/g, '').trim();
 
-  // B열 지사 매핑: 본사→의정부, 강남→서초, 대전→대전, 부산→부산
+  // B열 지사 매핑: 본사→의정부본사, 강남→서초지사, 대전→대전지사, 부산→부산지사
   const mapBranch = (raw: string): string => {
     const v = normalize(raw);
     if (!v) return '';
-    if (v.includes('의정부') || v.includes('본사')) return '의정부';
-    if (v.includes('강남') || v.includes('서초')) return '서초';
-    if (v.includes('대전')) return '대전';
-    if (v.includes('부산')) return '부산';
+    if (v.includes('본사관리')) return '본사관리';
+    if (v.includes('의정부') || v.includes('본사')) return '의정부본사';
+    if (v.includes('강남') || v.includes('서초')) return '서초지사';
+    if (v.includes('대전')) return '대전지사';
+    if (v.includes('부산')) return '부산지사';
     return v;
   };
 

@@ -6,7 +6,8 @@ import { ROLE_LABELS, VISIBLE_ROLES } from '../types';
 import { useBranches } from '../hooks/useBranches';
 import type { Role } from '../types';
 import Select, { toOptions } from '../components/Select';
-import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingUp, AlertTriangle, ArrowDownCircle } from 'lucide-react';
+import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingUp, AlertTriangle, ArrowDownCircle, KeyRound } from 'lucide-react';
+import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 import { useDepartments } from '../hooks/useDepartments';
 const ROLE_OPTS = [...VISIBLE_ROLES, 'resigned' as const].map((v) => ({ value: v, label: ROLE_LABELS[v] }));
@@ -38,6 +39,12 @@ export default function UserManagement() {
   const [loading, setLoading] = useState(true);
   const [pendingDepts, setPendingDepts] = useState<Record<string, string>>({});
   const [userSearchTerm, setUserSearchTerm] = useState('');
+  const [resetPasswordInput, setResetPasswordInput] = useState('');
+  const [resettingPassword, setResettingPassword] = useState(false);
+  const [myauctionIdInput, setMyauctionIdInput] = useState('');
+  const [myauctionPwInput, setMyauctionPwInput] = useState('');
+  const [reportPermissionInput, setReportPermissionInput] = useState<'basic' | 'special'>('basic');
+  const [savingAuctionSettings, setSavingAuctionSettings] = useState(false);
 
   // 상세페이지 관련
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -55,7 +62,7 @@ export default function UserManagement() {
   const [converting, setConverting] = useState(false);
   // 알림톡 수신 설정
   const [alimBranches, setAlimBranches] = useState<Set<string>>(new Set());
-  const ALIM_BRANCHES = ['의정부', '서초', '대전', '부산'];
+  const ALIM_BRANCHES = ['의정부본사', '서초지사', '대전지사', '부산지사'];
 
   const hierarchy: Record<string, number> = { master: 1, ceo: 2, cc_ref: 2, admin: 3, accountant: 3, accountant_asst: 4, manager: 4, member: 5 };
   const myLevel = hierarchy[currentUser?.role || ''] || 99;
@@ -71,6 +78,7 @@ export default function UserManagement() {
   // 입사기준일 편집 가능한 역할
   const canSetHireDate = ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   const canConvertFreelancer = ['master', 'ceo', 'accountant'].includes(currentUser?.role || '');
+  const canGrantReportPermission = currentUser?.role === 'master';
 
   const load = () => {
     setLoading(true);
@@ -90,6 +98,7 @@ export default function UserManagement() {
     if (currentUser?.role === 'master') return ROLE_OPTS;
     if (currentUser?.role === 'ceo' || currentUser?.role === 'cc_ref') return ROLE_OPTS.filter((r) => ['cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'member', 'resigned'].includes(r.value));
     if (currentUser?.role === 'admin') return ROLE_OPTS.filter((r) => ['manager', 'member', 'resigned'].includes(r.value));
+    if (currentUser?.role === 'accountant') return ROLE_OPTS.filter((r) => r.value === 'resigned');
     return [];
   };
   const availableRoles = getAvailableRoles();
@@ -121,7 +130,32 @@ export default function UserManagement() {
   };
 
   const handleRoleChange = async (userId: string, role: string) => {
-    try { await api.users.updateRole(userId, role); load(); }
+    let resignedAt = '';
+    if (role === 'resigned') {
+      const target = users.find((u) => u.id === userId) || pendingUsers.find((u) => u.id === userId);
+      const defaultDate = (target?.resigned_at || new Date().toISOString().slice(0, 10)).slice(0, 10);
+      const input = window.prompt('퇴사일을 입력하세요. (YYYY-MM-DD)', defaultDate);
+      if (input === null) return;
+      resignedAt = input.trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(resignedAt)) {
+        alert('퇴사일은 YYYY-MM-DD 형식으로 입력해주세요.');
+        return;
+      }
+    }
+    try { await api.users.updateRole(userId, role, undefined, undefined, resignedAt); load(); }
+    catch (err: any) { alert(err.message); }
+  };
+
+  const handleResignedDateChange = async (u: User) => {
+    const defaultDate = (u.resigned_at || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const input = window.prompt(`${u.name}님의 퇴사일을 입력하세요. (YYYY-MM-DD)`, defaultDate);
+    if (input === null) return;
+    const resignedAt = input.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(resignedAt)) {
+      alert('퇴사일은 YYYY-MM-DD 형식으로 입력해주세요.');
+      return;
+    }
+    try { await api.users.updateRole(u.id, 'resigned', undefined, undefined, resignedAt); load(); }
     catch (err: any) { alert(err.message); }
   };
 
@@ -130,14 +164,74 @@ export default function UserManagement() {
     catch (err: any) { alert(err.message); }
   };
 
+  const handleAuctionSettingsSave = async () => {
+    if (!selectedUser) return;
+    const myauctionId = myauctionIdInput.trim();
+    const payload: {
+      myauction_id: string;
+      myauction_pw?: string;
+      report_permission?: 'basic' | 'special';
+    } = { myauction_id: myauctionId };
+
+    if (myauctionPwInput.length > 0) {
+      payload.myauction_pw = myauctionPwInput;
+    }
+    if (canGrantReportPermission) {
+      payload.report_permission = reportPermissionInput;
+    }
+
+    setSavingAuctionSettings(true);
+    try {
+      await api.users.update(selectedUser.id, payload);
+      const nextUser = {
+        ...selectedUser,
+        myauction_id: myauctionId,
+        has_myauction_credentials: myauctionId && (myauctionPwInput.length > 0 || selectedUser.has_myauction_credentials) ? 1 : 0,
+        report_permission: canGrantReportPermission ? reportPermissionInput : selectedUser.report_permission,
+      };
+      setSelectedUser(nextUser);
+      setUsers(prev => prev.map(u => u.id === selectedUser.id ? nextUser : u));
+      setMyauctionPwInput('');
+      alert('자료 생성 설정이 저장되었습니다.');
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setSavingAuctionSettings(false);
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    if (!selectedUser || !isAdminPlus || selectedUser.id === currentUser?.id) return;
+    const nextPassword = resetPasswordInput.trim();
+    if (nextPassword.length < 4) {
+      alert('임시 비밀번호는 4자 이상으로 입력하세요.');
+      return;
+    }
+    if (!confirm(`${selectedUser.name}님의 비밀번호를 입력한 임시 비밀번호로 초기화하시겠습니까?`)) return;
+    setResettingPassword(true);
+    try {
+      await api.users.update(selectedUser.id, { password: nextPassword });
+      setResetPasswordInput('');
+      alert('비밀번호가 초기화되었습니다.');
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setResettingPassword(false);
+    }
+  };
+
   // ── 상세 페이지: 사용자 클릭 시 ──
   const handleSelectUser = async (u: User) => {
     setSelectedUser(u);
+    setResetPasswordInput('');
+    setMyauctionIdInput(u.myauction_id || '');
+    setMyauctionPwInput('');
+    setReportPermissionInput(u.report_permission || 'basic');
     setHireDateInput(u.hire_date || '');
     // 알림톡 설정 로드
     try {
       const alimRes = await api.users.getAlimtalkSettings(u.id);
-      setAlimBranches(new Set(alimRes.branches ? alimRes.branches.split(',') : []));
+      setAlimBranches(new Set(alimRes.branches ? alimRes.branches.split(',').map(normalizeBranchName).filter(Boolean) : []));
     } catch { setAlimBranches(new Set()); }
     if (!canViewAccounting) return;
     // 총무보조 제한 대상: 회계 정보 로드 생략
@@ -235,6 +329,7 @@ export default function UserManagement() {
         salary,
         grade: gradeInput,
         position_allowance: positionAllowance,
+        effective_month: new Date().toISOString().slice(0, 7),
       });
       const nextUser = { ...selectedUser, ...res.user, login_type: 'employee' as const };
       setSelectedUser(nextUser);
@@ -270,6 +365,8 @@ export default function UserManagement() {
   };
 
   const isAdminPlus = !!currentUser && ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser.role);
+  const canEditPositionTitle = isAdminPlus || currentUser?.role === 'accountant';
+  const canEditResignedDate = isAdminPlus || currentUser?.role === 'accountant';
 
   const calculatedStandardSales = Math.round((Number(salaryInput) || 0) * 1.3 * 4);
 
@@ -302,6 +399,7 @@ export default function UserManagement() {
   // 상세 페이지 (사용자 클릭 시)
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   if (selectedUser) {
+    const canEditAuctionSettings = selectedUser.id === currentUser?.id || ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser?.role || '');
     return (
       <div className="page">
         <div className="page-header">
@@ -359,6 +457,90 @@ export default function UserManagement() {
               )}
             </div>
           </div>
+          {isAdminPlus && selectedUser.id !== currentUser?.id && (
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #e8eaed' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, fontWeight: 700, color: '#1a1a2e' }}>
+                <KeyRound size={16} /> 비밀번호 초기화
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={resetPasswordInput}
+                  onChange={(e) => setResetPasswordInput(e.target.value)}
+                  placeholder="임시 비밀번호 입력"
+                  style={{ width: 220, maxWidth: '100%' }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger"
+                  onClick={handlePasswordReset}
+                  disabled={resettingPassword || resetPasswordInput.trim().length < 4}
+                >
+                  {resettingPassword ? '초기화 중...' : '비밀번호 초기화'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 자료 생성 설정 */}
+        <div className="card" style={{ marginBottom: 20, padding: 20 }}>
+          <h3 style={{ marginTop: 0, marginBottom: 16, fontSize: '1rem', color: '#1a1a2e' }}>자료 생성 설정</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>마이옥션 아이디</label>
+              <input
+                className="form-input"
+                value={myauctionIdInput}
+                onChange={(e) => setMyauctionIdInput(e.target.value)}
+                disabled={!canEditAuctionSettings}
+                placeholder="마이옥션 아이디"
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>마이옥션 비밀번호</label>
+              <input
+                type="password"
+                className="form-input"
+                value={myauctionPwInput}
+                onChange={(e) => setMyauctionPwInput(e.target.value)}
+                disabled={!canEditAuctionSettings}
+                placeholder={selectedUser.has_myauction_credentials ? '저장됨 - 변경 시에만 입력' : '마이옥션 비밀번호'}
+                style={{ width: '100%' }}
+              />
+              <div style={{ fontSize: '0.72rem', color: selectedUser.has_myauction_credentials ? '#188038' : '#9aa0a6', marginTop: 4 }}>
+                {selectedUser.has_myauction_credentials ? '마이옥션 계정이 저장되어 있습니다.' : '저장된 마이옥션 계정이 없습니다.'}
+              </div>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>자료 생성 권한</label>
+              <select
+                className="form-input"
+                value={reportPermissionInput}
+                onChange={(e) => setReportPermissionInput(e.target.value as 'basic' | 'special')}
+                disabled={!canGrantReportPermission}
+                style={{ width: '100%' }}
+              >
+                <option value="basic">basic - 브리핑자료</option>
+                <option value="special">special - 브리핑자료 + 권리분석 보증서</option>
+              </select>
+              <div style={{ fontSize: '0.72rem', color: canGrantReportPermission ? '#5f6368' : '#9aa0a6', marginTop: 4 }}>
+                권한 부여는 현재 마스터만 가능합니다.
+              </div>
+            </div>
+          </div>
+          {(canEditAuctionSettings || canGrantReportPermission) && (
+            <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" onClick={handleAuctionSettingsSave} disabled={savingAuctionSettings}>
+                {savingAuctionSettings ? '저장중...' : '자료 생성 설정 저장'}
+              </button>
+              {!canGrantReportPermission && (
+                <span style={{ fontSize: '0.76rem', color: '#9aa0a6' }}>마이옥션 계정만 저장됩니다.</span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 회계 정보 카드 (회계 열람 가능자만, 총무보조 제한 대상 제외) */}
@@ -709,12 +891,14 @@ export default function UserManagement() {
                 const q = userSearchTerm.toLowerCase();
                 return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) || (u.branch || '').toLowerCase().includes(q) || (u.department || '').toLowerCase().includes(q) || (u.position_title || '').toLowerCase().includes(q);
               }).map((u) => {
-                const isSameBranch = currentUser?.role !== 'admin' || u.branch === currentUser?.branch;
+                const isSameBranch = currentUser?.role !== 'admin' || sameBranchName(u.branch, currentUser?.branch);
                 const canEdit = availableRoles.length > 0 && u.id !== currentUser?.id && isSameBranch;
                 const targetLevel = hierarchy[u.role] || 99;
                 const isHigher = targetLevel < myLevel || (targetLevel === myLevel && u.role !== 'cc_ref');
-                const canDel = canEdit && !isHigher;
-                const canChangeRole = canEdit && !isHigher;
+                const isAccountantRestrictedTarget = currentUser?.role === 'accountant' && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(u.role as string);
+                const canDel = isAdminPlus && canEdit && !isHigher;
+                const canChangeRole = canEdit && !isHigher && !isAccountantRestrictedTarget;
+                const canChangePosition = canEditPositionTitle && u.id !== currentUser?.id && !isAccountantRestrictedTarget;
                 return (
                   <tr key={u.id} onClick={() => handleSelectUser(u)} className="clickable-row" style={{ cursor: 'pointer' }}>
                     <td><strong>{u.name}</strong>{(u as any).login_type === 'freelancer' && <span style={{ marginLeft: 6, fontSize: '0.65rem', background: '#7b1fa2', color: '#fff', padding: '1px 6px', borderRadius: 8 }}>프리랜서</span>}</td>
@@ -730,7 +914,7 @@ export default function UserManagement() {
                       )}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      {isAdminPlus && u.id !== currentUser?.id ? (
+                      {canChangePosition ? (
                         <Select size="sm" options={POSITION_OPTS}
                           value={POSITION_OPTS.find((o) => o.value === u.position_title) || (u.position_title ? { value: u.position_title, label: u.position_title } : null)}
                           onChange={(o: any) => handleProfileChange(u.id, { position_title: o?.value || '' })}
@@ -773,7 +957,7 @@ export default function UserManagement() {
       {tab === 'resigned' && (
         <div className="table-wrapper">
           <table className="data-table">
-            <thead><tr><th>이름</th><th>이메일</th><th>지사</th><th>팀</th><th>가입일</th><th>복직</th></tr></thead>
+            <thead><tr><th>이름</th><th>이메일</th><th>지사</th><th>팀</th><th>가입일</th><th>퇴사일</th><th>관리</th></tr></thead>
             <tbody>
               {users.filter(u => u.role === 'resigned').map(u => (
                 <tr key={u.id}>
@@ -782,16 +966,20 @@ export default function UserManagement() {
                   <td>{u.branch || '-'}</td>
                   <td>{u.department || '-'}</td>
                   <td style={{ fontSize: '0.72rem' }}>{u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
+                  <td style={{ fontSize: '0.72rem' }}>{u.resigned_at ? new Date(u.resigned_at).toLocaleDateString('ko-KR') : '-'}</td>
                   <td>
-                    <button className="btn btn-sm btn-success" onClick={async () => {
-                      if (!confirm(`${u.name}님을 복직 처리하시겠습니까?`)) return;
-                      try { await api.users.updateRole(u.id, 'member'); load(); } catch (err: any) { alert(err.message); }
-                    }}><UserCheck size={13} /> 복직</button>
+                    {canEditResignedDate && <button className="btn btn-sm" style={{ marginRight: 6 }} onClick={() => handleResignedDateChange(u)}>퇴사일 수정</button>}
+                    {isAdminPlus && (
+                      <button className="btn btn-sm btn-success" onClick={async () => {
+                        if (!confirm(`${u.name}님을 복직 처리하시겠습니까?`)) return;
+                        try { await api.users.updateRole(u.id, 'member'); load(); } catch (err: any) { alert(err.message); }
+                      }}><UserCheck size={13} /> 복직</button>
+                    )}
                   </td>
                 </tr>
               ))}
               {users.filter(u => u.role === 'resigned').length === 0 && (
-                <tr><td colSpan={6} className="empty-state">퇴사자가 없습니다.</td></tr>
+                <tr><td colSpan={7} className="empty-state">퇴사자가 없습니다.</td></tr>
               )}
             </tbody>
           </table>

@@ -2,12 +2,15 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { recheckAlertsForJournalEntry, recheckAlertsAfterEntryDelete } from '../lib/journal-alerts';
+import { deleteBidAnalysisForJournal, upsertBidAnalysisFromJournal } from '../lib/bid-analysis';
+import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
+import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 
 // KST (한국 시간) 기준 날짜 — 연도별 공휴일
 const HOLIDAYS: Record<string, string[]> = {
   '2026': [
     '2026-01-01','2026-01-28','2026-01-29','2026-01-30','2026-03-01',
-    '2026-05-05','2026-05-24','2026-06-06','2026-08-15',
+    '2026-05-05','2026-05-24','2026-05-25','2026-06-03','2026-06-06','2026-08-15',
     '2026-09-24','2026-09-25','2026-09-26','2026-10-03','2026-10-09','2026-12-25',
   ],
   '2027': [
@@ -16,26 +19,44 @@ const HOLIDAYS: Record<string, string[]> = {
     '2027-10-13','2027-10-14','2027-10-15','2027-10-03','2027-10-09','2027-12-25',
   ],
 };
-const ALL_HOLIDAYS = new Set(Object.values(HOLIDAYS).flat());
+const STATIC_HOLIDAYS = new Set(Object.values(HOLIDAYS).flat());
 
 function fmtDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-function isOffDay(d: Date): boolean {
+function isOffDay(d: Date, extraHolidays = new Set<string>()): boolean {
   const day = d.getUTCDay();
-  return day === 0 || day === 6 || ALL_HOLIDAYS.has(fmtDate(d));
+  const date = fmtDate(d);
+  return day === 0 || day === 6 || STATIC_HOLIDAYS.has(date) || extraHolidays.has(date);
 }
 
-function prevBizDay(d: Date): Date {
+function prevBizDay(d: Date, extraHolidays = new Set<string>()): Date {
   let r = new Date(d.getTime());
-  while (isOffDay(r)) r = new Date(r.getTime() - 86400000);
+  while (isOffDay(r, extraHolidays)) r = new Date(r.getTime() - 86400000);
   return r;
 }
 
-function getKSTToday(): string {
+async function loadDynamicJournalHolidays(db: D1Database, year: string): Promise<Set<string>> {
+  try {
+    const result = await db.prepare(`
+      SELECT holiday_date
+      FROM system_holidays
+      WHERE enabled = 1
+        AND substr(holiday_date, 1, 4) = ?
+        AND (applies_to = 'all' OR applies_to = 'journal')
+    `).bind(year).all<{ holiday_date: string }>();
+    return new Set((result.results || []).map((row) => row.holiday_date).filter(Boolean));
+  } catch (err) {
+    console.warn('[journal holidays] dynamic holiday table unavailable', err);
+    return new Set();
+  }
+}
+
+async function getKSTToday(db: D1Database): Promise<string> {
   const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  return isOffDay(kst) ? fmtDate(prevBizDay(kst)) : fmtDate(kst);
+  const extraHolidays = await loadDynamicJournalHolidays(db, String(kst.getUTCFullYear()));
+  return isOffDay(kst, extraHolidays) ? fmtDate(prevBizDay(kst, extraHolidays)) : fmtDate(kst);
 }
 
 interface JournalEntry {
@@ -65,6 +86,8 @@ const journal = new Hono<AuthEnv>();
 journal.use('*', authMiddleware);
 
 const canManageJournalAssignees = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+const canViewSuggestedPrice = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+const FIELD_ACTIVITY_TYPES = new Set(['입찰', '미팅', '임장']);
 
 async function getJournalAssignee(db: D1Database, userId: string) {
   return db.prepare('SELECT id, role, branch, department, approved FROM users WHERE id = ?')
@@ -72,12 +95,61 @@ async function getJournalAssignee(db: D1Database, userId: string) {
     .first<JournalAssignee>();
 }
 
-function canUseAssignee(currentUser: { role: string; branch: string; sub: string }, assignee: JournalAssignee) {
+async function canUseAssignee(db: D1Database, currentUser: { role: string; branch: string; sub: string }, assignee: JournalAssignee) {
   if (assignee.approved !== 1 || assignee.role === 'master') return false;
   if (assignee.id === currentUser.sub) return true;
   if (!canManageJournalAssignees(currentUser.role)) return false;
-  if (currentUser.role === 'admin') return assignee.branch === currentUser.branch;
+  if (currentUser.role === 'admin') {
+    const branches = await getAdminVisibleBranches(db, currentUser);
+    return branches.some((branch) => sameBranchName(assignee.branch, branch));
+  }
   return true;
+}
+
+function normalizeJournalData(activityType: string, data: Record<string, unknown>): Record<string, unknown> {
+  const isFieldType = FIELD_ACTIVITY_TYPES.has(activityType);
+  const isExcluded = !!data.companion || !!data.bidProxy || !!data.internalMeeting;
+  return {
+    ...data,
+    fieldCheckIn: isFieldType && !isExcluded && data.timeFrom === '09:00',
+    fieldCheckOut: isFieldType && !isExcluded && data.timeTo === '18:00',
+  };
+}
+
+function parseJournalData(data: string): Record<string, unknown> {
+  try {
+    return JSON.parse(data || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function redactSuggestedPrice<T extends { activity_type?: string; data?: string }>(entry: T, canView: boolean): T {
+  if (canView || entry.activity_type !== '입찰' || !entry.data) return entry;
+  const data = parseJournalData(entry.data);
+  if (!Object.prototype.hasOwnProperty.call(data, 'suggestedPrice')) return entry;
+  const { suggestedPrice: _suggestedPrice, ...rest } = data;
+  return { ...entry, data: JSON.stringify(rest) };
+}
+
+function preserveSuggestedPriceForRestrictedUpdate(entry: JournalEntry, nextData: Record<string, unknown>, canView: boolean): Record<string, unknown> {
+  if (canView || entry.activity_type !== '입찰') return nextData;
+  const existingData = parseJournalData(entry.data);
+  if (!Object.prototype.hasOwnProperty.call(existingData, 'suggestedPrice')) return nextData;
+  return { ...nextData, suggestedPrice: existingData.suggestedPrice };
+}
+
+function mergeBidFieldOnlyData(entry: JournalEntry, data: Record<string, unknown> | undefined): Record<string, unknown> {
+  const existingData = parseJournalData(entry.data);
+  const nextData = data || {};
+  return {
+    ...existingData,
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'bidPrice') ? { bidPrice: nextData.bidPrice } : {}),
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'winPrice') ? { winPrice: nextData.winPrice } : {}),
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'bidWon') ? { bidWon: nextData.bidWon } : {}),
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'bidCancelled') ? { bidCancelled: nextData.bidCancelled } : {}),
+    ...(Object.prototype.hasOwnProperty.call(nextData, 'deviationReason') ? { deviationReason: nextData.deviationReason } : {}),
+  };
 }
 
 // GET /api/journal?date=2026-03-30&range=all
@@ -98,11 +170,13 @@ journal.get('/', async (c) => {
   } else if (user.role === 'manager') {
     conditions.push('j.branch = ?');
     params.push(user.branch);
-  } else if (user.role === 'admin' && user.branch === '의정부') {
+  } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
-    conditions.push('j.branch = ?');
-    params.push(user.branch);
+    const allBranches = await getAdminVisibleBranches(db, user);
+    const placeholders = allBranches.map(() => '?').join(',');
+    conditions.push(`j.branch IN (${placeholders})`);
+    params.push(...allBranches);
   }
 
   if (date) {
@@ -121,7 +195,8 @@ journal.get('/', async (c) => {
 
   const stmt = db.prepare(query);
   const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all();
-  return c.json({ entries: result.results });
+  const entries = (result.results || []).map((entry: any) => redactSuggestedPrice(entry, canViewSuggestedPrice(user.role)));
+  return c.json({ entries });
 });
 
 // GET /api/journal/members - 권한 범위 내 전체 사용자 목록 (팀/지사별)
@@ -138,11 +213,13 @@ journal.get('/members', async (c) => {
   } else if (user.role === 'manager') {
     query += ' AND branch = ?';
     params.push(user.branch);
-  } else if (user.role === 'admin' && user.branch === '의정부') {
+  } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람
   } else if (user.role === 'admin') {
-    query += ' AND branch = ?';
-    params.push(user.branch);
+    const allBranches = await getAdminVisibleBranches(db, user);
+    const placeholders = allBranches.map(() => '?').join(',');
+    query += ` AND branch IN (${placeholders})`;
+    params.push(...allBranches);
   }
 
   query += " ORDER BY branch, department, CASE role WHEN 'master' THEN 1 WHEN 'ceo' THEN 2 WHEN 'cc_ref' THEN 2 WHEN 'admin' THEN 3 WHEN 'manager' THEN 4 WHEN 'member' THEN 5 END, name";
@@ -165,8 +242,12 @@ journal.post('/', async (c) => {
   if (!body.target_date || !body.activity_type) {
     return c.json({ error: '날짜와 활동 유형은 필수입니다.' }, 400);
   }
+  if (body.activity_type === '입찰' && !String(body.data?.propertyType || '').trim()) {
+    return c.json({ error: '물건종류를 선택하세요.' }, 400);
+  }
 
-  const today = getKSTToday();
+  const db = c.env.DB;
+  const today = await getKSTToday(db);
   // 과거 날짜 등록 불가 (master/ceo/cc_ref 제외)
   if (body.target_date < today && !canManageJournalAssignees(user.role)) {
     return c.json({ error: '과거 날짜에는 일정을 등록할 수 없습니다.' }, 400);
@@ -179,22 +260,31 @@ journal.post('/', async (c) => {
     }
   }
 
-  const db = c.env.DB;
   const id = crypto.randomUUID();
   const assigneeId = body.user_id || user.sub;
   const assignee = assigneeId === user.sub
     ? { id: user.sub, role: user.role, branch: user.branch, department: user.department, approved: 1 }
     : await getJournalAssignee(db, assigneeId);
 
-  if (!assignee || !canUseAssignee(user, assignee)) {
+  if (!assignee || !(await canUseAssignee(db, user, assignee))) {
     return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
   }
 
   await db.prepare(
     'INSERT INTO journal_entries (id, user_id, target_date, activity_type, activity_subtype, data, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, assignee.id, body.target_date, body.activity_type, body.activity_subtype || '', JSON.stringify(body.data), assignee.branch, assignee.department).run();
+  ).bind(id, assignee.id, body.target_date, body.activity_type, body.activity_subtype || '', JSON.stringify(normalizeJournalData(body.activity_type, body.data || {})), assignee.branch, assignee.department).run();
 
   // 영속 알림 재계산 (개인/입찰/출장/일정공백)
+  if (body.activity_type === '입찰') {
+    const inserted = await db.prepare(`
+      SELECT j.*, u.name as user_name
+      FROM journal_entries j
+      LEFT JOIN users u ON u.id = j.user_id
+      WHERE j.id = ?
+    `).bind(id).first<any>();
+    if (inserted) await upsertBidAnalysisFromJournal(db, inserted).catch((err) => console.error('[bid analysis sync on insert]', err));
+  }
+
   await recheckAlertsForJournalEntry(db, id).catch((err) => console.error('[recheckAlerts on insert]', err));
 
   return c.json({ entry: { id, target_date: body.target_date, activity_type: body.activity_type } }, 201);
@@ -208,10 +298,14 @@ journal.put('/:id', async (c) => {
 
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(id).first<JournalEntry>();
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
-  const canEditAssignedEntry = canManageJournalAssignees(user.role) && (user.role !== 'admin' || entry.branch === user.branch);
+  let canEditAssignedEntry = canManageJournalAssignees(user.role);
+  if (canEditAssignedEntry && user.role === 'admin') {
+    const branches = await getAdminVisibleBranches(db, user);
+    canEditAssignedEntry = branches.some((branch) => sameBranchName(entry.branch, branch));
+  }
   if (entry.user_id !== user.sub && !canEditAssignedEntry) return c.json({ error: '권한이 없습니다.' }, 403);
 
-  const today = getKSTToday();
+  const today = await getKSTToday(db);
   const isTopRole = ['master', 'ceo', 'cc_ref'].includes(user.role);
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
   const isBidEntry = entry.activity_type === '입찰';
@@ -221,6 +315,9 @@ journal.put('/:id', async (c) => {
     bid_field_only?: boolean; // 낙찰가/입찰가만 수정하는 경우
     user_id?: string;
   }>();
+
+  const isRestrictedBidFieldUpdate = !isAdminPlus && isBidEntry && body.bid_field_only === true
+    && (entry.target_date < today || (entry.target_date === today && new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCHours() >= 18));
 
   // 시간 제한 체크 (admin 이상은 모든 날짜 수정 가능)
   if (!isTopRole && !isAdminPlus) {
@@ -247,26 +344,49 @@ journal.put('/:id', async (c) => {
 
   let assignee: JournalAssignee | null = null;
   if (body.user_id && body.user_id !== entry.user_id) {
+    if (isRestrictedBidFieldUpdate) {
+      return c.json({ error: '지난 일정에서는 담당자를 변경할 수 없습니다.' }, 400);
+    }
     assignee = await getJournalAssignee(db, body.user_id);
-    if (!assignee || !canUseAssignee(user, assignee)) {
+    if (!assignee || !(await canUseAssignee(db, user, assignee))) {
       return c.json({ error: '담당자를 변경할 권한이 없습니다.' }, 403);
     }
   }
+
+  const normalizedData = normalizeJournalData(
+    entry.activity_type,
+    isRestrictedBidFieldUpdate
+      ? mergeBidFieldOnlyData(entry, body.data)
+      : body.data || parseJournalData(entry.data),
+  );
+  const nextData = preserveSuggestedPriceForRestrictedUpdate(entry, normalizedData, canViewSuggestedPrice(user.role));
 
   await db.prepare(
     "UPDATE journal_entries SET user_id = ?, activity_subtype = ?, data = ?, completed = ?, fail_reason = ?, branch = ?, department = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(
     assignee?.id || entry.user_id,
-    body.activity_subtype ?? entry.activity_subtype,
-    body.data ? JSON.stringify(body.data) : entry.data,
-    body.completed ?? entry.completed,
-    body.fail_reason ?? entry.fail_reason,
+    isRestrictedBidFieldUpdate ? entry.activity_subtype : body.activity_subtype ?? entry.activity_subtype,
+    JSON.stringify(nextData),
+    isRestrictedBidFieldUpdate ? entry.completed : body.completed ?? entry.completed,
+    isRestrictedBidFieldUpdate ? entry.fail_reason : body.fail_reason ?? entry.fail_reason,
     assignee?.branch || entry.branch,
     assignee?.department || entry.department,
     id
   ).run();
 
   // 영속 알림 재계산
+  const synced = await db.prepare(`
+    SELECT j.*, u.name as user_name
+    FROM journal_entries j
+    LEFT JOIN users u ON u.id = j.user_id
+    WHERE j.id = ?
+  `).bind(id).first<any>();
+  if (synced?.activity_type === '입찰') {
+    await upsertBidAnalysisFromJournal(db, synced).catch((err) => console.error('[bid analysis sync on update]', err));
+  } else {
+    await deleteBidAnalysisForJournal(db, id).catch((err) => console.error('[bid analysis delete on update]', err));
+  }
+
   await recheckAlertsForJournalEntry(db, id).catch((err) => console.error('[recheckAlerts on update]', err));
 
   return c.json({ success: true });
@@ -282,10 +402,11 @@ journal.delete('/:id', async (c) => {
   if (!entry) return c.json({ error: '일지를 찾을 수 없습니다.' }, 404);
   if (entry.user_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '권한이 없습니다.' }, 403);
 
-  const today = getKSTToday();
+  const today = await getKSTToday(db);
   if (entry.target_date < today && !['master', 'ceo', 'cc_ref'].includes(user.role)) return c.json({ error: '지난 일정은 삭제할 수 없습니다.' }, 400);
 
   await db.prepare('DELETE FROM journal_entries WHERE id = ?').bind(id).run();
+  await deleteBidAnalysisForJournal(db, id).catch((err) => console.error('[bid analysis delete on journal delete]', err));
 
   // FK CASCADE로 entry-level alert 자동 삭제됨. day-level 알림(일정공백)은 재계산 필요.
   await recheckAlertsAfterEntryDelete(db, entry.user_id, entry.target_date)
@@ -294,8 +415,8 @@ journal.delete('/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/journal/dismiss-alert — 알림 삭제 (마스터 전용)
-journal.post('/dismiss-alert', requireRole('master'), async (c) => {
+// POST /api/journal/dismiss-alert — 알림 삭제 (마스터/관리자)
+journal.post('/dismiss-alert', requireRole('master', 'admin'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const { alert_type, alert_key } = await c.req.json<{ alert_type: string; alert_key: string }>();
@@ -305,8 +426,8 @@ journal.post('/dismiss-alert', requireRole('master'), async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/journal/dismiss-alerts-bulk — 알림 일괄 삭제
-journal.post('/dismiss-alerts-bulk', requireRole('master'), async (c) => {
+// POST /api/journal/dismiss-alerts-bulk — 알림 일괄 삭제 (마스터/관리자)
+journal.post('/dismiss-alerts-bulk', requireRole('master', 'admin'), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const { keys } = await c.req.json<{ keys: { alert_type: string; alert_key: string }[] }>();
@@ -325,6 +446,44 @@ journal.get('/dismissed-alerts', async (c) => {
   return c.json({ keys: (result.results || []).map((r: any) => r.alert_key) });
 });
 
+function filterDuplicateActivityRows(
+  rows: any[],
+  options: {
+    isTopRole: boolean;
+    isManager: boolean;
+    canSeeIfInvolved: boolean;
+    userId: string;
+    branch: string;
+    department: string;
+  },
+) {
+  let results = rows;
+  const involvedOnly = !options.isTopRole && !options.isManager && options.canSeeIfInvolved;
+
+  if (involvedOnly) {
+    results = results.filter((r: any) => {
+      const ids = (r.user_ids || '').split(',');
+      return ids.includes(options.userId);
+    });
+  }
+
+  if (options.isManager) {
+    results = results.filter((r: any) => {
+      const ids = (r.user_ids || '').split(',');
+      if (ids.includes(options.userId)) return true;
+      const branches = (r.branch || '').split(',').map((b: string) => b.trim());
+      const depts = (r.user_departments || '').split(',').map((d: string) => d.trim());
+      return branches.some((b: string) => sameBranchName(b, options.branch)) && depts.includes(options.department);
+    });
+  }
+
+  if (!options.isTopRole && !options.isManager && !options.canSeeIfInvolved) {
+    results = [];
+  }
+
+  return results;
+}
+
 // GET /api/journal/duplicate-inspections — 중복 임장 사건번호+법원 조회
 // 열람 권한:
 //   - master/ceo/cc_ref/admin/director: 전체 열람 가능
@@ -342,15 +501,15 @@ journal.get('/duplicate-inspections', async (c) => {
 
   const isTopRole = ['master', 'ceo', 'cc_ref', 'admin', 'director'].includes(user.role);
   const isManager = user.role === 'manager';
-  const isMember = user.role === 'member';
+  const canSeeIfInvolved = ['member', 'manager', 'accountant', 'accountant_asst', 'support'].includes(user.role);
 
   // 알림 종료 조건:
-  //   1) 같은 사건번호+법원+지사로 '입찰' 일지가 등록됨 → 알림 제외
-  //   2) 첫 임장 등록일 기준 1개월(30일) 경과 → 알림 제외
+  //   1) 첫 임장 등록일 기준 1개월(30일) 경과 → 알림 제외
+  // 입찰 등록 여부와 무관하게 동일 사건 임장은 계속 알려야 한다.
   let query = `
     SELECT j.activity_subtype as case_no,
            json_extract(j.data, '$.court') as court,
-           j.branch,
+           GROUP_CONCAT(DISTINCT j.branch) as branch,
            GROUP_CONCAT(DISTINCT u.name) as user_names,
            GROUP_CONCAT(DISTINCT j.user_id) as user_ids,
            GROUP_CONCAT(DISTINCT u.department) as user_departments,
@@ -362,31 +521,11 @@ journal.get('/duplicate-inspections', async (c) => {
     WHERE j.activity_type = '임장'
       AND j.activity_subtype != ''
       AND COALESCE(json_extract(j.data, '$.companion'), 0) != 1
-      AND NOT EXISTS (
-        SELECT 1 FROM journal_entries jb
-        WHERE jb.activity_type = '입찰'
-          AND jb.activity_subtype = j.activity_subtype
-          AND json_extract(jb.data, '$.court') = json_extract(j.data, '$.court')
-          AND jb.branch = j.branch
-      )
   `;
   const params: string[] = [];
 
-  // 권한별 지사/팀 필터
-  // - 상위자(master/ceo/cc_ref/admin/director): 기본 전체 지사 (항상 전부 노출)
-  // - 일반 사용자: 본인 지사 고정
-  if (!isTopRole) {
-    query += ' AND j.branch = ?';
-    params.push(branch);
-  }
-  // 상위자는 별도 지사 필터 없음 (전체 노출)
-
-  // 팀원/팀장은 관련 건만 볼 수 있게 후처리 필터링용 변수 (GROUP BY 결과 이후 필터)
-  const memberOnlyMine = isMember;
-  const managerOnlyMyTeam = isManager;
-
   query += `
-    GROUP BY j.activity_subtype, json_extract(j.data, '$.court'), j.branch
+    GROUP BY j.activity_subtype, json_extract(j.data, '$.court')
     HAVING COUNT(DISTINCT j.user_id) > 1
        AND MIN(j.target_date) >= date('now', '-30 days')
     ORDER BY MAX(j.target_date) DESC
@@ -396,24 +535,14 @@ journal.get('/duplicate-inspections', async (c) => {
     ? await db.prepare(query).bind(...params).all()
     : await db.prepare(query).all();
 
-  let results = rows.results || [];
-
-  // 팀원: 본인이 관련된 중복건만
-  if (memberOnlyMine) {
-    results = results.filter((r: any) => {
-      const ids = (r.user_ids || '').split(',');
-      return ids.includes(user.sub);
-    });
-  }
-
-  // 팀장: 본인 지사+부서에 속한 팀원이 관련된 중복건만
-  if (managerOnlyMyTeam) {
-    results = results.filter((r: any) => {
-      // 해당 중복건 관련자의 department 중 본인 부서가 있는지
-      const depts = (r.user_departments || '').split(',').map((d: string) => d.trim());
-      return r.branch === branch && depts.includes(department);
-    });
-  }
+  const results = filterDuplicateActivityRows(rows.results || [], {
+    isTopRole,
+    isManager,
+    canSeeIfInvolved,
+    userId: user.sub,
+    branch,
+    department,
+  });
 
   return c.json({ duplicates: results });
 });

@@ -6,17 +6,53 @@ const links = new Hono<AuthEnv>();
 links.use('*', authMiddleware);
 
 const REVIEW_ROLES = ['master', 'accountant', 'admin'] as const;
+const EXEMPTION_APPROVER_ROLES = ['master', 'ceo', 'admin', 'accountant'] as const;
+const canViewSuggestedPrice = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+
+function redactSuggestedPrice<T extends { activity_type?: string; data?: string }>(entry: T, canView: boolean): T {
+  if (canView || entry.activity_type !== '입찰' || !entry.data) return entry;
+  try {
+    const data = JSON.parse(entry.data || '{}');
+    if (!Object.prototype.hasOwnProperty.call(data, 'suggestedPrice')) return entry;
+    const { suggestedPrice: _suggestedPrice, ...rest } = data;
+    return { ...entry, data: JSON.stringify(rest) };
+  } catch {
+    return entry;
+  }
+}
+
+async function ensureOutdoorExemptionTable(db: D1Database): Promise<void> {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS outdoor_report_exemptions (
+      id TEXT PRIMARY KEY,
+      journal_entry_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      target_date TEXT NOT NULL,
+      reason_type TEXT NOT NULL DEFAULT '',
+      reason_detail TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      requested_by TEXT NOT NULL,
+      reviewed_by TEXT,
+      reviewer_comment TEXT,
+      reviewed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now', '+9 hours')),
+      updated_at TEXT DEFAULT (datetime('now', '+9 hours'))
+    )
+  `).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_outdoor_exemptions_entry_status ON outdoor_report_exemptions(journal_entry_id, status)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_outdoor_exemptions_status ON outdoor_report_exemptions(status, created_at)').run();
+}
 
 // ─────────────────────────────────────────────────────────
-// 외근 판정 (Dashboard.tsx isOutdoorEntry와 동일 룰)
+// 외근보고서 제출 대상 판정 (Dashboard.tsx isOutdoorEntry와 동일 룰)
 // ─────────────────────────────────────────────────────────
 function isOutdoorEntry(activityType: string, dataJson: string): boolean {
   try {
-    const d = JSON.parse(dataJson);
-    if (d.companion) return false;
-    if (activityType === '임장') return true;
+    const d = JSON.parse(dataJson || '{}');
+    if (activityType === '사무' || activityType === '개인') return false;
+    if (activityType === '입찰') return !d.bidProxy && !d.bidCancelled;
     if (activityType === '미팅') return !d.internalMeeting;
-    if (activityType === '입찰' && (d.fieldCheckIn || d.fieldCheckOut) && !d.bidProxy) return true;
+    if (activityType === '임장') return true;
   } catch { /* */ }
   return false;
 }
@@ -37,10 +73,138 @@ function dayDiff(a: string, b: string): number {
   return Math.round((new Date(a).getTime() - new Date(b).getTime()) / 86400000);
 }
 
+function normalizeDocText(value: string): string {
+  return (value || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function dateNeedles(date: string): string[] {
+  const [year, monthRaw, dayRaw] = date.split('-');
+  const month = String(Number(monthRaw));
+  const day = String(Number(dayRaw));
+  const yy = year.slice(2);
+  return [
+    `${year}-${monthRaw}-${dayRaw}`,
+    `${year}.${monthRaw}.${dayRaw}`,
+    `${year}. ${month}. ${day}`,
+    `${year}\uB144 ${month}\uC6D4 ${day}\uC77C`,
+    `${year} \uB144 ${month} \uC6D4 ${day} \uC77C`,
+    `${yy}\uB144 ${month}\uC6D4 ${day}\uC77C`,
+    `${yy} \uB144 ${month} \uC6D4 ${day} \uC77C`,
+  ];
+}
+
+function docMentionsOutdoorEntry(doc: { title?: string | null; content?: string | null }, entry: { target_date: string; data: string }): boolean {
+  const haystack = normalizeDocText(`${doc.title || ''} ${doc.content || ''}`);
+  if (!dateNeedles(entry.target_date).some((needle) => haystack.includes(needle))) return false;
+
+  let parsed: any = {};
+  try { parsed = JSON.parse(entry.data || '{}'); } catch { /* ignore */ }
+
+  const timeKeys = [parsed.timeFrom, parsed.timeTo]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean);
+  if (timeKeys.length > 0 && timeKeys.every((key) => haystack.includes(key))) return true;
+
+  const strongKeys = [parsed.caseNo, parsed.court, parsed.client, parsed.place]
+    .map((v) => String(v || '').trim())
+    .filter((v) => v.length >= 2);
+
+  if (strongKeys.length === 0) return true;
+  return strongKeys.some((key) => haystack.includes(key));
+}
+
+async function loadImplicitOutdoorEntryIds(db: D1Database, options: { userId?: string; since?: string; excludeDocId?: string } = {}): Promise<Set<string>> {
+  const entryParams: any[] = [];
+  let entryWhere = "WHERE activity_type IN ('입찰','임장','미팅')";
+  if (options.userId) {
+    entryWhere += ' AND user_id = ?';
+    entryParams.push(options.userId);
+  }
+  if (options.since) {
+    entryWhere += ' AND target_date >= ?';
+    entryParams.push(options.since);
+  }
+
+  const entriesRes = await db.prepare(`
+    SELECT id, user_id, target_date, activity_type, data
+    FROM journal_entries
+    ${entryWhere}
+  `).bind(...entryParams).all();
+  const entries = ((entriesRes.results || []) as Array<{ id: string; user_id: string; target_date: string; activity_type: string; data: string }>)
+    .filter((entry) => isOutdoorEntry(entry.activity_type, entry.data));
+
+  if (entries.length === 0) return new Set();
+
+  const docParams: any[] = [];
+  let docWhere = `
+    WHERE template_id = 'tpl-work-007'
+      AND status IN ('submitted','approved')
+      AND COALESCE(cancelled, 0) = 0
+  `;
+  if (options.userId) {
+    docWhere += ' AND author_id = ?';
+    docParams.push(options.userId);
+  }
+  if (options.excludeDocId) {
+    docWhere += ' AND id <> ?';
+    docParams.push(options.excludeDocId);
+  }
+
+  const docsRes = await db.prepare(`
+    SELECT id, author_id, title, content
+    FROM documents
+    ${docWhere}
+  `).bind(...docParams).all();
+  const docs = (docsRes.results || []) as Array<{ id: string; author_id: string; title: string; content: string }>;
+  const docsByAuthor = new Map<string, typeof docs>();
+  for (const doc of docs) {
+    const list = docsByAuthor.get(doc.author_id) || [];
+    list.push(doc);
+    docsByAuthor.set(doc.author_id, list);
+  }
+
+  const implicit = new Set<string>();
+  for (const entry of entries) {
+    const authorDocs = docsByAuthor.get(entry.user_id) || [];
+    if (authorDocs.some((doc) => docMentionsOutdoorEntry(doc, entry))) {
+      implicit.add(entry.id);
+    }
+  }
+  return implicit;
+}
+
 // ─────────────────────────────────────────────────────────
 // POST /api/links/backfill-outdoor — 외근보고서 ↔ 일지 link backfill
 // body: { dryRun: boolean (default true) }
 // ─────────────────────────────────────────────────────────
+async function loadApprovedOutdoorExemptionEntryIds(db: D1Database, options: { userId?: string; since?: string } = {}): Promise<Set<string>> {
+  await ensureOutdoorExemptionTable(db);
+
+  const params: any[] = [];
+  let where = "WHERE ore.status = 'approved'";
+  if (options.userId) {
+    where += ' AND je.user_id = ?';
+    params.push(options.userId);
+  }
+  if (options.since) {
+    where += ' AND je.target_date >= ?';
+    params.push(options.since);
+  }
+
+  const result = await db.prepare(`
+    SELECT ore.journal_entry_id
+    FROM outdoor_report_exemptions ore
+    JOIN journal_entries je ON je.id = ore.journal_entry_id
+    ${where}
+  `).bind(...params).all();
+
+  return new Set((result.results || []).map((r: any) => r.journal_entry_id as string));
+}
+
 links.post('/backfill-outdoor', requireRole(...REVIEW_ROLES), async (c) => {
   const db = c.env.DB;
   const user = c.get('user');
@@ -67,11 +231,13 @@ links.post('/backfill-outdoor', requireRole(...REVIEW_ROLES), async (c) => {
     ORDER BY target_date ASC
   `).all();
   const allEntries = (entriesRes.results || []) as Array<{ id: string; user_id: string; target_date: string; activity_type: string; data: string }>;
+  const exemptedEntries = await loadApprovedOutdoorExemptionEntryIds(db);
 
   // 3. 외근 entries만 필터 + 사용자별 그룹
   const entriesByUser: Record<string, Array<{ id: string; target_date: string; activity_type: string }>> = {};
   for (const e of allEntries) {
     if (!isOutdoorEntry(e.activity_type, e.data)) continue;
+    if (exemptedEntries.has(e.id)) continue;
     if (!entriesByUser[e.user_id]) entriesByUser[e.user_id] = [];
     entriesByUser[e.user_id].push({ id: e.id, target_date: e.target_date, activity_type: e.activity_type });
   }
@@ -292,10 +458,15 @@ links.get('/my-outdoor-entries', async (c) => {
 
   // 다른 문서에 이미 link된 entry id 조회
   const linkedRes = await db.prepare(`
-    SELECT journal_entry_id, document_id
-    FROM document_journal_links
-    WHERE link_type = 'outdoor'
-  `).all();
+    SELECT djl.journal_entry_id, djl.document_id
+    FROM document_journal_links djl
+    JOIN documents d ON d.id = djl.document_id
+    WHERE djl.link_type = 'outdoor'
+      AND (
+        djl.document_id = ?
+        OR (d.status IN ('submitted','approved') AND COALESCE(d.cancelled, 0) = 0)
+      )
+  `).bind(forDocId).all();
   const linkedToOther = new Map<string, string>();      // entry_id → other_doc_id
   const linkedToCurrent = new Set<string>();             // entry_id (현재 문서에 link된)
   for (const r of (linkedRes.results || []) as Array<{ journal_entry_id: string; document_id: string }>) {
@@ -307,6 +478,9 @@ links.get('/my-outdoor-entries', async (c) => {
   }
 
   // 응답 가공
+  const implicitLinkedToOther = await loadImplicitOutdoorEntryIds(db, { userId: user.sub, since: sixtyDaysAgo, excludeDocId: forDocId });
+  const approvedExemptions = await loadApprovedOutdoorExemptionEntryIds(db, { userId: user.sub, since: sixtyDaysAgo });
+
   const items = outdoorEntries.map((e) => {
     let parsed: any = {};
     try { parsed = JSON.parse(e.data); } catch { /* */ }
@@ -320,9 +494,10 @@ links.get('/my-outdoor-entries', async (c) => {
       time_to: parsed.timeTo || '',
       place: parsed.place || '',
       case_no: parsed.caseNo || '',
+      property_type: parsed.propertyType || '',
       client: parsed.client || '',
       court: parsed.court || '',
-      linked_to_other_doc: otherDoc || null,
+      linked_to_other_doc: otherDoc || (implicitLinkedToOther.has(e.id) ? '__implicit_existing_report__' : approvedExemptions.has(e.id) ? '__approved_exemption__' : null),
       linked_to_current_doc: linkedToCurrent.has(e.id),
     };
   });
@@ -368,6 +543,20 @@ links.post('/', async (c) => {
     if (linkType === 'outdoor' && !isOutdoorEntry(e.activity_type, e.data)) {
       return c.json({ error: `outdoor link은 외근 entry만 가능합니다 (${e.activity_type})` }, 400);
     }
+  }
+
+  if (linkType === 'outdoor') {
+    await db.prepare(`
+      DELETE FROM document_journal_links
+      WHERE link_type = ?
+        AND journal_entry_id IN (${placeholders})
+        AND document_id IN (
+          SELECT id
+          FROM documents
+          WHERE id <> ?
+            AND (status NOT IN ('submitted','approved') OR COALESCE(cancelled, 0) = 1)
+        )
+    `).bind(linkType, ...entryIds, docId).run();
   }
 
   // INSERT (UNIQUE 위반은 무시)
@@ -440,14 +629,27 @@ links.get('/review-queue', requireRole(...REVIEW_ROLES), async (c) => {
   }
 
   const entryMap: Record<string, any> = {};
+  const exemptedEntryIds = new Set<string>();
   if (allEntryIds.size > 0) {
     const ids = Array.from(allEntryIds);
     const placeholders = ids.map(() => '?').join(',');
+    await ensureOutdoorExemptionTable(db);
+    const exemptionRes = await db.prepare(`
+      SELECT journal_entry_id
+      FROM outdoor_report_exemptions
+      WHERE status = 'approved'
+        AND journal_entry_id IN (${placeholders})
+    `).bind(...ids).all();
+    for (const row of (exemptionRes.results || []) as Array<{ journal_entry_id: string }>) {
+      exemptedEntryIds.add(row.journal_entry_id);
+    }
+
     const eRes = await db.prepare(`
       SELECT id, target_date, activity_type, activity_subtype, data, user_id
       FROM journal_entries WHERE id IN (${placeholders})
     `).bind(...ids).all();
     for (const e of (eRes.results || []) as any[]) {
+      if (exemptedEntryIds.has(e.id)) continue;
       let parsed: any = {};
       try { parsed = JSON.parse(e.data); } catch { /* */ }
       entryMap[e.id] = {
@@ -464,6 +666,10 @@ links.get('/review-queue', requireRole(...REVIEW_ROLES), async (c) => {
   const items = candidates.map((cand) => {
     let entryIds: string[] = [];
     try { entryIds = JSON.parse(cand.candidate_journal_entry_ids); } catch { /* */ }
+    const visibleCandidates = entryIds
+      .filter((eid) => !exemptedEntryIds.has(eid))
+      .map((eid) => entryMap[eid])
+      .filter(Boolean);
     return {
       id: cand.id,
       document_id: cand.document_id,
@@ -475,10 +681,10 @@ links.get('/review-queue', requireRole(...REVIEW_ROLES), async (c) => {
       match_tier: cand.match_tier,
       body_outing_text: cand.document_outing_date_text,
       body_outing_parsed: cand.document_outing_date_parsed,
-      candidates: entryIds.map((eid) => entryMap[eid]).filter(Boolean),
+      candidates: visibleCandidates,
       created_at: cand.created_at,
     };
-  });
+  }).filter((item) => item.candidates.length > 0);
 
   return c.json({ items });
 });
@@ -524,6 +730,146 @@ links.post('/review/:id/resolve', requireRole(...REVIEW_ROLES), async (c) => {
   return c.json({ success: true, action: 'resolved', linked_count: entryIds.length });
 });
 
+// POST /api/links/outdoor-exemptions — 외근보고서 면제 사유서 제출
+links.post('/outdoor-exemptions', async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  await ensureOutdoorExemptionTable(db);
+  const body = await c.req.json<{ journal_entry_ids?: string[]; journal_entry_id?: string; reason_type?: string; reason_detail?: string }>();
+  const entryIds = Array.from(new Set([...(body.journal_entry_ids || []), body.journal_entry_id || ''].filter(Boolean)));
+  const reasonType = String(body.reason_type || '').trim();
+  const reasonDetail = String(body.reason_detail || '').trim();
+
+  if (entryIds.length === 0) return c.json({ error: '면제 처리할 외근 일지가 없습니다.' }, 400);
+  if (!reasonType) return c.json({ error: '사유 유형을 입력하세요.' }, 400);
+  if (!reasonDetail) return c.json({ error: '상세 사유를 입력하세요.' }, 400);
+
+  const placeholders = entryIds.map(() => '?').join(',');
+  const entriesRes = await db.prepare(`
+    SELECT id, user_id, target_date, activity_type, data
+    FROM journal_entries
+    WHERE id IN (${placeholders})
+  `).bind(...entryIds).all();
+  const entries = (entriesRes.results || []) as Array<{ id: string; user_id: string; target_date: string; activity_type: string; data: string }>;
+  if (entries.length !== entryIds.length) return c.json({ error: '일부 외근 일지를 찾을 수 없습니다.' }, 404);
+
+  const isPriv = EXEMPTION_APPROVER_ROLES.includes(user.role as any);
+  for (const entry of entries) {
+    if (entry.user_id !== user.sub && !isPriv) return c.json({ error: '본인 외근 일지만 면제 사유서를 제출할 수 있습니다.' }, 403);
+    if (!isOutdoorEntry(entry.activity_type, entry.data)) return c.json({ error: '외근보고서 대상 일지만 면제 신청할 수 있습니다.' }, 400);
+  }
+
+  const existingRes = await db.prepare(`
+    SELECT journal_entry_id, status
+    FROM outdoor_report_exemptions
+    WHERE journal_entry_id IN (${placeholders})
+      AND status IN ('pending', 'approved')
+  `).bind(...entryIds).all();
+  const existing = new Map((existingRes.results || []).map((r: any) => [r.journal_entry_id, r.status]));
+
+  const toInsert = entries.filter((entry) => !existing.has(entry.id));
+  if (toInsert.length > 0) {
+    await db.batch(toInsert.map((entry) =>
+      db.prepare(`
+        INSERT INTO outdoor_report_exemptions
+          (id, journal_entry_id, user_id, target_date, reason_type, reason_detail, status, requested_by)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+      `).bind(crypto.randomUUID(), entry.id, entry.user_id, entry.target_date, reasonType, reasonDetail, user.sub)
+    ));
+  }
+
+  return c.json({
+    success: true,
+    requested: toInsert.length,
+    skipped: entries.length - toInsert.length,
+  });
+});
+
+// GET /api/links/outdoor-exemptions?status=pending|approved|rejected|mine
+links.get('/outdoor-exemptions', async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  await ensureOutdoorExemptionTable(db);
+  const status = c.req.query('status') || 'pending';
+  const isReviewer = EXEMPTION_APPROVER_ROLES.includes(user.role as any);
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+  if (status === 'mine') {
+    conditions.push('ore.user_id = ?');
+    params.push(user.sub);
+  } else {
+    if (!isReviewer) {
+      conditions.push('ore.user_id = ?');
+      params.push(user.sub);
+    }
+    conditions.push('ore.status = ?');
+    params.push(status);
+  }
+
+  const result = await db.prepare(`
+    SELECT ore.*, u.name as user_name, rb.name as reviewed_by_name,
+      je.activity_type, je.activity_subtype, je.data
+    FROM outdoor_report_exemptions ore
+    JOIN journal_entries je ON je.id = ore.journal_entry_id
+    LEFT JOIN users u ON u.id = ore.user_id
+    LEFT JOIN users rb ON rb.id = ore.reviewed_by
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY ore.created_at DESC
+    LIMIT 100
+  `).bind(...params).all();
+
+  const items = (result.results || []).map((row: any) => {
+    let parsed: any = {};
+    try { parsed = JSON.parse(row.data || '{}'); } catch { /* */ }
+    return {
+      ...row,
+      time_from: parsed.timeFrom || '',
+      time_to: parsed.timeTo || '',
+      place: parsed.place || '',
+      case_no: parsed.caseNo || '',
+      client: parsed.client || '',
+    };
+  });
+  return c.json({ items });
+});
+
+links.post('/outdoor-exemptions/:id/approve', requireRole(...EXEMPTION_APPROVER_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  await ensureOutdoorExemptionTable(db);
+  const id = c.req.param('id');
+  const body = await c.req.json<{ comment?: string }>().catch(() => ({} as { comment?: string }));
+  const existing = await db.prepare('SELECT id, status FROM outdoor_report_exemptions WHERE id = ?').bind(id).first<{ id: string; status: string }>();
+  if (!existing) return c.json({ error: '면제 사유서를 찾을 수 없습니다.' }, 404);
+  if (existing.status !== 'pending') return c.json({ error: '이미 처리된 면제 사유서입니다.' }, 400);
+  await db.prepare(`
+    UPDATE outdoor_report_exemptions
+    SET status = 'approved', reviewed_by = ?, reviewer_comment = ?, reviewed_at = datetime('now', '+9 hours'), updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+  `).bind(user.sub, String(body.comment || ''), id).run();
+  return c.json({ success: true });
+});
+
+links.post('/outdoor-exemptions/:id/reject', requireRole(...EXEMPTION_APPROVER_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  await ensureOutdoorExemptionTable(db);
+  const id = c.req.param('id');
+  const body = await c.req.json<{ comment?: string }>().catch(() => ({} as { comment?: string }));
+  const comment = String(body.comment || '').trim();
+  if (!comment) return c.json({ error: '반려 사유를 입력하세요.' }, 400);
+  const existing = await db.prepare('SELECT id, status FROM outdoor_report_exemptions WHERE id = ?').bind(id).first<{ id: string; status: string }>();
+  if (!existing) return c.json({ error: '면제 사유서를 찾을 수 없습니다.' }, 404);
+  if (existing.status !== 'pending') return c.json({ error: '이미 처리된 면제 사유서입니다.' }, 400);
+  await db.prepare(`
+    UPDATE outdoor_report_exemptions
+    SET status = 'rejected', reviewed_by = ?, reviewer_comment = ?, reviewed_at = datetime('now', '+9 hours'), updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+  `).bind(user.sub, comment, id).run();
+  return c.json({ success: true });
+});
+
 // GET /api/links/effective-entry-ids?since=YYYY-MM-DD&link_type=outdoor
 // 활성 link가 걸린 일지 entry IDs 반환 (Dashboard 알림 검사용)
 // 활성 = 문서 status IN ('submitted','approved') AND cancelled = 0
@@ -531,6 +877,7 @@ links.get('/effective-entry-ids', async (c) => {
   const db = c.env.DB;
   const since = c.req.query('since') || '';
   const linkType = c.req.query('link_type') || 'outdoor';
+  await ensureOutdoorExemptionTable(db);
 
   let query = `
     SELECT djl.journal_entry_id
@@ -548,12 +895,35 @@ links.get('/effective-entry-ids', async (c) => {
   }
 
   const result = await db.prepare(query).bind(...params).all();
-  const ids = (result.results || []).map((r: any) => r.journal_entry_id as string);
+  let exemptionQuery = `
+    SELECT ore.journal_entry_id
+    FROM outdoor_report_exemptions ore
+    JOIN journal_entries je ON je.id = ore.journal_entry_id
+    WHERE ore.status = 'approved'
+  `;
+  const exemptionParams: any[] = [];
+  if (since) {
+    exemptionQuery += ' AND je.target_date >= ?';
+    exemptionParams.push(since);
+  }
+  const exemptionResult = exemptionParams.length > 0
+    ? await db.prepare(exemptionQuery).bind(...exemptionParams).all()
+    : await db.prepare(exemptionQuery).all();
+  const implicitEntryIds = linkType === 'outdoor'
+    ? await loadImplicitOutdoorEntryIds(db, { since })
+    : new Set<string>();
+
+  const ids = Array.from(new Set([
+    ...(result.results || []).map((r: any) => r.journal_entry_id as string),
+    ...(exemptionResult.results || []).map((r: any) => r.journal_entry_id as string),
+    ...implicitEntryIds,
+  ]));
   return c.json({ entry_ids: ids });
 });
 
 // GET /api/links/by-document/:doc_id — 특정 문서에 link된 entries
 links.get('/by-document/:doc_id', async (c) => {
+  const user = c.get('user');
   const db = c.env.DB;
   const docId = c.req.param('doc_id');
   const result = await db.prepare(`
@@ -564,7 +934,8 @@ links.get('/by-document/:doc_id', async (c) => {
     WHERE djl.document_id = ?
     ORDER BY je.target_date DESC
   `).bind(docId).all();
-  return c.json({ links: result.results });
+  const links = (result.results || []).map((entry: any) => redactSuggestedPrice(entry, canViewSuggestedPrice(user.role)));
+  return c.json({ links });
 });
 
 export default links;

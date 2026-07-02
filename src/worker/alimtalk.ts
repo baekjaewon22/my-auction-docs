@@ -301,7 +301,7 @@ export const ALIMTALK_TEMPLATES = {
 
   COMMUNITY_DIRECT_SHARE: {
     code: 'commshare',
-    variables: ['receiver_name', 'author_name', 'title', 'date', 'link'],
+    variables: ['author_name', 'title', 'date', 'link'],
     content: `[마이옥션 알림]
 
 #{receiver_name}님께 공유된 사내 커뮤니티 글이 있습니다.
@@ -318,10 +318,10 @@ export const ALIMTALK_TEMPLATES = {
   // 사내 커뮤니티: 명도 견적 답변 완료 → 요청자
   COMMUNITY_EVICTION_QUOTE_ANSWERED: {
     code: 'lawa',
-    variables: ['receiver_name', 'court', 'case_number', 'responder_name', 'link'],
+    variables: ['court', 'case_number', 'responder_name', 'link'],
     content: `[마이옥션 오피스]
 
-#{receiver_name}님
+담당자님
 
 요청하신 명도 견적 의뢰에 답변이 등록되었습니다.
 
@@ -733,7 +733,20 @@ export async function sendAlimtalkByTemplate(
   options?: AlimtalkSendOptions,
 ): Promise<AlimtalkSendResponse | null> {
   const template = ALIMTALK_TEMPLATES[templateKey];
-  const content = replaceTemplateVariables(template.content, variables);
+  const contentTemplate = templateKey === 'COMMUNITY_DIRECT_SHARE'
+    ? `[마이옥션 알림]
+
+담당자님께 공유된 사내 커뮤니티 글이 있습니다.
+
+작성자: #{author_name}
+제목: #{title}
+등록일: #{date}
+
+내용을 확인해주세요.
+
+바로가기 #{link}`
+    : template.content;
+  const content = replaceTemplateVariables(contentTemplate, variables);
   const db = options?.db || (env.DB as D1Database | undefined);
   const relatedType = options?.relatedType || templateKey;
   const relatedId = options?.relatedId || '';

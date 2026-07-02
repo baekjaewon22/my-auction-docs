@@ -11,6 +11,10 @@ import {
 } from '../lib/approval-alerts';
 import { dispatchApprovalAlerts } from '../lib/approval-alerts-dispatcher';
 import { recheckAlertsAfterDocumentChange } from '../lib/journal-alerts';
+import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
+import { applyBranchApprovalOverride, getAdminVisibleBranches } from '../lib/branch-approval-overrides';
+
+const LEAVE_REQUEST_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
 
 // 결재선 자동 계산: 조직도를 위로 탐색하여 승인자 목록 반환
 async function buildApprovalChain(db: D1Database, authorId: string): Promise<string[]> {
@@ -20,7 +24,7 @@ async function buildApprovalChain(db: D1Database, authorId: string): Promise<str
   ).bind(authorId).first<OrgNode>();
   if (!userNode) return [];
 
-  const author = await db.prepare('SELECT role FROM users WHERE id = ?').bind(authorId).first<{ role: string }>();
+  const author = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(authorId).first<{ role: string; branch: string }>();
   if (!author) return [];
 
   // 2) 위로 올라가며 승인자 수집 (본인 제외)
@@ -46,6 +50,9 @@ async function buildApprovalChain(db: D1Database, authorId: string): Promise<str
   }
 
   // 3) 최상위급(tier <= 2)이고 chain이 비었으면 → CC 승인자 사용
+  const overrideResult = await applyBranchApprovalOverride(db, chain, authorId, author.branch);
+  chain.splice(0, chain.length, ...overrideResult.chain);
+
   if (chain.length === 0 && userNode.tier <= 2) {
     const ccList = await db.prepare(
       'SELECT cc_user_id FROM approval_cc'
@@ -121,18 +128,20 @@ documents.get('/', async (c) => {
     params.push(user.sub);
   } else if (user.role === 'director') {
     // 총괄이사: 본인 + 대전/부산 지사 — 타인 draft 제외
-    conditions.push("(d.author_id = ? OR d.branch IN ('대전', '부산'))");
+    conditions.push("(d.author_id = ? OR d.branch IN ('대전', '대전지사', '부산', '부산지사'))");
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(user.sub, user.sub);
-  } else if (user.role === 'admin' && user.branch === '의정부') {
+  } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람 — 타인 draft 제외
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(user.sub);
   } else if (user.role === 'admin') {
     // 기타 지사 관리자: 본인 지사 — 타인 draft 제외
-    conditions.push('d.branch = ?');
+    const allBranches = await getAdminVisibleBranches(db, user);
+    const placeholders = allBranches.map(() => '?').join(',');
+    conditions.push(`d.branch IN (${placeholders})`);
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
-    params.push(user.branch);
+    params.push(...allBranches);
     params.push(user.sub);
   } else if (user.role === 'manager') {
     conditions.push('d.branch = ?');
@@ -201,11 +210,16 @@ documents.get('/:id', async (c) => {
   if (user.role === 'member' && doc.author_id !== user.sub) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
-  if (user.role === 'manager' && doc.author_id !== user.sub && (doc.branch !== user.branch || doc.department !== user.department)) {
+  if (user.role === 'manager' && doc.author_id !== user.sub && (!sameBranchName(doc.branch, user.branch) || doc.department !== user.department)) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
   // 의정부 관리자는 타지사 열람 가능, 기타 관리자는 본인 지사만
-  if (user.role === 'admin' && user.branch !== '의정부' && doc.branch !== user.branch && doc.author_id !== user.sub) {
+  if (
+    user.role === 'admin'
+    && !isHeadOfficeBranch(user.branch)
+    && doc.author_id !== user.sub
+    && !(await getAdminVisibleBranches(db, user)).some((branch) => sameBranchName(doc.branch, branch))
+  ) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
@@ -219,6 +233,9 @@ documents.post('/', async (c) => {
     title: string; content?: string; template_id?: string;
   }>();
   if (!title) return c.json({ error: '문서 제목은 필수입니다.' }, 400);
+  if (template_id && LEAVE_REQUEST_TEMPLATE_IDS.has(template_id)) {
+    return c.json({ error: '연차/반차/특별휴가 신청은 연차관리에서 신청하세요.' }, 400);
+  }
 
   const db = c.env.DB;
   const id = crypto.randomUUID();
@@ -422,15 +439,31 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
+  let body: { step_id?: string } = {};
+  try { body = await c.req.json(); } catch { body = {}; }
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
   if (doc.status !== 'submitted') return c.json({ error: '제출된 문서만 승인할 수 있습니다.' }, 400);
 
   // 결재선에서 현재 대기중인 내 단계 찾기
-  const myStep = await db.prepare(
-    "SELECT * FROM approval_steps WHERE document_id = ? AND approver_id = ? AND status = 'pending'"
-  ).bind(id, user.sub).first<{ id: string; step_order: number }>();
+  let myStep: { id: string; step_order: number } | null = null;
+  if (body.step_id) {
+    myStep = await db.prepare(
+      "SELECT * FROM approval_steps WHERE document_id = ? AND id = ? AND status = 'pending'"
+    ).bind(id, body.step_id).first<{ id: string; step_order: number }>() || null;
+    if (!myStep) return c.json({ error: '승인 대기 중인 결재 단계를 찾을 수 없습니다.' }, 404);
+    const isOwnStep = await db.prepare(
+      "SELECT id FROM approval_steps WHERE id = ? AND approver_id = ?"
+    ).bind(body.step_id, user.sub).first();
+    if (!isOwnStep && !['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role)) {
+      return c.json({ error: '해당 결재 단계를 대리 승인할 권한이 없습니다.' }, 403);
+    }
+  } else {
+    myStep = await db.prepare(
+      "SELECT * FROM approval_steps WHERE document_id = ? AND approver_id = ? AND status = 'pending'"
+    ).bind(id, user.sub).first<{ id: string; step_order: number }>() || null;
+  }
 
   if (!myStep) {
     // 대리 승인은 상위 권한(master/ceo/cc_ref/admin/accountant)만 가능 — manager 제외
@@ -440,7 +473,14 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
       const headStep = await db.prepare(
         "SELECT id, approver_id FROM approval_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order ASC LIMIT 1"
       ).bind(id).first<{ id: string; approver_id: string }>();
-      if (!headStep) return c.json({ error: '승인 대기 중인 단계가 없습니다.' }, 400);
+      if (!headStep) {
+        const pendingCount = await db.prepare(
+          "SELECT COUNT(*) as cnt FROM approval_steps WHERE document_id = ? AND status = 'pending'"
+        ).bind(id).first<{ cnt: number }>();
+        if (pendingCount && pendingCount.cnt > 0) {
+          return c.json({ error: '승인 대기 중인 단계가 없습니다.' }, 400);
+        }
+      } else {
       await db.prepare(
         "UPDATE approval_steps SET status = 'approved', signed_at = datetime('now'), comment = ? WHERE id = ?"
       ).bind('proxy:' + user.sub, headStep.id).run();
@@ -472,6 +512,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
           ).bind(crypto.randomUUID(), id, headStep.approver_id, approverInfo.saved_signature, 'proxy-by:' + user.sub).run();
         }
       }
+      }
     } else {
       return c.json({ error: '현재 승인 차례가 아니거나 결재선에 포함되지 않았습니다.' }, 403);
     }
@@ -499,6 +540,26 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
   const allDone = !remaining || remaining.cnt === 0;
 
   if (allDone) {
+    await db.prepare(`
+      INSERT OR IGNORE INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent)
+      SELECT 'ceo-stamp-' || s.document_id || '-' || s.approver_id,
+             s.document_id,
+             s.approver_id,
+             '/LNCstemp.png',
+             'auto-finalize',
+             'auto-finalize'
+      FROM approval_steps s
+      JOIN users u ON u.id = s.approver_id
+      WHERE s.document_id = ?
+        AND s.status = 'approved'
+        AND u.role = 'ceo'
+        AND NOT EXISTS (
+          SELECT 1 FROM signatures sig
+          WHERE sig.document_id = s.document_id
+            AND sig.signature_data = '/LNCstemp.png'
+        )
+    `).bind(id).run();
+
     // 전체 승인 완료
     await db.prepare("UPDATE documents SET status = 'approved', updated_at = datetime('now') WHERE id = ?").bind(id).run();
     await db.prepare('INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)')
@@ -513,7 +574,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
     if (isLeaveDoc) {
       const leaveType = isSpecial
         ? '특별휴가'
-        : title.includes('반차') ? '반차' : title.includes('월차') ? '월차' : '연차';
+        : title.includes('반차') ? '반차' : '연차';
 
       // 날짜 결정: "휴가 기간 : 2026년 4월 28일 ~ 2026년 4월 30일" 처럼 시작/종료가 다르면 다일로 처리
       const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -537,7 +598,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
         if (endDate < startDate) endDate = startDate;
       }
 
-      // days 계산: 반차 0.5 / 특별휴가는 본문 "총 N일" 우선, 못 찾으면 (end-start)+1 / 그 외 연차 동일
+      // days는 호환 저장값, 실제 차감은 hours 기준(연차 8h, 반차 4h)
       let days: number;
       if (leaveType === '반차') {
         days = 0.5;
@@ -558,6 +619,8 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
         ) + 1;
         days = Math.min(31, Math.max(1, diff));
       }
+      const deductHours = leaveType === '반차' ? 4 : days * 8;
+      const deductDays = Math.round((deductHours / 8) * 1000) / 1000;
 
       // [중복 방지]
       const dup = await db.prepare(
@@ -582,10 +645,10 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
           const leaveData = await db.prepare('SELECT leave_type FROM annual_leave WHERE user_id = ?').bind(doc.author_id).first<any>();
           if (leaveData?.leave_type === 'monthly') {
             await db.prepare("UPDATE annual_leave SET monthly_used = monthly_used + ?, updated_at = datetime('now') WHERE user_id = ?")
-              .bind(days, doc.author_id).run();
+              .bind(deductDays, doc.author_id).run();
           } else {
             await db.prepare("UPDATE annual_leave SET used_days = used_days + ?, updated_at = datetime('now') WHERE user_id = ?")
-              .bind(days, doc.author_id).run();
+              .bind(deductDays, doc.author_id).run();
           }
         }
 
@@ -594,9 +657,9 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
           ? `특별휴가 (${doc.title})`
           : `문서결재 자동등록 (${doc.title})`;
         await db.prepare(
-          "INSERT INTO leave_requests (id, user_id, leave_type, start_date, end_date, days, reason, status, approved_by, approved_at, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), ?, ?)"
+          "INSERT INTO leave_requests (id, user_id, leave_type, start_date, end_date, hours, days, reason, status, approved_by, approved_at, branch, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), ?, ?)"
         ).bind(
-          crypto.randomUUID(), doc.author_id, leaveType, startDate, endDate, days,
+          crypto.randomUUID(), doc.author_id, leaveType, startDate, endDate, deductHours, deductDays,
           reason, user.sub, doc.branch || '', doc.department || ''
         ).run();
       }

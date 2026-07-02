@@ -1,0 +1,4 @@
+thesis: 사원용 신청 목적은 결재 판단을 돕는 업무 근거 문장이다.
+audience: team members writing internal requests
+arc: why it matters -> formula -> examples -> mistakes -> checklist -> reusable template
+slides: 1 cover, 2 role, 3 formula, 4 examples, 5 bad-to-better, 6 do/don't, 7 checklist, 8 template

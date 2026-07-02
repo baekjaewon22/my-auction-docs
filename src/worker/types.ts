@@ -16,6 +16,11 @@ export interface User {
   department: string;
   position_title: string;
   hire_date: string;
+  resigned_at?: string;
+  myauction_id?: string;
+  myauction_pw?: string;
+  has_myauction_credentials?: number;
+  report_permission?: 'basic' | 'special';
   approved: number;
   created_at: string;
   updated_at: string;
@@ -114,6 +119,8 @@ export interface JwtPayload {
   team_id: string | null;
   branch: string;
   department: string;
+  position_title?: string;
+  login_type?: string;
   auth_type?: 'user' | 'service_token';
   service_token_id?: string;
   service_token_scope?: 'read' | 'write' | 'admin';

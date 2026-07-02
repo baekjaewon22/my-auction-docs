@@ -34,6 +34,10 @@ export interface User {
   position_title: string;
   card_number?: string;
   hire_date?: string;
+  resigned_at?: string;
+  myauction_id?: string;
+  has_myauction_credentials?: number;
+  report_permission?: 'basic' | 'special';
   login_type?: 'employee' | 'freelancer';
   created_at?: string;
   updated_at?: string;
@@ -205,7 +209,7 @@ export interface SalesRecord {
   client_phone: string;
   // 세금계산서/현금영수증 발행 기록 (총무 메모용)
   tax_invoice_date?: string;
-  tax_invoice_type?: string; // '영수' | '계산'
+  tax_invoice_type?: string; // '영수' | '계산' | '자진'
   created_at: string;
   updated_at: string;
 }
@@ -237,6 +241,7 @@ export interface LeaveRequest {
   user_id: string;
   user_name?: string;
   leave_type: LeaveRequestType;
+  half_day_period?: '오전' | '오후' | '';
   start_date: string;
   end_date: string;
   hours: number;
@@ -257,6 +262,15 @@ export interface LeaveBalance {
   used_days: number;
   monthly_days: number;
   monthly_used: number;
+  total_hours?: number;
+  used_hours?: number;
+  annual_total_hours?: number;
+  annual_used_hours?: number;
+  annual_remaining_hours?: number;
+  monthly_total_hours?: number;
+  monthly_used_hours?: number;
+  monthly_remaining_hours?: number;
+  total_remaining_hours?: number;
   leave_type: 'monthly' | 'annual';
   hire_date: string;
   months_since_hire: number;

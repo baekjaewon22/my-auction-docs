@@ -28,6 +28,9 @@ export default function PropertyReport() {
   const [approvalSteps, setApprovalSteps] = useState<ApprovalStep[]>([]);
   const [showSignPanel, setShowSignPanel] = useState(false);
   const [signType, setSignType] = useState<'author' | 'approver'>('author');
+  const [signStepId, setSignStepId] = useState<string | undefined>(undefined);
+  const approvingRef = useRef(false);
+  const [approving, setApproving] = useState(false);
 
   const canUseStamp = STAMP_ROLES.includes(user?.role || '');
 
@@ -77,33 +80,41 @@ export default function PropertyReport() {
   }, [id]);
 
   // 서명 처리 — approverRole로 자동 판단
-  const handleSignRequest = async (type: 'author' | 'approver', approverRole?: string) => {
+  const handleSignRequest = async (type: 'author' | 'approver', approverRole?: string, stepId?: string) => {
     if (!docId) return;
+    if (approvingRef.current) return;
 
     // CEO 결재란 → 자동으로 대표 직인
     if (canUseStamp && approverRole === 'ceo') {
+      approvingRef.current = true;
+      setApproving(true);
       try {
         await api.signatures.sign(docId, '/LNCstemp.png');
         if (type === 'approver') {
-          await api.documents.approve(docId);
+          await api.documents.approve(docId, stepId ? { step_id: stepId } : undefined);
         }
         await loadDoc(docId);
       } catch (err: any) { alert(err.message); }
+      finally { approvingRef.current = false; setApproving(false); }
       return;
     }
 
     // 그 외 → 본인 서명
     if (hasSavedSignature()) {
+      approvingRef.current = true;
+      setApproving(true);
       try {
-        await quickSign(docId, 'author', async () => {
+        await quickSign(docId, type, async () => {
           if (type === 'approver') {
-            await api.documents.approve(docId);
+            await api.documents.approve(docId, stepId ? { step_id: stepId } : undefined);
           }
           await loadDoc(docId);
         });
       } catch (err: any) { alert(err.message); }
+      finally { approvingRef.current = false; setApproving(false); }
     } else {
       setSignType(type);
+      setSignStepId(stepId);
       setShowSignPanel(true);
     }
   };
@@ -112,9 +123,10 @@ export default function PropertyReport() {
     if (!docId) return;
     try {
       if (signType === 'approver') {
-        await api.documents.approve(docId);
+        await api.documents.approve(docId, signStepId ? { step_id: signStepId } : undefined);
       }
       setShowSignPanel(false);
+      setSignStepId(undefined);
       await loadDoc(docId);
     } catch (err: any) { alert(err.message); }
   };
@@ -358,7 +370,7 @@ export default function PropertyReport() {
           <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#1a2744' }}>물건분석보고서</span>
           {status !== 'draft' && <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: 6, background: status === 'submitted' ? '#e8f0fe' : status === 'approved' ? '#e8f5e9' : '#fff3e0', color: status === 'submitted' ? '#1a73e8' : status === 'approved' ? '#188038' : '#e65100' }}>{status === 'submitted' ? '제출' : status === 'approved' ? '승인' : status === 'rejected' ? '반려' : status}</span>}
           <div style={{ flex: 1 }} />
-          {saving && <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>저장중...</span>}
+          {(saving || approving) && <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>{approving ? '승인중...' : '저장중...'}</span>}
           {isEditable && <button className="btn btn-sm btn-primary" onClick={handleSave}><Save size={14} /></button>}
           {isEditable && (
             <button className="btn btn-sm" style={{ background: '#188038', color: '#fff', opacity: mySigned ? 1 : 0.5 }} onClick={handleSubmit} title={status === 'rejected' ? '재제출' : '최종 제출'}>
@@ -461,7 +473,13 @@ export default function PropertyReport() {
                   approvalSteps.forEach((step, idx) => {
                     if (idx + 1 < headers.length) {
                       // 1) 정확히 매칭
-                      let sig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1 && !usedSigIds.has(s.id || ''));
+                      let sig: Signature | undefined;
+                      if (step.status === 'approved' && (step as any).approver_role === 'ceo') {
+                        sig = signatures.find(s => s.signature_data === '/LNCstemp.png' && !usedSigIds.has(s.id || ''));
+                      }
+                      if (!sig) {
+                        sig = signatures.find(s => s.user_id === step.approver_id && signatures.indexOf(s) >= 1 && !usedSigIds.has(s.id || ''));
+                      }
                       // 2) proxy 매칭
                       if (!sig && step.status === 'approved' && (step as any).comment?.startsWith('proxy:')) {
                         const proxyId = (step as any).comment.replace('proxy:', '');

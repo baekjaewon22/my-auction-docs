@@ -6,9 +6,16 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { ensureBidAnalysisTable } from '../lib/bid-analysis';
+import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 
 const comprehensive = new Hono<AuthEnv>();
 comprehensive.use('*', authMiddleware);
+
+const HOLIDAYS = new Set([
+  '2026-05-25',
+]);
 
 // 백필/수동 갱신 엔드포인트 (master·ceo·accountant만)
 comprehensive.post('/backfill', requireRole('master', 'ceo', 'accountant'), async (c) => {
@@ -36,11 +43,12 @@ comprehensive.post('/run-monthly', requireRole('master', 'ceo', 'accountant'), a
 // ───────────────────────────────────────
 // 점수 계산 — 직군별 가중치
 // 정직원: 매출35 / 전환20 / 활동15 / 출근15 / 안정10 / 이상-5
-// 프리랜서: 매출25 / 전환25 / 활동20 / 출근15 / 성장15
+// 프리랜서: 입찰률50 / 낙찰률50
 // ───────────────────────────────────────
 type ScoreInput = {
   isFreelancer: boolean;
   targetRate: number;        // 정직원: standard 대비 / 프리랜서: 비율제 평균 대비
+  bidCompletionRate: number; // 입찰 처리율
   bidWinRate: number;        // 입찰→낙찰률 (0~100)
   activityIndex: number;     // 본인 활동수 / 조직 평균 × 100
   journalRate: number;       // 평일 일지 작성률 (0~100)
@@ -55,11 +63,8 @@ function calculateScore(input: ScoreInput) {
 
   if (input.isFreelancer) {
     const breakdown = {
-      매출: Math.round((targetScore100 / 100) * 25),
-      전환: Math.round((clamp(input.bidWinRate) / 100) * 25),
-      활동: Math.round((clamp(input.activityIndex, 0, 150) / 150) * 20),
-      출근: Math.round((clamp(input.journalRate) / 100) * 15),
-      성장: Math.round((clamp(input.growthRate + 50, 0, 100) / 100) * 15),
+      입찰률: Math.round((clamp(input.bidCompletionRate) / 100) * 50),
+      낙찰률: Math.round((clamp(input.bidWinRate) / 100) * 50),
     };
     const total = Object.values(breakdown).reduce((a, b) => a + b, 0);
     return { total, breakdown, grade: gradeOf(total) };
@@ -100,6 +105,13 @@ type TagKey =
 
 function generateTags(m: any, isFreelancer: boolean, hireMonths: number): TagKey[] {
   const tags: TagKey[] = [];
+  if (isFreelancer) {
+    if ((m.bidCompletionRate || 0) >= 90) tags.push('active');
+    else if ((m.bidCompletionRate || 0) < 50 && (m.bidCount || 0) > 0) tags.push('inactive');
+    if ((m.bidWinRate || 0) >= 50) tags.push('efficient');
+    if (m.deviationCount === 0 && m.processedBidCount > 0) tags.push('precise');
+    return tags;
+  }
   const targetRate = m.targetRate || 0;
   if (targetRate >= 120) tags.push('champion');
   else if (targetRate >= 90) tags.push('stable');
@@ -132,6 +144,14 @@ function generateTags(m: any, isFreelancer: boolean, hireMonths: number): TagKey
 function generateDiagnosis(m: any, breakdown: any, maxByKey: Record<string, number>, isFreelancer: boolean): { strengths: string[]; weaknesses: string[] } {
   const strengths: string[] = [];
   const weaknesses: string[] = [];
+  if (isFreelancer) {
+    if ((m.bidCompletionRate || 0) >= 90) strengths.push(`입찰 처리율 ${m.bidCompletionRate.toFixed(0)}%로 우수`);
+    if ((m.bidWinRate || 0) >= 50) strengths.push(`낙찰률 ${m.bidWinRate.toFixed(0)}%로 우수`);
+    if ((m.bidCompletionRate || 0) < 50 && (m.bidCount || 0) > 0) weaknesses.push(`입찰 처리율 ${m.bidCompletionRate.toFixed(0)}% — 낮음`);
+    if ((m.bidWinRate || 0) < 20 && (m.processedBidCount || 0) > 0) weaknesses.push(`낙찰률 ${m.bidWinRate.toFixed(0)}% — 낮음`);
+    if (strengths.length === 0 && weaknesses.length === 0) strengths.push('입찰 데이터 누적 중');
+    return { strengths, weaknesses };
+  }
   if (m.targetRate >= 110) strengths.push(`매출 ${m.targetRate.toFixed(0)}% 달성 — 우수`);
   if (m.bidWinRate >= 70) strengths.push(`입찰→낙찰 전환율 ${m.bidWinRate.toFixed(0)}%로 우수`);
   if (m.deviationCount === 0 && m.bidCount > 0) strengths.push('5% 편차 없음 — 입찰 정확도 우수');
@@ -160,7 +180,7 @@ function generateDiagnosis(m: any, breakdown: any, maxByKey: Record<string, numb
 comprehensive.get('/', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  const branch = c.req.query('branch') || '';
+  const branch = normalizeBranchName(c.req.query('branch') || '');
   const department = c.req.query('department') || '';
   const userIdParam = c.req.query('user_id') || '';
   const month = c.req.query('month') || ''; // YYYY-MM
@@ -169,11 +189,14 @@ comprehensive.get('/', async (c) => {
   // 권한 정책
   const role = user.role;
   const isViewer = ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(role);
-  const isHQAdmin = role === 'admin' && user.branch === '의정부';
+  const isHQAdmin = role === 'admin' && isHeadOfficeBranch(user.branch);
   const isDirector = role === 'director';
   const canSeeAll = isViewer || isHQAdmin;
   const canSeeBranch = canSeeAll || (role === 'admin');
   const canSeeTeam = canSeeBranch || role === 'manager';
+  const adminVisibleBranches = role === 'admin' && !isHQAdmin
+    ? await getAdminVisibleBranches(db, user)
+    : [];
 
   // 본인 외 조회 차단 처리
   let scopedUserId = userIdParam;
@@ -182,9 +205,9 @@ comprehensive.get('/', async (c) => {
     // 일반 직원이 다른 사람 조회 시도
     const target = await db.prepare('SELECT branch, department FROM users WHERE id = ?').bind(scopedUserId).first<any>();
     if (!target) return c.json({ error: '대상을 찾을 수 없습니다.' }, 404);
-    if (role === 'admin' && target.branch !== user.branch) return c.json({ error: '권한 없음' }, 403);
-    if (role === 'manager' && (target.branch !== user.branch || target.department !== user.department)) return c.json({ error: '권한 없음' }, 403);
-    if (role === 'director' && !['대전', '부산'].includes(target.branch) && target.id !== user.sub) return c.json({ error: '권한 없음' }, 403);
+    if (role === 'admin' && !isHQAdmin && !adminVisibleBranches.some((visibleBranch) => sameBranchName(target.branch, visibleBranch))) return c.json({ error: '권한 없음' }, 403);
+    if (role === 'manager' && (!sameBranchName(target.branch, user.branch) || target.department !== user.department)) return c.json({ error: '권한 없음' }, 403);
+    if (role === 'director' && !['대전지사', '부산지사'].includes(normalizeBranchName(target.branch)) && target.id !== user.sub) return c.json({ error: '권한 없음' }, 403);
   }
 
   // 기간 결정 — month 미지정 시 현재 달
@@ -215,7 +238,7 @@ comprehensive.get('/', async (c) => {
     FROM users u
     LEFT JOIN user_accounting ua ON ua.user_id = u.id
     WHERE u.role NOT IN ('master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst', 'support', 'resigned')
-      AND u.branch != '본사 관리'
+      AND REPLACE(u.branch, ' ', '') != '본사관리'
       AND (u.department IS NULL OR u.department NOT IN ('명도팀', '지원팀'))
       AND u.id != ?
       AND u.login_type != 'freelancer-old'
@@ -225,11 +248,27 @@ comprehensive.get('/', async (c) => {
     memberQuery += ' AND u.id = ?';
     params.push(scopedUserId);
   } else {
-    if (branch) { memberQuery += ' AND u.branch = ?'; params.push(branch); }
+    if (branch) {
+      const aliases = branchAliases(branch);
+      memberQuery += ` AND u.branch IN (${aliases.map(() => '?').join(',')})`;
+      params.push(...aliases);
+    }
     if (department) { memberQuery += ' AND u.department = ?'; params.push(department); }
-    if (isDirector) { memberQuery += " AND (u.branch IN ('대전','부산') OR u.id = ?)"; params.push(user.sub); }
-    else if (role === 'admin' && user.branch !== '의정부') { memberQuery += ' AND u.branch = ?'; params.push(user.branch); }
-    else if (role === 'manager') { memberQuery += ' AND u.branch = ? AND u.department = ?'; params.push(user.branch, user.department); }
+    if (isDirector) { memberQuery += " AND (u.branch IN ('대전', '대전지사', '부산', '부산지사') OR u.id = ?)"; params.push(user.sub); }
+    else if (role === 'admin' && !isHQAdmin) {
+      if (branch) {
+        if (!adminVisibleBranches.some((visibleBranch) => sameBranchName(branch, visibleBranch))) {
+          return c.json({ members: [], benchmarks: {}, metadata: { period_start: periodStart, period_end: periodEnd, member_count: 0 } });
+        }
+      } else if (adminVisibleBranches.length > 0) {
+        memberQuery += ` AND u.branch IN (${adminVisibleBranches.map(() => '?').join(',')})`;
+        params.push(...adminVisibleBranches);
+      } else {
+        memberQuery += ' AND u.branch = ?';
+        params.push(normalizeBranchName(user.branch));
+      }
+    }
+    else if (role === 'manager') { memberQuery += ' AND u.branch = ? AND u.department = ?'; params.push(normalizeBranchName(user.branch), user.department); }
   }
   const membersRes = await db.prepare(memberQuery).bind(...params).all<any>();
   const members = membersRes.results || [];
@@ -250,6 +289,40 @@ comprehensive.get('/', async (c) => {
   (activityRes.results || []).forEach((r: any) => {
     if (!activityMap[r.user_id]) activityMap[r.user_id] = {};
     activityMap[r.user_id][r.activity_type] = r.cnt;
+  });
+
+  // 입찰은 일지뿐 아니라 엑셀/프리랜서/수기 보정까지 포함된 입찰분석 테이블을 평가 원천으로 사용한다.
+  await ensureBidAnalysisTable(db);
+  const bidRows = await db.prepare(`
+    SELECT bid_datetime, assignee_name, branch_name, suggested_bid_price, actual_bid_price, bid_result
+    FROM bid_analysis_entries
+    WHERE substr(bid_datetime, 1, 10) BETWEEN ? AND ?
+  `).bind(periodStart, periodEnd).all<any>();
+  const memberByBranchName = new Map<string, any>();
+  const memberByName = new Map<string, any>();
+  members.forEach((m: any) => {
+    if (!m.name) return;
+    memberByName.set(String(m.name).trim(), m);
+    memberByBranchName.set(`${m.branch || ''}|${String(m.name).trim()}`, m);
+    if (!activityMap[m.id]) activityMap[m.id] = {};
+    activityMap[m.id]['입찰'] = 0;
+  });
+  const winMap: Record<string, number> = {};
+  const processedBidMap: Record<string, number> = {};
+  const deviationMap: Record<string, number> = {};
+  (bidRows.results || []).forEach((row: any) => {
+    const member = memberByBranchName.get(`${row.branch_name || ''}|${row.assignee_name || ''}`) || memberByName.get(row.assignee_name || '');
+    if (!member) return;
+    activityMap[member.id]['입찰'] = (activityMap[member.id]['입찰'] || 0) + 1;
+    if (Number(row.actual_bid_price || 0) > 0 || row.bid_result === '낙찰') {
+      processedBidMap[member.id] = (processedBidMap[member.id] || 0) + 1;
+    }
+    if (row.bid_result === '낙찰') winMap[member.id] = (winMap[member.id] || 0) + 1;
+    const suggested = Number(row.suggested_bid_price || 0);
+    const actual = Number(row.actual_bid_price || 0);
+    if (suggested > 0 && actual > 0 && (suggested - actual) / suggested >= 0.05) {
+      deviationMap[member.id] = (deviationMap[member.id] || 0) + 1;
+    }
   });
 
   // 3. 매출 (기간 내)
@@ -341,27 +414,7 @@ comprehensive.get('/', async (c) => {
     if (!evalMap[r.user_id]) evalMap[r.user_id] = r; // 최신만
   });
 
-  // 6. 5% 편차 입찰 수 (이상지표) + 낙찰 수 (입찰→낙찰 전환율 계산)
-  const deviationRes = await db.prepare(`
-    SELECT user_id, COUNT(*) as cnt
-    FROM journal_entries
-    WHERE activity_type = '입찰' AND target_date BETWEEN ? AND ?
-      AND data LIKE '%deviationReason%'
-    GROUP BY user_id
-  `).bind(periodStart, periodEnd).all<any>();
-  const deviationMap: Record<string, number> = {};
-  (deviationRes.results || []).forEach((r: any) => { deviationMap[r.user_id] = r.cnt; });
-
-  // 낙찰(bidWon=true) 카운트
-  const winRes = await db.prepare(`
-    SELECT user_id, COUNT(*) as cnt
-    FROM journal_entries
-    WHERE activity_type = '입찰' AND target_date BETWEEN ? AND ?
-      AND (data LIKE '%"bidWon":true%' OR data LIKE '%"bidWon":1%')
-    GROUP BY user_id
-  `).bind(periodStart, periodEnd).all<any>();
-  const winMap: Record<string, number> = {};
-  (winRes.results || []).forEach((r: any) => { winMap[r.user_id] = r.cnt; });
+  // 6. 5% 편차 입찰 수 + 낙찰 수는 위 입찰분석 테이블 기준으로 계산한다.
 
   // 7. 전 지사 비율제(commission) 평균 매출 — analytics_snapshots 캐시 lookup, 없으면 실시간 fallback
   const queryYM = month || curYM;
@@ -396,7 +449,7 @@ comprehensive.get('/', async (c) => {
 
   // ─── 멤버별 데이터 합성 ───
   const result = members.map((m: any) => {
-    const isFreelancer = m.pay_type === 'commission' || m.role === 'freelancer';
+    const isFreelancer = m.pay_type === 'commission' || m.role === 'freelancer' || m.login_type === 'freelancer';
     const myActivity = activityMap[m.id] || {};
     const activityCount = Object.values(myActivity).reduce((a, b) => a + b, 0);
     const bidCount = myActivity['입찰'] || 0;
@@ -413,7 +466,9 @@ comprehensive.get('/', async (c) => {
       ? (freelancerAvgSales > 0 ? (totalSales / freelancerAvgSales) * 100 : 0)
       : (proratedStandard > 0 ? (totalSales / proratedStandard) * 100 : 0);
 
-    const bidWinRate = bidCount > 0 ? (winCount / bidCount) * 100 : 0;
+    const processedBidCount = processedBidMap[m.id] || 0;
+    const bidCompletionRate = bidCount > 0 ? (processedBidCount / bidCount) * 100 : 0;
+    const bidWinRate = processedBidCount > 0 ? (winCount / processedBidCount) * 100 : 0;
     const activityIndex = orgActivityAvg > 0 ? (activityCount / orgActivityAvg) * 100 : 100;
     // 프리랜서는 일지 작성 의무가 없으므로 결근율 평가 제외 (만점 처리)
     const journalDays = Object.values(myActivity).reduce((a, b) => a + b, 0);
@@ -445,14 +500,14 @@ comprehensive.get('/', async (c) => {
       : 0;
 
     const score = calculateScore({
-      isFreelancer, targetRate, bidWinRate, activityIndex, journalRate, refundRate, anomalyCount, growthRate,
+      isFreelancer, targetRate, bidCompletionRate, bidWinRate, activityIndex, journalRate, refundRate, anomalyCount, growthRate,
     });
 
-    const tagsCtx = { targetRate, activityIndex, bidWinRate, deviationCount, refundCount: sales.refunded_count, salesCount: sales.sales_count, journalRate, growthRate, bidCount };
+    const tagsCtx = { targetRate, activityIndex, bidCompletionRate, bidWinRate, deviationCount, refundCount: sales.refunded_count, salesCount: sales.sales_count, journalRate, growthRate, bidCount, processedBidCount };
     const tags = generateTags(tagsCtx, isFreelancer, hireMonths);
 
     const maxByKey: Record<string, number> = isFreelancer
-      ? { 매출: 25, 전환: 25, 활동: 20, 출근: 15, 성장: 15 }
+      ? { 입찰률: 50, 낙찰률: 50 }
       : { 매출: 35, 전환: 20, 활동: 15, 출근: 15, 안정: 10 };
     const diag = generateDiagnosis({ ...tagsCtx, targetRate }, score.breakdown, maxByKey, isFreelancer);
 
@@ -481,7 +536,7 @@ comprehensive.get('/', async (c) => {
         monthly_trend: trendArr,
         growth_rate: Math.round(growthRate * 10) / 10,
       },
-      conversion: { bid_to_win: Math.round(bidWinRate * 10) / 10 },
+      conversion: { bid_completion: Math.round(bidCompletionRate * 10) / 10, bid_to_win: Math.round(bidWinRate * 10) / 10 },
       anomalies: { deviation: deviationCount, refund: sales.refunded_count, total: anomalyCount },
       score,
       tags,
@@ -497,8 +552,8 @@ comprehensive.get('/', async (c) => {
       org_activity_avg: Math.round(orgActivityAvg * 10) / 10,
       freelancer_avg_sales: Math.round(freelancerAvgSales),
       member_count: members.length,
-      full_time_count: members.filter((m) => m.pay_type !== 'commission' && m.role !== 'freelancer').length,
-      freelancer_count: members.filter((m) => m.pay_type === 'commission' || m.role === 'freelancer').length,
+      full_time_count: members.filter((m) => m.pay_type !== 'commission' && m.role !== 'freelancer' && m.login_type !== 'freelancer').length,
+      freelancer_count: members.filter((m) => m.pay_type === 'commission' || m.role === 'freelancer' || m.login_type === 'freelancer').length,
     },
     metadata: { period_start: periodStart, period_end: periodEnd },
   });
@@ -511,7 +566,8 @@ function countWeekdays(start: string, end: string): number {
   const cur = new Date(s);
   while (cur <= e) {
     const day = cur.getDay();
-    if (day !== 0 && day !== 6) count++;
+    const dateStr = cur.toISOString().slice(0, 10);
+    if (day !== 0 && day !== 6 && !HOLIDAYS.has(dateStr)) count++;
     cur.setDate(cur.getDate() + 1);
   }
   return count;

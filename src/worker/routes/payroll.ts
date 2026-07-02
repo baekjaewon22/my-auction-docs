@@ -1,7 +1,10 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
-import { calculateMyungdoBonus } from './cases';
+import { calculateCaseAllowance, isCaseAllowanceExcludedName } from './cases';
+import { reinitUserLeave } from './leave';
+import { normalizeBranchName } from '../lib/branchAliases';
+import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotForMonth, payTypeAtMonthSql, resolvePayTypeFromHistory } from '../lib/pay-type-history';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -9,6 +12,204 @@ import { calculateMyungdoBonus } from './cases';
 // 매출포상(일반 성과금) 산정에는 합산 X — 별도 항목으로만 표시
 const CONTRACT_AWARD_TIERS = [300_000, 200_000, 100_000];
 const CONTRACT_AWARD_MIN_COUNT = 10;
+const LEAVE_HOURS_PER_DAY = 8;
+const CASE_ALLOWANCE_EXCLUDED_FROM_BONUS_BASIS_FROM = '2026-06';
+const PAYROLL_TRUNCATE_MONEY_FROM = '2026-06';
+const truncMoney = (value: number): number => Math.trunc(Number(value) || 0);
+const shouldTruncatePayrollMoney = (month: string): boolean => /^\d{4}-\d{2}$/.test(month) && month >= PAYROLL_TRUNCATE_MONEY_FROM;
+const payrollMoney = (value: number, month: string): number => (
+  shouldTruncatePayrollMoney(month) ? truncMoney(value) : Math.round(Number(value) || 0)
+);
+const vatSupplyAmount = (amount: number, month: string): number => payrollMoney((Number(amount) || 0) * 10 / 11, month);
+
+function leaveDaysToHours(days: number): number {
+  return Math.round((Number(days || 0) * LEAVE_HOURS_PER_DAY) * 1000) / 1000;
+}
+
+function leaveHoursToDays(hours: number): number {
+  return Math.round((Number(hours || 0) / LEAVE_HOURS_PER_DAY) * 1000) / 1000;
+}
+
+async function ensureUsersResignedAtColumn(db: D1Database): Promise<void> {
+  const columns = await db.prepare('PRAGMA table_info(users)').all<{ name: string }>();
+  const names = new Set((columns.results || []).map((c) => c.name));
+  if (!names.has('resigned_at')) {
+    await db.prepare('ALTER TABLE users ADD COLUMN resigned_at TEXT').run();
+  }
+}
+
+async function buildTerminationSettlement(
+  db: D1Database,
+  userId: string,
+  user: any,
+  month: string,
+  salary: number,
+  positionAllowance: number,
+): Promise<Record<string, any> | null> {
+  if (String(user?.role || '') !== 'resigned') return null;
+
+  const resignedDate = String(user?.resigned_at || user?.updated_at || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(resignedDate) || resignedDate.slice(0, 7) !== month) return null;
+
+  const [yearText, monthText] = month.split('-');
+  const year = Number(yearText);
+  const monthNumber = Number(monthText);
+  const monthDays = new Date(year, monthNumber, 0).getDate();
+  const resignedDay = Math.min(Math.max(Number(resignedDate.slice(8, 10)) || 1, 1), monthDays);
+  const basePay = Number(salary || 0) + Number(positionAllowance || 0);
+  const proratedBasePay = payrollMoney(basePay * resignedDay / monthDays, month);
+  const baseDeduction = Math.max(basePay - proratedBasePay, 0);
+
+  try {
+    await reinitUserLeave(db, userId);
+  } catch {
+    // Leave settlement should not block payroll if leave data needs manual repair.
+  }
+
+  const leaveInfo = await db.prepare('SELECT * FROM annual_leave WHERE user_id = ?').bind(userId).first<any>();
+  const annualRemainingHours = leaveInfo
+    ? leaveDaysToHours(leaveInfo.total_days || 0) - leaveDaysToHours(leaveInfo.used_days || 0)
+    : 0;
+  const monthlyRemainingHours = leaveInfo
+    ? leaveDaysToHours(leaveInfo.monthly_days || 0) - leaveDaysToHours(leaveInfo.monthly_used || 0)
+    : 0;
+  const leaveRemainingHours = Math.round((annualRemainingHours + monthlyRemainingHours) * 1000) / 1000;
+  const leaveAdjustmentAmount = salary > 0 ? payrollMoney((salary / 209) * leaveRemainingHours, month) : 0;
+  const leavePayout = Math.max(leaveAdjustmentAmount, 0);
+  const leaveDeduction = Math.max(-leaveAdjustmentAmount, 0);
+
+  return {
+    is_termination: true,
+    resigned_date: resignedDate,
+    month,
+    worked_days: resignedDay,
+    month_days: monthDays,
+    base_pay: basePay,
+    prorated_base_pay: proratedBasePay,
+    base_deduction: baseDeduction,
+    leave_remaining_hours: leaveRemainingHours,
+    leave_remaining_days: leaveHoursToDays(leaveRemainingHours),
+    leave_adjustment_amount: leaveAdjustmentAmount,
+    leave_payout: leavePayout,
+    leave_deduction: leaveDeduction,
+    leave_adjustment_label: leaveRemainingHours >= 0 ? 'unused_leave_payout' : 'excess_leave_deduction',
+    net_adjustment: leavePayout - leaveDeduction - baseDeduction,
+  };
+}
+
+function buildJoiningSettlement(
+  user: any,
+  month: string,
+  salary: number,
+  positionAllowance: number,
+): Record<string, any> | null {
+  const hireDate = String(user?.hire_date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(hireDate) || hireDate.slice(0, 7) !== month) return null;
+
+  const [, monthText] = month.split('-');
+  const year = Number(month.slice(0, 4));
+  const monthNumber = Number(monthText);
+  const monthDays = new Date(year, monthNumber, 0).getDate();
+  const hireDay = Math.min(Math.max(Number(hireDate.slice(8, 10)) || 1, 1), monthDays);
+  if (hireDay <= 1) return null;
+
+  const payrollBaseDays = 30;
+  const workedDays = Math.min(Math.max(monthDays - hireDay + 1, 0), payrollBaseDays);
+  const basePay = Number(salary || 0) + Number(positionAllowance || 0);
+  const proratedBasePay = payrollMoney(basePay * workedDays / payrollBaseDays, month);
+  const baseDeduction = Math.max(basePay - proratedBasePay, 0);
+
+  return {
+    is_joining: true,
+    hire_date: hireDate,
+    month,
+    worked_days: workedDays,
+    month_days: monthDays,
+    payroll_base_days: payrollBaseDays,
+    base_pay: basePay,
+    prorated_base_pay: proratedBasePay,
+    base_deduction: baseDeduction,
+  };
+}
+
+function parsePayrollPeriodMonth(value: string): string {
+  const text = String(value || '').trim();
+  const iso = text.match(/^(\d{4})-(\d{2})$/);
+  if (iso) return `${iso[1]}-${iso[2]}`;
+  const ko = text.match(/^(\d{4})년\s*(\d{1,2})월$/);
+  if (ko) return `${ko[1]}-${String(Number(ko[2])).padStart(2, '0')}`;
+  return '';
+}
+
+function payrollPeriodLabel(month: string): string {
+  const [year, monthText] = month.split('-');
+  return `${Number(year)}년 ${Number(monthText)}월`;
+}
+
+function isPayrollPaidMonth(month: string): boolean {
+  const parsed = parsePayrollPeriodMonth(month);
+  if (!parsed) return false;
+  const [yearText, monthText] = parsed.split('-');
+  let year = Number(yearText);
+  let paymentMonth = Number(monthText) + 1;
+  if (paymentMonth === 13) {
+    year += 1;
+    paymentMonth = 1;
+  }
+
+  const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const nowKey = nowKst.getUTCFullYear() * 10000 + (nowKst.getUTCMonth() + 1) * 100 + nowKst.getUTCDate();
+  const paidKey = year * 10000 + paymentMonth * 100 + 5;
+  return nowKey >= paidKey;
+}
+
+function defaultPayrollMonth(): string {
+  const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  let year = nowKst.getUTCFullYear();
+  let monthIndex = nowKst.getUTCMonth();
+  const day = nowKst.getUTCDate();
+  if (day <= 15) {
+    monthIndex -= 1;
+    if (monthIndex < 0) {
+      monthIndex = 11;
+      year -= 1;
+    }
+  }
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+}
+
+function excludesCaseAllowanceFromBonusBasis(month: string): boolean {
+  return /^\d{4}-\d{2}$/.test(month) && month >= CASE_ALLOWANCE_EXCLUDED_FROM_BONUS_BASIS_FROM;
+}
+
+function parsePayrollSaveData(raw: unknown): Record<string, any> {
+  try {
+    const parsed = JSON.parse(String(raw || '{}'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function buildPayrollSnapshot(response: Record<string, any>, saveData: Record<string, any>, extra: { period: string; month: string }) {
+  return {
+    version: 1,
+    saved_at: new Date().toISOString(),
+    period: extra.period,
+    month: extra.month,
+    response,
+    caseAllowance: saveData.caseAllowance || null,
+    manual: {
+      deduction: saveData.deduction ?? '0',
+      extraPay: saveData.extraPay ?? '0',
+      extraLabel: saveData.extraLabel ?? '',
+      extraDeduction: saveData.extraDeduction ?? '0',
+      extraDeductionLabel: saveData.extraDeductionLabel ?? '',
+      commExtras: Array.isArray(saveData.commExtras) ? saveData.commExtras : [],
+      commDeductions: Array.isArray(saveData.commDeductions) ? saveData.commDeductions : [],
+    },
+  };
+}
 function contractCustomerKey(r: any): string {
   const phone = String(r.client_phone || '').replace(/\D/g, '');
   const name = String(r.client_name || '').trim().toLowerCase();
@@ -30,6 +231,7 @@ function calculateContractCountFromRows(rows: any[]): number {
 async function calcContractAwardForUser(
   db: D1Database, userId: string, periodStart: string, periodEnd: string,
 ): Promise<{ rank: number | null; count: number; award: number; total_amount: number }> {
+  await ensurePayTypeHistoryTable(db);
   const result = await db.prepare(`
     SELECT user_id, user_name,
       SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as cnt,
@@ -87,12 +289,21 @@ const requirePayrollAccess = async (c: any, next: any) => {
 };
 
 // 총무보조(accountant_asst) 열람 제한 — 팀장·관리자급·이사·대표자 정산은 총무담당만 접근 가능
-const RESTRICTED_ROLES_FOR_ASST = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'];
+function getAsstScopedBranch(viewer: any): string | null {
+  void viewer;
+  return '';
+}
+
 async function canAccessUserPayroll(db: D1Database, viewer: any, targetUserId: string): Promise<boolean> {
-  if (viewer.role !== 'accountant_asst') return true;
-  const target = await db.prepare('SELECT role FROM users WHERE id = ?').bind(targetUserId).first<any>();
-  if (!target) return true;
-  return !RESTRICTED_ROLES_FOR_ASST.includes(target.role);
+  void db;
+  void viewer;
+  void targetUserId;
+  return true;
+}
+
+export async function lockPaidPayrollSaves(db: D1Database): Promise<{ scanned: number; locked: number }> {
+  const rows = await db.prepare('SELECT user_id, period FROM payroll_saves WHERE locked = 0').all<any>();
+  return { scanned: rows.results?.length || 0, locked: 0 };
 }
 
 // GET /api/payroll/:userId?month=YYYY-MM
@@ -101,7 +312,7 @@ async function canAccessUserPayroll(db: D1Database, viewer: any, targetUserId: s
 // 매출 기준: 카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date
 payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const userId = c.req.param('userId');
-  const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
+  const month = c.req.query('month') || defaultPayrollMonth();
   const db = c.env.DB;
   const viewer = c.get('user');
   if (!(await canAccessUserPayroll(db, viewer, userId))) {
@@ -111,6 +322,12 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const [yearStr, monthStr] = month.split('-');
   const y = Number(yearStr);
   const m = Number(monthStr);
+  if (!/^\d{4}-\d{2}$/.test(month) || !Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) {
+    return c.json({ error: 'month는 YYYY-MM 형식이어야 합니다.' }, 400);
+  }
+  const periodLabel = payrollPeriodLabel(month);
+  const isPaidPeriod = isPayrollPaidMonth(month);
+  await ensureUsersResignedAtColumn(db);
 
   // 1개월 구간 (급여/비율 공통)
   const monthStart = `${month}-01`;
@@ -121,15 +338,59 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const bonusPeriodEndMonth = bonusPeriodStartMonth + 1;
   const bonusPeriodStart = `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}-01`;
   const bonusPeriodEnd = `${y}-${String(bonusPeriodEndMonth).padStart(2, '0')}-${new Date(y, bonusPeriodEndMonth, 0).getDate()}`;
+  const isPayoutMonth = m % 2 === 0;
 
   const user = await db.prepare(
-    'SELECT id, name, branch, department, position_title, role FROM users WHERE id = ?'
+    'SELECT id, name, branch, department, position_title, role, hire_date, resigned_at, updated_at FROM users WHERE id = ?'
   ).bind(userId).first<any>();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
-  const accounting = await db.prepare(
+  const savedPayroll = await db.prepare('SELECT * FROM payroll_saves WHERE user_id = ? AND period = ?').bind(userId, periodLabel).first<any>();
+  const savedPayrollData = parsePayrollSaveData(savedPayroll?.data);
+  const excludeCaseAllowanceFromBonusBasis = excludesCaseAllowanceFromBonusBasis(month);
+  const shouldUseSavedSnapshot = !!savedPayroll && !!savedPayroll.locked && !excludeCaseAllowanceFromBonusBasis;
+  const savedSnapshot = savedPayrollData.payroll_snapshot;
+  if (shouldUseSavedSnapshot && savedSnapshot?.response) {
+    return c.json({
+      ...savedSnapshot.response,
+      is_paid_period: isPaidPeriod,
+      is_snapshot: true,
+      payroll_snapshot: {
+        caseAllowance: savedSnapshot.caseAllowance || null,
+        manual: savedSnapshot.manual || null,
+        saved_at: savedSnapshot.saved_at || savedPayroll.updated_at || savedPayroll.created_at,
+      },
+      payroll_save: {
+        locked: !!savedPayroll.locked,
+        pay_type: savedPayroll.pay_type,
+        saved_at: savedSnapshot.saved_at || savedPayroll.updated_at || savedPayroll.created_at,
+      },
+    });
+  }
+
+  let accounting = await db.prepare(
     'SELECT salary, standard_sales, grade, position_allowance, pay_type, commission_rate FROM user_accounting WHERE user_id = ?'
   ).bind(userId).first<any>();
+  accounting = {
+    salary: 0,
+    standard_sales: 0,
+    grade: '',
+    position_allowance: 0,
+    pay_type: 'salary',
+    commission_rate: 0,
+    ...(accounting || {}),
+  };
+
+  await ensurePayTypeHistoryTable(db);
+  const payTypeHistoryRows = await getPayTypeHistoryRows(db, userId);
+  if (!shouldUseSavedSnapshot) {
+    const monthSnapshot = await getPayTypeSnapshotForMonth(db, userId, month, accounting);
+    accounting = { ...accounting, ...monthSnapshot };
+  }
+
+  if (shouldUseSavedSnapshot && savedPayroll?.pay_type) {
+    accounting.pay_type = savedPayroll.pay_type;
+  }
 
   // 2026년 1~2월은 전원 프리랜서(비율 50%) — 강제 적용
   // 예외: commission_rate_overrides 테이블에 유저별 월별 예외 비율 저장 가능
@@ -141,12 +402,15 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const effectiveRate = override?.commission_rate !== undefined
     ? override.commission_rate
     : (isJanFeb2026 ? 50 : (accounting?.commission_rate || 0));
+  const payTypeForMonth = (ym: string) => (
+    isJanFeb2026 ? 'commission' : resolvePayTypeFromHistory(payTypeHistoryRows, ym, accounting?.pay_type || 'salary')
+  );
 
   // 매출 조회: 1개월 기준 (카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date)
   const salesQuery = `
     SELECT id, type, type_detail, client_name, client_phone, depositor_name, depositor_different,
       amount, contract_date, deposit_date, status, confirmed_at, memo, exclude_from_count,
-      payment_type, card_deposit_date, proxy_cost
+      payment_type, card_deposit_date, proxy_cost, direction
     FROM sales_records
     WHERE user_id = ? AND status IN ('confirmed', 'refunded')
       AND (
@@ -195,81 +459,130 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
   const salary = accounting?.salary || 0;
   const standardSales = accounting?.standard_sales || 0;
+  const bonusMonths = [
+    `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}`,
+    `${y}-${String(bonusPeriodEndMonth).padStart(2, '0')}`,
+  ];
+  const salaryBonusMonths = bonusMonths.filter((ym) => payTypeForMonth(ym) === 'salary');
+  const bonusStandardSales = isPayoutMonth ? payrollMoney(standardSales * (salaryBonusMonths.length / 2), month) : standardSales;
   const positionAllowance = accounting?.position_allowance || 0;
 
-  // 무급휴가 공제 계산: 해당 월 내 승인된 무급휴가(특별휴가-기타) 조회
+  // 무급휴가 공제 계산: 해당 월 내 승인된 무급휴가 조회
+  // 기존 데이터 호환을 위해 과거 [기타] 특별휴가도 무급 공제 대상으로 유지한다.
   const unpaidLeaveResult = await db.prepare(`
-    SELECT COALESCE(SUM(days), 0) as total_days FROM leave_requests
+    SELECT COALESCE(SUM(COALESCE(hours, days * 8)), 0) as total_hours FROM leave_requests
     WHERE user_id = ? AND status = 'approved'
-      AND leave_type = '특별휴가' AND instr(reason, '기타') > 0
+      AND leave_type = '특별휴가'
+      AND (instr(reason, '[무급]') > 0 OR instr(reason, '[기타]') > 0)
       AND start_date >= ? AND start_date <= ?
   `).bind(userId, monthStart, monthEnd).first<any>();
-  const unpaidLeaveDays = unpaidLeaveResult?.total_days || 0;
-  const unpaidLeaveDeduction = salary > 0 ? Math.round((salary / 209) * 8 * unpaidLeaveDays) : 0;
+  const unpaidLeaveHours = unpaidLeaveResult?.total_hours || 0;
+  const unpaidLeaveDays = unpaidLeaveHours / 8;
+  const unpaidLeaveDeduction = salary > 0 ? truncMoney((salary / 209) * unpaidLeaveHours) : 0;
 
   // 본사관리 인원은 실적 기반 성과금 없음
-  const isHQ = user.branch === '본사 관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
+  const isHQ = normalizeBranchName(user.branch) === '본사관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
+  const isCaseAllowanceExcluded = isCaseAllowanceExcludedName(user.name);
 
-  // 성과금: 2개월 일반매출(공급가액) + 명도포상(amount 그대로) 합산 (급여제만)
+  // 성과금: 2개월 일반매출(공급가액) + 안건 수당(amount 그대로) 합산 (급여제만)
+  // 매수신청대리는 대리비용을 제3자에게 지급하므로 업무성과 산정에서 차감
+  // effective_raw = amount - proxy_cost*1.1 (VAT 포함 기준 환산)
+  // → effective_supply = effective_raw / 1.1 = amount/1.1 - proxy_cost
+  const proxyEffectiveRaw = (r: any) => {
+    if (r.type === '매수신청대리') {
+      return Math.max((r.amount || 0) - truncMoney((r.proxy_cost || 0) * 1.1), 0);
+    }
+    return r.amount || 0;
+  };
+  const totalSalesEffective = confirmedRecords.reduce((sum: number, r: any) => sum + proxyEffectiveRaw(r), 0);
+
   let bonus = 0;
-  // 일반매출 (부가세 분리 대상)
-  let bonusRegularRaw = totalSales;                          // 일반 원본
-  let bonusRegularSupply = Math.round(totalSales / 1.1);     // 일반 공급가액
-  let bonusRegularVat = totalSales - bonusRegularSupply;     // 일반 부가세
-  // 명도포상 (부가세 X)
-  let bonusMyungdoSum = 0;
-  // 합계 (성과금 산정 기준 = 일반공급가 + 명도포상)
-  let bonusTotalSalesRaw = bonusRegularRaw;                  // 호환: raw = 일반 원본 + 명도
-  let bonusTotalSales = bonusRegularSupply;                  // 호환: 합계 = 일반공급가 + 명도
+  // 일반매출 (부가세 분리 대상) — 매수신청대리는 대리비용 차감 후 환산
+  let bonusRegularRaw = totalSalesEffective;                          // 일반 원본 (effective)
+  let bonusRegularSupply = vatSupplyAmount(totalSalesEffective, month);      // 일반 공급가액
+  let bonusRegularVat = totalSalesEffective - bonusRegularSupply;     // 일반 부가세
+  // 안건 수당 (부가세 X) — cases 테이블 등급별 산정
+  let bonusCaseAllowance = 0;
+  // 합계 (2026-06 급여명세부터 성과금 산정 기준에서 안건 수당 제외)
+  let bonusTotalSalesRaw = bonusRegularRaw;
+  let bonusTotalSales = bonusRegularSupply;
   let bonusTotalVat = bonusRegularVat;                       // 호환: 부가세
   let bonusExcess = 0;
-  const isPayoutMonth = m % 2 === 0; // 짝수월 = 성과금 지급월
-
   if (!isCommission && !isHQ && isPayoutMonth) {
     // 2개월 매출 조회 (성과금 계산용)
     const bonusSalesResult = await db.prepare(salesQuery)
       .bind(userId, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd).all();
-    const bonusConfirmed = (bonusSalesResult.results as any[]).filter((r: any) => r.status === 'confirmed');
-    // sales_records의 명도성과금은 일반매출 합산에서 제외 (cases 직접 조회로 중복 방지)
-    const isMyungdoSalesRow = (r: any) => (r.type_detail || '').startsWith('명도성과금');
-    bonusRegularRaw = bonusConfirmed.filter((r: any) => !isMyungdoSalesRow(r)).reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
-    bonusRegularSupply = Math.round(bonusRegularRaw / 1.1);
+    const bonusConfirmed = (bonusSalesResult.results as any[]).filter((r: any) => {
+      if (r.status !== 'confirmed') return false;
+      const ym = String(r.card_deposit_date || r.deposit_date || r.contract_date || '').slice(0, 7);
+      return ym && payTypeForMonth(ym) === 'salary';
+    });
+    // sales_records의 안건 수당 자동 INSERT 건(type_detail '명도성과금' prefix — DB 레거시)은 일반매출 합산에서 제외
+    // cases 직접 조회로 중복 방지. 매수신청대리는 대리비용 차감 후 effective amount로 합산.
+    const isCaseAllowanceSalesRow = (r: any) => (r.type_detail || '').startsWith('명도성과금');
+    bonusRegularRaw = bonusConfirmed
+      .filter((r: any) => !isCaseAllowanceSalesRow(r))
+      .reduce((sum: number, r: any) => sum + proxyEffectiveRaw(r), 0);
+    bonusRegularSupply = vatSupplyAmount(bonusRegularRaw, month);
     bonusRegularVat = bonusRegularRaw - bonusRegularSupply;
 
-    // 명도포상: cases 테이블에서 직접 등급 성과금 계산 (트리거 INSERT 여부 무관)
+    // 안건 수당: cases 테이블에서 직접 등급 성과금 계산 (트리거 INSERT 여부 무관)
     const periodKey = `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}_${String(bonusPeriodEndMonth).padStart(2, '0')}`;
-    const myungdoCases = await db.prepare(`
-      SELECT COALESCE(SUM(
-        CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-             ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER) END
-      ), 0) as total_fee_adjusted
-      FROM cases
-      WHERE consultant_user_id = ? AND bimonthly_period = ?
-    `).bind(userId, periodKey).first<any>();
-    bonusMyungdoSum = calculateMyungdoBonus(myungdoCases?.total_fee_adjusted || 0);
+    if (!isCaseAllowanceExcluded) {
+      const salaryMonthPlaceholders = salaryBonusMonths.map(() => '?').join(', ');
+      const salaryMonthFilter = salaryMonthPlaceholders ? `AND substr(registered_at, 1, 7) IN (${salaryMonthPlaceholders})` : 'AND 1 = 0';
+      const caseAllowanceCases = await db.prepare(`
+        SELECT COALESCE(SUM(
+          CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
+               ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER) END
+        ), 0) as total_fee_adjusted
+        FROM cases
+        WHERE consultant_user_id = ? AND bimonthly_period = ?
+          ${salaryMonthFilter}
+      `).bind(userId, periodKey, ...salaryBonusMonths).first<any>();
+      bonusCaseAllowance = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
+    }
 
-    bonusTotalSalesRaw = bonusRegularRaw + bonusMyungdoSum;
-    bonusTotalSales = bonusRegularSupply + bonusMyungdoSum;  // 산정 기준
+    bonusTotalSalesRaw = excludeCaseAllowanceFromBonusBasis
+      ? bonusRegularRaw
+      : bonusRegularRaw + bonusCaseAllowance;
+    bonusTotalSales = excludeCaseAllowanceFromBonusBasis
+      ? bonusRegularSupply
+      : bonusRegularSupply + bonusCaseAllowance;
     bonusTotalVat = bonusRegularVat;
-    bonusExcess = Math.max(bonusTotalSales - standardSales, 0);
+    bonusExcess = Math.max(bonusTotalSales - bonusStandardSales, 0);
 
     if (bonusExcess > 0) {
       if (bonusExcess < 5010000) {
-        bonus = Math.round(bonusExcess * 0.20);
+        bonus = truncMoney(bonusExcess * 0.20);
       } else if (bonusExcess < 15010000) {
-        bonus = Math.round(5010000 * 0.20 + (bonusExcess - 5010000) * 0.25);
+        bonus = truncMoney(5010000 * 0.20 + (bonusExcess - 5010000) * 0.25);
       } else {
-        bonus = Math.round(5010000 * 0.20 + 10000000 * 0.25 + (bonusExcess - 15010000) * 0.30);
+        bonus = truncMoney(5010000 * 0.20 + 10000000 * 0.25 + (bonusExcess - 15010000) * 0.30);
       }
     }
   }
 
   // 부가세 분리
+  // 매수신청대리는 담당자에게 지급되는 대리비용을 제외한 금액이 급여/성과 반영액이다.
+  // amount는 VAT 포함 입금액이므로 급여반영액 = amount / 1.1 - proxy_cost.
   const recordsWithVat = confirmedRecords.map((r: any) => {
-    const supply = Math.round(r.amount / 1.1);
-    const vat = r.amount - supply;
-    return { ...r, supply_amount: supply, vat_amount: vat };
+    const grossSupply = vatSupplyAmount(r.amount, month);
+    const vat = r.amount - grossSupply;
+    const proxyCost = r.type === '매수신청대리' ? Number(r.proxy_cost || 0) : 0;
+    const supply = r.type === '매수신청대리'
+      ? Math.max(grossSupply - proxyCost, 0)
+      : grossSupply;
+    return {
+      ...r,
+      supply_amount: supply,
+      vat_amount: vat,
+      gross_supply_amount: grossSupply,
+      proxy_payroll_amount: supply,
+    };
   });
+  const totalPayrollSupply = recordsWithVat.reduce((sum: number, r: any) => sum + (Number(r.supply_amount) || 0), 0);
+  const totalPayrollVat = recordsWithVat.reduce((sum: number, r: any) => sum + (Number(r.vat_amount) || 0), 0);
 
   // 이전 기간 환불 건 조회: 현재 정산월에 환불 승인된 + 이전 기간 매출 건
   const prevRefunds = await db.prepare(`
@@ -284,11 +597,11 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       : r.deposit_date ? r.deposit_date : r.contract_date;
     return sd && sd < monthStart;
   }).map((r: any) => {
-    const supply = Math.round(r.amount / 1.1);
+    const supply = vatSupplyAmount(r.amount, month);
     let recovery = 0;
     if (isCommission) {
-      const comm = Math.round(supply * effectiveRate / 100);
-      recovery = Math.round(comm * (1 - 0.033));
+      const comm = truncMoney(supply * effectiveRate / 100);
+      recovery = truncMoney(comm * (1 - 0.033));
     }
     return { ...r, supply_amount: supply, recovery_amount: recovery };
   });
@@ -297,8 +610,10 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const contractAward = (isPayoutMonth && !isHQ)
     ? await calcContractAwardForUser(db, userId, bonusPeriodStart, bonusPeriodEnd)
     : { rank: null, count: 0, award: 0, total_amount: 0 };
+  const joiningSettlement = buildJoiningSettlement(user, month, salary, positionAllowance);
+  const terminationSettlement = await buildTerminationSettlement(db, userId, user, month, salary, positionAllowance);
 
-  return c.json({
+  const payrollResponse = {
     user,
     accounting: isJanFeb2026
       ? { ...(accounting || { salary: 0, standard_sales: 0, grade: '', position_allowance: 0 }), pay_type: 'commission', commission_rate: effectiveRate }
@@ -308,28 +623,40 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     month,
     period_start: monthStart,
     period_end: monthEnd,
-    period_label: `${y}년 ${m}월`,
+    period_label: periodLabel,
     bonus_period_label: isPayoutMonth ? `${y}년 ${bonusPeriodStartMonth}~${bonusPeriodEndMonth}월` : null,
     is_payout_month: isPayoutMonth,
+    is_paid_period: isPaidPeriod,
+    is_snapshot: false,
+    payroll_save: savedPayroll ? {
+      locked: !!savedPayroll.locked,
+      pay_type: savedPayroll.pay_type,
+      saved_at: savedPayroll.updated_at || savedPayroll.created_at,
+    } : null,
     records: recordsWithVat,
     refunded_records: refundedRecords,
     refund_recoveries: refundRecoveries,
     contract_award: contractAward, // { rank, count, award, total_amount } — rank null이면 자격 미달
+    joining_settlement: joiningSettlement,
+    termination_settlement: terminationSettlement,
     summary: {
       contract_count: contractCount,
       total_sales: totalSales,
-      total_supply: Math.round(totalSales / 1.1),
-      total_vat: totalSales - Math.round(totalSales / 1.1),
+      total_supply: totalPayrollSupply,
+      total_vat: totalPayrollVat,
       total_refund: totalRefund,
       net_sales: totalSales - totalRefund,
-      standard_sales: standardSales,
+      standard_sales: bonusStandardSales,
+      standard_sales_full_period: standardSales,
+      bonus_salary_months: salaryBonusMonths,
       bonus_regular_raw: bonusRegularRaw,            // 일반매출 원본(부가세 포함)
       bonus_regular_vat: bonusRegularVat,            // 일반매출 부가세
       bonus_regular_supply: bonusRegularSupply,      // 일반매출 공급가액
-      bonus_myungdo_sum: bonusMyungdoSum,            // 명도포상 합계 (부가세 X)
-      bonus_total_sales_raw: bonusTotalSalesRaw,    // 합계: 일반원본 + 명도
+      bonus_case_allowance: bonusCaseAllowance,      // 안건 수당 합계 (부가세 X)
+      bonus_case_allowance_included_in_bonus_basis: !excludeCaseAllowanceFromBonusBasis,
+      bonus_total_sales_raw: bonusTotalSalesRaw,
       bonus_total_vat: bonusTotalVat,                // 호환
-      bonus_total_sales: bonusTotalSales,            // 산정 기준: 일반공급가 + 명도
+      bonus_total_sales: bonusTotalSales,
       bonus_excess: bonusExcess,
       excess: bonusExcess,
       bonus,
@@ -340,13 +667,34 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       unpaid_leave_deduction: unpaidLeaveDeduction,
       company_profit: totalSales - totalRefund - salary - positionAllowance - bonus + unpaidLeaveDeduction,
     },
-  });
+  };
+
+  if (shouldUseSavedSnapshot && savedPayroll && !savedPayrollData.payroll_snapshot) {
+    const nextData = {
+      ...savedPayrollData,
+      payroll_snapshot: buildPayrollSnapshot(payrollResponse, savedPayrollData, { period: periodLabel, month }),
+    };
+    await db.prepare('UPDATE payroll_saves SET data = ?, locked = 1 WHERE user_id = ? AND period = ?')
+      .bind(JSON.stringify(nextData), userId, periodLabel).run();
+    payrollResponse.payroll_save = {
+      locked: true,
+      pay_type: savedPayroll.pay_type,
+      saved_at: new Date().toISOString(),
+    };
+  }
+
+  return c.json(payrollResponse);
 });
 
 // GET /api/payroll/branch-summary?month=YYYY-MM&branch=xxx — 지사별 합산
 payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
-  const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
-  const filterBranch = c.req.query('branch') || '';
+  const month = c.req.query('month') || defaultPayrollMonth();
+  const viewer = c.get('user');
+  const scopedBranch = getAsstScopedBranch(viewer);
+  if (scopedBranch === null) {
+    return c.json({ error: '총무보조는 의정부 본사 및 종합 지표를 열람할 수 없습니다.' }, 403);
+  }
+  const filterBranch = normalizeBranchName(c.req.query('branch') || '');
   const db = c.env.DB;
 
   // 조건
@@ -453,37 +801,55 @@ payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
   if (!(await canAccessUserPayroll(db, user, user_id))) {
     return c.json({ error: '해당 직원의 정산 정보 저장 권한이 없습니다.' }, 403);
   }
+  if (false && isPayrollPaidMonth(period)) {
+    return c.json({ error: '지급일(익월 5일)이 지난 급여정산은 수정할 수 없습니다.' }, 400);
+  }
 
   // 잠금 체크: 익달 5일 이후면 수정 불가
   const existing = await db.prepare('SELECT locked FROM payroll_saves WHERE user_id = ? AND period = ?').bind(user_id, period).first<any>();
   if (existing?.locked) return c.json({ error: '해당 기간 정산은 잠금 상태입니다. (익달 5일 이후 수정 불가)' }, 400);
 
   const id = crypto.randomUUID();
+  const normalizedData = {
+    ...saveData,
+    payroll_snapshot: (saveData as any).payroll_snapshot || null,
+  };
   await db.prepare(`
     INSERT INTO payroll_saves (id, user_id, period, pay_type, data, created_by)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, period) DO UPDATE SET
       data = excluded.data, pay_type = excluded.pay_type, updated_at = datetime('now')
-  `).bind(id, user_id, period, pay_type, JSON.stringify(saveData), user.sub).run();
+  `).bind(id, user_id, period, pay_type, JSON.stringify(normalizedData), user.sub).run();
 
   return c.json({ success: true });
 });
 
 // POST /api/payroll/lock — 자동 잠금 (cron 또는 수동)
-payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
+payroll.post('/lock', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const db = c.env.DB;
-  // 현재 달 기준: 전달 정산을 잠금 (5일 이후)
-  const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST
-  if (now.getUTCDate() < 5) return c.json({ message: '아직 5일 전입니다.' });
+  const user = c.get('user');
+  const body = await c.req.json<{ user_id?: string; period?: string }>().catch(() => ({} as { user_id?: string; period?: string }));
+  if (body.user_id && body.period) {
+    if (!(await canAccessUserPayroll(db, user, body.user_id))) {
+      return c.json({ error: '해당 직원의 급여정산 확정 권한이 없습니다.' }, 403);
+    }
+    const existing = await db.prepare('SELECT id FROM payroll_saves WHERE user_id = ? AND period = ?').bind(body.user_id, body.period).first<any>();
+    if (!existing) return c.json({ error: '저장된 급여정산이 없습니다. 먼저 정산 저장 후 확정해주세요.' }, 400);
+    await db.prepare("UPDATE payroll_saves SET locked = 1, updated_at = datetime('now') WHERE user_id = ? AND period = ?")
+      .bind(body.user_id, body.period).run();
+    return c.json({ success: true, locked: 1 });
+  }
+  const result = await lockPaidPayrollSaves(db);
+  return c.json({ success: true, ...result });
+});
 
-  const prevMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() - 1, 1);
-  const periodPattern = `${prevMonth.getUTCFullYear()}-${String(prevMonth.getUTCMonth() + 1).padStart(2, '0')}%`;
-
-  const result = await db.prepare(
-    "UPDATE payroll_saves SET locked = 1 WHERE period LIKE ? AND locked = 0"
-  ).bind(periodPattern).run();
-
-  return c.json({ success: true, locked: result.meta?.changes || 0 });
+payroll.post('/unlock', requireRole('master', 'accountant'), async (c) => {
+  const db = c.env.DB;
+  const body = await c.req.json<{ user_id?: string; period?: string }>().catch(() => ({} as { user_id?: string; period?: string }));
+  if (!body.user_id || !body.period) return c.json({ error: 'user_id와 period가 필요합니다.' }, 400);
+  const result = await db.prepare("UPDATE payroll_saves SET locked = 0, updated_at = datetime('now') WHERE user_id = ? AND period = ?")
+    .bind(body.user_id, body.period).run();
+  return c.json({ success: true, unlocked: result.meta?.changes || 0 });
 });
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -494,17 +860,29 @@ payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
 // GET /api/payroll/reports/business-income?month=YYYY-MM
 payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   const db = c.env.DB;
-  const month = c.req.query('month') || new Date().toISOString().slice(0, 7);
+  const viewer = c.get('user');
+  if (false && viewer?.role === 'accountant_asst') {
+    return c.json({ error: '총무보조는 세무자료를 열람할 수 없습니다.' }, 403);
+  }
+  const scopedBranch = getAsstScopedBranch(viewer);
+  if (scopedBranch === null) {
+    return c.json({ error: '총무보조는 의정부 본사 및 종합 지표를 열람할 수 없습니다.' }, 403);
+  }
+  const month = c.req.query('month') || defaultPayrollMonth();
   const [y, m] = month.split('-').map(Number);
+  const periodLabel = payrollPeriodLabel(month);
   const monthStart = `${month}-01`;
   const lastDay = new Date(y, m, 0).getDate();
   const monthEnd = `${month}-${String(lastDay).padStart(2, '0')}`;
+  await ensurePayTypeHistoryTable(db);
 
   // 2026-01·02 특별 규칙: 전원 비율제(기본 50%) 처리 (payroll 로직과 동일)
   const isJanFeb2026 = month === '2026-01' || month === '2026-02';
 
   // 비율제 대상 사용자 목록
   let usersResult;
+  const branchFilterSql = scopedBranch ? ' AND u.branch = ?' : '';
+  const branchFilterBinds = scopedBranch ? [scopedBranch] : [];
   if (isJanFeb2026) {
     // 전체 활성 컨설턴트 (본사관리/명도팀/support 제외, 퇴사자 포함 → 과거 회차 보고 위해)
     usersResult = await db.prepare(`
@@ -516,18 +894,22 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       LEFT JOIN user_accounting ua ON ua.user_id = u.id
       WHERE u.approved = 1
         AND u.role IN ('member', 'manager', 'resigned')
-        AND u.branch != '본사 관리'
+        AND REPLACE(u.branch, ' ', '') != '본사관리'
         AND u.department != '명도팀'
+        ${branchFilterSql}
       ORDER BY u.branch, u.department, u.name
-    `).all<any>();
+    `).bind(...branchFilterBinds).all<any>();
   } else {
+    const historyPayTypeSql = payTypeAtMonthSql('u.id', '?', 'ua.pay_type');
     usersResult = await db.prepare(`
       SELECT u.id, u.name, u.branch, u.department, ua.commission_rate, ua.ssn, ua.address
       FROM user_accounting ua
       JOIN users u ON u.id = ua.user_id
-      WHERE ua.pay_type = 'commission' AND u.approved = 1 AND u.role != 'resigned'
+      LEFT JOIN payroll_saves ps ON ps.user_id = u.id AND ps.period = ?
+      WHERE (${historyPayTypeSql} = 'commission' OR ps.pay_type = 'commission') AND u.approved = 1 AND u.role != 'resigned'
+        ${branchFilterSql}
       ORDER BY u.branch, u.department, u.name
-    `).all<any>();
+    `).bind(periodLabel, month, ...branchFilterBinds).all<any>();
   }
 
   // commission_rate_overrides 일괄 조회 (해당 월)
@@ -548,7 +930,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       ? rateOverrides[u.id]
       : (Number(u.commission_rate) || (isJanFeb2026 ? 50 : 0));
     const salesRes = await db.prepare(`
-      SELECT type, type_detail, amount, proxy_cost, payment_type, card_deposit_date, deposit_date, contract_date
+      SELECT type, type_detail, amount, proxy_cost, direction, payment_type, card_deposit_date, deposit_date, contract_date
       FROM sales_records
       WHERE user_id = ? AND status = 'confirmed'
         AND (
@@ -565,34 +947,36 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
         // sales_records의 명도성과금 INSERT 건은 제외 (cases 직접 조회로 중복 방지)
         continue;
       } else if (r.type === '매수신청대리') {
-        const net = (r.amount || 0) - (r.proxy_cost || 0);
-        proxyIncome += Math.max(Math.round(net / 1.1), 0);
+        // amount = 매출 gross (VAT 포함), proxy_cost = 대리비용
+        // 담당자 지급 = (매출 - 부가세) - 대리비용 = amount/1.1 - cost
+        const payrollAmount = vatSupplyAmount(r.amount || 0, month) - (r.proxy_cost || 0);
+        proxyIncome += Math.max(payrollAmount, 0);
       } else {
-        normalSupply += Math.round((r.amount || 0) / 1.1);
+        normalSupply += vatSupplyAmount(r.amount || 0, month);
       }
     }
 
-    // 명도성과금: 짝수월 정산 시 cases 직접 조회로 등급 성과금 자동 합산
+    // 안건 수당: 짝수월 정산 시 cases 직접 조회로 등급 성과금 자동 합산
     // (commission rate 미적용, 부가세 없음, 33% 세금만 차감)
-    let myungdoIncome = 0;
-    if (m % 2 === 0) {
+    let caseAllowanceIncome = 0;
+    if (m % 2 === 0 && !isCaseAllowanceExcludedName(u.name)) {
       const m1 = m - 1;
       const m2 = m;
       const periodKey = `${y}-${String(m1).padStart(2, '0')}_${String(m2).padStart(2, '0')}`;
-      const myungdoCases = await db.prepare(`
+      const caseAllowanceCases = await db.prepare(`
         SELECT COALESCE(SUM(
           CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
-               ELSE CAST(ROUND(fee_amount * 1.0 / 1.1) AS INTEGER) END
+               ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER) END
         ), 0) as total_fee_adjusted
         FROM cases
         WHERE consultant_user_id = ? AND bimonthly_period = ?
       `).bind(u.id, periodKey).first<any>();
-      myungdoIncome = calculateMyungdoBonus(myungdoCases?.total_fee_adjusted || 0);
+      caseAllowanceIncome = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
     }
 
-    const commissionAmount = Math.round(normalSupply * rate / 100);
-    const amount = commissionAmount + proxyIncome + myungdoIncome; // 총 소득
-    const tax = Math.round(amount * 0.033);
+    const commissionAmount = truncMoney(normalSupply * rate / 100);
+    const amount = commissionAmount + proxyIncome + caseAllowanceIncome; // 총 소득
+    const tax = truncMoney(amount * 0.033);
     const net = amount - tax;
     autoMap[u.id] = { amount, tax, net };
   }
@@ -659,7 +1043,13 @@ payroll.put('/reports/business-income/save', requireRole(...ACCOUNTING_ROLES), a
   }>();
 
   if (!body.month || !/^\d{4}-\d{2}$/.test(body.month)) return c.json({ error: 'month 형식 오류' }, 400);
+  if (false && isPayrollPaidMonth(body.month)) {
+    return c.json({ error: '지급일(익월 5일)이 지난 사업소득 정산은 수정할 수 없습니다.' }, 400);
+  }
   const isAdHoc = body.is_ad_hoc || !body.user_id;
+  if (false && user?.role === 'accountant_asst') {
+    return c.json({ error: '총무보조는 세무자료를 수정할 수 없습니다.' }, 403);
+  }
 
   // 기존 entry 찾기
   let existingId: string | null = null;
@@ -687,19 +1077,32 @@ payroll.put('/reports/business-income/save', requireRole(...ACCOUNTING_ROLES), a
 
 // DELETE /api/payroll/reports/business-income/:id — 오버라이드/ad-hoc 삭제
 payroll.delete('/reports/business-income/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  if (false && user?.role === 'accountant_asst') {
+    return c.json({ error: '총무보조는 사업소득 항목을 삭제할 수 없습니다.' }, 403);
+  }
   const id = c.req.param('id');
+  const existing = await c.env.DB.prepare('SELECT month FROM business_income_entries WHERE id = ?').bind(id).first<any>();
+  if (false && existing?.month && isPayrollPaidMonth(existing.month)) {
+    return c.json({ error: '지급일(익월 5일)이 지난 사업소득 정산은 삭제할 수 없습니다.' }, 400);
+  }
   await c.env.DB.prepare('DELETE FROM business_income_entries WHERE id = ?').bind(id).run();
   return c.json({ success: true });
 });
 
 // ━━ 사업소득신고 추가리스트 (풀) CRUD ━━
 payroll.get('/reports/business-income-pool', requirePayrollAccess, async (c) => {
+  const user = c.get('user');
+  if (false && user?.role === 'accountant_asst') {
+    return c.json({ pool: [] });
+  }
   const result = await c.env.DB.prepare('SELECT * FROM business_income_pool ORDER BY name').all();
   return c.json({ pool: result.results || [] });
 });
 
 payroll.post('/reports/business-income-pool', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
+  if (false && user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
   const { name, ssn, address, note } = await c.req.json<{ name: string; ssn?: string; address?: string; note?: string }>();
   if (!name?.trim()) return c.json({ error: '이름을 입력하세요.' }, 400);
   const id = crypto.randomUUID();
@@ -710,6 +1113,8 @@ payroll.post('/reports/business-income-pool', requireRole(...ACCOUNTING_ROLES), 
 });
 
 payroll.put('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  if (false && user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
   const id = c.req.param('id');
   const { name, ssn, address, note } = await c.req.json<{ name: string; ssn?: string; address?: string; note?: string }>();
   if (!name?.trim()) return c.json({ error: '이름을 입력하세요.' }, 400);
@@ -720,6 +1125,8 @@ payroll.put('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES
 });
 
 payroll.delete('/reports/business-income-pool/:id', requireRole(...ACCOUNTING_ROLES), async (c) => {
+  const user = c.get('user');
+  if (false && user?.role === 'accountant_asst') return c.json({ error: 'Permission denied.' }, 403);
   await c.env.DB.prepare('DELETE FROM business_income_pool WHERE id = ?').bind(c.req.param('id')).run();
   return c.json({ success: true });
 });

@@ -5,7 +5,13 @@
       "Bash(curl -s -X POST \"https://my-auction-docs.nic874.workers.dev/api/_test-alimtalk-all?token=alimtalk-test-2026&phone=01029440141\")",
       "Bash(npx wrangler whoami)",
       "mcp__claude_ai_Figma__use_figma",
-      "mcp__serena__get_symbols_overview"
+      "mcp__serena__get_symbols_overview",
+      "PowerShell(python --version)",
+      "PowerShell(python -c \"import openpyxl; print\\('openpyxl', openpyxl.__version__\\)\")",
+      "Read(//c/Users/pdragon/**)",
+      "Bash(python -)",
+      "Bash(PYTHONUTF8=1 python -)",
+      "Bash(PYTHONUTF8=1 python \"C:\\\\tmp\\\\rebuild_bonus.py\")"
     ]
   }
 }

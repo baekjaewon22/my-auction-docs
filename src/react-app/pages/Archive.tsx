@@ -8,6 +8,7 @@ import { useDepartments } from '../hooks/useDepartments';
 import { useBranches } from '../hooks/useBranches';
 import { Archive, FileCheck, FileText, Search, Trash2, MapPin, Cloud, CloudOff } from 'lucide-react';
 import DriveBackupModal from '../components/DriveBackupModal';
+import { sameBranchName } from '../lib/branchAliases';
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   draft: { label: '작성중', className: 'status-draft' },
@@ -30,18 +31,27 @@ export default function ArchivePage() {
   const [filterAuthor, setFilterAuthor] = useState('');
   const [filterStatus, setFilterStatus] = useState('approved');
   const [filterCategory, setFilterCategory] = useState('');
+  const [sortMode, setSortMode] = useState<'upload' | 'outingDate'>('upload');
   const [searchText, setSearchText] = useState('');
 
   // 외근 보고서에서 외근 일자 추출
   const extractOutingDate = (content: string): string | null => {
     if (!content) return null;
-    // "외근 일자 : 2026년 4월 3일" 또는 "외근 일자 : 2026 년 4 월 3일" 등 다양한 형태
-    const text = content.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
-    const m = text.match(/외근\s*일자\s*[:\s]*(\d{2,4})\s*년?\s*(\d{1,2})\s*월?\s*(\d{1,2})\s*일/);
-    if (m) {
+    const text = content
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const formatDate = (m: RegExpMatchArray) => {
       const year = m[1].length === 2 ? '20' + m[1] : m[1];
       return `${year}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
-    }
+    };
+    // 일반 외근보고서 자동채우기: "외근 일자 : 2026년 4월 3일"
+    const outdoorDate = text.match(/외근\s*일자\s*[:\s]*(\d{2,4})\s*[년.\-]?\s*(\d{1,2})\s*[월.\-]?\s*(\d{1,2})\s*일?/);
+    if (outdoorDate) return formatDate(outdoorDate);
+    // 일지 비작성 대상자 수동 작성: "일시: 2026년 5월 21일", "일시: 2026-05-21", "일시: 2026.05.21"
+    const manualDate = text.match(/일시\s*[:\s]*(\d{2,4})\s*[년.\-]?\s*(\d{1,2})\s*[월.\-]?\s*(\d{1,2})\s*일?/);
+    if (manualDate) return formatDate(manualDate);
     return null;
   };
 
@@ -60,11 +70,15 @@ export default function ArchivePage() {
     }
   }, [driveModalOpen]);
   const [driveStatus, setDriveStatus] = useState<{ last_backup_at: string | null; pending_count: number; connected: boolean } | null>(null);
+  const [driveStatusCheckedAt, setDriveStatusCheckedAt] = useState(0);
 
   useEffect(() => {
     if (!canDrive) return;
     api.drive.settings()
-      .then(s => setDriveStatus({ last_backup_at: s.last_backup_at, pending_count: s.pending_count, connected: !!s.settings?.connected_email }))
+      .then(s => {
+        setDriveStatus({ last_backup_at: s.last_backup_at, pending_count: s.pending_count, connected: !!s.settings?.connected_email });
+        setDriveStatusCheckedAt(Date.now());
+      })
       .catch(() => { /* ignore */ });
   }, [canDrive, driveModalOpen]);
   const canFilterAll = isCeoPlus || isAdmin || isAccountant;
@@ -114,11 +128,22 @@ export default function ArchivePage() {
   // 'all'은 전체
   if (filterStatus && statusTab === 'all') filtered = filtered.filter((d) => d.status === filterStatus);
   if (filterMonth) filtered = filtered.filter((d) => d.created_at.startsWith(filterMonth));
-  if (filterBranch) filtered = filtered.filter((d) => d.branch === filterBranch);
+  if (filterBranch) filtered = filtered.filter((d) => sameBranchName(d.branch, filterBranch));
   if (filterDept) filtered = filtered.filter((d) => d.department === filterDept);
   if (filterAuthor) filtered = filtered.filter((d) => d.author_name?.includes(filterAuthor));
   if (filterCategory) filtered = filtered.filter((d) => getDocCategory(d.title) === filterCategory);
   if (searchText) filtered = filtered.filter((d) => d.title.includes(searchText) || d.author_name?.includes(searchText));
+
+  filtered = [...filtered].sort((a, b) => {
+    if (sortMode === 'outingDate') {
+      const aOuting = a.title.includes('외근') ? extractOutingDate(a.content) : null;
+      const bOuting = b.title.includes('외근') ? extractOutingDate(b.content) : null;
+      if (aOuting && bOuting && aOuting !== bOuting) return bOuting.localeCompare(aOuting);
+      if (aOuting && !bOuting) return -1;
+      if (!aOuting && bOuting) return 1;
+    }
+    return b.created_at.localeCompare(a.created_at);
+  });
 
   // 월 목록
   const months = [...new Set(documents.map((d) => d.created_at.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
@@ -135,7 +160,7 @@ export default function ArchivePage() {
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   // 필터 변경 시 1페이지로 리셋
-  useEffect(() => { setPage(1); }, [statusTab, filterMonth, filterBranch, filterDept, filterAuthor, filterCategory, searchText]);
+  useEffect(() => { setPage(1); }, [statusTab, filterMonth, filterBranch, filterDept, filterAuthor, filterCategory, sortMode, searchText]);
 
   const resetFilters = () => {
     setFilterMonth('');
@@ -166,7 +191,7 @@ export default function ArchivePage() {
           <Archive size={24} style={{ verticalAlign: 'middle' }} /> 문서 보관함
           {canDrive && (() => {
             const ds = driveStatus;
-            const stale = ds?.last_backup_at && (Date.now() - new Date(ds.last_backup_at).getTime() > 7 * 86400 * 1000);
+            const stale = ds?.last_backup_at && driveStatusCheckedAt > 0 && (driveStatusCheckedAt - new Date(ds.last_backup_at).getTime() > 7 * 86400 * 1000);
             const connected = !!ds?.connected;
             const pending = ds?.pending_count || 0;
             const color = !ds ? '#9aa0a6' : !connected ? '#9aa0a6' : (pending > 0 || stale) ? '#e65100' : '#188038';
@@ -202,6 +227,24 @@ export default function ArchivePage() {
 
       {/* 필터 */}
       <div className="archive-filters">
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 8 }}>
+          <button
+            type="button"
+            className={`btn btn-sm ${sortMode === 'upload' ? 'btn-primary' : ''}`}
+            style={sortMode !== 'upload' ? { border: '1px solid #dadce0', background: '#fff' } : {}}
+            onClick={() => setSortMode('upload')}
+          >
+            업로드 순
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${sortMode === 'outingDate' ? 'btn-primary' : ''}`}
+            style={sortMode !== 'outingDate' ? { border: '1px solid #dadce0', background: '#fff' } : {}}
+            onClick={() => setSortMode('outingDate')}
+          >
+            일정최근 순
+          </button>
+        </div>
         <div className="archive-filter-row">
           <div className="archive-filter-item">
             <Select size="sm" options={monthOpts} value={filterMonth ? { value: filterMonth, label: filterMonth } : null} onChange={(o: any) => setFilterMonth(o?.value || '')} placeholder="전체 기간" isClearable />
@@ -249,7 +292,8 @@ export default function ArchivePage() {
       {/* 문서 목록 - 월별 그룹 + 페이지네이션 */}
       {(() => {
         const pagedGrouped = paged.reduce<Record<string, Document[]>>((acc, d) => {
-          const m = d.created_at.slice(0, 7);
+          const outingDate = sortMode === 'outingDate' && d.title.includes('외근') ? extractOutingDate(d.content) : null;
+          const m = (outingDate || d.created_at).slice(0, 7);
           if (!acc[m]) acc[m] = [];
           acc[m].push(d);
           return acc;

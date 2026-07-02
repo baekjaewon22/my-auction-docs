@@ -4,9 +4,12 @@ import { useAuthStore } from '../store';
 import { api } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
+import { sameBranchName } from '../lib/branchAliases';
+
+const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
 
 const statusConfig: Record<string, { label: string; className: string; icon: typeof FileText }> = {
   draft: { label: '작성중', className: 'status-draft', icon: FilePlus },
@@ -22,6 +25,7 @@ interface MissingAlert {
   activity: string;
   missingDoc: string;
   dDay: number; // 경과일
+  journalEntryIds?: string[];
 }
 
 interface ScheduleGapAlert {
@@ -30,14 +34,39 @@ interface ScheduleGapAlert {
   gaps: string[]; // ["09:00~10:00", "14:00~15:30"]
 }
 
+const dashboardNewsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+const dashboardNewsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
+
+function pickTodayLegalFact(legalFacts: any[]) {
+  if (legalFacts.length === 0) return null;
+  const ordered = legalFacts
+    .slice()
+    .sort((a: any, b: any) => String(a.created_at || a.updated_at || '').localeCompare(String(b.created_at || b.updated_at || '')));
+  const kstDayIndex = Math.floor((Date.now() + 9 * 60 * 60 * 1000) / 86400000);
+  return ordered[Math.floor(kstDayIndex / 3) % ordered.length];
+}
+
 function FreelancerDashboard() {
   const { user } = useAuthStore();
   const [mySales, setMySales] = useState<SalesRecord[]>([]);
+  const [todayNews, setTodayNews] = useState<any[]>([]);
+  const [legalFacts, setLegalFacts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.sales.list({}).then(res => {
-      setMySales((res.records || []).filter((r: SalesRecord) => r.user_id === user?.id));
+    Promise.all([
+      api.sales.list({}).catch(() => null),
+      api.adminNotes.list({ category: 'article_news' }).catch(() => null),
+      api.adminNotes.list({ category: 'legal_support', legal_subcategory: 'legal_terms' }).catch(() => null),
+    ]).then(([salesRes, newsRes, legalFactsRes]) => {
+      if (salesRes) setMySales((salesRes.records || []).filter((r: SalesRecord) => r.user_id === user?.id));
+      if (newsRes) {
+        const latestNews = (newsRes.notes || [])
+          .slice()
+          .sort((a: any, b: any) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+        setTodayNews(latestNews);
+      }
+      if (legalFactsRes) setLegalFacts(legalFactsRes.notes || []);
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
@@ -47,6 +76,8 @@ function FreelancerDashboard() {
   const pendingCount = mySales.filter(r => r.status === 'pending').length;
   const cardPendingCount = mySales.filter(r => r.status === 'card_pending').length;
   const confirmedCount = mySales.filter(r => r.status === 'confirmed').length;
+  const todayLegalFact = pickTodayLegalFact(legalFacts);
+  const legalPreview = todayLegalFact ? dashboardNewsPreview(todayLegalFact.content || '') : '';
 
   return (
     <div className="page dashboard-page">
@@ -67,6 +98,49 @@ function FreelancerDashboard() {
         <div className="stat-card stat-approved"><FileCheck size={28} className="stat-icon" /><div className="stat-number">{confirmedCount}</div><div className="stat-label">확정</div></div>
         <div className="stat-card" style={{ borderTop: '3px solid #7b1fa2' }}><TrendingDown size={28} className="stat-icon" style={{ color: '#7b1fa2' }} /><div className="stat-number" style={{ color: '#7b1fa2' }}>{totalAmount.toLocaleString()}</div><div className="stat-label">확정 매출액</div></div>
       </div>
+
+      <section className="section dashboard-news-row">
+        <div className="dashboard-today-news-panel">
+          <div className="dashboard-today-news-header">
+            <span><Newspaper size={16} /> 오늘의 뉴스</span>
+            <Link to="/admin-notes?section=article_news" className="dashboard-today-news-more">전체보기</Link>
+          </div>
+          {todayNews.length === 0 ? (
+            <div className="dashboard-today-news-empty">업데이트된 뉴스가 없습니다.</div>
+          ) : (
+            <div className="dashboard-today-news-list">
+              {todayNews.slice(0, 1).map((note: any) => {
+                const preview = dashboardNewsPreview(note.content || '');
+                return (
+                  <Link key={note.id} to={`/admin-notes?section=article_news&note=${note.id}`} className="dashboard-today-news-item">
+                    <div className="dashboard-today-news-title">{note.title}</div>
+                    {preview && <div className="dashboard-today-news-preview">{preview.length > 72 ? preview.slice(0, 72) + '...' : preview}</div>}
+                    <div className="dashboard-today-news-date">{dashboardNewsDate(note.updated_at || note.created_at)}</div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <div className="dashboard-top-alert-panel dashboard-my-alert-panel">
+          <div className="dashboard-today-news-header">
+            <span><Scale size={16} /> 오늘의 한줄 법률상식</span>
+            <Link to="/admin-notes?tab=legal_support&section=legal_terms" className="dashboard-today-news-more">전체보기</Link>
+          </div>
+          {!todayLegalFact ? (
+            <div className="dashboard-today-news-empty">등록된 법률용어가 없습니다.</div>
+          ) : (
+            <Link to={`/admin-notes?tab=legal_support&section=legal_terms&note=${todayLegalFact.id}`} className="dashboard-my-alert-item priority-3">
+              <div className="dashboard-my-alert-row">
+                <span className="dashboard-my-alert-badge">법률용어</span>
+              </div>
+              <div className="dashboard-my-alert-title">{todayLegalFact.title}</div>
+              {legalPreview && <div className="dashboard-my-alert-message">{legalPreview.length > 88 ? legalPreview.slice(0, 88) + '...' : legalPreview}</div>}
+              <div className="dashboard-today-news-date">클릭해서 자세히 보기</div>
+            </Link>
+          )}
+        </div>
+      </section>
 
       {mySales.length > 0 && (
         <section className="section">
@@ -106,22 +180,26 @@ export default function Dashboard() {
   const [depositNotices, setDepositNotices] = useState<DepositNotice[]>([]);
   const [refundImpacts, setRefundImpacts] = useState<any[]>([]);
   const [scheduleGaps, setScheduleGaps] = useState<ScheduleGapAlert[]>([]);
+  const [exemptionSubmitting, setExemptionSubmitting] = useState(false);
   const [contractAlerts, setContractAlerts] = useState<SalesRecord[]>([]);
   const [myMissingDocs, setMyMissingDocs] = useState<SalesRecord[]>([]);
   const [dupInspections, setDupInspections] = useState<{ case_no: string; court: string; user_names: string; user_count: number; first_date: string; last_date: string; branch?: string }[]>([]);
-  const [dupAllBranches, setDupAllBranches] = useState(false);
+  const dupAllBranches = true;
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [pendingSalesBranch, setPendingSalesBranch] = useState('');
   const [accountantLeaves, setAccountantLeaves] = useState<any[]>([]);
   const [coopAlerts, setCoopAlerts] = useState<any[]>([]);
-  const [myAlerts, setMyAlerts] = useState<any[]>([]);
+  const [noticeItems, setNoticeItems] = useState<any[]>([]);
   const [todayNews, setTodayNews] = useState<any[]>([]);
+  const [legalFacts, setLegalFacts] = useState<any[]>([]);
   const [driveStatus, setDriveStatus] = useState<{ last_backup_at: string | null; pending_count: number; connected: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '');
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
-  const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
+  const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '')
+    || ACCOUNTING_ALERT_EXTRA_USER_IDS.includes(user?.id || '');
   const isMaster = user?.role === 'master';
+  const canDismissScheduleGapAlerts = ['master', 'admin'].includes(user?.role || '');
 
   // 마스터 전용 섹션 전체 삭제 버튼 — 실수 방지를 위해 명확한 라벨 표시
   const MasterCloseBtn = ({ alertType, keys, onClose }: { alertType: string; keys: string[]; onClose: () => void }) => isMaster ? (
@@ -235,7 +313,7 @@ export default function Dashboard() {
             entriesForDetect = entries.filter(e => e.user_id === user?.id);
           } else if (user?.role === 'manager') {
             entriesForDetect = entries.filter(e =>
-              e.branch === user.branch && e.department === user.department,
+              sameBranchName(e.branch, user.branch) && e.department === user.department,
             );
           } else {
             entriesForDetect = entries;
@@ -282,8 +360,9 @@ export default function Dashboard() {
           coopRes,
           dupRes,
           alimtalkRes,
+          noticeRes,
           newsRes,
-          myAlertsRes,
+          legalFactsRes,
         ] = await Promise.all([
           needSalesList ? api.sales.list({}).catch(() => null) : Promise.resolve(null),
           submittedDocsForSteps.length > 0
@@ -304,8 +383,9 @@ export default function Dashboard() {
           (canSeeAccountingAlerts && ['accountant', 'accountant_asst'].includes(user?.role || '') && user?.id)
             ? api.users.getAlimtalkSettings(user.id).catch(() => null)
             : Promise.resolve(null),
+          api.adminNotes.list({ category: 'notice' }).catch(() => null),
           api.adminNotes.list({ category: 'article_news' }).catch(() => null),
-          api.adminNotes.myAlerts().catch(() => null),
+          api.adminNotes.list({ category: 'legal_support', legal_subcategory: 'legal_terms' }).catch(() => null),
         ]);
 
         // ─── 결과 처리 ───
@@ -407,6 +487,14 @@ export default function Dashboard() {
           setDupInspections((dupRes.duplicates || []).filter((d: any) => !localDismissed.has(`dup_${d.case_no}_${d.court}_${d.branch || ''}`)));
         }
 
+        if (noticeRes) {
+          const latestNotices = (noticeRes.notes || [])
+            .slice()
+            .sort((a: any, b: any) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))
+            .slice(0, 1);
+          setNoticeItems(latestNotices);
+        }
+
         if (newsRes) {
           const latestNews = (newsRes.notes || [])
             .slice()
@@ -415,8 +503,8 @@ export default function Dashboard() {
           setTodayNews(latestNews);
         }
 
-        if (myAlertsRes) {
-          setMyAlerts(myAlertsRes.alerts || []);
+        if (legalFactsRes) {
+          setLegalFacts(legalFactsRes.notes || []);
         }
       })
       .finally(() => setLoading(false));
@@ -440,6 +528,29 @@ export default function Dashboard() {
 
   const newsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const newsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
+  const NoticePanel = () => {
+    const notice = noticeItems[0];
+    return (
+      <section className="section dashboard-notice-section">
+        <div className="dashboard-notice-panel">
+          <div className="dashboard-today-news-header">
+            <span><Bell size={16} /> 공지사항</span>
+              <Link to="/admin-notes?section=notice" className="dashboard-today-news-more">전체보기</Link>
+          </div>
+          {!notice ? (
+            <div className="dashboard-today-news-empty">등록된 공지사항이 없습니다.</div>
+          ) : (
+            <Link to={`/admin-notes?section=notice&note=${notice.id}`} className="dashboard-notice-item">
+              <div className="dashboard-notice-line">
+                <strong>{notice.title}</strong>
+                <time>{newsDate(notice.updated_at || notice.created_at)}</time>
+              </div>
+            </Link>
+          )}
+        </div>
+      </section>
+    );
+  };
   const TodayNewsPanel = () => (
     <div className="dashboard-today-news-panel">
       <div className="dashboard-today-news-header">
@@ -450,10 +561,10 @@ export default function Dashboard() {
         <div className="dashboard-today-news-empty">업데이트된 뉴스가 없습니다.</div>
       ) : (
         <div className="dashboard-today-news-list">
-          {todayNews.map((note: any) => {
+          {todayNews.slice(0, 1).map((note: any) => {
             const preview = newsPreview(note.content || '');
             return (
-              <Link key={note.id} to="/admin-notes?section=article_news" className="dashboard-today-news-item">
+              <Link key={note.id} to={`/admin-notes?section=article_news&note=${note.id}`} className="dashboard-today-news-item">
                 <div className="dashboard-today-news-title">{note.title}</div>
                 {preview && <div className="dashboard-today-news-preview">{preview.length > 72 ? preview.slice(0, 72) + '...' : preview}</div>}
                 <div className="dashboard-today-news-date">{newsDate(note.updated_at || note.created_at)}</div>
@@ -465,30 +576,63 @@ export default function Dashboard() {
     </div>
   );
   const ownMissingAlerts = alerts.filter((a) => a.userId === user?.id);
-  const alertDate = (value: string = '') => value ? value.slice(0, 16).replace('T', ' ') : '';
-  const topMyAlert = myAlerts[0] || null;
-  const MyAlertsPanel = () => (
+
+  const handleOutdoorExemptionRequest = async (missing: MissingAlert) => {
+    const ids = missing.journalEntryIds || [];
+    if (ids.length === 0) {
+      alert('면제 신청할 외근 일지 정보를 찾을 수 없습니다.');
+      return;
+    }
+    const reasonType = prompt('면제 사유 유형을 입력하세요.\n예: 실제 외근 취소, 내부 일정 전환, 동행/지원 업무, 입찰 취소, 대리입찰, 단순 이동, 기타');
+    if (!reasonType?.trim()) return;
+    const reasonDetail = prompt('상세 사유를 입력하세요. 관리자 승인 및 감사 기록으로 남습니다.');
+    if (!reasonDetail?.trim()) return;
+    setExemptionSubmitting(true);
+    try {
+      const res = await api.links.requestOutdoorExemption({
+        journal_entry_ids: ids,
+        reason_type: reasonType.trim(),
+        reason_detail: reasonDetail.trim(),
+      });
+      alert(`면제 사유서를 제출했습니다. 관리자 승인 후 미제출 알림에서 제외됩니다.\n신청 ${res.requested}건, 기존 신청/승인 ${res.skipped}건`);
+    } catch (err: any) {
+      alert('면제 사유서 제출 실패: ' + (err.message || ''));
+    } finally {
+      setExemptionSubmitting(false);
+    }
+  };
+  const getTodayLegalFact = () => {
+    if (legalFacts.length === 0) return null;
+    const ordered = legalFacts
+      .slice()
+      .sort((a: any, b: any) => String(a.created_at || a.updated_at || '').localeCompare(String(b.created_at || b.updated_at || '')));
+    const kstDayIndex = Math.floor((Date.now() + 9 * 60 * 60 * 1000) / 86400000);
+    return ordered[Math.floor(kstDayIndex / 3) % ordered.length];
+  };
+  const todayLegalFact = getTodayLegalFact();
+  const LegalFactPanel = () => {
+    const preview = todayLegalFact ? newsPreview(todayLegalFact.content || '') : '';
+    return (
     <div className="dashboard-top-alert-panel dashboard-my-alert-panel">
       <div className="dashboard-today-news-header">
-        <span><Bell size={16} /> 내 알림</span>
-        <Link to="/admin-notes" className="dashboard-today-news-more">커뮤니티</Link>
+        <span><Scale size={16} /> 오늘의 한줄 법률상식</span>
+        <Link to="/admin-notes?tab=legal_support&section=legal_terms" className="dashboard-today-news-more">전체보기</Link>
       </div>
-      {!topMyAlert ? (
-        <div className="dashboard-today-news-empty">확인할 새 알림이 없습니다.</div>
+      {!todayLegalFact ? (
+        <div className="dashboard-today-news-empty">등록된 법률용어가 없습니다.</div>
       ) : (
-        <Link to={topMyAlert.link || '/admin-notes'} className={`dashboard-my-alert-item priority-${topMyAlert.priority || 4}`}>
+        <Link to={`/admin-notes?tab=legal_support&section=legal_terms&note=${todayLegalFact.id}`} className="dashboard-my-alert-item priority-3">
           <div className="dashboard-my-alert-row">
-            <span className="dashboard-my-alert-badge">{topMyAlert.label || '알림'}</span>
-            {topMyAlert.comment_count > 1 && <span className="dashboard-my-alert-count">{topMyAlert.comment_count}</span>}
-            {myAlerts.length > 1 && <span className="dashboard-my-alert-more-badge">+{myAlerts.length - 1}</span>}
+            <span className="dashboard-my-alert-badge">법률용어</span>
           </div>
-          <div className="dashboard-my-alert-title">{topMyAlert.title}</div>
-          <div className="dashboard-my-alert-message">{topMyAlert.message}</div>
-          <div className="dashboard-today-news-date">{alertDate(topMyAlert.created_at)}</div>
+          <div className="dashboard-my-alert-title">{todayLegalFact.title}</div>
+          {preview && <div className="dashboard-my-alert-message">{preview.length > 88 ? preview.slice(0, 88) + '...' : preview}</div>}
+          <div className="dashboard-today-news-date">클릭해서 자세히 보기</div>
         </Link>
       )}
     </div>
-  );
+    );
+  };
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -531,8 +675,10 @@ export default function Dashboard() {
         );
       })()}
 
+      <NoticePanel />
+
       <section className="section dashboard-news-row">
-        <MyAlertsPanel />
+        <LegalFactPanel />
         <TodayNewsPanel />
       </section>
 
@@ -635,6 +781,16 @@ export default function Dashboard() {
                       </div>
                       <div className="missing-alert-detail">{a.date} · {a.activity}</div>
                     </div>
+                    {a.missingDoc.includes('외근 보고서') && (
+                      <button
+                        className="btn btn-sm"
+                        disabled={exemptionSubmitting}
+                        onClick={() => handleOutdoorExemptionRequest(a)}
+                        style={{ borderColor: '#e65100', color: '#e65100', whiteSpace: 'nowrap' }}
+                      >
+                        면제 사유서
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -695,15 +851,16 @@ export default function Dashboard() {
           <div className="missing-alert-list">
             {(() => {
               // 같은 사용자+카테고리 묶기
-              const grouped: { userName: string; missingDoc: string; count: number; dates: string[]; maxDDay: number }[] = [];
+              const grouped: { userName: string; missingDoc: string; count: number; dates: string[]; maxDDay: number; journalEntryIds: string[] }[] = [];
               alerts.forEach((a) => {
                 const existing = grouped.find((g) => g.userName === a.userName && g.missingDoc === a.missingDoc);
                 if (existing) {
                   existing.count++;
                   if (!existing.dates.includes(a.date)) existing.dates.push(a.date);
                   existing.maxDDay = Math.max(existing.maxDDay, a.dDay);
+                  existing.journalEntryIds.push(...(a.journalEntryIds || []));
                 } else {
-                  grouped.push({ userName: a.userName, missingDoc: a.missingDoc, count: 1, dates: [a.date], maxDDay: a.dDay });
+                  grouped.push({ userName: a.userName, missingDoc: a.missingDoc, count: 1, dates: [a.date], maxDDay: a.dDay, journalEntryIds: [...(a.journalEntryIds || [])] });
                 }
               });
               return grouped.slice(0, 15).map((g, i) => (
@@ -722,6 +879,24 @@ export default function Dashboard() {
                       {g.dates.sort().join(', ')}
                     </div>
                   </div>
+                  {g.missingDoc.includes('외근 보고서') && g.journalEntryIds.length > 0 && (
+                    <button
+                      className="btn btn-sm"
+                      disabled={exemptionSubmitting}
+                      onClick={() => handleOutdoorExemptionRequest({
+                        userName: g.userName,
+                        userId: '',
+                        date: g.dates.sort().join(', '),
+                        activity: `외근(${g.journalEntryIds.length}건)`,
+                        missingDoc: g.missingDoc,
+                        dDay: g.maxDDay,
+                        journalEntryIds: Array.from(new Set(g.journalEntryIds)),
+                      })}
+                      style={{ borderColor: '#e65100', color: '#e65100', whiteSpace: 'nowrap' }}
+                    >
+                      면제 사유서
+                    </button>
+                  )}
                 </div>
               ));
             })()}
@@ -742,7 +917,7 @@ export default function Dashboard() {
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Clock size={18} color="#e65100" /> {gapTitle}
             <span className="missing-alert-count">{filteredGaps.length}건</span>
-            {user?.role === 'master' && (
+            {canDismissScheduleGapAlerts && (
               <button className="btn btn-sm" style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#9aa0a6' }}
                 onClick={async () => {
                   if (!confirm(`${filteredGaps.length}건을 모두 삭제하시겠습니까?`)) return;
@@ -762,7 +937,7 @@ export default function Dashboard() {
                     공백: {g.gaps.join(', ')}
                   </span>
                 </div>
-                {user?.role === 'master' && (
+                {canDismissScheduleGapAlerts && (
                   <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#bdc1c6', padding: 2 }}
                     onClick={async () => {
                       const key = `gap_${g.userName}_${g.date}`;
@@ -808,12 +983,7 @@ export default function Dashboard() {
             <MapPin size={18} color="#7b1fa2" /> 동일 사건 임장 알림
             <span style={{ background: '#7b1fa2', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{dupInspections.length}건</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 'auto' }}>
-              <span style={{ fontSize: '0.68rem', color: !dupAllBranches ? '#7b1fa2' : '#9aa0a6', fontWeight: !dupAllBranches ? 600 : 400 }}>내 지사</span>
-              <div onClick={() => setDupAllBranches(!dupAllBranches)}
-                style={{ width: 32, height: 18, borderRadius: 9, background: dupAllBranches ? '#7b1fa2' : '#dadce0', cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}>
-                <div style={{ width: 14, height: 14, borderRadius: 7, background: '#fff', position: 'absolute', top: 2, left: dupAllBranches ? 16 : 2, transition: 'left 0.2s', boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }} />
-              </div>
-              <span style={{ fontSize: '0.68rem', color: dupAllBranches ? '#7b1fa2' : '#9aa0a6', fontWeight: dupAllBranches ? 600 : 400 }}>전 지사</span>
+              <span style={{ fontSize: '0.68rem', color: '#7b1fa2', fontWeight: 700 }}>전 지사 중복 기준</span>
               <MasterCloseBtn alertType="dup_inspection" keys={dupInspections.map(d => `dup_${d.case_no}_${d.court}_${d.branch || ''}`)} onClose={() => setDupInspections([])} />
             </div>
           </h3>
@@ -920,7 +1090,7 @@ export default function Dashboard() {
 
       {/* 입금 대기 매출 (회계/관리자급) */}
       {pendingSales.length > 0 && (() => {
-        const filteredPending = pendingSalesBranch ? pendingSales.filter((r: any) => r.branch === pendingSalesBranch) : pendingSales;
+        const filteredPending = pendingSalesBranch ? pendingSales.filter((r: any) => sameBranchName(r.branch, pendingSalesBranch)) : pendingSales;
         const branches = [...new Set(pendingSales.map((r: any) => r.branch).filter(Boolean))].sort();
         return (
         <section className="section">
@@ -1193,17 +1363,14 @@ export default function Dashboard() {
   );
 }
 
-// 외근 여부 판정: 회사 밖 활동인지
+// 외근보고서 제출 대상 판정: 사무/개인은 제외, 외출성 일지는 대상
 function isOutdoorEntry(entry: JournalEntry): boolean {
   try {
-    const d = JSON.parse(entry.data);
-    if (d.companion) return false;
-    // 임장: 항상 외근
-    if (entry.activity_type === '임장') return true;
-    // 미팅: 회사 미팅(internalMeeting)은 제외, 그 외는 외근
+    const d = JSON.parse(entry.data || '{}');
+    if (entry.activity_type === '사무' || entry.activity_type === '개인') return false;
+    if (entry.activity_type === '입찰') return !d.bidProxy && !d.bidCancelled;
     if (entry.activity_type === '미팅') return !d.internalMeeting;
-    // 입찰: 현장출근 + 대리입찰 아닌 경우
-    if (entry.activity_type === '입찰' && (d.fieldCheckIn || d.fieldCheckOut) && !d.bidProxy) return true;
+    if (entry.activity_type === '임장') return true;
   } catch { /* */ }
   return false;
 }
@@ -1309,25 +1476,13 @@ function detectMissing(entries: JournalEntry[], docs: Document[], linkedEntryIds
     // 해당 사용자의 제출/승인된 문서
     const userDocs = docs.filter((d) => d.author_id === userId);
 
-    // 1. 개인 → 연차/반차/시간차/병가 신청서 필요
+    // 1. 개인 → 지각/조퇴/외출 사유서 필요
     dayEntries.forEach((entry) => {
       try {
         const d = JSON.parse(entry.data);
         if (entry.activity_type === '개인') {
           const reason = (d.reason || '').toLowerCase();
-          if (reason.includes('연차') || reason.includes('월차') || reason.includes('휴가')) {
-            const hasDoc = userDocs.some((doc) => doc.title.includes('연차') || doc.title.includes('휴가'));
-            if (!hasDoc) {
-              alerts.push({ userName, userId, date, activity: `개인 - ${d.reason}`, missingDoc: '연차휴가 신청서 미제출', dDay });
-            }
-          }
-          if (reason.includes('반차')) {
-            const hasDoc = userDocs.some((doc) => doc.title.includes('반차'));
-            if (!hasDoc) {
-              alerts.push({ userName, userId, date, activity: `개인 - ${d.reason}`, missingDoc: '반차 신청서 미제출', dDay });
-            }
-          }
-          if (reason.includes('시간차')) {
+          if (reason.includes('지각') || reason.includes('조퇴') || reason.includes('외출')) {
             const hasDoc = userDocs.some((doc) => doc.title.includes('시간차') || doc.title.includes('지각') || doc.title.includes('조퇴') || doc.title.includes('외출'));
             if (!hasDoc) {
               alerts.push({ userName, userId, date, activity: `개인 - ${d.reason}`, missingDoc: '지각/조퇴/외출 사유서 미제출', dDay });
@@ -1349,6 +1504,7 @@ function detectMissing(entries: JournalEntry[], docs: Document[], linkedEntryIds
     const todayKst = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
     dayEntries.forEach((entry) => {
       if (entry.activity_type !== '입찰') return;
+      if (dDay !== 0) return;
       try {
         const d = JSON.parse(entry.data);
         const missing: string[] = [];
@@ -1379,6 +1535,7 @@ function detectMissing(entries: JournalEntry[], docs: Document[], linkedEntryIds
             activity: `외근(${outdoorEntries.length}건)`,
             missingDoc: `외근 보고서 미제출 (${totalText})`,
             dDay,
+            journalEntryIds: outdoorEntries.filter((e) => !linkedEntryIds.has(e.id)).map((e) => e.id),
           });
         }
       }

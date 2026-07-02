@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store';
 import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
+import { isHeadOfficeBranch, isRestrictedAccountingBranch } from '../lib/branchAliases';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
-  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase,
+  PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
   Scale, ExternalLink,
 } from 'lucide-react';
 
@@ -20,6 +21,10 @@ function shouldShowDiagnosisBox(pathname: string): boolean {
 // 컨설턴트 계약관리: 대표/마스터/총무급 + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+
+function isRestrictedAccountingAsstBranch(branch: unknown): boolean {
+  return isRestrictedAccountingBranch(branch);
+}
 
 export default function Layout() {
   const { user, logout } = useAuthStore();
@@ -39,20 +44,34 @@ export default function Layout() {
 
   const handleLogout = () => { logout(); navigate('/login'); };
   const isActive = (path: string) => location.pathname.startsWith(path);
+  const isAccountingBookActive = location.pathname === '/accounting' || location.pathname.startsWith('/accounting/');
   const navTo = (path: string) => { navigate(path); setMobileOpen(false); };
+
+  useEffect(() => {
+    if (
+      location.pathname.startsWith('/accounting-session1') ||
+      location.pathname.startsWith('/accounting-session2/reports')
+    ) {
+      setCollapsed(true);
+    }
+  }, [location.pathname]);
 
   const role = (user?.role || 'member') as Role;
   const isFreelancer = (user as any)?.login_type === 'freelancer';
   const isSupport = role === 'support';
+  const isRestrictedAsst = role === 'accountant_asst' && isRestrictedAccountingAsstBranch(user?.branch);
   const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'support'].includes(role);
   const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canViewBidHistory = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canViewFreelancerBids = isFreelancer || (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role));
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
   const canPayroll = canAccounting || PAYROLL_EXTRA_IDS.includes(user?.id || '');
+  const canManagementSupport = canAccounting || canPayroll || (!isFreelancer && !isSupport && role === 'admin');
   // 회계분석은 총무보조 제외 (cc_ref도 제외)
   const canFinanceAnalytics = !isFreelancer && !isSupport && (
     ['master', 'ceo', 'accountant'].includes(role) ||
-    (role === 'admin' && user?.branch === '의정부')
+    (role === 'admin' && isHeadOfficeBranch(user?.branch))
   );
   const isAccountingOnly = !isFreelancer && ['accountant', 'accountant_asst'].includes(role);
   const isDirector = role === 'director';
@@ -60,6 +79,8 @@ export default function Layout() {
     ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role) ||
     CONTRACT_TRACKER_EXTRA_IDS.includes(user?.id || '')
   );
+  const canViewMissingDocuments = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant', 'accountant_asst'].includes(role);
+  const canUseDocumentGeneration = role === 'master';
 
   const sidebarContent = (
     <>
@@ -85,8 +106,8 @@ export default function Layout() {
           <LayoutDashboard size={18} /> {!collapsed && '대시보드'}
         </Link>
 
-        {!isFreelancer && <div className="nav-divider" />}
-        {!isFreelancer && !collapsed && <span className="nav-label">마이페이지</span>}
+        <div className="nav-divider" />
+        {!collapsed && <span className="nav-label">마이페이지</span>}
         <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="사내 커뮤니티" onClick={() => setMobileOpen(false)}>
           <StickyNote size={18} /> {!collapsed && '사내 커뮤니티'}
         </Link>
@@ -100,6 +121,16 @@ export default function Layout() {
             <DollarSign size={18} /> {!collapsed && '업무성과'}
           </Link>
         )}
+        {canViewMissingDocuments && (
+          <Link to="/missing-documents" className={`nav-item ${isActive('/missing-documents') ? 'active' : ''}`} title="미제출 문서 현황" onClick={() => setMobileOpen(false)}>
+            <FileText size={18} /> {!collapsed && '미제출 문서 현황'}
+          </Link>
+        )}
+        {canViewFreelancerBids && (
+          <Link to="/freelancer-bids" className={`nav-item ${isActive('/freelancer-bids') ? 'active' : ''}`} title="입찰 내역" onClick={() => setMobileOpen(false)}>
+            <span className="nav-freelancer-bid-icon" aria-hidden="true">F</span> {!collapsed && '입찰 내역'}
+          </Link>
+        )}
         {!isFreelancer && (
           <Link to="/leave" className={`nav-item ${isActive('/leave') ? 'active' : ''}`} title="연차관리" onClick={() => setMobileOpen(false)}>
             <CalendarCheck size={18} /> {!collapsed && '연차관리'}
@@ -108,6 +139,22 @@ export default function Layout() {
         <Link to="/rooms" className={`nav-item ${isActive('/rooms') ? 'active' : ''}`} title="회의실 예약" onClick={() => setMobileOpen(false)}>
           <DoorOpen size={18} /> {!collapsed && '회의실 예약'}
         </Link>
+        {canUseDocumentGeneration && (
+          <>
+        <div className="nav-divider" />
+        {!collapsed && <span className="nav-label">자료 생성</span>}
+        {!isFreelancer && (
+          <Link to="/briefing-materials" className={`nav-item ${isActive('/briefing-materials') ? 'active' : ''}`} title="업무 자동화" onClick={() => setMobileOpen(false)}>
+            <FileText size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>업무 자동화</span>}
+          </Link>
+        )}
+        {!isFreelancer && (
+          <Link to="/rights-analysis-guarantee" className={`nav-item ${isActive('/rights-analysis-guarantee') ? 'active' : ''}`} title="권리분석 보증서" onClick={() => setMobileOpen(false)}>
+            <FileSignature size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>권리분석 보증서</span>}
+          </Link>
+        )}
+          </>
+        )}
         {canViewContractTracker && (
           <Link to="/contract-tracker" className={`nav-item ${isActive('/contract-tracker') ? 'active' : ''}`} title="컨설턴트 계약관리" onClick={() => setMobileOpen(false)}>
             <FileSignature size={18} /> {!collapsed && '컨설턴트 계약관리'}
@@ -139,6 +186,11 @@ export default function Layout() {
             <Link to="/review" className={`nav-item ${isActive('/review') ? 'active' : ''}`} title="문서 승인" onClick={() => setMobileOpen(false)}>
               <CheckCircle size={18} /> {!collapsed && '문서 승인'}
             </Link>
+            {canViewBidHistory && (
+              <Link to="/bid-history" className={`nav-item ${isActive('/bid-history') ? 'active' : ''}`} title="경매분석" onClick={() => setMobileOpen(false)}>
+                <CalendarDays size={18} /> {!collapsed && '경매분석'}
+              </Link>
+            )}
           </>
         )}
 
@@ -188,21 +240,31 @@ export default function Layout() {
             <MessageSquare size={18} /> {!collapsed && '카카오 발송내역'}
           </Link>
         )}
-        {(canAccounting || canPayroll) && (
+        {canManagementSupport && (
           <>
             <div className="nav-divider" />
             {!collapsed && <span className="nav-label">회계</span>}
             {canAccounting && (
-              <Link to="/accounting" className={`nav-item ${isActive('/accounting') ? 'active' : ''}`} title="회계장부" onClick={() => setMobileOpen(false)}>
+              <Link to="/accounting" className={`nav-item ${isAccountingBookActive ? 'active' : ''}`} title="회계장부" onClick={() => setMobileOpen(false)}>
                 <BookOpenCheck size={18} /> {!collapsed && '회계장부'}
               </Link>
             )}
-            <Link to="/payroll" className={`nav-item ${isActive('/payroll') ? 'active' : ''}`} title="급여정산" onClick={() => setMobileOpen(false)}>
-              <Receipt size={18} /> {!collapsed && '급여정산'}
-            </Link>
+            {canPayroll && (
+              <Link to="/payroll" className={`nav-item ${isActive('/payroll') ? 'active' : ''}`} title="급여정산" onClick={() => setMobileOpen(false)}>
+                <Receipt size={18} /> {!collapsed && '급여정산'}
+              </Link>
+            )}
             {canFinanceAnalytics && (
               <Link to="/finance-analytics" className={`nav-item ${isActive('/finance-analytics') ? 'active' : ''}`} title="회계분석" onClick={() => setMobileOpen(false)}>
                 <PieChart size={18} /> {!collapsed && '회계분석'}
+              </Link>
+            )}
+            <Link to="/management-support" className={`nav-item ${isActive('/management-support') ? 'active' : ''}`} title="경영지원" onClick={() => setMobileOpen(false)}>
+              <Briefcase size={18} /> {!collapsed && '경영지원'}
+            </Link>
+            {canAccounting && !isRestrictedAsst && (
+              <Link to="/accounting-session2/reports" className={`nav-item ${isActive('/accounting-session2/reports') ? 'active' : ''}`} title="출력물" onClick={() => setMobileOpen(false)}>
+                <FileSpreadsheet size={18} /> {!collapsed && '출력물'}
               </Link>
             )}
           </>

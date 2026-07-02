@@ -67,7 +67,7 @@ journalAlerts.post('/:type/:id/dismiss', async (c) => {
 
   const row = await db.prepare(`SELECT user_id FROM ${table} WHERE id = ?`).bind(id).first<{ user_id: string }>();
   if (!row) return c.json({ error: 'alert을 찾을 수 없습니다.' }, 404);
-  if (row.user_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
+  if (row.user_id !== user.sub && !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
