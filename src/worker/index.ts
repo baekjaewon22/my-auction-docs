@@ -33,6 +33,7 @@ import freelancerBidsRoute from './routes/freelancer-bids';
 import systemSettingsRoute from './routes/system-settings';
 import reportRoute from './routes/report';
 import auctionReferenceRoute from './routes/auction-reference';
+import announcementPopupsRoute from './routes/announcement-popups';
 import { jwtVerify } from 'jose';
 import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
@@ -109,6 +110,7 @@ app.route('/api/freelancer-bids', freelancerBidsRoute);
 app.route('/api/system', systemSettingsRoute);
 app.route('/api/report', reportRoute);
 app.route('/api/auction-reference', auctionReferenceRoute);
+app.route('/api/announcement-popups', announcementPopupsRoute);
 
 // OAuth 콜백 — Google이 /oauth/drive/callback 으로 redirect (최상위 경로)
 app.get('/oauth/drive/callback', async (c) => {

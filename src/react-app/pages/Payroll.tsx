@@ -13,7 +13,7 @@ import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
-function truncMoney(n: number): number { return Math.trunc(Number(n) || 0); }
+function truncMoney(n: number): number { return Math.trunc((Number(n) || 0) / 10) * 10; }
 function payrollMoney(n: number, month: string): number {
   return /^\d{4}-\d{2}$/.test(month) && month >= '2026-06'
     ? truncMoney(n)
@@ -309,7 +309,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const afterDeduction = basePay - joiningBaseDeduction - terminationBaseDeduction - deductionNum - unpaidDeduction - extraDeductionNum - terminationLeaveDeduction;
   const caseAllowanceValue = caseAllowance?.bonus || 0;
   const contractAwardAmount = (data?.is_payout_month && data?.contract_award?.rank) ? (data.contract_award.award || 0) : 0;
-  const totalPay = s ? afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount : 0;
+  const totalPay = s ? payrollMoney(afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount, selectedMonth) : 0;
 
   if (requireBranchSelection && searchParams.get('branch') === null) {
     return (
@@ -1062,7 +1062,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
               ))}
               <div className="payroll-bonus-row grand-total">
                 <span>총 지급액</span>
-                <span className="num">{fmtWon(totalPay + commExtras.reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0) - commDeductions.reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0))}</span>
+                <span className="num">{fmtWon(payrollMoney(totalPay + commExtras.reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0) - commDeductions.reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0), selectedMonth))}</span>
               </div>
             </div>
 
@@ -1295,7 +1295,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         const mBonus = s.bonus; // 백엔드에서 짝수월만 계산
         const mJoiningDeduction = joining?.base_deduction || 0;
         const mTerminationNet = (termination?.leave_payout || 0) - (termination?.leave_deduction || 0) - (termination?.base_deduction || 0);
-        const mTotalPay = s.salary + s.position_allowance + mBonus + mTerminationNet - mJoiningDeduction;
+        const mTotalPay = payrollMoney(s.salary + s.position_allowance + mBonus + mTerminationNet - mJoiningDeduction, selectedMonth);
         const mProfit = mNet - mTotalPay;
         const monthLabel = selectedMonth.replace('-', '년 ') + '월';
         return (

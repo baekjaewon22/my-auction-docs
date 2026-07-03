@@ -3,6 +3,7 @@ import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { isHeadOfficeBranch } from '../lib/branchAliases';
+import { buildOrgApprovalChain } from '../lib/org-approval-chain';
 
 const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
@@ -68,6 +69,56 @@ function isJulyOrAugustDate(value: string): boolean {
   return month === 7 || month === 8;
 }
 
+function parseDateString(value: string): Date | null {
+  const [year, month, day] = String(value || '').slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function formatDateString(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function isWeekendDate(date: Date): boolean {
+  const day = date.getUTCDay();
+  return day === 0 || day === 6;
+}
+
+async function getLeaveHolidayDates(db: D1Database, startDate: string, endDate: string): Promise<Set<string>> {
+  const startYear = Number(String(startDate || '').slice(0, 4));
+  const endYear = Number(String(endDate || startDate || '').slice(0, 4));
+  if (!startYear || !endYear) return new Set();
+  const fromYear = Math.min(startYear, endYear);
+  const toYear = Math.max(startYear, endYear);
+  try {
+    const result = await db.prepare(`
+      SELECT holiday_date
+      FROM system_holidays
+      WHERE enabled = 1
+        AND applies_to IN ('all', 'leave')
+        AND substr(holiday_date, 1, 4) >= ?
+        AND substr(holiday_date, 1, 4) <= ?
+    `).bind(String(fromYear), String(toYear)).all<{ holiday_date: string }>();
+    return new Set((result.results || []).map((row) => row.holiday_date).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+function countLeaveBusinessDays(startDate: string, endDate: string, holidays = new Set<string>()): number {
+  const start = parseDateString(startDate);
+  const end = parseDateString(endDate);
+  if (!start || !end || end < start) return 1;
+  const cursor = new Date(start);
+  let count = 0;
+  while (cursor <= end) {
+    const dateText = formatDateString(cursor);
+    if (!isWeekendDate(cursor) && !holidays.has(dateText)) count += 1;
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return Math.max(1, count);
+}
+
 async function hasActiveSummerVacationRequest(db: D1Database, userId: string, year: string): Promise<boolean> {
   const row = await db.prepare(`
     SELECT id FROM leave_requests
@@ -81,35 +132,21 @@ async function hasActiveSummerVacationRequest(db: D1Database, userId: string, ye
   return Boolean(row);
 }
 
-async function isDirectOrgParent(db: D1Database, approverId: string, requesterId: string): Promise<boolean> {
-  const row = await db.prepare(`
-    SELECT 1
-    FROM org_nodes child
-    JOIN org_nodes parent ON parent.id = child.parent_id
-    WHERE child.user_id = ?
-      AND parent.user_id = ?
-    LIMIT 1
-  `).bind(requesterId, approverId).first();
-  return Boolean(row);
-}
-
-async function getDirectOrgParentPhone(db: D1Database, requesterId: string): Promise<string> {
-  const row = await db.prepare(`
-    SELECT u.phone
-    FROM org_nodes child
-    JOIN org_nodes parent ON parent.id = child.parent_id
-    JOIN users u ON u.id = parent.user_id
-    WHERE child.user_id = ?
-      AND u.approved = 1
-      AND u.phone != ''
-    LIMIT 1
-  `).bind(requesterId).first<{ phone: string }>();
-  return row?.phone || '';
-}
+const LEAVE_APPROVER_ROLES = new Set(['admin', 'manager', 'accountant', 'cc_ref']);
 
 async function getLeaveApprovalNotifyPhones(db: D1Database, requesterId: string): Promise<string[]> {
-  const directParentPhone = await getDirectOrgParentPhone(db, requesterId);
-  if (directParentPhone) return [directParentPhone];
+  const chain = await buildOrgApprovalChain(db, requesterId);
+  for (const approverId of chain) {
+    const approver = await db.prepare(`
+      SELECT phone
+      FROM users
+      WHERE id = ?
+        AND approved = 1
+        AND phone != ''
+      LIMIT 1
+    `).bind(approverId).first<{ phone: string }>();
+    if (approver?.phone) return [approver.phone];
+  }
 
   const fallback = await db.prepare(
     "SELECT phone FROM users WHERE role IN ('master', 'ceo') AND approved = 1 AND phone != ''"
@@ -123,10 +160,32 @@ async function canApproveLeaveRequest(
   req: any,
 ): Promise<boolean> {
   if (['master', 'ceo'].includes(user.role)) return true;
-  if (['admin', 'manager', 'accountant', 'cc_ref'].includes(user.role)) {
-    return isDirectOrgParent(db, user.sub, req.user_id);
+  if (!LEAVE_APPROVER_ROLES.has(user.role)) return false;
+  const chain = await buildOrgApprovalChain(db, req.user_id);
+  return chain.includes(user.sub);
+}
+
+async function filterLeaveRequestsByApprovalLine(
+  db: D1Database,
+  user: { sub: string; role: string },
+  requests: any[],
+): Promise<any[]> {
+  if (['master', 'ceo'].includes(user.role)) return requests;
+  if (!LEAVE_APPROVER_ROLES.has(user.role)) return [];
+
+  const visible: any[] = [];
+  const chainCache = new Map<string, string[]>();
+  for (const request of requests) {
+    const requesterId = String(request.user_id || '');
+    if (!requesterId) continue;
+    let chain = chainCache.get(requesterId);
+    if (!chain) {
+      chain = await buildOrgApprovalChain(db, requesterId);
+      chainCache.set(requesterId, chain);
+    }
+    if (chain.includes(user.sub)) visible.push(request);
   }
-  return false;
+  return visible;
 }
 
 function halfDayTimeRange(period?: string): string {
@@ -803,17 +862,15 @@ leave.post('/request', async (c) => {
     const hours = body.hours || 1;
     deductHours = Math.round(hours * 1000) / 1000;
   } else if (requestedLeaveType === '특별휴가') {
-    // 특별휴가: 시작~종료일 기준
-    const start = new Date(body.start_date);
-    const end = new Date(body.end_date);
-    deductHours = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1) * HOURS_PER_DAY;
+    // 특별휴가: 주말 및 휴가 적용 공휴일 제외한 근무일 기준
+    const holidays = await getLeaveHolidayDates(db, body.start_date, body.end_date);
+    deductHours = countLeaveBusinessDays(body.start_date, body.end_date, holidays) * HOURS_PER_DAY;
     if (isRewardVacationReason(body.reason) && deductHours !== HOURS_PER_DAY) {
       return c.json({ error: '포상휴가는 1일만 신청할 수 있습니다.' }, 400);
     }
   } else if (requestedLeaveType === '연차') {
-    const start = new Date(body.start_date);
-    const end = new Date(body.end_date);
-    deductHours = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1) * HOURS_PER_DAY;
+    const holidays = await getLeaveHolidayDates(db, body.start_date, body.end_date);
+    deductHours = countLeaveBusinessDays(body.start_date, body.end_date, holidays) * HOURS_PER_DAY;
   }
   const days = hoursToDays(deductHours);
 
@@ -884,6 +941,7 @@ leave.get('/requests', async (c) => {
   const filterUserId = c.req.query('user_id') || '';
 
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'].includes(user.role);
+  const needsApprovalLineFilter = LEAVE_APPROVER_ROLES.has(user.role) && (status === 'pending' || status === 'cancel_requested');
 
   let query = `SELECT lr.*, u.name as user_name, u.role as user_role FROM leave_requests lr
     LEFT JOIN users u ON lr.user_id = u.id WHERE 1=1`;
@@ -896,19 +954,10 @@ leave.get('/requests', async (c) => {
   } else if (!isAdmin) {
     query += ' AND lr.user_id = ?';
     params.push(user.sub);
-  } else if (['admin', 'manager', 'accountant', 'cc_ref'].includes(user.role) && (status === 'pending' || status === 'cancel_requested')) {
-    query += ` AND EXISTS (
-      SELECT 1
-      FROM org_nodes child
-      JOIN org_nodes parent ON parent.id = child.parent_id
-      WHERE child.user_id = lr.user_id
-        AND parent.user_id = ?
-    )`;
-    params.push(user.sub);
-  } else if (user.role === 'manager') {
+  } else if (!needsApprovalLineFilter && user.role === 'manager') {
     query += ' AND lr.branch = ? AND lr.department = ?';
     params.push(user.branch, user.department);
-  } else if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
+  } else if (!needsApprovalLineFilter && user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     query += ' AND lr.branch = ?';
     params.push(user.branch);
   }
@@ -925,7 +974,12 @@ leave.get('/requests', async (c) => {
   query += ' ORDER BY lr.created_at DESC';
   const stmt = db.prepare(query);
   const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all();
-  return c.json({ requests: result.results });
+  const requests = result.results || [];
+  return c.json({
+    requests: needsApprovalLineFilter
+      ? await filterLeaveRequestsByApprovalLine(db, user, requests)
+      : requests,
+  });
 });
 
 // ───── 휴가 승인/반려 (관리자+) ─────

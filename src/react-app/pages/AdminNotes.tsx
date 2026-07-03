@@ -256,6 +256,177 @@ function FeeCalculationTool() {
   );
 }
 
+type AnnouncementPopupForm = {
+  id?: string;
+  title: string;
+  content: string;
+  enabled: boolean;
+  start_at: string;
+  end_at: string;
+  dismiss_days: number;
+};
+
+const DEFAULT_POPUP_CONTENT = `법무법인 명승으로 변경됨에 따라 브리핑 자료 및 권리분석보증서 템플릿이 변경되었습니다.
+
+현재 작성 중인 자료가 있는 경우에는 기존 템플릿을 그대로 사용해 주시고,
+다음 주부터 제출되는 자료는 변경된 템플릿을 사용해 주시기 바랍니다.
+
+변경된 자료는
+마이옥션 오피스 > 사내 커뮤니티 > 자료실에서 다운로드하실 수 있습니다.
+
+또한 계약서 등 관련 서류는 이폼사인에 변경 사항 반영이 완료되었습니다.`;
+
+const defaultPopupForm = (): AnnouncementPopupForm => ({
+  title: '브리핑 자료 및 권리분석보증서 템플릿 변경 안내',
+  content: DEFAULT_POPUP_CONTENT,
+  enabled: true,
+  start_at: new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10),
+  end_at: '',
+  dismiss_days: 7,
+});
+
+function PopupNoticeManager({ canManage }: { canManage: boolean }) {
+  const [popups, setPopups] = useState<any[]>([]);
+  const [form, setForm] = useState<AnnouncementPopupForm>(defaultPopupForm);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const editing = Boolean(form.id);
+
+  const loadPopups = async () => {
+    if (!canManage) return;
+    setLoading(true);
+    try {
+      const res = await api.announcementPopups.list();
+      setPopups(res.popups || []);
+    } catch (err: any) {
+      alert(err.message || '팝업 목록을 불러오지 못했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadPopups(); }, [canManage]);
+
+  const editPopup = (popup: any) => {
+    setForm({
+      id: popup.id,
+      title: popup.title || '',
+      content: popup.content || '',
+      enabled: popup.enabled !== 0,
+      start_at: String(popup.start_at || '').slice(0, 10),
+      end_at: String(popup.end_at || '').slice(0, 10),
+      dismiss_days: Number(popup.dismiss_days || 7),
+    });
+  };
+
+  const reset = () => setForm(defaultPopupForm());
+
+  const save = async () => {
+    if (!form.title.trim()) { alert('팝업 제목을 입력하세요.'); return; }
+    if (!form.content.trim()) { alert('팝업 내용을 입력하세요.'); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        title: form.title,
+        content: form.content,
+        enabled: form.enabled,
+        start_at: form.start_at,
+        end_at: form.end_at,
+        dismiss_days: form.dismiss_days,
+      };
+      if (form.id) await api.announcementPopups.update(form.id, payload);
+      else await api.announcementPopups.create(payload);
+      reset();
+      await loadPopups();
+    } catch (err: any) {
+      alert(err.message || '팝업을 저장하지 못했습니다.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const endPopup = async (popup: any) => {
+    if (!confirm(`"${popup.title}" 팝업을 종료할까요?`)) return;
+    await api.announcementPopups.end(popup.id);
+    await loadPopups();
+  };
+
+  const deletePopup = async (popup: any) => {
+    if (!confirm(`"${popup.title}" 팝업을 삭제할까요?`)) return;
+    await api.announcementPopups.delete(popup.id);
+    await loadPopups();
+  };
+
+  if (!canManage) return null;
+
+  return (
+    <section className="popup-manager-panel">
+      <div className="popup-manager-head">
+        <div>
+          <h3>공지 팝업 관리</h3>
+          <p>대시보드 최초 진입 시 표시할 팝업을 등록하고 종료할 수 있습니다.</p>
+        </div>
+        <button className="btn btn-sm" type="button" onClick={reset}>새 팝업</button>
+      </div>
+
+      <div className="popup-manager-grid">
+        <div className="popup-manager-form">
+          <label>팝업 제목</label>
+          <input className="form-input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+
+          <label>팝업 내용</label>
+          <textarea className="form-input" rows={7} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} />
+
+          <div className="popup-manager-fields">
+            <div>
+              <label>시작일</label>
+              <input className="form-input" type="date" value={form.start_at} onChange={(e) => setForm({ ...form, start_at: e.target.value })} />
+            </div>
+            <div>
+              <label>종료일</label>
+              <input className="form-input" type="date" value={form.end_at} onChange={(e) => setForm({ ...form, end_at: e.target.value })} />
+            </div>
+            <div>
+              <label>숨김 기간</label>
+              <input className="form-input" type="number" min={1} max={30} value={form.dismiss_days} onChange={(e) => setForm({ ...form, dismiss_days: Number(e.target.value || 7) })} />
+            </div>
+          </div>
+
+          <label className="popup-manager-check">
+            <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
+            <span>활성 상태로 노출</span>
+          </label>
+
+          <div className="popup-manager-actions">
+            <button className="btn btn-primary" type="button" onClick={save} disabled={saving}>{saving ? '저장 중...' : editing ? '수정 저장' : '팝업 등록'}</button>
+            {editing && <button className="btn" type="button" onClick={reset}>취소</button>}
+          </div>
+        </div>
+
+        <div className="popup-manager-list">
+          {loading ? (
+            <div className="empty-state">불러오는 중...</div>
+          ) : popups.length === 0 ? (
+            <div className="empty-state">등록된 팝업이 없습니다.</div>
+          ) : popups.map((popup) => (
+            <article key={popup.id} className={`popup-manager-item ${popup.enabled ? 'active' : ''}`}>
+              <div>
+                <strong>{popup.title}</strong>
+                <span>{popup.enabled ? '노출 중' : '종료됨'} · {String(popup.updated_at || popup.created_at || '').slice(0, 10)}</span>
+              </div>
+              <div className="popup-manager-item-actions">
+                <button className="btn btn-sm" type="button" onClick={() => editPopup(popup)}>수정</button>
+                {popup.enabled !== 0 && <button className="btn btn-sm" type="button" onClick={() => endPopup(popup)}>종료</button>}
+                <button className="btn btn-sm btn-danger" type="button" onClick={() => deletePopup(popup)}>삭제</button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function escapeHtml(value: string) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -1101,6 +1272,11 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           {communitySection === 'article_news' && (
             <div style={{ flexBasis: '100%', color: '#5f6368', fontSize: '0.82rem', padding: '2px 0 0 2px' }}>
               매일 오전 08:00 업로드 됩니다.
+            </div>
+          )}
+          {communitySection === 'notice' && (
+            <div style={{ flexBasis: '100%' }}>
+              <PopupNoticeManager canManage={canCreateNotice} />
             </div>
           )}
         </div>

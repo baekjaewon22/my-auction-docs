@@ -15,7 +15,7 @@ const CONTRACT_AWARD_MIN_COUNT = 10;
 const LEAVE_HOURS_PER_DAY = 8;
 const CASE_ALLOWANCE_EXCLUDED_FROM_BONUS_BASIS_FROM = '2026-06';
 const PAYROLL_TRUNCATE_MONEY_FROM = '2026-06';
-const truncMoney = (value: number): number => Math.trunc(Number(value) || 0);
+const truncMoney = (value: number): number => Math.trunc((Number(value) || 0) / 10) * 10;
 const shouldTruncatePayrollMoney = (month: string): boolean => /^\d{4}-\d{2}$/.test(month) && month >= PAYROLL_TRUNCATE_MONEY_FROM;
 const payrollMoney = (value: number, month: string): number => (
   shouldTruncatePayrollMoney(month) ? truncMoney(value) : Math.round(Number(value) || 0)

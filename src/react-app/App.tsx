@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from './store';
+import { api } from './api';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -55,12 +56,98 @@ import Print from './pages/Print';
 import FreelancerBidHistory from './pages/FreelancerBidHistory';
 import BriefingMaterials from './pages/BriefingMaterials';
 import RightsAnalysisGuarantee from './pages/RightsAnalysisGuarantee';
+import { X } from 'lucide-react';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const PROFIT_LOSS_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const LABOR_COST_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+const openedAnnouncementPopupIds = new Set<string>();
+
+function escapePopupHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function openAnnouncementWindow(popup: any): boolean {
+  const id = String(popup?.id || '');
+  if (!id || openedAnnouncementPopupIds.has(id)) return true;
+
+  const popupWindow = window.open('', `announcement-popup-${id}`, 'width=520,height=560,left=120,top=90,resizable=yes,scrollbars=yes');
+  if (!popupWindow) return false;
+
+  openedAnnouncementPopupIds.add(id);
+  const dismissDays = Math.max(1, Number(popup.dismiss_days || 7));
+  const origin = escapePopupHtml(window.location.origin);
+  const title = escapePopupHtml(popup.title || '공지사항');
+  const contentHtml = String(popup.content || '')
+    .split('\n')
+    .map((line) => line.trim()
+      ? `<p>${escapePopupHtml(line)}</p>`
+      : '<div class="gap"></div>')
+    .join('');
+
+  popupWindow.document.open();
+  popupWindow.document.write(`<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f8fb; color: #172033; }
+    .wrap { min-height: 100vh; padding: 22px; display: flex; align-items: stretch; }
+    .card { width: 100%; background: #fff; border: 1px solid #d8dee8; box-shadow: 0 10px 26px rgba(18, 31, 56, .12); border-radius: 8px; display: flex; flex-direction: column; }
+    .head { padding: 20px 22px 14px; border-bottom: 1px solid #e7ebf1; }
+    .kicker { display: block; font-size: 12px; font-weight: 700; color: #1a73e8; margin-bottom: 7px; }
+    h1 { margin: 0; font-size: 20px; line-height: 1.35; letter-spacing: 0; color: #101828; }
+    .body { padding: 18px 22px 14px; flex: 1; overflow: auto; }
+    p { margin: 0 0 11px; font-size: 14px; line-height: 1.75; color: #334155; word-break: keep-all; }
+    .gap { height: 8px; }
+    .foot { padding: 14px 22px 18px; border-top: 1px solid #e7ebf1; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    label { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: #475569; user-select: none; }
+    input { width: 15px; height: 15px; }
+    button { border: 0; border-radius: 6px; padding: 8px 15px; background: #1a73e8; color: #fff; font-weight: 700; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="card">
+      <div class="head">
+        <span class="kicker">공지사항</span>
+        <h1>${title}</h1>
+      </div>
+      <div class="body">${contentHtml}</div>
+      <div class="foot">
+        <label><input id="hide-week" type="checkbox" /> 일주일간 보지않기</label>
+        <button id="close-button" type="button">확인</button>
+      </div>
+    </section>
+  </div>
+  <script>
+    document.getElementById('close-button').addEventListener('click', function () {
+      if (document.getElementById('hide-week').checked) {
+        localStorage.setItem('announcement-popup-dismiss-until:${escapePopupHtml(id)}', String(Date.now() + ${dismissDays} * 86400000));
+        if (window.opener) {
+          window.opener.postMessage({ type: 'announcement-popup-dismissed', id: '${escapePopupHtml(id)}' }, '${origin}');
+        }
+      }
+      window.close();
+    });
+  </script>
+</body>
+</html>`);
+  popupWindow.document.close();
+  popupWindow.focus();
+  return true;
+}
+
 function ContractTrackerRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
@@ -249,6 +336,119 @@ function FinanceAnalyticsRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function AnnouncementPopupGate() {
+  const { user } = useAuthStore();
+  const location = useLocation();
+  const [fallbackPopup, setFallbackPopup] = useState<any | null>(null);
+  const [hideForWeek, setHideForWeek] = useState(false);
+  const popupTestMode = import.meta.env.DEV && new URLSearchParams(location.search).get('popupTest') === '1';
+
+  const clearFallbackIfDismissed = (id: string) => {
+    const dismissUntil = Number(localStorage.getItem(`announcement-popup-dismiss-until:${id}`) || 0);
+    if (dismissUntil && dismissUntil >= Date.now()) {
+      setFallbackPopup((current: any | null) => (String(current?.id || '') === id ? null : current));
+      setHideForWeek(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) {
+      setFallbackPopup(null);
+      setHideForWeek(false);
+      return;
+    }
+    if (location.pathname.startsWith('/login') || location.pathname.startsWith('/print')) return;
+
+    let alive = true;
+    api.announcementPopups.active()
+      .then((res) => {
+        if (!alive) return;
+        const activePopup = res.popup;
+        if (!activePopup) {
+          setFallbackPopup(null);
+          return;
+        }
+        const dismissUntil = Number(localStorage.getItem(`announcement-popup-dismiss-until:${activePopup.id}`) || 0);
+        if (popupTestMode || !dismissUntil || dismissUntil < Date.now()) {
+          const opened = openAnnouncementWindow(activePopup);
+          setFallbackPopup(opened && !popupTestMode ? null : activePopup);
+        } else {
+          setFallbackPopup(null);
+        }
+      })
+      .catch(() => {});
+
+    return () => { alive = false; };
+  }, [user?.id, popupTestMode]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === 'announcement-popup-dismissed' && event.data?.id) {
+        clearFallbackIfDismissed(String(event.data.id));
+      }
+    };
+    const onStorage = (event: StorageEvent) => {
+      const prefix = 'announcement-popup-dismiss-until:';
+      if (event.key?.startsWith(prefix)) {
+        clearFallbackIfDismissed(event.key.slice(prefix.length));
+      }
+    };
+    window.addEventListener('message', onMessage);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
+  const closePopup = () => {
+    if (fallbackPopup && hideForWeek) {
+      const days = Math.max(1, Number(fallbackPopup.dismiss_days || 7));
+      localStorage.setItem(`announcement-popup-dismiss-until:${fallbackPopup.id}`, String(Date.now() + days * 86400000));
+    }
+    setFallbackPopup(null);
+    setHideForWeek(false);
+  };
+
+  if (!fallbackPopup) return null;
+
+  return (
+    <div className="announcement-popup-floating" role="status">
+      <section className="announcement-popup-card announcement-popup-card-floating" aria-labelledby="announcement-popup-title">
+        <div className="announcement-popup-head">
+          <div>
+            <span className="announcement-popup-kicker">공지사항</span>
+            <h3 id="announcement-popup-title">{fallbackPopup.title}</h3>
+          </div>
+          <button className="announcement-popup-close" type="button" onClick={closePopup} aria-label="공지 닫기">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="announcement-popup-body">
+          {String(fallbackPopup.content || '').split('\n').map((line: string, index: number) => (
+            line.trim() ? <p key={index}>{line}</p> : <div key={index} className="announcement-popup-gap" />
+          ))}
+        </div>
+        <div className="announcement-popup-foot">
+          <label className="announcement-popup-check">
+            <input
+              type="checkbox"
+              checked={hideForWeek}
+              onChange={(event) => setHideForWeek(event.target.checked)}
+            />
+            <span>일주일간 보지않기</span>
+          </label>
+          {import.meta.env.DEV && (
+            <button className="btn btn-sm" type="button" onClick={() => openAnnouncementWindow(fallbackPopup)}>새창 열기</button>
+          )}
+          <button className="btn btn-primary btn-sm" type="button" onClick={closePopup}>확인</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   const { loadUser, loading } = useAuthStore();
 
@@ -260,6 +460,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      <AnnouncementPopupGate />
       <Routes>
         <Route path="/login" element={<Login />} />
         {/* 인쇄 전용 (서버 Puppeteer가 접근) — 인증 불필요, printToken으로 데이터 조회 */}

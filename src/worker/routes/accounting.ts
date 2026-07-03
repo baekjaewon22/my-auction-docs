@@ -291,7 +291,7 @@ function payrollMoney(value: unknown): number {
 
 function payrollSettlementMoney(value: number, month: string): number {
   return /^\d{4}-\d{2}$/.test(month) && month >= '2026-06'
-    ? Math.trunc(Number(value) || 0)
+    ? Math.trunc((Number(value) || 0) / 10) * 10
     : Math.round(Number(value) || 0);
 }
 

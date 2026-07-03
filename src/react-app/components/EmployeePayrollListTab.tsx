@@ -23,7 +23,7 @@ type PayrollListRow = {
 };
 
 function fmt(n: number): string { return (n || 0).toLocaleString('ko-KR'); }
-function truncMoney(n: number): number { return Math.trunc(Number(n) || 0); }
+function truncMoney(n: number): number { return Math.trunc((Number(n) || 0) / 10) * 10; }
 function payrollMoney(n: number, month: string): number {
   return /^\d{4}-\d{2}$/.test(month) && month >= '2026-06'
     ? truncMoney(n)
@@ -145,7 +145,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
           let rowContractAward = contractAward;
           let rowExtraPay = manualExtraPay + commExtraRaw + terminationLeavePayout;
           let rowDeduction = deduction;
-          let totalPay = rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay;
+          let totalPay = payrollMoney(rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay, month);
 
           if (isCommission) {
             const rate = Number(accounting.commission_rate || 0);
@@ -188,7 +188,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             const tax33 = truncMoney(taxableIncome * 0.033);
             const contractAwardTax = truncMoney(contractAward * 0.033);
             const contractAwardNet = contractAward - contractAwardTax;
-            totalPay = totalIncome - preTaxDeductions - tax33 - otherDeductions + contractAwardNet;
+            totalPay = payrollMoney(totalIncome - preTaxDeductions - tax33 - otherDeductions + contractAwardNet, month);
             rowBasePay = commissionAmount + proxyIncome;
             rowPerformanceBonus = 0;
             rowCaseAllowance = 0;

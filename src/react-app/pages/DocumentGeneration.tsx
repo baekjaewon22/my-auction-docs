@@ -6,7 +6,7 @@ import { DEFAULT_AUCTION_REFERENCES, type AuctionReferenceItem, type AuctionRefe
 import { useAuthStore } from '../store';
 
 type View = 'select' | 'input' | 'progress' | 'result' | 'history';
-type DocumentToolTab = 'briefing' | 'rightsReference' | 'checklistReference';
+type DocumentToolTab = 'briefing' | 'rightsReference' | 'checklistReference' | 'plannerReference';
 
 const BRIEFING_STEPS = ['브라우저 준비', '사이트 파싱', 'PPT 기본값 입력', '문서 캡처', 'PPT 이미지 삽입', '저장 완료'];
 const RIGHTS_STEPS = ['브라우저 준비', '물건정보 확인', '매각물건명세서 확인', '권리분석 문구 구성', '보증서 템플릿 입력', 'PDF/PPTX 변환', '저장 완료'];
@@ -209,7 +209,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   const referenceType: AuctionReferenceType | null = toolTab === 'checklistReference' ? 'checklist' : null;
 
   return (
-    <div className="page">
+    <div className={`page${toolTab === 'plannerReference' ? ' document-page-planner' : ''}`}>
       <div className="page-header">
         <h2><FileText size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 자료 생성</h2>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -228,10 +228,13 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
         <button className={toolTab === 'briefing' ? 'active' : ''} onClick={() => setToolTab('briefing')}>업무 자동화</button>
         <button className={toolTab === 'rightsReference' ? 'active' : ''} onClick={() => setToolTab('rightsReference')}>권리분석</button>
         <button className={toolTab === 'checklistReference' ? 'active' : ''} onClick={() => setToolTab('checklistReference')}>물건별 체크리스트</button>
+        <button className={toolTab === 'plannerReference' ? 'active' : ''} onClick={() => setToolTab('plannerReference')}>옥션플래너</button>
       </div>
 
       {toolTab === 'rightsReference' ? (
         <RightsLegalReferencePanel canManage={user?.role === 'master'} />
+      ) : toolTab === 'plannerReference' ? (
+        <PlannerReferencePanel />
       ) : referenceType ? (
         <ChecklistReferencePanel canManage={user?.role === 'master'} />
       ) : (
@@ -900,6 +903,144 @@ function ChecklistReferencePanel({ canManage }: { canManage: boolean }) {
       ) : (
         <div className="auction-reference-content">
           {loading && !selected ? '불러오는 중...' : selected ? stripInternalCodes(selected.content) : '표시할 체크리스트가 없습니다.'}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type PlannerCalculatorKey = 'acquisition-tax' | 'brokerage-fee' | 'profit' | 'bid-price' | 'cost-analysis' | 'tenant-registry';
+
+const PLANNER_CALCULATORS: { key: PlannerCalculatorKey; label: string; description: string; frameHeight: number }[] = [
+  { key: 'acquisition-tax', label: '취득세 계산기', description: '부동산 취득 시 납부해야 할 취득세 계산', frameHeight: 1320 },
+  { key: 'brokerage-fee', label: '중개수수료', description: '부동산 임대, 매매 시 중개수수료 계산', frameHeight: 1220 },
+  { key: 'profit', label: '수익률 계산기', description: '투자 수익률 예상 수치 제공', frameHeight: 1500 },
+  { key: 'bid-price', label: '적정입찰가', description: '최적의 입찰가로 낙찰 확률 증가', frameHeight: 1420 },
+  { key: 'cost-analysis', label: '원가분석계산', description: '총 투입 원가 분석', frameHeight: 1560 },
+  { key: 'tenant-registry', label: '임차인등록표', description: '임차인 현황 정리', frameHeight: 1640 },
+];
+
+const AUCTION_PLANNER_EMBED_BASE = (
+  (import.meta as any).env?.VITE_AUCTION_PLANNER_EMBED_BASE || 'https://auction-planner.kr'
+).replace(/\/+$/, '');
+
+type PlannerMessage = {
+  source?: string;
+  type?: string;
+  calculator?: PlannerCalculatorKey | string;
+  payload?: {
+    input?: unknown;
+    inputs?: unknown;
+    [key: string]: unknown;
+  };
+  input?: unknown;
+  inputs?: unknown;
+  timestamp?: string;
+};
+
+function PlannerReferencePanel() {
+  const [selectedCalculator, setSelectedCalculator] = useState<PlannerCalculatorKey>('acquisition-tax');
+  const [message, setMessage] = useState('');
+  const [result, setResult] = useState<PlannerMessage | null>(null);
+  const [refreshToken, setRefreshToken] = useState(() => Date.now());
+
+  const selected = PLANNER_CALCULATORS.find((item) => item.key === selectedCalculator) || PLANNER_CALCULATORS[0];
+  const plannerVersion = selectedCalculator === 'profit' ? '20260702-1' : String(refreshToken);
+  const queryEmbedUrl = `${AUCTION_PLANNER_EMBED_BASE}/embed?calculator=${encodeURIComponent(selectedCalculator)}&v=${plannerVersion}`;
+  const pathEmbedUrl = selectedCalculator === 'profit'
+    ? `${AUCTION_PLANNER_EMBED_BASE}/embed/calculators/profit?calculator=profit&v=${plannerVersion}`
+    : `${AUCTION_PLANNER_EMBED_BASE}/embed/calculators/${selectedCalculator}`;
+  const embedUrl = selectedCalculator === 'profit' ? pathEmbedUrl : queryEmbedUrl;
+  const externalUrl = selectedCalculator === 'profit'
+    ? pathEmbedUrl
+    : `${AUCTION_PLANNER_EMBED_BASE}/embed?calculator=${encodeURIComponent(selectedCalculator)}`;
+  const plannerOrigin = (() => {
+    try {
+      return new URL(AUCTION_PLANNER_EMBED_BASE).origin;
+    } catch {
+      return '';
+    }
+  })();
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (plannerOrigin && event.origin !== plannerOrigin) return;
+      const data = event.data as PlannerMessage;
+      if (!data || data.source !== 'auction-planner') return;
+      if (data.type !== 'calculator-result') return;
+      const normalizedInput = data.input || data.inputs || data.payload?.input || data.payload?.inputs;
+      setResult({
+        ...data,
+        input: normalizedInput || data.input,
+        inputs: data.inputs || data.payload?.inputs,
+      });
+      const label = PLANNER_CALCULATORS.find((item) => item.key === data.calculator)?.label || '옥션플래너';
+      setMessage(`${label} 계산값을 가져왔습니다.`);
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [plannerOrigin]);
+
+  const copyResult = async () => {
+    if (!result) return;
+    await navigator.clipboard.writeText(JSON.stringify(result, null, 2));
+    setMessage('가져온 계산값이 복사되었습니다.');
+  };
+
+  return (
+    <div className="card auction-reference-panel planner-reference-panel">
+      <div className="auction-reference-head">
+        <div>
+          <h3>옥션플래너</h3>
+          <p>카테고리를 선택하면 해당 옥션플래너 계산기로 바로 이동하고, 계산 완료 값은 브리핑자료에서 활용합니다.</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-sm" type="button" onClick={() => setRefreshToken(Date.now())}>새로고침</button>
+          <a className="btn btn-sm" href={externalUrl} target="_blank" rel="noreferrer">새 창에서 열기</a>
+        </div>
+      </div>
+
+      <div className="document-tool-tabs" style={{ marginBottom: 12 }}>
+        {PLANNER_CALCULATORS.map((calculator) => (
+          <button
+            key={calculator.key}
+            className={selectedCalculator === calculator.key ? 'active' : ''}
+            type="button"
+            onClick={() => { setSelectedCalculator(calculator.key); setMessage(''); setResult(null); setRefreshToken(Date.now()); }}
+          >
+            {calculator.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="planner-selected-row">
+        <div>
+          <strong>{selected.label}</strong>
+          <div style={{ fontSize: '0.78rem', color: '#5f6368', marginTop: 3 }}>{selected.description}</div>
+        </div>
+        {message && <div className="auction-reference-message" style={{ margin: 0 }}>{message}</div>}
+      </div>
+
+      <div className="planner-embed-shell">
+        <iframe
+          key={embedUrl}
+          src={embedUrl}
+          title={`옥션플래너 ${selected.label}`}
+          className="planner-embed-frame"
+          style={{ height: selected.frameHeight, minHeight: selected.frameHeight }}
+          loading="lazy"
+        />
+      </div>
+
+      {result !== null && (
+        <div className="auction-reference-content planner-result-content">
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <strong>가져온 계산값</strong>
+              <button className="btn btn-sm" onClick={copyResult}><Copy size={14} /> 계산값 복사</button>
+            </div>
+            {JSON.stringify(result, null, 2)}
+          </>
         </div>
       )}
     </div>

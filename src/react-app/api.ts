@@ -821,6 +821,21 @@ export const api = {
       request('/accounting/staging/' + id, { method: 'DELETE' }),
   },
 
+  announcementPopups: {
+    active: () =>
+      request<{ popup: any | null }>('/announcement-popups/active'),
+    list: () =>
+      request<{ popups: any[] }>('/announcement-popups'),
+    create: (data: Record<string, unknown>) =>
+      request<{ success: boolean; id: string }>('/announcement-popups', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Record<string, unknown>) =>
+      request<{ success: boolean }>('/announcement-popups/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    end: (id: string) =>
+      request<{ success: boolean }>('/announcement-popups/' + id + '/end', { method: 'POST' }),
+    delete: (id: string) =>
+      request<{ success: boolean }>('/announcement-popups/' + id, { method: 'DELETE' }),
+  },
+
   cooperation: {
     list: (filter?: string) =>
       request<{ requests: any[] }>('/cooperation' + (filter ? '?filter=' + filter : '')),

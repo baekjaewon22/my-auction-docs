@@ -50,6 +50,56 @@ function isJulyOrAugustDate(value: string): boolean {
   return month === 7 || month === 8;
 }
 
+function parseDateString(value: string): Date | null {
+  const [year, month, day] = String(value || '').slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function formatDateString(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function isWeekendDate(date: Date): boolean {
+  const day = date.getUTCDay();
+  return day === 0 || day === 6;
+}
+
+function addBusinessDays(startDate: string, days: number): string {
+  const start = parseDateString(startDate);
+  if (!start) return startDate;
+  const targetDays = Math.max(1, Math.floor(Number(days || 1)));
+  const cursor = new Date(start);
+  let counted = 0;
+  while (counted < targetDays) {
+    if (!isWeekendDate(cursor)) counted += 1;
+    if (counted < targetDays) cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return formatDateString(cursor);
+}
+
+function nextBusinessDay(dateText: string): string {
+  const date = parseDateString(dateText);
+  if (!date) return dateText;
+  do {
+    date.setUTCDate(date.getUTCDate() + 1);
+  } while (isWeekendDate(date));
+  return formatDateString(date);
+}
+
+function countBusinessDays(startDate: string, endDate: string): number {
+  const start = parseDateString(startDate);
+  const end = parseDateString(endDate);
+  if (!start || !end || end < start) return 1;
+  const cursor = new Date(start);
+  let count = 0;
+  while (cursor <= end) {
+    if (!isWeekendDate(cursor)) count += 1;
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return Math.max(1, count);
+}
+
 // 타입 색상 매핑 (목록 표시용)
 function getTypeColor(leaveType: string): string {
   if (leaveType === '연차' || leaveType === '월차') return '#1a73e8';
@@ -269,25 +319,26 @@ export default function Leave() {
 
     // ━━━ 여름휴가 전용 제출 (2 API: 특별휴가 + 옵션 연차) ━━━
     if (formType === '특별휴가' && specialSubtype === '여름휴가') {
-      const baseStart = new Date(formStartDate);
       // 여름휴가 구간 계산
-      let summerStart: Date, summerEnd: Date, chainStart: Date | null = null, chainEnd: Date | null = null;
+      let summerStartText: string;
+      let summerEndText: string;
+      let chainStartText = '';
+      let chainEndText = '';
       if (summerChain === 0) {
-        summerStart = baseStart;
-        summerEnd = new Date(baseStart); summerEnd.setDate(summerStart.getDate() + summerDays - 1);
+        summerStartText = formStartDate;
+        summerEndText = addBusinessDays(summerStartText, summerDays);
       } else if (summerChainPos === 'after') {
-        summerStart = baseStart;
-        summerEnd = new Date(baseStart); summerEnd.setDate(summerStart.getDate() + summerDays - 1);
-        chainStart = new Date(summerEnd); chainStart.setDate(summerEnd.getDate() + 1);
-        chainEnd = new Date(chainStart); chainEnd.setDate(chainStart.getDate() + summerChain - 1);
+        summerStartText = formStartDate;
+        summerEndText = addBusinessDays(summerStartText, summerDays);
+        chainStartText = nextBusinessDay(summerEndText);
+        chainEndText = addBusinessDays(chainStartText, summerChain);
       } else {
-        chainStart = baseStart;
-        chainEnd = new Date(baseStart); chainEnd.setDate(chainStart.getDate() + summerChain - 1);
-        summerStart = new Date(chainEnd); summerStart.setDate(chainEnd.getDate() + 1);
-        summerEnd = new Date(summerStart); summerEnd.setDate(summerStart.getDate() + summerDays - 1);
+        chainStartText = formStartDate;
+        chainEndText = addBusinessDays(chainStartText, summerChain);
+        summerStartText = nextBusinessDay(chainEndText);
+        summerEndText = addBusinessDays(summerStartText, summerDays);
       }
-      const fmt = (d: Date) => d.toISOString().slice(0, 10);
-      const rangeDates = [summerStart, summerEnd, chainStart, chainEnd].filter(Boolean).map(d => fmt(d as Date));
+      const rangeDates = [summerStartText, summerEndText, chainStartText, chainEndText].filter(Boolean);
       if (rangeDates.some(d => !isJulyOrAugustDate(d))) {
         alert('여름 특별휴가와 연결 연차는 모두 7~8월 안에서만 사용할 수 있습니다.'); return;
       }
@@ -301,17 +352,17 @@ export default function Leave() {
         await api.leave.createRequest({
           user_id: requestUserId,
           leave_type: '특별휴가',
-          start_date: fmt(summerStart),
-          end_date: fmt(summerEnd),
+          start_date: summerStartText,
+          end_date: summerEndText,
           hours: 8,
           reason: summerReason,
         });
-        if (summerChain > 0 && chainStart && chainEnd) {
+        if (summerChain > 0 && chainStartText && chainEndText) {
           await api.leave.createRequest({
             user_id: requestUserId,
             leave_type: annualType,
-            start_date: fmt(chainStart),
-            end_date: fmt(chainEnd),
+            start_date: chainStartText,
+            end_date: chainEndText,
             hours: 8,
             reason: `[여름휴가 연결] ${summerChain}일`,
           });
@@ -454,9 +505,7 @@ export default function Leave() {
     if (formType === '특별휴가' && specialSubtype === '여름휴가') {
       return summerDays * 8; // 여름휴가 자체는 연차 차감 없음, 이어붙인 연차는 별도 계산
     }
-    const start = new Date(formStartDate);
-    const end = new Date(formEndDate);
-    return Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1) * 8;
+    return countBusinessDays(formStartDate, formEndDate) * 8;
   };
 
   const formatLeavePeriod = (req: LeaveRequest): string => {

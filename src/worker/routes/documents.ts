@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { AuthEnv, Document, OrgNode } from '../types';
+import type { AuthEnv, Document } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { calculateLeaveEntitlement, reinitUserLeave } from './leave';
@@ -12,59 +12,63 @@ import {
 import { dispatchApprovalAlerts } from '../lib/approval-alerts-dispatcher';
 import { recheckAlertsAfterDocumentChange } from '../lib/journal-alerts';
 import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
-import { applyBranchApprovalOverride, getAdminVisibleBranches } from '../lib/branch-approval-overrides';
+import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
+import { buildOrgApprovalChain } from '../lib/org-approval-chain';
 
 const LEAVE_REQUEST_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
 
-// 결재선 자동 계산: 조직도를 위로 탐색하여 승인자 목록 반환
+function parseDateString(value: string): Date | null {
+  const [year, month, day] = String(value || '').slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function formatDateString(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function isWeekendDate(date: Date): boolean {
+  const day = date.getUTCDay();
+  return day === 0 || day === 6;
+}
+
+async function getLeaveHolidayDates(db: D1Database, startDate: string, endDate: string): Promise<Set<string>> {
+  const startYear = Number(String(startDate || '').slice(0, 4));
+  const endYear = Number(String(endDate || startDate || '').slice(0, 4));
+  if (!startYear || !endYear) return new Set();
+  const fromYear = Math.min(startYear, endYear);
+  const toYear = Math.max(startYear, endYear);
+  try {
+    const result = await db.prepare(`
+      SELECT holiday_date
+      FROM system_holidays
+      WHERE enabled = 1
+        AND applies_to IN ('all', 'leave')
+        AND substr(holiday_date, 1, 4) >= ?
+        AND substr(holiday_date, 1, 4) <= ?
+    `).bind(String(fromYear), String(toYear)).all<{ holiday_date: string }>();
+    return new Set((result.results || []).map((row) => row.holiday_date).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+function countLeaveBusinessDays(startDate: string, endDate: string, holidays = new Set<string>()): number {
+  const start = parseDateString(startDate);
+  const end = parseDateString(endDate);
+  if (!start || !end || end < start) return 1;
+  const cursor = new Date(start);
+  let count = 0;
+  while (cursor <= end) {
+    const dateText = formatDateString(cursor);
+    if (!isWeekendDate(cursor) && !holidays.has(dateText)) count += 1;
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return Math.max(1, count);
+}
+
 async function buildApprovalChain(db: D1Database, authorId: string): Promise<string[]> {
-  // 1) 작성자의 org_node 찾기
-  const userNode = await db.prepare(
-    'SELECT * FROM org_nodes WHERE user_id = ?'
-  ).bind(authorId).first<OrgNode>();
-  if (!userNode) return [];
-
-  const author = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(authorId).first<{ role: string; branch: string }>();
-  if (!author) return [];
-
-  // 2) 위로 올라가며 승인자 수집 (본인 제외)
-  // 팀원→팀장→지사장→대표, 팀장→지사장→대표, 관리자→대표
-  const chain: string[] = [];
-  let currentParentId = userNode.parent_id;
-  const maxSteps = author.role === 'admin' ? 1 : author.role === 'manager' ? 2 : 3;
-
-  while (currentParentId && chain.length < maxSteps) {
-    const parentNode = await db.prepare(
-      'SELECT * FROM org_nodes WHERE id = ?'
-    ).bind(currentParentId).first<OrgNode>();
-    if (!parentNode) break;
-
-    if (parentNode.user_id) {
-      // 프리랜서·지원(support) 역할은 결재선에서 제외 — 지원팀/명도팀처럼 보고체계상 중간 노드는 건너뛰고 상위 결재자로 직행
-      const approver = await db.prepare('SELECT login_type, role FROM users WHERE id = ?').bind(parentNode.user_id).first<{ login_type: string; role: string }>();
-      if (approver?.login_type === 'freelancer') { currentParentId = parentNode.parent_id; continue; }
-      if (approver?.role === 'support') { currentParentId = parentNode.parent_id; continue; }
-      chain.push(parentNode.user_id);
-    }
-    currentParentId = parentNode.parent_id;
-  }
-
-  // 3) 최상위급(tier <= 2)이고 chain이 비었으면 → CC 승인자 사용
-  const overrideResult = await applyBranchApprovalOverride(db, chain, authorId, author.branch);
-  chain.splice(0, chain.length, ...overrideResult.chain);
-
-  if (chain.length === 0 && userNode.tier <= 2) {
-    const ccList = await db.prepare(
-      'SELECT cc_user_id FROM approval_cc'
-    ).all<{ cc_user_id: string }>();
-    if (ccList.results) {
-      for (const cc of ccList.results) {
-        chain.push(cc.cc_user_id);
-      }
-    }
-  }
-
-  return chain;
+  return buildOrgApprovalChain(db, authorId);
 }
 
 const documents = new Hono<AuthEnv>();
@@ -608,16 +612,12 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
         if (totalMatch) {
           days = Math.min(31, Math.max(1, parseFloat(totalMatch[1])));
         } else {
-          const diff = Math.round(
-            (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24),
-          ) + 1;
-          days = Math.min(31, Math.max(1, diff));
+          const holidays = await getLeaveHolidayDates(db, startDate, endDate);
+          days = Math.min(31, countLeaveBusinessDays(startDate, endDate, holidays));
         }
       } else {
-        const diff = Math.round(
-          (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24),
-        ) + 1;
-        days = Math.min(31, Math.max(1, diff));
+        const holidays = await getLeaveHolidayDates(db, startDate, endDate);
+        days = Math.min(31, countLeaveBusinessDays(startDate, endDate, holidays));
       }
       const deductHours = leaveType === '반차' ? 4 : days * 8;
       const deductDays = Math.round((deductHours / 8) * 1000) / 1000;
