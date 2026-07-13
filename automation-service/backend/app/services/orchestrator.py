@@ -9,10 +9,13 @@ import os
 import re
 import time
 import logging
+import base64
+import json
 from urllib.parse import urljoin
 from typing import Optional, Callable
 
 from pptx import Presentation
+from pptx.util import Inches, Pt
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -59,6 +62,363 @@ BUILDING_OVERVIEW_PNG = str(CAPTURE_DIR / "building_overview.png")
 
 # 전체 단계 수
 TOTAL_STEPS = 6
+
+
+def _safe_planner_name(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value or "planner")).strip("_")[:80] or "planner"
+
+
+def _planner_snapshot_image(snapshot: dict, index: int) -> str:
+    data_url = (
+        snapshot.get("image_data_url")
+        or snapshot.get("imageDataUrl")
+        or (snapshot.get("message") or {}).get("image_data_url")
+        or (snapshot.get("message") or {}).get("imageDataUrl")
+    )
+    if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
+        return ""
+    try:
+        header, encoded = data_url.split(",", 1)
+        ext = "jpg" if "jpeg" in header.lower() else "png"
+        path = str(CAPTURE_DIR / f"auction_planner_{index}_{_safe_planner_name(snapshot.get('calculator', 'planner'))}.{ext}")
+        with open(path, "wb") as file:
+            file.write(base64.b64decode(encoded))
+        track_file(path)
+        return path
+    except Exception as exc:
+        logger.warning(f"옥션플래너 이미지 저장 실패: {exc}")
+        return ""
+
+
+def _add_planner_appendix_slide(prs: Presentation, title: str, image_path: str) -> bool:
+    if not image_path or not os.path.exists(image_path):
+        return False
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    margin = Inches(0.45)
+    title_box = slide.shapes.add_textbox(margin, Inches(0.25), prs.slide_width - margin * 2, Inches(0.35))
+    tf = title_box.text_frame
+    tf.text = title
+    if tf.paragraphs and tf.paragraphs[0].runs:
+        tf.paragraphs[0].runs[0].font.size = Pt(18)
+        tf.paragraphs[0].runs[0].font.bold = True
+    top = Inches(0.75)
+    max_w = prs.slide_width - margin * 2
+    max_h = prs.slide_height - top - Inches(0.35)
+    try:
+        from PIL import Image as PILImage
+        with PILImage.open(image_path) as img:
+            ratio = img.width / img.height
+        width = max_w
+        height = int(width / ratio)
+        if height > max_h:
+            height = max_h
+            width = int(height * ratio)
+        left = int((prs.slide_width - width) / 2)
+        slide.shapes.add_picture(image_path, left, top, width=width, height=height)
+    except Exception:
+        slide.shapes.add_picture(image_path, margin, top, width=max_w)
+    return True
+
+
+def _insert_planner_snapshots(prs: Presentation, snapshots: list[dict]) -> int:
+    inserted = 0
+    handled_calculators: set[str] = set()
+    for index, snapshot in enumerate(snapshots or [], start=1):
+        if snapshot.get("include") is False:
+            continue
+        calculator = str(snapshot.get("calculator") or "")
+        if calculator in handled_calculators:
+            continue
+        handled_calculators.add(calculator)
+        label = str(snapshot.get("label") or calculator or "옥션플래너")
+        keywords = _planner_snapshot_note_keywords(calculator)
+        image_path = _planner_snapshot_image(snapshot, index)
+        if image_path:
+            ok = ppt_builder.insert_single_image_by_note_keywords(prs, keywords, image_path)
+            if not ok:
+                ok = _add_planner_appendix_slide(prs, f"옥션플래너 - {label}", image_path)
+        else:
+            ok = ppt_builder.insert_key_value_table_by_note_keywords(
+                prs,
+                keywords,
+                f"옥션플래너 - {label}",
+                _planner_snapshot_rows(snapshot),
+            )
+        inserted += 1 if ok else 0
+    return inserted
+
+
+_PLANNER_LABELS = {
+    "appraisal_price": "감정가",
+    "minimum_price": "최저매각가격",
+    "bid_price": "예상 입찰가",
+    "loan_amount": "대출금액",
+    "loan_rate": "대출비율",
+    "acquisition_tax": "취득세",
+    "local_education_tax": "지방교육세",
+    "rural_tax": "농어촌특별세",
+    "total_tax": "취득세 합계",
+    "purchase_price": "취득가격",
+    "total_cost": "총 취득비용",
+}
+
+
+def _planner_snapshot_rows(snapshot: dict) -> list[tuple[str, str]]:
+    message = snapshot.get("message") or {}
+    preferred = message
+    if isinstance(message, dict):
+        preferred = (
+            message.get("result")
+            or message.get("results")
+            or message.get("data")
+            or message.get("input")
+            or message.get("inputs")
+            or message.get("payload")
+            or message
+        )
+    rows: list[tuple[str, str]] = []
+    ignored = {"source", "type", "calculator", "timestamp", "image_data_url", "imageDataUrl"}
+
+    def append_value(path: str, value, depth: int = 0):
+        if len(rows) >= 16 or depth > 3 or value in (None, ""):
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in ignored or re.search(r"image|screenshot|capture|thumbnail", str(key), re.I):
+                    continue
+                append_value(f"{path}.{key}" if path else str(key), item, depth + 1)
+            return
+        if isinstance(value, list):
+            if all(not isinstance(item, (dict, list)) for item in value):
+                value = ", ".join(str(item) for item in value)
+            else:
+                for item_index, item in enumerate(value[:8], start=1):
+                    append_value(f"{path} {item_index}", item, depth + 1)
+                return
+        key = path.split(".")[-1]
+        label = _PLANNER_LABELS.get(key, re.sub(r"[_-]+", " ", key).strip())
+        if isinstance(value, bool):
+            display = "예" if value else "아니오"
+        elif isinstance(value, int):
+            display = f"{value:,}"
+        elif isinstance(value, float):
+            display = f"{value:,.2f}".rstrip("0").rstrip(".")
+        elif isinstance(value, str):
+            display = value[:180]
+        else:
+            display = json.dumps(value, ensure_ascii=False)[:180]
+        rows.append((label or "항목", display))
+
+    append_value("", preferred)
+    return rows
+
+
+def _planner_snapshot_note_keywords(calculator: str) -> list[str]:
+    key = str(calculator or "").strip()
+    if key == "acquisition-tax":
+        return [
+            "SLIDE_KEY=OPINION_ACQUISITION_TAX_LOAN",
+            "취득세 및 대출",
+            "취득세",
+        ]
+    if key == "loan-bid-estimator":
+        return [
+            "SLIDE_KEY=OPINION_BID_PRICE_TABLE",
+            "EXCEL_RANGE:(1) 예상 입찰가 금액분석표",
+            "예상 입찰가 금액분석표",
+            "입찰가 산정표",
+        ]
+    if key == "acquisition-cost-sheet":
+        return [
+            "SLIDE_KEY=OPINION_ACQUISITION_COST_TABLE",
+            "EXCEL_RANGE:(2) 취득시 비용계산표",
+            "취득시 비용계산표",
+            "취득비용 계산표",
+            "비용계산표",
+        ]
+    return ["SLIDE_KEY=AUCTION_PLANNER", "SLIDE_KEY=CALC_COST"]
+
+
+def _normalize_match_text(value: str) -> str:
+    text = str(value or "").lower()
+    text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", text)
+    text = re.sub(r"[^0-9a-z가-힣]+", "", text)
+    return text
+
+
+def _clean_reference_content(value: str) -> str:
+    text = str(value or "").replace("\r", "\n")
+    text = re.sub(r"\s*`?\[[A-Z]{2,4}-\d{2}\]`?", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+_PROPERTY_TYPE_ALIASES: list[tuple[str, tuple[str, ...]]] = [
+    ("아파트형공장", ("아파트형공장", "지식산업센터")),
+    ("아파트상가", ("아파트상가", "단지내상가")),
+    ("다세대(빌라)", ("다세대", "빌라", "연립")),
+    ("다가구주택", ("다가구",)),
+    ("근린주택", ("근린주택", "상가주택")),
+    ("도시형생활주택", ("도시형생활주택",)),
+    ("오피스텔", ("오피스텔",)),
+    ("아파트", ("아파트",)),
+    ("주택", ("단독주택", "전원주택", "주택")),
+    ("자동차관련시설", ("자동차관련시설", "자동차정비", "세차장")),
+    ("장례관련시설", ("장례식장", "봉안", "장례관련시설")),
+    ("콘도(호텔)", ("콘도", "호텔")),
+    ("펜션(캠핑장)", ("펜션", "캠핑장", "야영장")),
+    ("근린상가", ("근린상가",)),
+    ("근린시설", ("근린생활시설", "근린시설")),
+    ("숙박시설", ("숙박시설", "모텔", "여관")),
+    ("목욕시설", ("목욕시설", "목욕장", "사우나")),
+    ("운동시설", ("운동시설", "체육시설")),
+    ("휴게시설", ("휴게시설", "휴게음식점")),
+    ("노유자시설", ("노유자시설", "노인복지", "아동복지")),
+    ("교육시설", ("교육시설", "학원")),
+    ("주유소", ("주유소",)),
+    ("병원", ("병원", "의료시설")),
+    ("창고", ("창고시설", "물류센터", "창고")),
+    ("공장", ("공장", "제조시설")),
+    ("상가", ("상가", "판매시설")),
+    ("공장용지", ("공장용지",)),
+    ("창고용지", ("창고용지",)),
+    ("목장용지", ("목장용지",)),
+    ("기타토지", ("기타토지",)),
+    ("주차장", ("주차장",)),
+    ("과수원", ("과수원",)),
+    ("잡종지", ("잡종지",)),
+    ("임야", ("임야", "산지")),
+    ("대지", ("대지",)),
+    ("도로", ("도로", "사도", "현황도로")),
+    ("유지", ("유지", "저수지")),
+    ("하천", ("하천",)),
+    ("구거", ("구거",)),
+    ("묘지", ("묘지", "분묘")),
+    ("전", ("전",)),
+    ("답", ("답",)),
+    ("축사(농가시설)", ("축사", "농가시설")),
+    ("광업권", ("광업권",)),
+    ("어업권", ("어업권",)),
+    ("양어장", ("양어장", "양식장")),
+    ("종교시설", ("종교시설", "교회", "사찰", "성당")),
+    ("중장비", ("중장비", "건설기계")),
+    ("선박", ("선박",)),
+    ("차량", ("차량", "자동차")),
+    ("학교", ("학교",)),
+]
+
+
+def _canonical_property_type(value: str) -> str:
+    compact = _normalize_match_text(value)
+    if not compact:
+        return ""
+    for canonical, aliases in _PROPERTY_TYPE_ALIASES:
+        if any(_normalize_match_text(alias) in compact for alias in aliases):
+            return canonical
+    return "기타" if "기타" in compact else ""
+
+
+def _find_applicable_checklist_references(data: dict, references: dict) -> list[dict]:
+    checklist = references.get("checklist") if isinstance(references, dict) else []
+    if not isinstance(checklist, list):
+        return []
+    property_text = " ".join(
+        str(value or "") for value in (data.get("item_type"), data.get("item_category"))
+    )
+    canonical = _canonical_property_type(property_text)
+    common: list[dict] = []
+    specific: list[dict] = []
+    seen: set[str] = set()
+    for item in checklist:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or f"{item.get('category')}:{item.get('title')}")
+        if item_id in seen:
+            continue
+        title = str(item.get("title") or "")
+        category = str(item.get("category") or "")
+        if "공통" in category or "공통" in title:
+            common.append(item)
+            seen.add(item_id)
+            continue
+        if canonical and _canonical_property_type(title) == canonical:
+            specific.append(item)
+            seen.add(item_id)
+    if not specific:
+        fallback = (
+            _find_checklist_reference(str(data.get("item_category") or ""), references)
+            or _find_checklist_reference(str(data.get("item_type") or ""), references)
+        )
+        if fallback:
+            specific.append(fallback)
+    return [*common, *specific]
+
+
+def _find_checklist_reference(item_category: str, references: dict) -> dict:
+    category = _normalize_match_text(item_category)
+    if not category:
+        return {}
+    checklist = references.get("checklist") if isinstance(references, dict) else []
+    if not isinstance(checklist, list):
+        return {}
+
+    best: tuple[int, dict] = (0, {})
+    for item in checklist:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "")
+        group = str(item.get("category") or "")
+        haystacks = [_normalize_match_text(title), _normalize_match_text(group)]
+        score = 0
+        for haystack in haystacks:
+            if not haystack:
+                continue
+            if haystack == category:
+                score = max(score, 100)
+            elif category in haystack or haystack in category:
+                score = max(score, 80)
+            else:
+                overlap = len(set(category) & set(haystack))
+                if overlap >= max(2, min(len(category), len(haystack)) // 2):
+                    score = max(score, overlap)
+        if score > best[0]:
+            best = (score, item)
+    return best[1] if best[0] >= 2 else {}
+
+
+def _append_briefing_special_references(special_opinion: str, data: dict, request) -> str:
+    additions: list[str] = []
+    item_category = str(data.get("item_category") or "").strip()
+    item_type = str(data.get("item_type") or "").strip()
+    references = getattr(request, "auction_references", {}) or {}
+    matched_items = _find_applicable_checklist_references(data, references)
+    for matched in matched_items:
+        title = str(matched.get("title") or item_type or item_category).strip()
+        category_label = "공통" if "공통" in title else (item_type or item_category or title)
+        content = _clean_reference_content(matched.get("content") or "")
+        checklist_lines: list[str] = []
+        for raw_line in content.splitlines():
+            line = re.sub(r"^[\s\-•ㆍ*□☐✅✔]+", "", raw_line).strip()
+            line = re.sub(r"^\d+[.)]\s*", "", line).strip()
+            if len(line) < 3 or line in checklist_lines:
+                continue
+            checklist_lines.append(line[:110])
+            if len(checklist_lines) >= 16:
+                break
+        header = f"물건별 체크리스트 점검: [{category_label}] {title}"
+        if checklist_lines:
+            additions.append("\n".join([header, *(f"  · {line}" for line in checklist_lines)]))
+        else:
+            additions.append(f"{header}\n  · 등기·공부·현장 확인항목을 담당자가 최종 확인해야 합니다.")
+
+    if not additions:
+        return special_opinion or ""
+
+    sections: list[str] = []
+    if str(special_opinion or "").strip():
+        sections.append(str(special_opinion).strip())
+    sections.extend(f"- {block}" for block in additions)
+    return "\n\n".join(sections).strip()
 
 
 def _short_selenium_message(exc: Exception, fallback: str) -> str:
@@ -358,10 +718,22 @@ async def generate_report(
             briefing_rights_data = briefing_rights.build_opinion_data(data)
             rights_analysis_opinion = briefing_opinion.build_rights_analysis_opinion(briefing_rights_data)
             special_opinion = briefing_opinion.build_special_opinion(briefing_rights_data)
-            data["rights_analysis_opinion"] = rights_analysis_opinion
-            data["special_opinion"] = special_opinion
         except Exception as e:
             logger.warning(f"담당자 종합의견 (2) 권리분석 문안 구성 실패: {e}")
+            try:
+                briefing_rights_data = briefing_rights.build_opinion_data(data)
+                rights_analysis_opinion = briefing_opinion.build_rights_analysis_opinion(briefing_rights_data)
+                special_opinion = briefing_opinion.build_special_opinion(briefing_rights_data)
+            except Exception as fallback_error:
+                logger.warning(f"담당자 종합의견 (2) 권리분석 기본 문안 구성 실패: {fallback_error}")
+
+        # 권리분석 OCR 일부가 실패하더라도 선택 물건 체크리스트는 항상 반영한다.
+        try:
+            special_opinion = _append_briefing_special_references(special_opinion, data, request)
+        except Exception as e:
+            logger.warning(f"물건별 체크리스트 반영 실패: {e}")
+        data["rights_analysis_opinion"] = rights_analysis_opinion
+        data["special_opinion"] = special_opinion
 
         try:
             data["property_status_opinion"] = briefing_opinion.build_property_status_opinion(data)
@@ -707,6 +1079,13 @@ async def generate_report(
             logger.info("물건현황 (1) 위치도/내부구조도 좌우 삽입 완료")
         else:
             logger.warning("물건현황 (1) 위치도/내부구조도 좌우 삽입 실패")
+
+    try:
+        planner_inserted = _insert_planner_snapshots(prs, request.planner_snapshots)
+        if planner_inserted:
+            logger.info(f"옥션플래너 스냅샷 {planner_inserted}건 PPT 삽입 완료")
+    except Exception as e:
+        logger.warning(f"옥션플래너 스냅샷 PPT 삽입 실패: {e}")
 
     logger.info("예상명도비용 산출근거 캡처 이미지 삽입 생략: 템플릿 변수 자동입력 방식 사용")
 

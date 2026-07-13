@@ -1,15 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CheckCircle2, Copy, Download, FileText, History, Pencil, Play, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { AlertCircle, Archive, CheckCircle2, Copy, Download, FileText, History, Pencil, Play, Plus, RefreshCw, Save, ShieldCheck, Trash2, X } from 'lucide-react';
 import { api } from '../api';
-import { automationApi, type DownloadFormat, type DownloadHistoryItem, type OutputType, type ProgressUpdate } from '../automationApi';
+import { automationApi, REQUIRED_AUTOMATION_AGENT_VERSION, type AutomationAgentStatus, type DownloadFormat, type DownloadHistoryItem, type OutputType, type ProgressUpdate } from '../automationApi';
 import { DEFAULT_AUCTION_REFERENCES, type AuctionReferenceItem, type AuctionReferenceType } from '../data/auctionReference';
+import { clearPlannerDraft, loadPlannerDraft, savePlannerDraft } from '../plannerDraftStorage';
 import { useAuthStore } from '../store';
 
 type View = 'select' | 'input' | 'progress' | 'result' | 'history';
 type DocumentToolTab = 'briefing' | 'rightsReference' | 'checklistReference' | 'plannerReference';
+type AgentState = 'checking' | 'connected' | 'missing' | 'outdated';
+type PlannerSnapshot = {
+  id: string;
+  calculator: string;
+  label: string;
+  captured_at: string;
+  message: unknown;
+  image_data_url?: string;
+  include: boolean;
+};
+type PlannerWorkspace = {
+  selectedCalculator?: string;
+  calculatorDrafts?: Record<string, PlannerMessage>;
+};
 
 const BRIEFING_STEPS = ['브라우저 준비', '사이트 파싱', 'PPT 기본값 입력', '문서 캡처', 'PPT 이미지 삽입', '저장 완료'];
 const RIGHTS_STEPS = ['브라우저 준비', '물건정보 확인', '매각물건명세서 확인', '권리분석 문구 구성', '보증서 템플릿 입력', 'PDF/PPTX 변환', '저장 완료'];
+const AUCTION_REFERENCE_MANAGER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호 지사장
 
 interface Props {
   initialType?: OutputType;
@@ -34,8 +50,18 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState('');
   const [toolTab, setToolTab] = useState<DocumentToolTab>('briefing');
+  const [agentState, setAgentState] = useState<AgentState>('checking');
+  const [agentStatus, setAgentStatus] = useState<AutomationAgentStatus | null>(null);
+  const [agentModalOpen, setAgentModalOpen] = useState(false);
+  const [plannerSnapshots, setPlannerSnapshots] = useState<PlannerSnapshot[]>([]);
+  const [plannerWorkspace, setPlannerWorkspace] = useState<PlannerWorkspace>({});
+  const plannerHydratedUserRef = useRef('');
+  const plannerExportAllRef = useRef<(() => Promise<PlannerSnapshot[]>) | null>(null);
 
   const canUseRights = user?.role === 'master' || reportPermission === 'special';
+  const canManageAuctionReferences = Boolean(
+    user && (['master', 'ceo'].includes(user.role) || AUCTION_REFERENCE_MANAGER_IDS.includes(user.id))
+  );
   const isRights = outputType === 'rights_certificate';
   const rightsUrls = useMemo(() => rightsUrlsText.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean), [rightsUrlsText]);
   const stepLabels = isRights ? RIGHTS_STEPS : BRIEFING_STEPS;
@@ -44,6 +70,51 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   useEffect(() => {
     setOutputType(initialType);
   }, [initialType]);
+
+  useEffect(() => {
+    if (!canManageAuctionReferences && (toolTab === 'rightsReference' || toolTab === 'checklistReference')) {
+      setToolTab('briefing');
+    }
+  }, [canManageAuctionReferences, toolTab]);
+
+  useEffect(() => {
+    const userId = user?.id || '';
+    if (!userId || plannerHydratedUserRef.current === userId) return;
+    const saved = loadPlannerDraft(userId);
+    setPlannerSnapshots((saved?.snapshots || []) as PlannerSnapshot[]);
+    setPlannerWorkspace((saved?.workspace || {}) as PlannerWorkspace);
+    plannerHydratedUserRef.current = userId;
+  }, [user?.id]);
+
+  useEffect(() => {
+    const userId = user?.id || '';
+    if (!userId || plannerHydratedUserRef.current !== userId) return;
+    savePlannerDraft(userId, { snapshots: plannerSnapshots, workspace: plannerWorkspace });
+  }, [plannerSnapshots, plannerWorkspace, user?.id]);
+
+  const resetPlannerDraft = () => {
+    if (!window.confirm('옥션플래너에 임시 저장된 입력값과 브리핑 저장자료를 모두 초기화할까요?')) return;
+    setPlannerSnapshots([]);
+    setPlannerWorkspace({});
+    if (user?.id) clearPlannerDraft(user.id);
+  };
+
+  const refreshAgentStatus = async (showWhenMissing = false, showChecking = true) => {
+    if (showChecking) setAgentState('checking');
+    const status = await automationApi.checkAgent();
+    setAgentStatus(status);
+    const nextState: AgentState = status.ok ? (status.updateRequired ? 'outdated' : 'connected') : 'missing';
+    setAgentState(nextState);
+    if (nextState !== 'connected' && showWhenMissing) setAgentModalOpen(true);
+    if (nextState === 'connected') setAgentModalOpen(false);
+    return nextState === 'connected';
+  };
+
+  useEffect(() => {
+    refreshAgentStatus(true);
+    const timer = window.setInterval(() => refreshAgentStatus(false, false), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!taskId || view !== 'progress') return;
@@ -128,10 +199,15 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
 
   useEffect(() => {
     if (view !== 'progress') return;
-    logEndRef.current?.scrollIntoView({ block: 'end' });
+    const logEl = logEndRef.current?.parentElement;
+    if (logEl) logEl.scrollTop = logEl.scrollHeight;
   }, [updates, view]);
 
   const selectWork = (next: OutputType) => {
+    if (agentState !== 'connected') {
+      setAgentModalOpen(true);
+      return;
+    }
     if (next === 'rights_certificate' && !canUseRights) {
       setError('권리분석 보증서는 master 또는 special 권한만 생성할 수 있습니다.');
       return;
@@ -141,10 +217,49 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     setView('input');
   };
 
-  const commonPayload = () => ({
+  const loadAutomationReferences = async () => {
+    let customChecklist: AuctionReferenceItem[] = [];
+    try {
+      const res = await api.auctionReference.list('checklist');
+      customChecklist = (res.items || []).map((item) => ({ ...item, source: 'custom' as const }));
+    } catch {
+      customChecklist = [];
+    }
+    return {
+      checklist: mergeReferenceItems('checklist', customChecklist).map((item) => ({
+        id: item.id,
+        type: 'checklist' as const,
+        category: item.category || '',
+        title: item.title,
+        content: stripInternalCodes(item.content),
+        source: item.source,
+      })),
+    };
+  };
+
+  const commonPayload = async (snapshots = plannerSnapshots) => ({
     remember_login: rememberLogin,
     requester_permission: reportPermission,
+    planner_snapshots: snapshots.filter((item) => item.include),
+    auction_references: await loadAutomationReferences(),
   });
+
+  const collectLatestPlannerSnapshots = async () => {
+    if (!plannerExportAllRef.current) return plannerSnapshots;
+    try {
+      const exported = await plannerExportAllRef.current();
+      if (exported.length === 0) return plannerSnapshots;
+      const exportedCalculators = new Set(exported.map(item => item.calculator));
+      const merged = [
+        ...exported,
+        ...plannerSnapshots.filter(item => !exportedCalculators.has(item.calculator)),
+      ].slice(0, 12);
+      setPlannerSnapshots(merged);
+      return merged;
+    } catch {
+      return plannerSnapshots;
+    }
+  };
 
   const validateInput = () => {
     if (!user?.has_myauction_credentials) return '내 정보 수정에서 마이옥션 아이디와 비밀번호를 먼저 저장해 주세요.';
@@ -156,6 +271,8 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   };
 
   const startGeneration = async () => {
+    const agentOk = await refreshAgentStatus(true);
+    if (!agentOk) return;
     const validation = validateInput();
     if (validation) {
       setError(validation);
@@ -164,7 +281,8 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     setStarting(true);
     setError('');
     try {
-      const payload = commonPayload();
+      const latestPlannerSnapshots = isRights ? plannerSnapshots : await collectLatestPlannerSnapshots();
+      const payload = await commonPayload(latestPlannerSnapshots);
       const res = isRights && rightsUrls.length > 1
         ? await automationApi.startBatch({
             output_type: 'rights_certificate',
@@ -210,13 +328,46 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
 
   return (
     <div className={`page${toolTab === 'plannerReference' ? ' document-page-planner' : ''}`}>
-      <div className="page-header">
-        <h2><FileText size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 자료 생성</h2>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div className="page-header document-page-header">
+        <div className="document-page-title">
+          <span className="document-page-title-icon"><FileText size={22} /></span>
+          <div>
+            <h2>자료 생성</h2>
+            <p>사건 정보부터 완성 문서까지, 한 화면에서 안전하게 생성합니다.</p>
+          </div>
+        </div>
+        <div className="document-page-actions">
+          <button className={`automation-agent-badge ${agentState}`} onClick={() => refreshAgentStatus(true)} type="button">
+            {agentState === 'connected' ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
+            {agentState === 'checking'
+              ? '실행기 확인 중'
+              : agentState === 'connected'
+                ? '자동화 실행기 최신'
+                : agentState === 'outdated'
+                  ? '자동화 실행기 업데이트 필요'
+                  : '자동화 실행기 필요'}
+          </button>
           <button className="btn btn-sm" onClick={() => setView('select')}>작업 선택</button>
           <button className="btn btn-sm" onClick={loadHistory}><History size={14} /> 이력</button>
         </div>
       </div>
+
+      {toolTab === 'plannerReference' && plannerSnapshots.length > 0 && (
+        <PlannerSnapshotList
+          snapshots={plannerSnapshots}
+          onToggleSnapshot={(id) => setPlannerSnapshots((prev) => prev.map((item) => item.id === id ? { ...item, include: !item.include } : item))}
+          onRemoveSnapshot={(id) => setPlannerSnapshots((prev) => prev.filter((item) => item.id !== id))}
+        />
+      )}
+
+      {agentModalOpen && (
+        <AutomationAgentModal
+          state={agentState}
+          status={agentStatus}
+          onClose={() => setAgentModalOpen(false)}
+          onRecheck={() => refreshAgentStatus(true)}
+        />
+      )}
 
       {error && (
         <div className="card" style={{ marginBottom: 16, borderLeft: '3px solid #d93025', color: '#d93025', padding: 14 }}>
@@ -226,54 +377,100 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
 
       <div className="document-tool-tabs">
         <button className={toolTab === 'briefing' ? 'active' : ''} onClick={() => setToolTab('briefing')}>업무 자동화</button>
-        <button className={toolTab === 'rightsReference' ? 'active' : ''} onClick={() => setToolTab('rightsReference')}>권리분석</button>
-        <button className={toolTab === 'checklistReference' ? 'active' : ''} onClick={() => setToolTab('checklistReference')}>물건별 체크리스트</button>
+        {canManageAuctionReferences && (
+          <button className={toolTab === 'rightsReference' ? 'active' : ''} onClick={() => setToolTab('rightsReference')}>권리분석 관리</button>
+        )}
+        {canManageAuctionReferences && (
+          <button className={toolTab === 'checklistReference' ? 'active' : ''} onClick={() => setToolTab('checklistReference')}>물건별 체크리스트 관리</button>
+        )}
         <button className={toolTab === 'plannerReference' ? 'active' : ''} onClick={() => setToolTab('plannerReference')}>옥션플래너</button>
       </div>
 
+      <div style={{ display: toolTab === 'plannerReference' ? 'block' : 'none' }} aria-hidden={toolTab !== 'plannerReference'}>
+        <PlannerReferencePanel
+          workspace={plannerWorkspace}
+          onWorkspaceChange={setPlannerWorkspace}
+          onReset={resetPlannerDraft}
+          onSaveSnapshot={(snapshot) => setPlannerSnapshots((prev) => [snapshot, ...prev.filter((item) => item.calculator !== snapshot.calculator)].slice(0, 12))}
+          registerExportAll={(exporter) => { plannerExportAllRef.current = exporter; }}
+        />
+      </div>
+
       {toolTab === 'rightsReference' ? (
-        <RightsLegalReferencePanel canManage={user?.role === 'master'} />
+        canManageAuctionReferences ? <RightsLegalReferencePanel canManage /> : null
       ) : toolTab === 'plannerReference' ? (
-        <PlannerReferencePanel />
+        null
       ) : referenceType ? (
-        <ChecklistReferencePanel canManage={user?.role === 'master'} />
+        canManageAuctionReferences ? <ChecklistReferencePanel canManage /> : null
       ) : (
         <>
       {view === 'select' && (
-        <div className="document-work-grid">
+        <div className="document-select-wrap">
+          <section className="document-automation-hero">
+            <div>
+              <span className="document-section-kicker">DOCUMENT AUTOMATION</span>
+              <h3>어떤 자료를 준비할까요?</h3>
+              <p>작업 유형을 선택하면 필요한 입력 항목과 생성 과정을 순서대로 안내합니다.</p>
+            </div>
+            <div className="document-hero-points">
+              <span><CheckCircle2 size={14} /> 자동 수집</span>
+              <span><CheckCircle2 size={14} /> 템플릿 반영</span>
+              <span><CheckCircle2 size={14} /> 즉시 다운로드</span>
+            </div>
+          </section>
+          <div className="document-work-grid">
           <button className="document-work-button briefing" type="button" onClick={() => selectWork('auction_report')}>
             <span className="document-work-icon"><FileText size={24} /></span>
             <span className="document-work-copy">
+              <span className="document-work-label">AUCTION BRIEF</span>
               <strong>브리핑자료</strong>
               <small>사건 URL 1개로 PPT/PDF 출력물을 생성합니다.</small>
+              <span className="document-work-formats"><b>PPTX</b><b>PDF</b><b>옥션플래너 연동</b></span>
             </span>
             <span className="document-work-action">시작</span>
           </button>
           <button className={`document-work-button rights ${canUseRights ? '' : 'disabled'}`} type="button" onClick={() => selectWork('rights_certificate')} aria-disabled={!canUseRights}>
             <span className="document-work-icon"><ShieldCheck size={24} /></span>
             <span className="document-work-copy">
+              <span className="document-work-label">RIGHTS REPORT</span>
               <strong>권리분석 보증서</strong>
               <small>{canUseRights ? '여러 URL을 순차 처리하고 ZIP 다운로드를 제공합니다.' : 'special 권한 이상 사용 가능합니다.'}</small>
+              <span className="document-work-formats"><b>PPTX</b><b>PDF</b><b>일괄 ZIP</b></span>
             </span>
             <span className="document-work-action">{canUseRights ? '시작' : '권한 필요'}</span>
           </button>
+          </div>
         </div>
       )}
 
       {view === 'input' && (
-        <div className="card" style={{ padding: 20 }}>
-          <h3 style={{ marginTop: 0 }}>{isRights ? '권리분석 보증서 생성' : '브리핑자료 생성'}</h3>
-          <div style={{ display: 'grid', gap: 16 }}>
+        <div className="card document-generator-card">
+          <div className="document-generator-head">
+            <div className={`document-generator-icon ${isRights ? 'rights' : 'briefing'}`}>
+              {isRights ? <ShieldCheck size={22} /> : <FileText size={22} />}
+            </div>
+            <div>
+              <span className="document-section-kicker">{isRights ? 'RIGHTS CERTIFICATE' : 'BRIEFING MATERIALS'}</span>
+              <h3>{isRights ? '권리분석 보증서 생성' : '브리핑자료 생성'}</h3>
+              <p>{isRights ? '여러 사건 URL을 한 줄에 하나씩 입력해 주세요.' : '마이옥션 사건 상세 URL 하나만 입력하면 됩니다.'}</p>
+            </div>
+          </div>
+          <div className="document-generator-body">
             {isRights ? (
-              <div>
+              <div className="document-primary-field">
                 <label className="label">사건 URL 여러 개</label>
                 <textarea className="form-input" value={rightsUrlsText} onChange={(e) => setRightsUrlsText(e.target.value)} rows={7} placeholder={'https://www.my-auction.co.kr/view/1111111\nhttps://www.my-auction.co.kr/view/2222222'} style={{ width: '100%', resize: 'vertical' }} />
-                <div style={{ marginTop: 6, fontSize: '0.78rem', color: '#5f6368' }}>{rightsUrls.length}개 URL 입력됨</div>
+                <div className="document-field-hint"><CheckCircle2 size={13} /> {rightsUrls.length}개 URL 입력됨</div>
               </div>
             ) : (
-              <div>
+              <div className="document-primary-field">
                 <label className="label">사건 URL</label>
                 <input className="form-input" value={briefingUrl} onChange={(e) => setBriefingUrl(e.target.value)} placeholder="https://www.my-auction.co.kr/view/사건번호" style={{ width: '100%' }} />
+                {plannerSnapshots.length > 0 && (
+                  <div className="document-planner-note">
+                    <Save size={14} /> 옥션플래너 저장자료 <strong>{plannerSnapshots.filter((item) => item.include).length}/{plannerSnapshots.length}건</strong>이 함께 반영됩니다.
+                  </div>
+                )}
               </div>
             )}
 
@@ -292,14 +489,14 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
 
             <ProfileSummary user={user} />
 
-            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: '0.86rem' }}>
+            <label className="document-session-option">
               <input type="checkbox" checked={rememberLogin} onChange={(e) => setRememberLogin(e.target.checked)} />
-              자동 로그인 세션 유지
+              <span><strong>자동 로그인 세션 유지</strong><small>다음 작업에서도 저장된 마이옥션 로그인을 사용합니다.</small></span>
             </label>
 
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" onClick={startGeneration} disabled={starting}>
-                <Play size={14} /> {starting ? '시작중...' : '생성 시작'}
+            <div className="document-generator-actions">
+              <button className="btn btn-primary document-start-button" onClick={startGeneration} disabled={starting}>
+                <Play size={15} /> {starting ? '생성을 준비하고 있습니다...' : `${isRights ? '보증서' : '브리핑자료'} 생성 시작`}
               </button>
               <button className="btn" onClick={() => setView('select')}>작업 다시 선택</button>
             </div>
@@ -308,16 +505,19 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
       )}
 
       {view === 'progress' && (
-        <div style={{ display: 'grid', gap: 16 }}>
-          <div className="card" style={{ padding: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
-              <h3 style={{ margin: 0 }}>{isRights ? '권리분석 보증서 진행' : '브리핑자료 진행'}</h3>
-              <strong>{Math.round(currentPercent)}%</strong>
+        <div className="document-progress-wrap">
+          <div className="card document-progress-overview">
+            <div className="document-progress-heading">
+              <div>
+                <span className="document-section-kicker">GENERATING DOCUMENT</span>
+                <h3>{isRights ? '권리분석 보증서를 만들고 있습니다' : '브리핑자료를 만들고 있습니다'}</h3>
+              </div>
+              <strong>{Math.round(currentPercent)}<small>%</small></strong>
             </div>
-            <div style={{ height: 10, borderRadius: 8, background: '#edf2f7', overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${currentPercent}%`, background: currentProgress?.status === 'error' ? '#d93025' : '#1a73e8', transition: 'width .3s' }} />
+            <div className="document-progress-track">
+              <div className={currentProgress?.status === 'error' ? 'error' : ''} style={{ width: `${currentPercent}%` }} />
             </div>
-            <div style={{ marginTop: 14, color: '#5f6368' }}>{currentProgress?.message || '작업을 준비하고 있습니다.'}</div>
+            <div className="document-progress-message">{currentProgress?.message || '작업을 준비하고 있습니다.'}</div>
           </div>
           <div className="document-progress-grid">
           <div className="card document-step-card">
@@ -349,11 +549,13 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
           </div>
           </div>
           {result && (
-            <div className="card" style={{ padding: 20, borderLeft: `3px solid ${result.success ? '#188038' : '#d93025'}` }}>
-              <h3 style={{ marginTop: 0 }}>{result.success ? '생성 완료' : '생성 실패'}</h3>
-              <p style={{ color: result.success ? '#188038' : '#d93025' }}>{result.message}</p>
+            <div className={`card document-result-card ${result.success ? 'success' : 'error'}`}>
+              <div className="document-result-head">
+                <span>{result.success ? <CheckCircle2 size={23} /> : <AlertCircle size={23} />}</span>
+                <div><h3>{result.success ? '자료 생성이 완료되었습니다' : '자료 생성에 실패했습니다'}</h3><p>{result.message}</p></div>
+              </div>
               {result.success && (
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <div className="document-download-grid">
                   {!result.isBatch && <DownloadButton taskId={result.taskId} format="pptx" label="PPT 다운로드" />}
                   {!result.isBatch && <DownloadButton taskId={result.taskId} format="pdf" label="PDF 다운로드" />}
                   {result.isBatch && <DownloadButton taskId={result.taskId} format="zip" label="ZIP 다운로드" />}
@@ -365,11 +567,13 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
       )}
 
       {view === 'result' && result && (
-        <div className="card" style={{ padding: 24 }}>
-          <h3 style={{ marginTop: 0 }}>{result.success ? '생성 완료' : '생성 실패'}</h3>
-          <p style={{ color: result.success ? '#188038' : '#d93025' }}>{result.message}</p>
+        <div className={`card document-result-card ${result.success ? 'success' : 'error'}`}>
+          <div className="document-result-head">
+            <span>{result.success ? <CheckCircle2 size={23} /> : <AlertCircle size={23} />}</span>
+            <div><h3>{result.success ? '자료 생성이 완료되었습니다' : '자료 생성에 실패했습니다'}</h3><p>{result.message}</p></div>
+          </div>
           {result.success && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div className="document-download-grid">
               {!result.isBatch && <DownloadButton taskId={result.taskId} format="pptx" label="PPT 다운로드" />}
               {!result.isBatch && <DownloadButton taskId={result.taskId} format="pdf" label="PDF 다운로드" />}
               {result.isBatch && <DownloadButton taskId={result.taskId} format="zip" label="ZIP 다운로드" />}
@@ -379,13 +583,13 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
       )}
 
       {view === 'history' && (
-        <div className="card" style={{ padding: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+        <div className="card document-history-card">
+          <div className="document-history-head">
             <div>
               <h3 style={{ margin: 0 }}>다운로드 이력</h3>
-              <p style={{ margin: '4px 0 0', color: '#5f6368', fontSize: '0.8rem' }}>최근 20개까지 보관되며, 초과 시 오래된 항목부터 자동 삭제됩니다.</p>
+              <p style={{ margin: '4px 0 0', color: '#5f6368', fontSize: '0.8rem' }}>기간 제한 없이 로컬 파일이 남아 있는 동안 재다운로드할 수 있으며, 목록에는 최근 20건까지 표시됩니다.</p>
             </div>
-            <button className="btn btn-sm" onClick={loadHistory} disabled={historyLoading}><RefreshCw size={14} /> 새로고침</button>
+            <button className="btn btn-sm" onClick={loadHistory} disabled={historyLoading}><RefreshCw size={14} /> 목록 새로고침</button>
           </div>
           {historyItems.length === 0 ? (
             <div className="empty-state">다운로드 이력이 없습니다.</div>
@@ -402,7 +606,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
                       <td>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {item.formats.map((format) => (
-                            <button key={format} className="btn btn-sm" onClick={() => automationApi.downloadHistoryFile(item.id, format).catch((err) => setError(err.message))}>{format.toUpperCase()}</button>
+                            <button key={format} className="btn btn-sm" onClick={() => automationApi.downloadHistoryFile(item.id, format, item.file_name).catch((err) => setError(err.message))}>{format.toUpperCase()}</button>
                           ))}
                         </div>
                       </td>
@@ -714,7 +918,7 @@ function ChecklistReferencePanel({ canManage }: { canManage: boolean }) {
   const categories = useMemo(() => {
     const values = items.map((item) => item.category || '사용자 추가').filter(Boolean);
     const unique = [...new Set(values)];
-    const order = ['공통', '주거용', '상업·업무용', '산업용', '토지', '권리 특수형 (물건종류 불문 추가 점검)', '사용자 추가'];
+    const order = ['공통', '주거용 부동산', '상업용 부동산', '토지', '기타', '사용자 추가'];
     return unique.sort((a, b) => {
       const ai = order.indexOf(a);
       const bi = order.indexOf(b);
@@ -771,7 +975,8 @@ function ChecklistReferencePanel({ canManage }: { canManage: boolean }) {
   };
 
   const startAdd = () => {
-    setEditing({ category: selectedCategory || '사용자 추가', title: '', content: '' });
+    const baseTitle = selected?.title && selectedCategory !== '공통' ? `${selected.title} 추가점검` : '';
+    setEditing({ category: selectedCategory || '사용자 추가', title: baseTitle, content: '' });
     setMessage('');
   };
 
@@ -909,7 +1114,7 @@ function ChecklistReferencePanel({ canManage }: { canManage: boolean }) {
   );
 }
 
-type PlannerCalculatorKey = 'acquisition-tax' | 'brokerage-fee' | 'profit' | 'bid-price' | 'cost-analysis' | 'tenant-registry';
+type PlannerCalculatorKey = 'acquisition-tax' | 'brokerage-fee' | 'profit' | 'bid-price' | 'cost-analysis' | 'tenant-registry' | 'acquisition-cost-sheet' | 'loan-bid-estimator';
 
 const PLANNER_CALCULATORS: { key: PlannerCalculatorKey; label: string; description: string; frameHeight: number }[] = [
   { key: 'acquisition-tax', label: '취득세 계산기', description: '부동산 취득 시 납부해야 할 취득세 계산', frameHeight: 1320 },
@@ -918,6 +1123,8 @@ const PLANNER_CALCULATORS: { key: PlannerCalculatorKey; label: string; descripti
   { key: 'bid-price', label: '적정입찰가', description: '최적의 입찰가로 낙찰 확률 증가', frameHeight: 1420 },
   { key: 'cost-analysis', label: '원가분석계산', description: '총 투입 원가 분석', frameHeight: 1560 },
   { key: 'tenant-registry', label: '임차인등록표', description: '임차인 현황 정리', frameHeight: 1640 },
+  { key: 'loan-bid-estimator', label: '예상입찰가', description: '대출 조건을 반영한 예상 입찰가 산정', frameHeight: 1600 },
+  { key: 'acquisition-cost-sheet', label: '비용계산표', description: '취득 비용계산표 작성', frameHeight: 1600 },
 ];
 
 const AUCTION_PLANNER_EMBED_BASE = (
@@ -938,11 +1145,70 @@ type PlannerMessage = {
   timestamp?: string;
 };
 
-function PlannerReferencePanel() {
-  const [selectedCalculator, setSelectedCalculator] = useState<PlannerCalculatorKey>('acquisition-tax');
+function findPlannerImageDataUrl(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of ['imageDataUrl', 'image_data_url', 'screenshotDataUrl', 'screenshot', 'capture', 'thumbnail']) {
+    const item = record[key];
+    if (typeof item === 'string' && item.startsWith('data:image/')) return item;
+  }
+  for (const key of ['payload', 'result', 'results', 'data']) {
+    const found = findPlannerImageDataUrl(record[key]);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function PlannerSnapshotList({
+  snapshots,
+  onToggleSnapshot,
+  onRemoveSnapshot,
+}: {
+  snapshots: PlannerSnapshot[];
+  onToggleSnapshot: (id: string) => void;
+  onRemoveSnapshot: (id: string) => void;
+}) {
+  if (snapshots.length === 0) return null;
+  return (
+    <div className="card planner-top-snapshot-list">
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>브리핑자료 저장목록</div>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {snapshots.map((item) => (
+          <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between', borderBottom: '1px solid #eef2f7', paddingBottom: 6 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input type="checkbox" checked={item.include} onChange={() => onToggleSnapshot(item.id)} />
+              <span>{item.label}</span>
+              <span style={{ fontSize: '0.72rem', color: '#5f6368' }}>{item.image_data_url ? '이미지 포함' : '값만 저장'}</span>
+            </label>
+            <button className="btn btn-sm danger" type="button" onClick={() => onRemoveSnapshot(item.id)}>삭제</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PlannerReferencePanel({
+  workspace,
+  onWorkspaceChange,
+  onReset,
+  onSaveSnapshot,
+  registerExportAll,
+}: {
+  workspace: PlannerWorkspace;
+  onWorkspaceChange: (workspace: PlannerWorkspace) => void;
+  onReset: () => void;
+  onSaveSnapshot: (snapshot: PlannerSnapshot) => void;
+  registerExportAll: (exporter: () => Promise<PlannerSnapshot[]>) => void;
+}) {
+  const initialCalculator = PLANNER_CALCULATORS.some((item) => item.key === workspace.selectedCalculator)
+    ? workspace.selectedCalculator as PlannerCalculatorKey
+    : 'acquisition-tax';
+  const [selectedCalculator, setSelectedCalculator] = useState<PlannerCalculatorKey>(initialCalculator);
   const [message, setMessage] = useState('');
-  const [result, setResult] = useState<PlannerMessage | null>(null);
+  const [result, setResult] = useState<PlannerMessage | null>(() => workspace.calculatorDrafts?.[initialCalculator] || null);
   const [refreshToken, setRefreshToken] = useState(() => Date.now());
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   const selected = PLANNER_CALCULATORS.find((item) => item.key === selectedCalculator) || PLANNER_CALCULATORS[0];
   const plannerVersion = selectedCalculator === 'profit' ? '20260702-1' : String(refreshToken);
@@ -966,26 +1232,176 @@ function PlannerReferencePanel() {
     const handleMessage = (event: MessageEvent) => {
       if (plannerOrigin && event.origin !== plannerOrigin) return;
       const data = event.data as PlannerMessage;
-      if (!data || data.source !== 'auction-planner') return;
-      if (data.type !== 'calculator-result') return;
+      if (!data || typeof data !== 'object') return;
+      const knownCalculator = PLANNER_CALCULATORS.some((item) => item.key === data.calculator);
+      if (data.source !== 'auction-planner' && !knownCalculator) return;
+      if (data.type && ![
+        'calculator-result', 'calculator-export', 'auction-planner-result', 'snapshot',
+        'calculator-draft', 'calculator-change', 'form-change', 'draft',
+      ].includes(data.type)) return;
       const normalizedInput = data.input || data.inputs || data.payload?.input || data.payload?.inputs;
-      setResult({
+      const normalized = {
         ...data,
         input: normalizedInput || data.input,
         inputs: data.inputs || data.payload?.inputs,
+      };
+      const calculator = String(data.calculator || selectedCalculator);
+      setResult(normalized);
+      onWorkspaceChange({
+        selectedCalculator: calculator,
+        calculatorDrafts: { ...(workspace.calculatorDrafts || {}), [calculator]: normalized },
       });
       const label = PLANNER_CALCULATORS.find((item) => item.key === data.calculator)?.label || '옥션플래너';
-      setMessage(`${label} 계산값을 가져왔습니다.`);
+      const isDraft = ['calculator-draft', 'calculator-change', 'form-change', 'draft'].includes(String(data.type || ''));
+      setMessage(isDraft ? `${label} 작성 중 내용을 임시 저장했습니다.` : `${label} 계산값을 가져왔습니다.`);
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
+  }, [onWorkspaceChange, plannerOrigin, selectedCalculator, workspace.calculatorDrafts]);
+
+  useEffect(() => {
+    const restored = workspace.calculatorDrafts?.[selectedCalculator] || null;
+    setResult(restored);
+  }, [selectedCalculator, workspace.calculatorDrafts]);
+
+  useEffect(() => {
+    const clearEmbeddedDraft = () => {
+      iframeRef.current?.contentWindow?.postMessage({
+        source: 'my-auction-docs',
+        type: 'planner-clear-draft',
+      }, plannerOrigin || '*');
+    };
+    window.addEventListener('myauction:planner-clear', clearEmbeddedDraft);
+    return () => window.removeEventListener('myauction:planner-clear', clearEmbeddedDraft);
   }, [plannerOrigin]);
 
-  const copyResult = async () => {
-    if (!result) return;
-    await navigator.clipboard.writeText(JSON.stringify(result, null, 2));
-    setMessage('가져온 계산값이 복사되었습니다.');
+  const restoreIframeDraft = () => {
+    const draft = workspace.calculatorDrafts?.[selectedCalculator];
+    if (!draft || !iframeRef.current?.contentWindow) return;
+    iframeRef.current.contentWindow.postMessage({
+      source: 'my-auction-docs',
+      type: 'planner-restore',
+      calculator: selectedCalculator,
+      payload: draft,
+    }, plannerOrigin || '*');
+    setMessage(`${selected.label} 임시 저장자료를 불러왔습니다.`);
   };
+
+  const requestPlannerExport = () => new Promise<PlannerMessage>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener('message', handleExport);
+      reject(new Error('옥션플래너 이미지 생성 응답 시간이 초과되었습니다.'));
+    }, 6000);
+    function handleExport(event: MessageEvent) {
+      if (plannerOrigin && event.origin !== plannerOrigin) return;
+      const data = event.data as PlannerMessage;
+      if (!data || typeof data !== 'object') return;
+      if (String(data.calculator || '') !== selectedCalculator) return;
+      if (!findPlannerImageDataUrl(data)) return;
+      window.clearTimeout(timeout);
+      window.removeEventListener('message', handleExport);
+      resolve(data);
+    }
+    window.addEventListener('message', handleExport);
+    iframeRef.current?.contentWindow?.postMessage({
+      source: 'my-auction-docs',
+      type: 'calculator-export-request',
+      calculator: selectedCalculator,
+    }, plannerOrigin || '*');
+  });
+
+  const requestPlannerExportAll = () => new Promise<PlannerSnapshot[]>((resolve) => {
+    const calculators = ['acquisition-tax', 'loan-bid-estimator', 'acquisition-cost-sheet'];
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener('message', handleExportAll);
+      resolve([]);
+    }, 6000);
+    function handleExportAll(event: MessageEvent) {
+      if (plannerOrigin && event.origin !== plannerOrigin) return;
+      const data = event.data as PlannerMessage & { snapshots?: unknown[]; payload?: { snapshots?: unknown[]; [key: string]: unknown } };
+      if (!data || data.source !== 'auction-planner' || data.type !== 'calculator-export-all') return;
+      window.clearTimeout(timeout);
+      window.removeEventListener('message', handleExportAll);
+      const rawSnapshots = Array.isArray(data.snapshots)
+        ? data.snapshots
+        : Array.isArray(data.payload?.snapshots)
+          ? data.payload.snapshots
+          : [];
+      const snapshots = rawSnapshots.flatMap((raw, index) => {
+        if (!raw || typeof raw !== 'object') return [];
+        const message = raw as PlannerMessage & Record<string, unknown>;
+        const calculator = String(message.calculator || '');
+        if (!calculators.includes(calculator)) return [];
+        const imageDataUrl = findPlannerImageDataUrl(message);
+        if (!imageDataUrl) return [];
+        const label = PLANNER_CALCULATORS.find(item => item.key === calculator)?.label || String(message.label || calculator);
+        return [{
+          id: `${calculator}-${Date.now()}-${index}`,
+          calculator,
+          label,
+          captured_at: String(message.timestamp || new Date().toISOString()),
+          message,
+          image_data_url: imageDataUrl,
+          include: true,
+        }];
+      });
+      resolve(snapshots);
+    }
+    window.addEventListener('message', handleExportAll);
+    iframeRef.current?.contentWindow?.postMessage({
+      source: 'my-auction-docs',
+      type: 'calculator-export-all-request',
+      calculators,
+    }, plannerOrigin || '*');
+  });
+
+  useEffect(() => {
+    registerExportAll(requestPlannerExportAll);
+  }, [plannerOrigin, registerExportAll]);
+
+  const saveSnapshot = async () => {
+    if (!result) return;
+    let exportResult = result;
+    let imageDataUrl = findPlannerImageDataUrl(exportResult);
+    if (!imageDataUrl) {
+      setMessage(`${selected.label} 이미지를 생성하고 있습니다...`);
+      try {
+        exportResult = await requestPlannerExport();
+        imageDataUrl = findPlannerImageDataUrl(exportResult);
+      } catch (err: any) {
+        setMessage(err?.message || `${selected.label} 이미지를 생성하지 못했습니다. 다시 시도해 주세요.`);
+        return;
+      }
+    }
+    const label = PLANNER_CALCULATORS.find((item) => item.key === exportResult.calculator)?.label || selected.label;
+    onSaveSnapshot({
+      id: `${exportResult.calculator || selectedCalculator}-${Date.now()}`,
+      calculator: String(exportResult.calculator || selectedCalculator),
+      label,
+      captured_at: new Date().toISOString(),
+      message: exportResult,
+      image_data_url: imageDataUrl,
+      include: true,
+    });
+    setMessage(`${label} 자료를 브리핑자료에 저장했습니다.`);
+  };
+
+  const renderCalculatorButton = (calculator: { key: PlannerCalculatorKey; label: string }) => (
+    <button
+      key={calculator.key}
+      className={selectedCalculator === calculator.key ? 'active' : ''}
+      type="button"
+      onClick={() => {
+        setSelectedCalculator(calculator.key);
+        setMessage('');
+        setResult(workspace.calculatorDrafts?.[calculator.key] || null);
+        onWorkspaceChange({ ...workspace, selectedCalculator: calculator.key });
+        setRefreshToken(Date.now());
+      }}
+    >
+      {calculator.label}
+    </button>
+  );
 
   return (
     <div className="card auction-reference-panel planner-reference-panel">
@@ -996,21 +1412,15 @@ function PlannerReferencePanel() {
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button className="btn btn-sm" type="button" onClick={() => setRefreshToken(Date.now())}>새로고침</button>
+          <button className="btn btn-sm danger" type="button" onClick={onReset}><Trash2 size={14} /> 임시저장 초기화</button>
           <a className="btn btn-sm" href={externalUrl} target="_blank" rel="noreferrer">새 창에서 열기</a>
         </div>
       </div>
 
       <div className="document-tool-tabs" style={{ marginBottom: 12 }}>
-        {PLANNER_CALCULATORS.map((calculator) => (
-          <button
-            key={calculator.key}
-            className={selectedCalculator === calculator.key ? 'active' : ''}
-            type="button"
-            onClick={() => { setSelectedCalculator(calculator.key); setMessage(''); setResult(null); setRefreshToken(Date.now()); }}
-          >
-            {calculator.label}
-          </button>
-        ))}
+        {PLANNER_CALCULATORS.slice(0, 6).map(renderCalculatorButton)}
+        <span className="planner-tab-section-label">입찰/비용</span>
+        {PLANNER_CALCULATORS.slice(6).map(renderCalculatorButton)}
       </div>
 
       <div className="planner-selected-row">
@@ -1018,31 +1428,29 @@ function PlannerReferencePanel() {
           <strong>{selected.label}</strong>
           <div style={{ fontSize: '0.78rem', color: '#5f6368', marginTop: 3 }}>{selected.description}</div>
         </div>
-        {message && <div className="auction-reference-message" style={{ margin: 0 }}>{message}</div>}
+        <div className="planner-selected-actions">
+          {message && <div className="auction-reference-message" style={{ margin: 0 }}>{message}</div>}
+          {result && (
+            <button className="btn btn-primary planner-save-action" onClick={saveSnapshot} type="button">
+              <Save size={15} /> 브리핑자료에 저장
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="planner-embed-shell">
         <iframe
+          ref={iframeRef}
           key={embedUrl}
           src={embedUrl}
           title={`옥션플래너 ${selected.label}`}
           className="planner-embed-frame"
           style={{ height: selected.frameHeight, minHeight: selected.frameHeight }}
-          loading="lazy"
+          loading="eager"
+          onLoad={restoreIframeDraft}
         />
       </div>
 
-      {result !== null && (
-        <div className="auction-reference-content planner-result-content">
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-              <strong>가져온 계산값</strong>
-              <button className="btn btn-sm" onClick={copyResult}><Copy size={14} /> 계산값 복사</button>
-            </div>
-            {JSON.stringify(result, null, 2)}
-          </>
-        </div>
-      )}
     </div>
   );
 }
@@ -1067,10 +1475,67 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DownloadButton({ taskId, format, label }: { taskId: string; format: DownloadFormat; label: string }) {
+function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: AgentState; status: AutomationAgentStatus | null; onClose: () => void; onRecheck: () => void }) {
+  const isOutdated = state === 'outdated';
+  const title = isOutdated ? '자동화 실행기 업데이트가 필요합니다' : '자동화 실행기 설치가 필요합니다';
+  const statusText = state === 'connected'
+    ? '자동화 실행기가 최신 버전으로 연결되었습니다.'
+    : state === 'checking'
+      ? '자동화 실행기 연결을 확인하고 있습니다.'
+      : isOutdated
+        ? `현재 버전 ${status?.version || '확인 불가'} · 필요 버전 ${status?.requiredVersion || REQUIRED_AUTOMATION_AGENT_VERSION}`
+        : '현재 PC에서 자동화 실행기를 찾지 못했습니다.';
+  const description = isOutdated
+    ? '이 PC에 설치된 자동화 실행기가 구버전입니다. 최신 설치관리자를 다시 받아 실행하면 기존 실행기를 종료하고 새 버전으로 업데이트합니다.'
+    : '브리핑자료와 권리분석 보증서 자동 생성을 사용하려면 이 PC에 자동화 실행기가 설치되어 있어야 합니다. 설치관리자 실행 후 다시 확인을 눌러 주세요.';
+
   return (
-    <button className="btn btn-primary" onClick={() => automationApi.downloadFile(taskId, format).catch((err) => alert(err.message))}>
-      {format === 'zip' ? <Archive size={14} /> : <Download size={14} />} {label}
+    <div className="automation-agent-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="automation-agent-title">
+      <div className="automation-agent-modal">
+        <div className="automation-agent-modal-head">
+          <div>
+            <span className="automation-agent-kicker">업무 자동화 실행기</span>
+            <h3 id="automation-agent-title">{title}</h3>
+          </div>
+          <button className="modal-close" onClick={onClose} type="button" aria-label="닫기"><X size={18} /></button>
+        </div>
+        <div className="automation-agent-modal-body">
+          <div className={`automation-agent-status ${state}`}>
+            {state === 'connected' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
+            <span>{statusText}</span>
+          </div>
+          <p>{description}</p>
+          <div className="automation-agent-steps">
+            <span>1. 최신 설치관리자 다운로드</span>
+            <span>2. MyAuctionAutomationAgentSetup.exe 실행</span>
+            <span>3. 다시 확인</span>
+          </div>
+        </div>
+        <div className="automation-agent-modal-actions">
+          <button
+            className="btn btn-primary"
+            onClick={() => automationApi.downloadAgentInstaller().catch((err) => alert(err.message))}
+            type="button"
+          >
+            <Download size={14} /> 설치관리자 다운로드
+          </button>
+          <button className="btn" onClick={onRecheck} type="button">
+            <RefreshCw size={14} /> 설치 후 다시 확인
+          </button>
+          <button className="btn btn-secondary" onClick={onClose} type="button">닫기</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DownloadButton({ taskId, format, label }: { taskId: string; format: DownloadFormat; label: string }) {
+  const detail = format === 'pptx' ? '편집 가능한 원본 문서' : format === 'pdf' ? '공유·인쇄용 완성 문서' : '일괄 생성 파일 묶음';
+  return (
+    <button className={`document-download-button ${format}`} onClick={() => automationApi.downloadFile(taskId, format).catch((err) => alert(err.message))}>
+      <span className="document-download-icon">{format === 'zip' ? <Archive size={21} /> : format === 'pptx' ? <FileText size={21} /> : <Download size={21} />}</span>
+      <span className="document-download-copy"><strong>{label}</strong><small>{detail}</small></span>
+      <Download size={17} className="document-download-arrow" />
     </button>
   );
 }

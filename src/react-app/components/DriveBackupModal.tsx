@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, Cloud, CheckCircle, AlertCircle, Settings, History, Play, Link as LinkIcon, Loader, Unlink, Send } from 'lucide-react';
+import { X, Cloud, CheckCircle, AlertCircle, Settings, History, Play, Link as LinkIcon, Loader, Unlink, Send, Trash2 } from 'lucide-react';
 import { api } from '../api';
 
 const FOLDER_PRESETS: { label: string; pattern: string }[] = [
@@ -41,6 +41,8 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
   const [retrying, setRetrying] = useState(false);
   // 수동 실행 시 처리 건수 (5/15/30/50)
   const [runLimit, setRunLimit] = useState<number>(5);
+  const [retention, setRetention] = useState<any>(null);
+  const [cleaningRetention, setCleaningRetention] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -49,7 +51,8 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
       api.drive.logs(30).catch(() => ({ logs: [] })),
       api.drive.pending().catch(() => ({ documents: [] })),
       api.drive.errorSummary().catch(() => ({ summary: [] })),
-    ]).then(([s, l, p, es]: any) => {
+      api.drive.documentRetention().catch(() => null),
+    ]).then(([s, l, p, es, rt]: any) => {
       setPendingDocs(p?.documents || []);
       setSettings(s);
       setLastBackupAt(s?.last_backup_at || null);
@@ -57,6 +60,7 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
       setFailedLast7d(s?.failed_last_7d || 0);
       setLogs(l?.logs || []);
       setErrorSummary(es?.summary || []);
+      setRetention(rt);
       if (s?.settings) {
         setFolderPattern(s.settings.folder_pattern || '{yyyy-mm}/{branch}');
         setFilenamePattern(s.settings.filename_pattern || '[{yyyy-mm-dd}] {doc_type} {author} {position}');
@@ -140,6 +144,26 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
       load();
     } catch (err: any) { alert('재시도 준비 실패: ' + err.message); }
     finally { setRetrying(false); }
+  };
+
+  const handleRunRetentionCleanup = async () => {
+    const count = retention?.documents || 0;
+    if (count <= 0 && !(retention?.orphan_drive_backup_logs > 0)) {
+      alert('정리할 문서가 없습니다.');
+      return;
+    }
+    if (!confirm(`문서보관함에서 최근 ${retention?.retention_months || 2}개월 초과 문서 ${count}건을 정리할까요?\nGoogle Drive에 저장된 파일은 삭제하지 않습니다.`)) return;
+    setCleaningRetention(true);
+    try {
+      const r = await api.drive.runDocumentRetention();
+      setRetention(r);
+      alert(`문서보관함 정리 완료: 문서 ${r.documents || 0}건 삭제`);
+      load();
+    } catch (err: any) {
+      alert('문서보관함 정리 실패: ' + (err?.message || err));
+    } finally {
+      setCleaningRetention(false);
+    }
   };
 
   const handleTestSend = async () => {
@@ -319,6 +343,37 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
                     </div>
                   </div>
                 )}
+
+                <div style={{ marginBottom: 16, padding: 10, background: '#f8fafc', border: '1px solid #dbe3ef', borderRadius: 6 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <div>
+                      <strong style={{ fontSize: 13, color: '#1f2937', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Trash2 size={14} /> 문서보관함 보존기간
+                      </strong>
+                      <div style={{ fontSize: 12, color: '#5f6368', marginTop: 4 }}>
+                        최근 {retention?.retention_months || 2}개월만 내부 DB에 보존합니다. Google Drive 백업 파일은 삭제하지 않습니다.
+                      </div>
+                      {retention?.cutoff && (
+                        <div style={{ fontSize: 11, color: '#9aa0a6', marginTop: 3 }}>
+                          기준일: {retention.cutoff} 이전 문서 정리
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: (retention?.documents || 0) > 0 ? '#d93025' : '#188038' }}>
+                        정리 예정 {retention?.documents || 0}건
+                      </span>
+                      <button
+                        className="btn btn-sm"
+                        onClick={handleRunRetentionCleanup}
+                        disabled={cleaningRetention || ((retention?.documents || 0) === 0 && !(retention?.orphan_drive_backup_logs > 0))}
+                        style={{ border: '1px solid #d93025', color: '#d93025', background: '#fff' }}
+                      >
+                        {cleaningRetention ? '정리 중...' : '지금 정리'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
 
                 {/* 테스트 발송 — 특정 문서 1건만 */}
                 <details style={{ marginBottom: 16, padding: 10, background: '#fffbea', border: '1px solid #fde68a', borderRadius: 6 }}>

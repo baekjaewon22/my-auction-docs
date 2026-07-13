@@ -84,6 +84,7 @@ const FEE_BANDS = [
   { upTo: 20_000_000, label: '1000만 ~ 2000만', bonus: 600_000 },
   { upTo: Infinity,   label: '2000만 초과',  bonus: 800_000 },
 ];
+const CASE_ALLOWANCE_SALES_INSERT_DISABLED_FROM = '2026-05_06';
 
 export default function Cases() {
   const { user } = useAuthStore();
@@ -97,6 +98,7 @@ export default function Cases() {
   const [bonusLoading, setBonusLoading] = useState(false);
 
   const isAdminPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || user?.role === 'accountant_asst' || (user?.role === 'admin' && isHeadOfficeBranch(user?.branch));
+  const caseAllowanceSalesInsertDisabled = period >= CASE_ALLOWANCE_SALES_INSERT_DISABLED_FROM;
 
   const load = async () => {
     setLoading(true);
@@ -279,15 +281,27 @@ export default function Cases() {
           {(user?.role === 'master' || user?.role === 'accountant') && (
             <div style={{ marginBottom: 16, padding: 12, background: '#fff8e1', borderRadius: 8, border: '1px solid #ffd54f' }}>
               <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
-                매출 자동 추가 (2개월 마감)
+                {caseAllowanceSalesInsertDisabled ? '안건수당 지급 전용 구간' : '매출 자동 추가 (2개월 마감)'}
               </div>
               <div style={{ fontSize: 11, color: '#5f6368', marginBottom: 10 }}>
-                {labelOfPeriod(period)} 명도성과금을 매출내역에 추가합니다. (마감월 말일자, INSERT OR IGNORE — 한 번 들어가면 변동 없음)
-                <br />
-                ※ 매월 1일 00:45 KST에 자동 cron으로도 실행됩니다. 마감 전 미리 보고 싶을 때만 수동 사용.
+                {caseAllowanceSalesInsertDisabled ? (
+                  <>
+                    2026년 6월부로 안건수당은 급여 지급 항목으로만 처리하며, 업무성과 매출내역에는 추가하지 않습니다.
+                    <br />
+                    아래 요약은 급여정산의 안건수당 계산 참고용입니다.
+                  </>
+                ) : (
+                  <>
+                    {labelOfPeriod(period)} 명도성과금을 매출내역에 추가합니다. (마감월 말일자, INSERT OR IGNORE — 한 번 들어가면 변동 없음)
+                    <br />
+                    ※ 매월 1일 00:45 KST에 자동 cron으로도 실행됩니다. 마감 전 미리 보고 싶을 때만 수동 사용.
+                  </>
+                )}
               </div>
               <button
+                disabled={caseAllowanceSalesInsertDisabled}
                 onClick={async () => {
+                  if (caseAllowanceSalesInsertDisabled) return;
                   if (!confirm(`${labelOfPeriod(period)} 명도성과금을 매출내역에 추가하시겠습니까?\n\n- 급여제·비율제 모두 대상\n- 본사관리만 제외\n- 이미 들어간 건은 변동 없음`)) return;
                   try {
                     const r = await api.cases.finalizeBonus(period);
@@ -296,9 +310,9 @@ export default function Cases() {
                     alert('실패: ' + err.message);
                   }
                 }}
-                style={{ padding: '8px 16px', background: '#f57c00', color: '#fff', border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+                style={{ padding: '8px 16px', background: caseAllowanceSalesInsertDisabled ? '#dadce0' : '#f57c00', color: caseAllowanceSalesInsertDisabled ? '#5f6368' : '#fff', border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: caseAllowanceSalesInsertDisabled ? 'not-allowed' : 'pointer' }}
               >
-                매출내역에 명도성과금 추가
+                {caseAllowanceSalesInsertDisabled ? '업무성과 추가 중단됨' : '매출내역에 명도성과금 추가'}
               </button>
             </div>
           )}

@@ -220,5 +220,14 @@ automation-service/backend/download_pdf/
 automation-service/backend/logs/
 automation-service/backend/output/
 automation-service/backend/selenium_profile/
+automation-service/backend/build/
+automation-service/backend/dist/
+automation-service/backend/*.spec
+automation-service/build-agent/
+automation-service/releases/*.zip
+automation-service/releases/*.exe
 automation-service/**/__pycache__/
 automation-service/**/*.pyc
+
+### Local test and inspection artifacts ###
+.tmp/

@@ -11,6 +11,17 @@ sales.use('*', authMiddleware);
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 const EDIT_ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 const TEST_ACCOUNT_KEYWORDS = ['test', '테스트', 'dummy', 'sample', 'example', '임시'];
+const CASE_ALLOWANCE_SALES_EXCLUDE_FROM_DATE = '2026-06-01';
+
+function excludeCaseAllowanceSalesSql(alias = 'sr'): string {
+  return `NOT (
+    COALESCE(${alias}.contract_date, '') >= '${CASE_ALLOWANCE_SALES_EXCLUDE_FROM_DATE}'
+    AND (
+      COALESCE(${alias}.type_detail, '') LIKE '명도성과금%'
+      OR COALESCE(${alias}.external_id, '') LIKE 'myungdo-bonus-%'
+    )
+  )`;
+}
 
 // admin 권한 확장: 본인 지사 외 추가 지사 열람 가능 (특정 사용자 예외)
 // 진성헌(서초·admin·본부장): 서초 + 대전 매출 열람
@@ -152,6 +163,7 @@ sales.get('/', async (c) => {
   `;
   const conditions: string[] = [];
   const params: any[] = [];
+  conditions.push(excludeCaseAllowanceSalesSql('sr'));
 
   const role = user.role;
   const isAccountant = role === 'accountant' || role === 'accountant_asst';
@@ -639,6 +651,13 @@ sales.put('/:id', async (c) => {
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user.role);
   if (!isOwner && !isAdminPlus) return c.json({ error: '권한이 없습니다.' }, 403);
   if (record.status !== 'pending' && !isAdminPlus) return c.json({ error: '확정된 매출은 수정할 수 없습니다.' }, 400);
+  if (!isAdminPlus && (
+    body.card_deposit_date !== undefined ||
+    body.tax_invoice_date !== undefined ||
+    body.tax_invoice_type !== undefined
+  )) {
+    return c.json({ error: '증빙/정산 정보는 총무만 수정할 수 있습니다.' }, 403);
+  }
 
   // card_pending 상태에서 card_deposit_date 입력 시 → confirmed 전환
   const newCardDepDate = body.card_deposit_date ?? record.card_deposit_date ?? '';
@@ -1075,6 +1094,7 @@ sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'
     FROM sales_records sr
     JOIN users u ON u.id = sr.user_id
     WHERE 1=1
+      AND ${excludeCaseAllowanceSalesSql('sr')}
   `;
   const params: any[] = [];
 
@@ -1204,6 +1224,7 @@ sales.get('/manager-performance', async (c) => {
       ) as amount
     FROM sales_records sr
     WHERE sr.status IN ('confirmed', 'card_pending')
+      AND ${excludeCaseAllowanceSalesSql('sr')}
       AND sr.direction != 'expense'
       AND COALESCE(sr.exclude_from_count, 0) = 0
       AND sr.contract_date >= ?

@@ -39,6 +39,7 @@ import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
 import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
 import { cleanupExpiredArticlePdfs } from './lib/article-pdfs';
+import { cleanupOldDocuments } from './lib/document-retention';
 
 const app = new Hono<{ Bindings: Env }>();
 const EMBED_PAGES = ['/users', '/accounting', '/payroll', '/alimtalk-logs', '/org'];
@@ -447,6 +448,10 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
     ctx.waitUntil(cleanupExpiredArticlePdfs(env, 100).then(
       (r) => { if (r.scanned > 0) console.log('[cron article-pdf-cleanup] done', r); },
       (err) => console.error('[cron article-pdf-cleanup] error', err),
+    ));
+    ctx.waitUntil(cleanupOldDocuments(env.DB, { dryRun: false }).then(
+      (r) => { if (r.documents > 0 || r.orphan_drive_backup_logs > 0) console.log('[cron document-retention] done', r); },
+      (err) => console.error('[cron document-retention] error', err),
     ));
   } else if (cron === '30 15 1 * *') {
     ctx.waitUntil(import('./analytics-cron').then(({ runMonthlyAggregation }) =>

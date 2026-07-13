@@ -7,8 +7,8 @@ import { Handshake, Send, Check, Camera, Download, X, Plus, Trash2 } from 'lucid
 import { useSearchParams } from 'react-router-dom';
 import { sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
+import { COURTS } from '../journal/types';
 
-const COURTS = ['의정부지방법원', '서울중앙지방법원', '서울남부지방법원', '서울동부지방법원', '서울서부지방법원', '서울북부지방법원', '인천지방법원', '수원지방법원', '대전지방법원', '대구지방법원', '부산지방법원', '울산지방법원', '창원지방법원', '광주지방법원', '전주지방법원', '청주지방법원', '춘천지방법원', '제주지방법원'];
 const DEFAULT_CONTENT = `임장 사진 촬영 요청 / 임장 후 특이사항 공유 /
 미납 관리비 확인 / 시세 및 낙찰가 조사 /
 점유자 현황 파악 / 명도 가능 여부 확인`;

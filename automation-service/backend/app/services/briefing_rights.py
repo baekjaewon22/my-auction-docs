@@ -11,6 +11,12 @@ import re
 from typing import Optional
 
 from . import rights_certificate as rc
+from .special_situations import (
+    RISK_ORDER,
+    SPECIAL_SITUATION_RULES,
+    build_special_issue_lines,
+    dedupe_lines,
+)
 
 
 RISK_ORDER = {"상": 0, "중": 1, "하": 2}
@@ -110,10 +116,12 @@ SPECIAL_SITUATION_RULES = [
 def extract_context(soup, driver=None, task_id: Optional[str] = None) -> dict:
     """브리핑자료에서 사용할 권리분석 원자료를 추출한다."""
     selector_fields = rc._extract_selector_fields(soup)
+    rights_selector_text = _extract_rights_selector_text(soup)
     rights_ocr_context = rc.extract_rights_context_by_ocr(driver, task_id=task_id) if driver else {}
     rights = rc.merge_rights(rc._extract_rights(soup), rights_ocr_context.get("rights") or [])
     tenant_context = rc.extract_tenant_context_by_ocr(driver, task_id=task_id) if driver else {}
     status_survey_context = rc.extract_status_survey_context_by_ocr(driver, task_id=task_id) if driver else {}
+    case_document_text = rc.collect_case_document_text(driver) if driver else ""
 
     context = {
         "rights": rights,
@@ -127,12 +135,15 @@ def extract_context(soup, driver=None, task_id: Optional[str] = None) -> dict:
         "status_survey_etc": status_survey_context.get("status_survey_etc")
         or rc._extract_status_survey_etc_from_text(soup.get_text("\n", strip=True)),
         "status_survey_text": status_survey_context.get("status_survey_text", ""),
+        "case_document_text": case_document_text,
         "dividend_requests": rc._extract_dividend_requests(soup),
         "related_cases": rc._extract_related_cases(soup),
         "auction_applicant_creditors": rc._extract_auction_applicant_creditors(soup, selector_fields.get("case_number") or ""),
         "management_fee": rc._extract_management_fee(soup),
         "market_data": rc._extract_market_data(soup),
     }
+    if rights_selector_text:
+        context["rights_selector_text"] = rights_selector_text
     context["expected_dividend"] = rc._extract_expected_dividend(
         soup,
         selector_fields.get("case_number") or "",
@@ -140,6 +151,35 @@ def extract_context(soup, driver=None, task_id: Optional[str] = None) -> dict:
     )
     context.update(selector_fields)
     return context
+
+
+def _extract_rights_selector_text(soup) -> str:
+    """마이옥션 상세의 권리분석 selectbox 선택값을 가능한 범위에서 추출한다."""
+    found: list[str] = []
+    for select in soup.find_all("select"):
+        meta = " ".join(str(select.get(attr) or "") for attr in ("id", "name", "class", "title", "aria-label"))
+        parent = select.find_parent(["tr", "li", "div"])
+        nearby = " ".join(filter(None, [meta, parent.get_text(" ", strip=True) if parent else ""]))
+        if "권리분석" not in nearby:
+            continue
+        option = select.find("option", selected=True) or select.find("option")
+        text = re.sub(r"\s+", " ", option.get_text(" ", strip=True) if option else "").strip()
+        if text and text not in {"선택", "선택하세요", "-"}:
+            found.append(text)
+
+    for row in soup.find_all(["tr", "li", "div"]):
+        text = re.sub(r"\s+", " ", row.get_text(" ", strip=True)).strip()
+        if "권리분석" not in text:
+            continue
+        text = re.sub(r"^.*?권리분석\s*[:：-]?\s*", "", text).strip()
+        if text and text not in {"선택", "선택하세요", "-"}:
+            found.append(text)
+
+    result: list[str] = []
+    for item in found:
+        if item not in result:
+            result.append(item)
+    return "\n".join(result[:5]).strip()
 
 
 def build_opinion_data(data: dict) -> dict:
@@ -417,8 +457,8 @@ def _build_special_summary_text(
     data_quality_flags: list[str],
 ) -> str:
     lines = ["4) 물건별 특이사항"]
-    if data_quality_flags:
-        lines.extend(data_quality_flags)
+    # 크롤링 누락/모듈 상태 문구는 고객용 브리핑에 노출하지 않는다.
+    # 누락 여부는 내부 체크 로직에서만 활용하고, 실제 위험 점검 결과만 아래에 표시한다.
     master_issues = _master_special_issue_lines(
         data,
         rights,
@@ -552,20 +592,7 @@ def _master_special_issue_lines(
     case_notice_text: str,
 ) -> list[str]:
     source_text = _source_text_for_special(data, rights, tenant_analysis_text, sale_spec_remarks_text, status_survey_etc_text, case_notice_text)
-    compact = re.sub(r"\s+", "", source_text)
-    matched = []
-    for rule in SPECIAL_SITUATION_RULES:
-        if any(re.sub(r"\s+", "", keyword) in compact for keyword in rule["keywords"]):
-            matched.append(rule)
-    matched.sort(key=lambda item: (RISK_ORDER.get(item["risk"], 9), item["code"]))
-    if not matched:
-        return []
-    lines = []
-    if sum(1 for item in matched if item["risk"] == "상") >= 2:
-        lines.append("종합경고: 본건은 인수·비용 위험이 중첩되어 있어 입찰가 산정 전 정밀 검토가 필요합니다.")
-    for rule in matched[:8]:
-        lines.append(f"{rule['name']}: {rule['fact']} {{{rule['action']}}}")
-    return _dedupe_lines(lines)
+    return build_special_issue_lines(source_text, verbose=False)
 
 
 def _source_text_for_special(
@@ -589,6 +616,7 @@ def _source_text_for_special(
             data.get("sale_spec_remarks"),
             data.get("status_survey_etc"),
             data.get("case_notice"),
+            data.get("case_document_text"),
             tenant_analysis_text,
             sale_spec_remarks_text,
             status_survey_etc_text,
@@ -599,15 +627,7 @@ def _source_text_for_special(
 
 
 def _dedupe_lines(lines: list[str]) -> list[str]:
-    result = []
-    seen = set()
-    for line in lines:
-        key = re.sub(r"\s+", "", line or "")
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        result.append(line)
-    return result
+    return dedupe_lines(lines)
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:
@@ -648,8 +668,6 @@ def _property_special_issue_lines(
             tenant_analysis_text,
         )
     )
-    if case_notice_text:
-        issues.append(f"- 주의사항: {case_notice_text}")
     if any("임차권등기" in (right.get("type") or "") or "임차권등기" in (right.get("rawText") or "") for right in rights):
         issues.append("- 임차권등기: 실제 점유관계와 배당·인수 여부를 원본 문서로 확인해 주시기 바랍니다.")
     if rc._text_has_takeover_tenant("\n".join(tenant_texts + [tenant_analysis_text])):

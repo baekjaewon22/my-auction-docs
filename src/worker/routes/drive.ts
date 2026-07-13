@@ -8,6 +8,7 @@ import {
   refreshAccessToken,
   findOrCreateFolder,
 } from '../drive-oauth';
+import { cleanupOldDocuments } from '../lib/document-retention';
 
 const OAUTH_STATE_SECRET = new TextEncoder().encode('drive-oauth-state-v1');
 
@@ -198,6 +199,16 @@ drive.get('/error-summary', requireRole(...DRIVE_ROLES), async (c) => {
 });
 
 // GET /api/drive/logs — 최근 로그
+drive.get('/document-retention', requireRole(...DRIVE_ROLES), async (c) => {
+  const result = await cleanupOldDocuments(c.env.DB, { dryRun: true });
+  return c.json(result);
+});
+
+drive.post('/document-retention/run', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
+  const result = await cleanupOldDocuments(c.env.DB, { dryRun: false });
+  return c.json(result);
+});
+
 drive.get('/logs', requireRole(...DRIVE_ROLES), async (c) => {
   const db = c.env.DB;
   const limit = Math.min(100, Number(c.req.query('limit') || 30));

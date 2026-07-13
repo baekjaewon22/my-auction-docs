@@ -3,6 +3,7 @@ import { authMiddleware } from '../middleware/auth';
 import type { AuthEnv } from '../types';
 
 const auctionReference = new Hono<AuthEnv>();
+const AUCTION_REFERENCE_MANAGER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호 지사장
 
 auctionReference.use('*', authMiddleware);
 
@@ -30,10 +31,11 @@ async function ensureReferenceTable(db: D1Database) {
   }
 }
 
-function requireMaster(c: any) {
+function requireReferenceManager(c: any) {
   const user = c.get('user');
-  if (String(user?.role || '').toLowerCase() !== 'master') {
-    return c.json({ error: '경매 참조 문구 관리는 마스터 권한만 사용할 수 있습니다.' }, 403);
+  const role = String(user?.role || '').toLowerCase();
+  if (!['master', 'ceo'].includes(role) && !AUCTION_REFERENCE_MANAGER_IDS.includes(String(user?.sub || ''))) {
+    return c.json({ error: '경매 참조 문구 관리는 정민호 지사장, 대표, 마스터만 사용할 수 있습니다.' }, 403);
   }
   return null;
 }
@@ -44,8 +46,8 @@ function normalizeType(type: string) {
 }
 
 auctionReference.get('/items', async (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireReferenceManager(c);
+  if (permissionError) return permissionError;
 
   const type = normalizeType(c.req.query('type') || '');
   await ensureReferenceTable(c.env.DB);
@@ -57,8 +59,8 @@ auctionReference.get('/items', async (c) => {
 });
 
 auctionReference.post('/items', async (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireReferenceManager(c);
+  if (permissionError) return permissionError;
 
   const user = c.get('user');
   const body = await c.req.json<any>();
@@ -87,8 +89,8 @@ auctionReference.post('/items', async (c) => {
 });
 
 auctionReference.delete('/items/:id', async (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireReferenceManager(c);
+  if (permissionError) return permissionError;
 
   await ensureReferenceTable(c.env.DB);
   await c.env.DB.prepare('DELETE FROM auction_reference_items WHERE id = ?').bind(c.req.param('id')).run();

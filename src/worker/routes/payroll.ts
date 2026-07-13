@@ -182,6 +182,15 @@ function excludesCaseAllowanceFromBonusBasis(month: string): boolean {
   return /^\d{4}-\d{2}$/.test(month) && month >= CASE_ALLOWANCE_EXCLUDED_FROM_BONUS_BASIS_FROM;
 }
 
+function isCaseAllowanceSalesRecord(row: any): boolean {
+  return String(row?.type_detail || '').startsWith('명도성과금')
+    || String(row?.external_id || '').startsWith('myungdo-bonus-');
+}
+
+function excludeCaseAllowanceSalesRecordFromPayroll(row: any, month: string): boolean {
+  return excludesCaseAllowanceFromBonusBasis(month) && isCaseAllowanceSalesRecord(row);
+}
+
 function parsePayrollSaveData(raw: unknown): Record<string, any> {
   try {
     const parsed = JSON.parse(String(raw || '{}'));
@@ -410,7 +419,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const salesQuery = `
     SELECT id, type, type_detail, client_name, client_phone, depositor_name, depositor_different,
       amount, contract_date, deposit_date, status, confirmed_at, memo, exclude_from_count,
-      payment_type, card_deposit_date, proxy_cost, direction
+      payment_type, card_deposit_date, proxy_cost, direction, external_id
     FROM sales_records
     WHERE user_id = ? AND status IN ('confirmed', 'refunded')
       AND (
@@ -423,7 +432,8 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const salesResult = await db.prepare(salesQuery)
     .bind(userId, monthStart, monthEnd, monthStart, monthEnd, monthStart, monthEnd).all();
 
-  const records = salesResult.results as any[];
+  const records = (salesResult.results as any[])
+    .filter((r: any) => !excludeCaseAllowanceSalesRecordFromPayroll(r, month));
   // 계약건수: 급여제는 2개월 기준, 비율제는 1개월 기준
   let contractCount: number;
   if (!isCommission) {
@@ -519,9 +529,8 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     });
     // sales_records의 안건 수당 자동 INSERT 건(type_detail '명도성과금' prefix — DB 레거시)은 일반매출 합산에서 제외
     // cases 직접 조회로 중복 방지. 매수신청대리는 대리비용 차감 후 effective amount로 합산.
-    const isCaseAllowanceSalesRow = (r: any) => (r.type_detail || '').startsWith('명도성과금');
     bonusRegularRaw = bonusConfirmed
-      .filter((r: any) => !isCaseAllowanceSalesRow(r))
+      .filter((r: any) => !isCaseAllowanceSalesRecord(r))
       .reduce((sum: number, r: any) => sum + proxyEffectiveRaw(r), 0);
     bonusRegularSupply = vatSupplyAmount(bonusRegularRaw, month);
     bonusRegularVat = bonusRegularRaw - bonusRegularSupply;

@@ -19,6 +19,10 @@ function payrollMoney(n: number, month: string): number {
     ? truncMoney(n)
     : Math.round(Number(n) || 0);
 }
+const CASE_ALLOWANCE_LIVE_FROM = '2026-06';
+function shouldUseLiveCaseAllowance(month: string): boolean {
+  return /^\d{4}-\d{2}$/.test(month) && month >= CASE_ALLOWANCE_LIVE_FROM;
+}
 function vatSupplyAmount(n: number, month: string): number { return payrollMoney((Number(n) || 0) * 10 / 11, month); }
 function toMoneyDisplay(val: string): string {
   const num = val.replace(/[^0-9]/g, '');
@@ -148,7 +152,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
       // 안건 수당 — 짝수월에만 (예: 4월 → 3~4월 합계)
       try {
-        if (snapshotCaseAllowance) {
+        if (snapshotCaseAllowance && (!shouldUseLiveCaseAllowance(selectedMonth) || Number(snapshotCaseAllowance.bonus || 0) > 0)) {
           setCaseAllowance(snapshotCaseAllowance);
         } else if (res.is_payout_month) {
           const [y, mStr] = selectedMonth.split('-');

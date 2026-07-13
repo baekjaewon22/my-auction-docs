@@ -10,9 +10,10 @@ import { COURTS as ALL_COURTS } from '../journal/types';
 import BidAnalysis from './BidAnalysis';
 import BidMatchCheck from './BidMatchCheck';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
+import LegalGlossaryTool from '../components/LegalGlossaryTool';
 
 type NoteCategory = 'community' | 'notice' | 'article_news' | 'briefing_schedule' | 'resource_library' | 'eviction_quote' | 'legal_support' | 'cooperation';
-type LegalSubcategory = 'auction' | 'lawsuit' | 'legal_terms' | 'fee_calculation';
+type LegalSubcategory = 'auction' | 'lawsuit' | 'legal_terms' | 'glossary' | 'fee_calculation';
 type CommunitySection = 'posts' | 'notice' | 'article_news' | 'briefing_schedule' | 'resource_library';
 
 interface Note {
@@ -83,7 +84,8 @@ const CATEGORIES: Array<{ key: NoteCategory; label: string; icon: typeof StickyN
 const LEGAL_SUBCATEGORIES: Array<{ key: LegalSubcategory; label: string }> = [
   { key: 'auction', label: '경매' },
   { key: 'lawsuit', label: '소송' },
-  { key: 'legal_terms', label: '법률용어' },
+  { key: 'legal_terms', label: '법률이해' },
+  { key: 'glossary', label: '용어사전' },
   { key: 'fee_calculation', label: '보수계산' },
 ];
 const WRITABLE_LEGAL_SUBCATEGORIES = LEGAL_SUBCATEGORIES.filter(item => item.key === 'auction' || item.key === 'lawsuit');
@@ -512,6 +514,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const canCreateLegalTerms = !!user && (['master', 'ceo', 'cc_ref', 'admin'].includes(user.role) || user.role === 'support' || String(user.department || '').includes('법률지원'));
   const canCreateCurrentLegalCategory = activeCategory !== 'legal_support' || activeLegalSubcategory !== 'legal_terms' || canCreateLegalTerms;
   const isFeeCalculationTool = activeCategory === 'legal_support' && activeLegalSubcategory === 'fee_calculation';
+  const isGlossaryTool = activeCategory === 'legal_support' && activeLegalSubcategory === 'glossary';
+  const isStaticLegalTool = isFeeCalculationTool || isGlossaryTool;
   const isManager = !!user && ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user.role);
   const isMaster = user?.role === 'master';
   const canViewPostViews = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
@@ -542,6 +546,11 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
 
   const load = async () => {
     if (activeCategory === 'cooperation') {
+      setNotes([]);
+      setLoading(false);
+      return;
+    }
+    if (activeCategory === 'legal_support' && activeLegalSubcategory === 'glossary') {
       setNotes([]);
       setLoading(false);
       return;
@@ -707,7 +716,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     const legalAuctionCaseNumber = formNoCaseNumber ? '사건번호없음' : `${formCaseYear}타경${legalAuctionCaseNo}`;
     if (!isEditing && activeCategory === 'community' && communitySection === 'article_news') { alert('오늘의 뉴스는 외부 API 업로드로만 등록됩니다.'); return; }
     if (!isEditing && isNotice && !canCreateNotice) { alert('공지사항 등록 권한이 없습니다.'); return; }
-    if (activeCategory === 'legal_support' && formLegalSubcategory === 'legal_terms' && !canCreateLegalTerms) { alert('법률용어는 법률지원팀 및 관리자급 이상만 작성할 수 있습니다.'); return; }
+    if (activeCategory === 'legal_support' && formLegalSubcategory === 'legal_terms' && !canCreateLegalTerms) { alert('법률이해는 법률지원팀 및 관리자급 이상만 작성할 수 있습니다.'); return; }
     if (!isBriefingSchedule && activeCategory !== 'eviction_quote' && !formTitle.trim()) { alert('제목을 입력하세요.'); return; }
     if (activeCategory === 'eviction_quote' && !formCaseNumber.trim()) { alert('사건번호를 입력하세요.'); return; }
     if (isLegalAuction && ((!formNoCaseNumber && !legalAuctionCaseNo) || !formCourt)) { alert('경매 상담은 사건번호와 법원을 입력하세요.'); return; }
@@ -1147,7 +1156,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           </div>
         </div> : (
           <div className="admin-note-comments legal-answer-section">
-            <div className="empty-state" style={{ padding: 18 }}>법률용어는 답변 없이 열람용으로 운영됩니다.</div>
+            <div className="empty-state" style={{ padding: 18 }}>법률이해는 답변 없이 열람용으로 운영됩니다.</div>
           </div>
         )}
       </div>
@@ -1159,7 +1168,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     <div className="page">
       <div className="page-header">
         <h2><StickyNote size={20} style={{ marginRight: 6, verticalAlign: 'middle' }} />{isBidHistoryMode ? '경매분석' : '사내 커뮤니티'}</h2>
-        {bidHistorySection !== 'bid_analysis' && bidHistorySection !== 'bid_match_check' && activeCategory !== 'cooperation' && !isFeeCalculationTool && canCreateCurrentLegalCategory && !(activeCategory === 'community' && communitySection === 'article_news') && !(activeCategory === 'community' && communitySection === 'briefing_schedule' && !canCreateBriefingSchedule) && !(activeCategory === 'community' && communitySection === 'notice' && !canCreateNotice) && (
+        {bidHistorySection !== 'bid_analysis' && bidHistorySection !== 'bid_match_check' && activeCategory !== 'cooperation' && !isStaticLegalTool && canCreateCurrentLegalCategory && !(activeCategory === 'community' && communitySection === 'article_news') && !(activeCategory === 'community' && communitySection === 'briefing_schedule' && !canCreateBriefingSchedule) && !(activeCategory === 'community' && communitySection === 'notice' && !canCreateNotice) && (
           <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); if (showForm) resetForm(); }}>
             {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> {activeCategory === 'community' && communitySection === 'briefing_schedule' ? (isBidHistoryMode ? '브리핑자료 제출 등록' : '브리핑자료 일정 등록') : activeCategory === 'community' && communitySection === 'notice' ? '공지사항 등록' : activeCategory === 'community' && communitySection === 'resource_library' ? '자료 업로드' : '새 게시글'}</>}
           </button>
@@ -1302,8 +1311,9 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       )}
 
       {isFeeCalculationTool && <FeeCalculationTool />}
+      {isGlossaryTool && <LegalGlossaryTool />}
 
-      {!isFeeCalculationTool && <div style={{ display: 'flex', justifyContent: activeCategory === 'legal_support' ? 'center' : 'flex-start', margin: activeCategory === 'legal_support' ? '18px 0 22px' : '0 0 12px' }}>
+      {!isStaticLegalTool && <div style={{ display: 'flex', justifyContent: activeCategory === 'legal_support' ? 'center' : 'flex-start', margin: activeCategory === 'legal_support' ? '18px 0 22px' : '0 0 12px' }}>
           <div style={activeCategory === 'legal_support'
             ? { display: 'flex', alignItems: 'center', width: 'min(520px, 100%)', border: '3px solid var(--primary)', borderRadius: 999, overflow: 'hidden', background: '#fff' }
             : { display: 'flex', alignItems: 'center', width: 'min(360px, 100%)', border: '1px solid #dadce0', borderRadius: 6, overflow: 'hidden', background: '#fff' }}>
@@ -1320,7 +1330,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           </div>
       </div>}
 
-      {!isFeeCalculationTool && showForm && (
+      {!isStaticLegalTool && showForm && (
         <div className="card" style={{ marginBottom: 20, padding: 20 }}>
           <h3 style={{ margin: '0 0 12px', fontSize: '0.95rem' }}>
             {editingId ? '게시글 수정' : activeCategory === 'eviction_quote' ? '명도 견적 의뢰' : activeCategory === 'legal_support' ? `${getLegalSubcategoryLabel(formLegalSubcategory)} 작성` : activeCategory === 'community' && communitySection === 'briefing_schedule' ? (isBidHistoryMode ? '브리핑자료 제출 등록' : '브리핑자료 일정 등록') : activeCategory === 'community' && communitySection === 'notice' ? '공지사항 작성' : activeCategory === 'community' && communitySection === 'resource_library' ? '자료 업로드' : '새 게시글 작성'}
@@ -1441,7 +1451,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
               )}
               <div className="form-group" style={{ marginBottom: 12 }}>
                 <label>{activeCategory === 'legal_support' ? (formLegalSubcategory === 'legal_terms' ? '용어 제목 *' : '질문 제목 *') : activeCategory === 'community' && communitySection === 'resource_library' ? '자료명 *' : '제목 *'}</label>
-                <input className="form-input" value={formTitle} onChange={(e) => setFormTitle(e.target.value)} placeholder={activeCategory === 'legal_support' ? (formLegalSubcategory === 'legal_terms' ? '법률용어 제목' : '질문 제목') : activeCategory === 'community' && communitySection === 'resource_library' ? '자료명' : '게시글 제목'} style={{ width: '100%' }} />
+                <input className="form-input" value={formTitle} onChange={(e) => setFormTitle(e.target.value)} placeholder={activeCategory === 'legal_support' ? (formLegalSubcategory === 'legal_terms' ? '법률이해 제목' : '질문 제목') : activeCategory === 'community' && communitySection === 'resource_library' ? '자료명' : '게시글 제목'} style={{ width: '100%' }} />
               </div>
               {activeCategory === 'legal_support' && formLegalSubcategory === 'auction' && (
                 <div className="legal-auction-case-box">
@@ -1608,7 +1618,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
         </div>
       )}
 
-      {!isFeeCalculationTool && (filtered.length === 0 ? (
+      {!isStaticLegalTool && (filtered.length === 0 ? (
         <div className="empty-state" style={{ padding: 40 }}>
           {notes.length === 0 ? '등록된 게시글이 없습니다.' : '검색 결과가 없습니다.'}
         </div>

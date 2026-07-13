@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Calendar, FileSignature, RefreshCw, Search, TrendingUp, Users } from 'lucide-react';
+import { Calendar, ChevronLeft, ChevronRight, FileSignature, RefreshCw, Search, TrendingUp, Users } from 'lucide-react';
 import { api } from '../api';
 import { normalizeBranchName } from '../lib/branchAliases';
 
@@ -24,6 +24,18 @@ function fmtMonthLabel(month: string) {
   const [y, m] = month.split('-').map(Number);
   if (!y || !m) return month;
   return `${y}년 ${m}월`;
+}
+
+function fmtCompactMonthLabel(month: string) {
+  const [, m] = month.split('-').map(Number);
+  if (!m) return month;
+  return `${m}월`;
+}
+
+function shiftMonth(month: string, offset: number) {
+  const [y, m] = month.split('-').map(Number);
+  if (!y || !m) return fmtMonthStr(new Date());
+  return fmtMonthStr(new Date(y, m - 1 + offset, 1));
 }
 
 const BRANCH_ORDER = ['의정부본사', '서초지사', '대전지사', '부산지사', '본사관리', '미지정'];
@@ -85,6 +97,15 @@ export default function ContractTracker() {
     setAppliedTo(currentMonth);
   };
 
+  const moveSingleMonth = (offset: number) => {
+    const baseMonth = appliedFrom === appliedTo ? appliedFrom : monthTo || appliedTo || currentMonth;
+    const nextMonth = shiftMonth(baseMonth, offset);
+    setMonthFrom(nextMonth);
+    setMonthTo(nextMonth);
+    setAppliedFrom(nextMonth);
+    setAppliedTo(nextMonth);
+  };
+
   const grouped = useMemo(() => {
     const byBranch: Record<string, Record<string, TrackerUser[]>> = {};
     for (const u of users) {
@@ -119,6 +140,18 @@ export default function ContractTracker() {
         <h2><FileSignature size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 컨설턴트 계약관리</h2>
         <button className="btn btn-sm" onClick={load} disabled={loading} title="새로고침">
           <RefreshCw size={13} className={loading ? 'drive-spin' : ''} /> 새로고침
+        </button>
+      </div>
+
+      <div className="ct-month-nav" aria-label="월별 이동">
+        <button className="ct-month-arrow" onClick={() => moveSingleMonth(-1)} disabled={loading} title="이전 달">
+          <ChevronLeft size={18} />
+        </button>
+        <div className="ct-month-current">
+          {appliedFrom === appliedTo ? fmtCompactMonthLabel(appliedFrom) : rangeLabel}
+        </div>
+        <button className="ct-month-arrow" onClick={() => moveSingleMonth(1)} disabled={loading} title="다음 달">
+          <ChevronRight size={18} />
         </button>
       </div>
 

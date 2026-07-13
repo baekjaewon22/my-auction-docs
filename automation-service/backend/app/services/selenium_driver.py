@@ -12,6 +12,7 @@ import time
 import logging
 import tempfile
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -212,10 +213,11 @@ def navigate_with_retry(driver: webdriver.Chrome, url: str, *, retries: int = 2,
 def _chrome_service() -> ChromeService:
     chrome_binary = _find_chrome_binary()
     driver_path = _find_chromedriver(chrome_binary)
+    service_kwargs = {"log_output": subprocess.DEVNULL}
     if driver_path:
         logger.info(f"ChromeDriver: {driver_path}")
-        return ChromeService(executable_path=driver_path)
-    return ChromeService()
+        return ChromeService(executable_path=driver_path, **service_kwargs)
+    return ChromeService(**service_kwargs)
 
 
 def _create_driver_legacy(profile_dir: str = "", headless: bool = False) -> webdriver.Chrome:

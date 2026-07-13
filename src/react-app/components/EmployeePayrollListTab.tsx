@@ -85,17 +85,17 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       const [year, monthText] = month.split('-');
       const monthNumber = Number(monthText);
       const isPayoutMonth = monthNumber % 2 === 0;
-      let caseAllowanceByUser: Record<string, number> = {};
+      let salaryCaseAllowanceByUser: Record<string, number> = {};
 
       if (isPayoutMonth) {
         try {
           const period = `${year}-${String(monthNumber - 1).padStart(2, '0')}_${String(monthNumber).padStart(2, '0')}`;
-          const bonusRes = await api.cases.bonusSummary(period, { salary_only_month: month });
-          caseAllowanceByUser = Object.fromEntries(
-            (bonusRes.summary || []).map((item: any) => [item.consultant_user_id, item.bonus || 0])
+          const salaryBonusRes = await api.cases.bonusSummary(period, { salary_only_month: month });
+          salaryCaseAllowanceByUser = Object.fromEntries(
+            (salaryBonusRes.summary || []).map((item: any) => [item.consultant_user_id, item.bonus || 0])
           );
         } catch {
-          caseAllowanceByUser = {};
+          salaryCaseAllowanceByUser = {};
         }
       }
 
@@ -117,7 +117,10 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
           const positionAllowance = Number(s.position_allowance || accounting.position_allowance || 0);
           const basePay = Number(s.base_pay || salary + positionAllowance);
           const performanceBonus = Number(s.bonus || 0);
-          const caseAllowance = Number(saved.caseAllowance?.bonus || caseAllowanceByUser[user.id] || 0);
+          const isCommission = accounting.pay_type === 'commission';
+          const liveCaseAllowance = isCommission ? 0 : Number(salaryCaseAllowanceByUser[user.id] || 0);
+          const savedCaseAllowance = Number(saved.caseAllowance?.bonus || saved.payroll_snapshot?.caseAllowance?.bonus || 0);
+          const caseAllowance = isCommission ? 0 : (savedCaseAllowance || liveCaseAllowance);
           const contractAward = payroll.is_payout_month && payroll.contract_award?.rank
             ? Number(payroll.contract_award.award || 0)
             : 0;
@@ -137,7 +140,6 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             + Number(payroll.termination_settlement?.leave_deduction || 0)
             + commDeductionRaw;
           const terminationLeavePayout = Number(payroll.termination_settlement?.leave_payout || 0);
-          const isCommission = accounting.pay_type === 'commission';
 
           let rowBasePay = basePay;
           let rowPerformanceBonus = performanceBonus;
@@ -187,14 +189,13 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             const taxableIncome = totalIncome - taxExemptAmount - preTaxDeductions;
             const tax33 = truncMoney(taxableIncome * 0.033);
             const contractAwardTax = truncMoney(contractAward * 0.033);
-            const contractAwardNet = contractAward - contractAwardTax;
-            totalPay = payrollMoney(totalIncome - preTaxDeductions - tax33 - otherDeductions + contractAwardNet, month);
             rowBasePay = commissionAmount + proxyIncome;
             rowPerformanceBonus = 0;
             rowCaseAllowance = 0;
-            rowContractAward = contractAwardNet;
+            rowContractAward = contractAward;
             rowExtraPay = extraDetails.reduce((sum: number, item: any) => sum + item.afterRate, 0);
             rowDeduction = preTaxDeductions + otherDeductions + tax33 + contractAwardTax;
+            totalPay = payrollMoney(rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay, month);
           }
 
           return {

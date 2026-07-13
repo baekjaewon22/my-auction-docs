@@ -40,6 +40,7 @@ from ..core.config import (
 from ..core.utils import normalize_myauction_detail_url
 from ..models.schemas import ProgressUpdate, ReportRequest
 from . import capturer, crawler, forced_execution_estimator, pdf_processor
+from .special_situations import build_special_issue_lines
 from .selenium_driver import (
     account_profile_dir,
     click_tab_safe,
@@ -260,6 +261,7 @@ def extract_rights_context(soup, driver=None, task_id: Optional[str] = None) -> 
     rights = merge_rights(_extract_rights(soup), rights_ocr_context.get("rights") or [])
     ocr_context = extract_tenant_context_by_ocr(driver, task_id=task_id) if driver else {}
     status_survey_context = extract_status_survey_context_by_ocr(driver, task_id=task_id) if driver else {}
+    case_document_text = collect_case_document_text(driver) if driver else ""
     tenants = ocr_context.get("tenants") or _extract_tenants(soup)
     dividend_requests = _extract_dividend_requests(soup)
     related_cases = _extract_related_cases(soup)
@@ -282,6 +284,7 @@ def extract_rights_context(soup, driver=None, task_id: Optional[str] = None) -> 
         "sale_spec_remarks": ocr_context.get("sale_spec_remarks", ""),
         "status_survey_etc": status_survey_context.get("status_survey_etc") or _extract_status_survey_etc_from_text(soup.get_text("\n", strip=True)),
         "status_survey_text": status_survey_context.get("status_survey_text", ""),
+        "case_document_text": case_document_text,
         "dividend_requests": dividend_requests,
         "related_cases": related_cases,
         "auction_applicant_creditors": auction_applicant_creditors,
@@ -518,6 +521,7 @@ def build_template_data(data: dict) -> dict:
         "saleSpecRemarksText": sale_spec_remarks_text,
         "statusSurveyEtcText": status_survey_etc_text,
         "caseNoticeText": case_notice_text,
+        "caseDocumentText": data.get("case_document_text") or "",
         "미납관리비": unpaid_management_fee_text,
         "매각물건명세서비고": sale_spec_remarks_text,
         "현황조사서기타": status_survey_etc_text,
@@ -825,6 +829,7 @@ def _property_special_issue_lines(
             data.get("sale_spec_remarks"),
             data.get("status_survey_etc"),
             data.get("case_notice"),
+            data.get("case_document_text"),
             sale_spec_remarks_text,
             status_survey_etc_text,
             case_notice_text,
@@ -833,6 +838,8 @@ def _property_special_issue_lines(
     )
     if case_notice_text:
         issues.append(f"- 주의사항: {case_notice_text}")
+    for line in build_special_issue_lines(source_text):
+        issues.append(f"- {line}")
     if any("임차권등기" in (right.get("type") or "") or "임차권등기" in (right.get("rawText") or "") for right in rights):
         issues.append("- 임차권등기: 임차권등기가 확인되므로 실제 점유관계와 배당·인수 여부를 원본 문서로 확인해 주시기 바랍니다.")
     if "대지권미등기" in source_text.replace(" ", ""):
@@ -1215,6 +1222,114 @@ def _extract_status_survey_etc_from_text(text: str) -> str:
             if note:
                 return note
     return ""
+
+
+def collect_case_document_text(driver) -> str:
+    if not driver:
+        return ""
+
+    base_handle = driver.current_window_handle
+    base_url = driver.current_url
+    before_handles = set(driver.window_handles)
+    opened_handle = ""
+
+    try:
+        _open_case_document_list(driver)
+        end = time.time() + 8
+        while time.time() < end:
+            new_handles = list(set(driver.window_handles) - before_handles)
+            if new_handles:
+                opened_handle = new_handles[0]
+                driver.switch_to.window(opened_handle)
+                wait_document_ready(driver, timeout=15)
+                break
+            time.sleep(0.2)
+
+        try:
+            body_text = driver.find_element(By.TAG_NAME, "body").text
+        except Exception:
+            body_text = ""
+        return _extract_case_document_signal_text(body_text)
+    except Exception as e:
+        logger.info(f"문건접수 내역 확인 생략: {e}")
+        return ""
+    finally:
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+        try:
+            if opened_handle and opened_handle in driver.window_handles:
+                driver.close()
+                driver.switch_to.window(base_handle)
+            elif base_handle in driver.window_handles:
+                driver.switch_to.window(base_handle)
+                if driver.current_url != base_url:
+                    driver.get(base_url)
+                    wait_document_ready(driver, timeout=15)
+        except Exception:
+            pass
+
+
+def _open_case_document_list(driver) -> None:
+    wait = WebDriverWait(driver, 8)
+    candidates = [
+        (By.PARTIAL_LINK_TEXT, "문건접수"),
+        (By.PARTIAL_LINK_TEXT, "문건"),
+        (By.XPATH, "//div[@id='dtlw_link']//a[contains(normalize-space(.), '문건접수') or contains(normalize-space(.), '문건')]"),
+        (By.XPATH, "//a[contains(normalize-space(.), '문건접수') or contains(normalize-space(.), '문건')]"),
+    ]
+    last_error = None
+    for by, value in candidates:
+        try:
+            el = wait.until(EC.element_to_be_clickable((by, value)))
+            safe_click(driver, el)
+            time.sleep(1)
+            return
+        except Exception as e:
+            last_error = e
+    raise last_error if last_error else RuntimeError("문건접수 링크를 찾지 못했습니다.")
+
+
+def _extract_case_document_signal_text(text: str) -> str:
+    lines = [
+        re.sub(r"\s+", " ", line).strip()
+        for line in (text or "").splitlines()
+        if re.sub(r"\s+", " ", line).strip()
+    ]
+    signal_keywords = (
+        "유치권",
+        "공사대금",
+        "배제신청",
+        "유치권배제",
+        "유치권 배제",
+        "권리신고",
+        "권리 신고",
+    )
+    selected = []
+    for idx, line in enumerate(lines):
+        compact = re.sub(r"\s+", "", line)
+        if not any(re.sub(r"\s+", "", keyword) in compact for keyword in signal_keywords):
+            continue
+        start = max(0, idx - 1)
+        end = min(len(lines), idx + 2)
+        selected.extend(lines[start:end])
+
+    if selected:
+        return _clean_document_note(" ".join(_dedupe_text_lines(selected)), limit=1200)
+    return ""
+
+
+def _dedupe_text_lines(lines: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for line in lines:
+        key = re.sub(r"\s+", "", line or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(line)
+    return result
 
 
 def collect_sale_spec_text_and_images(driver, safe_task_id: str) -> tuple[str, list[str]]:

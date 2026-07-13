@@ -3,6 +3,7 @@ import { authMiddleware } from '../middleware/auth';
 import type { AuthEnv } from '../types';
 
 const report = new Hono<AuthEnv>();
+const AGENT_INSTALLER_KEY = 'downloads/MyAuctionAutomationAgentSetup.exe';
 
 report.use('*', authMiddleware);
 
@@ -130,6 +131,41 @@ report.post('/start', async (c) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+});
+
+report.get('/local-profile', async (c) => {
+  const masterError = requireMaster(c);
+  if (masterError) return masterError;
+
+  const { authUser, user } = await currentReportUser(c);
+  const credentialError = requireMyAuction(user);
+  if (credentialError) return c.json({ error: credentialError }, 400);
+
+  const profile = withSavedProfile({}, authUser, user);
+  return c.json({
+    myauction_id: profile.myauction_id,
+    myauction_pw: profile.myauction_pw,
+    author_name: profile.author_name,
+    author_title: profile.author_title,
+    author_phone: profile.author_phone,
+    requester_role: profile.requester_role,
+    requester_permission: profile.requester_permission,
+  });
+});
+
+report.get('/agent-installer', async (c) => {
+  const bucket = (c.env as any).ARTICLE_BUCKET;
+  if (!bucket) return c.json({ error: '설치 파일 저장소가 설정되지 않았습니다.' }, 500);
+
+  const object = await bucket.get(AGENT_INSTALLER_KEY);
+  if (!object) return c.json({ error: '자동화 실행기 설치 파일이 아직 업로드되지 않았습니다.' }, 404);
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('Content-Type', 'application/vnd.microsoft.portable-executable');
+  headers.set('Content-Disposition', 'attachment; filename="MyAuctionAutomationAgentSetup.exe"');
+  headers.set('Cache-Control', 'private, max-age=300');
+  return new Response(object.body, { headers });
 });
 
 report.post('/start-batch', async (c) => {

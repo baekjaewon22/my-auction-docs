@@ -23,9 +23,10 @@ import requests
 from PIL import Image as PILImage
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.enum.text import PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.oxml.xmlchemy import OxmlElement
-from pptx.util import Pt
+from pptx.util import Inches, Pt
 
 from ..core.config import settings, CAPTURE_DIR
 from ..core.utils import track_file
@@ -639,7 +640,9 @@ def _add_styled_run(paragraph, text: str, size_pt: float, bold: bool, color: RGB
 
 
 def apply_rights_analysis_opinion(prs: Presentation, opinion_text: str) -> bool:
-    slide = _find_opinion_slide_after_toc(prs, offset=2)
+    slide = find_slide_by_note_key(prs, "SLIDE_KEY=OPINION_RIGHTS_ANALYSIS")
+    if slide is None:
+        slide = _find_opinion_slide_after_toc(prs, offset=2)
     if slide is None:
         slide = _find_slide_by_body_keywords(prs, ("말소기준", "임차권리", "경매취하"))
     if slide is None:
@@ -648,8 +651,8 @@ def apply_rights_analysis_opinion(prs: Presentation, opinion_text: str) -> bool:
 
     target = _find_main_body_text_shape(slide)
     if target is None or not getattr(target, "has_text_frame", False):
-        logger.warning("담당자 종합의견 (2) 권리분석 본문 텍스트 박스를 찾지 못했습니다.")
-        return False
+        logger.warning("담당자 종합의견 (2) 권리분석 본문 텍스트 박스를 새로 생성합니다.")
+        target = slide.shapes.add_textbox(735013, 1486429, 9534525, 5478251)
 
     target.text_frame.word_wrap = True
     _set_rights_analysis_rich_text(
@@ -665,7 +668,9 @@ def apply_special_opinion(prs: Presentation, opinion_text: str) -> bool:
     if not str(opinion_text or "").strip():
         return False
 
-    slide = _find_opinion_slide_after_toc(prs, offset=3)
+    slide = find_slide_by_note_key(prs, "SLIDE_KEY=OPINION_SPECIAL")
+    if slide is None:
+        slide = _find_opinion_slide_after_toc(prs, offset=3)
     if slide is None:
         logger.warning("담당자 종합의견 (3) 특이사항 슬라이드를 찾지 못했습니다.")
         return False
@@ -675,17 +680,22 @@ def apply_special_opinion(prs: Presentation, opinion_text: str) -> bool:
         target = slide.shapes.add_textbox(735013, 1486429, 9534525, 5478251)
 
     target.text_frame.word_wrap = True
+    visible_line_count = len([line for line in str(opinion_text or "").splitlines() if line.strip()])
+    heading_size = 11 if visible_line_count > 16 else 14
+    body_size = 8.5 if visible_line_count > 20 else (9.5 if visible_line_count > 14 else 14)
     _set_rights_analysis_rich_text(
         target.text_frame,
         opinion_text or "",
-        heading_size_pt=14,
-        body_size_pt=14,
+        heading_size_pt=heading_size,
+        body_size_pt=body_size,
     )
     return True
 
 
 def _find_property_status_opinion_slide(prs: Presentation):
-    slide = _find_opinion_slide_after_toc(prs, offset=1)
+    slide = find_slide_by_note_key(prs, "SLIDE_KEY=OPINION_PROPERTY_STATUS")
+    if slide is None:
+        slide = _find_opinion_slide_after_toc(prs, offset=1)
     if slide is not None:
         return slide
 
@@ -976,10 +986,11 @@ def insert_single_image_by_note_keywords(prs, keywords: list[str], image_path: s
         return False
     yellow = find_yellow_box(slide)
     if yellow is None:
-        logger.warning(f"노트 키워드 슬라이드에서 노란 박스를 찾지 못했습니다: {keywords}")
-        return False
-    l, t, w, h = yellow.left, yellow.top, yellow.width, yellow.height
-    slide.shapes._spTree.remove(yellow._element)
+        l, t = Inches(0.65), Inches(1.15)
+        w, h = prs.slide_width - Inches(1.3), prs.slide_height - Inches(1.65)
+    else:
+        l, t, w, h = yellow.left, yellow.top, yellow.width, yellow.height
+        slide.shapes._spTree.remove(yellow._element)
 
     trimmed = image_path.replace(".png", "_trim.png")
     try:
@@ -1006,6 +1017,63 @@ def insert_single_image_by_note_keywords(prs, keywords: list[str], image_path: s
         slide.shapes.add_picture(use_path, new_l, new_t, width=new_w, height=new_h)
     except Exception:
         slide.shapes.add_picture(use_path, l, t, width=w, height=h)
+    return True
+
+
+def insert_key_value_table_by_note_keywords(
+    prs,
+    keywords: list[str],
+    title: str,
+    rows: list[tuple[str, str]],
+) -> bool:
+    """옥션플래너 값만 전달된 경우 지정 슬라이드의 이미지 박스를 표로 대체한다."""
+    if not rows:
+        return False
+    slide = find_slide_by_note_keywords(prs, keywords)
+    if slide is None:
+        logger.warning(f"노트 키워드 표 삽입 슬라이드를 찾지 못했습니다: {keywords}")
+        return False
+    yellow = find_yellow_box(slide)
+    if yellow is None:
+        left, top = Inches(0.65), Inches(1.15)
+        width, height = prs.slide_width - Inches(1.3), prs.slide_height - Inches(1.65)
+    else:
+        left, top, width, height = yellow.left, yellow.top, yellow.width, yellow.height
+        slide.shapes._spTree.remove(yellow._element)
+    visible_rows = rows[:16]
+    table = slide.shapes.add_table(len(visible_rows) + 1, 2, left, top, width, height).table
+    table.columns[0].width = int(width * 0.38)
+    table.columns[1].width = width - table.columns[0].width
+
+    header = table.cell(0, 0)
+    header.merge(table.cell(0, 1))
+    header.text = title
+    header.fill.solid()
+    header.fill.fore_color.rgb = OPINION_NAVY
+    for paragraph in header.text_frame.paragraphs:
+        paragraph.alignment = PP_ALIGN.CENTER
+        for run in paragraph.runs:
+            run.font.size = Pt(13)
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(255, 255, 255)
+            _force_run_font(run)
+
+    for row_index, (label, value) in enumerate(visible_rows, start=1):
+        for column_index, text in enumerate((label, value)):
+            cell = table.cell(row_index, column_index)
+            cell.text = str(text or "-")
+            cell.margin_left = 70000
+            cell.margin_right = 70000
+            if column_index == 0:
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = RGBColor(232, 240, 248)
+            for paragraph in cell.text_frame.paragraphs:
+                paragraph.alignment = PP_ALIGN.LEFT if column_index == 0 else PP_ALIGN.RIGHT
+                for run in paragraph.runs:
+                    run.font.size = Pt(10)
+                    run.font.bold = column_index == 0
+                    run.font.color.rgb = OPINION_NAVY
+                    _force_run_font(run)
     return True
 
 

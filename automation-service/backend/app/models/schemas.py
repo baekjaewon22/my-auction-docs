@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Pydantic 모델 (API 요청/응답 스키마)"""
 
-from typing import Literal, Optional
-from pydantic import BaseModel
+from typing import Any, Literal, Optional
+from pydantic import BaseModel, Field
 
 
 OutputType = Literal["auction_report", "rights_certificate"]
@@ -20,6 +20,8 @@ class ReportRequest(BaseModel):
     author_phone: str = ""            # 가입자 전화번호
     requester_role: str = "user"
     requester_permission: str = "basic"
+    planner_snapshots: list[dict[str, Any]] = Field(default_factory=list)
+    auction_references: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
 
 class RightsCertificateBatchRequest(BaseModel):

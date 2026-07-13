@@ -365,6 +365,8 @@ documents.post('/:id/submit', async (c) => {
 
   // 기존 결재선 삭제 (반려 후 재제출 대응)
   await db.prepare('DELETE FROM approval_steps WHERE document_id = ?').bind(id).run();
+  // 반려 후 재제출 시 이전 결재자 서명이 남으면 pending 단계가 승인처럼 보이므로 작성자 서명만 유지한다.
+  await db.prepare('DELETE FROM signatures WHERE document_id = ? AND user_id != ?').bind(id, doc.author_id).run();
 
   // 팀장 중 오늘 휴가자는 자동 건너뛰기 (role='manager'만 대상)
   const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -721,6 +723,8 @@ documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager', '
   await db.prepare(
     "UPDATE approval_steps SET status = 'rejected' WHERE document_id = ? AND status = 'pending'"
   ).bind(id).run();
+  // 반려되면 결재자 서명은 더 이상 유효하지 않다. 작성자 서명만 남겨 재제출을 준비한다.
+  await db.prepare('DELETE FROM signatures WHERE document_id = ? AND user_id != ?').bind(id, doc.author_id).run();
 
   await db.prepare("UPDATE documents SET status = 'rejected', reject_reason = ?, updated_at = datetime('now') WHERE id = ?")
     .bind(reason || '', id).run();

@@ -13,6 +13,7 @@ import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/
 const cases = new Hono<AuthEnv>();
 
 const CASE_ALLOWANCE_EXCLUDED_NAMES = new Set(['임태율', '서정수', '진성헌']);
+const CASE_ALLOWANCE_SALES_INSERT_DISABLED_FROM = '2026-05_06';
 
 function normalizeCaseAllowanceName(name: unknown): string {
   return String(name || '').replace(/["'\s]/g, '').trim();
@@ -675,6 +676,9 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
   // period 파싱: '2026-03_04' → year=2026, m1=3, m2=4
   const m = period.match(/^(\d{4})-(\d{2})_(\d{2})$/);
   if (!m) throw new Error(`invalid period: ${period}`);
+  if (period >= CASE_ALLOWANCE_SALES_INSERT_DISABLED_FROM) {
+    return { period, period_label: labelOfPeriod(period), inserted: 0, skipped: 0, ineligible: 0, details: [] };
+  }
   const year = parseInt(m[1], 10);
   const m1 = parseInt(m[2], 10);
   const m2 = parseInt(m[3], 10);

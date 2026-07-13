@@ -7,7 +7,7 @@ import type { JournalEntry } from '../journal/types';
 import { getToday, getTomorrow, isEditable } from '../journal/types';
 import JournalCard from '../journal/JournalCard';
 import JournalForm from '../journal/JournalForm';
-import { Plus, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar } from 'lucide-react';
+import { Plus, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, X } from 'lucide-react';
 import DatePicker, { registerLocale } from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { ko } from 'date-fns/locale';
@@ -72,6 +72,7 @@ export default function Journal() {
   // 전체이력 상태
   const [historyBranch, setHistoryBranch] = useState(0);
   const [historyDept, setHistoryDept] = useState('');
+  const [historySelectedMemberId, setHistorySelectedMemberId] = useState<string | null>(null);
   const [historyMonth, setHistoryMonth] = useState(() => {
     const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
     return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -108,6 +109,10 @@ export default function Journal() {
 
   useEffect(() => { load(); }, [tab, selectedDateStr]);
 
+  useEffect(() => {
+    setHistorySelectedMemberId(null);
+  }, [historyBranch, historyDept, historyMonth]);
+
   const handleDelete = async (id: string) => { await api.journal.delete(id); load(); };
   const handleToggleComplete = async (id: string, completed: boolean, failReason?: string) => {
     await api.journal.update(id, { completed: completed ? 1 : 0, fail_reason: failReason || '' });
@@ -115,6 +120,92 @@ export default function Journal() {
   };
 
   const openForm = (date: string) => { setFormDate(date); setShowForm(true); };
+
+  const parseEntryData = (entry: JournalEntry): Record<string, any> => {
+    try { return JSON.parse(entry.data || '{}'); } catch { return {}; }
+  };
+
+  const summarizeEntry = (entry: JournalEntry) => {
+    const data = parseEntryData(entry);
+    return [
+      data.timeFrom && data.timeTo ? `${data.timeFrom}~${data.timeTo}` : '',
+      data.court || data.place || data.location || '',
+      data.client || data.bidder || data.meetingClient || '',
+      data.caseNo || data.briefingCaseNo || entry.activity_subtype || '',
+    ].filter(Boolean).join(' · ');
+  };
+
+  const renderHistoryMemberDetail = (
+    member: Member | undefined,
+    memberEntries: JournalEntry[],
+  ) => {
+    if (!member) return null;
+    const sorted = [...memberEntries].sort((a, b) => {
+      const dateCompare = a.target_date.localeCompare(b.target_date);
+      if (dateCompare !== 0) return dateCompare;
+      const ad = parseEntryData(a);
+      const bd = parseEntryData(b);
+      return String(ad.timeFrom || '99:99').localeCompare(String(bd.timeFrom || '99:99'));
+    });
+    const counts = sorted.reduce<Record<string, number>>((acc, entry) => {
+      acc[entry.activity_type] = (acc[entry.activity_type] || 0) + 1;
+      return acc;
+    }, {});
+
+    return (
+      <aside className="journal-history-detail-panel">
+        <div className="journal-history-detail-head">
+          <div>
+            <div className="journal-history-detail-title">{member.name} 월간 로그</div>
+            <div className="journal-history-detail-sub">{historyMonth} · {member.department || '-'} · {member.position_title || ROLE_LABELS[member.role as Role] || ''}</div>
+          </div>
+          <button className="btn-icon-sm" onClick={() => setHistorySelectedMemberId(null)} title="닫기">
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="journal-history-detail-stats">
+          <span>총 {sorted.length}건</span>
+          {Object.entries(counts).map(([type, count]) => (
+            <span key={type} style={{ borderColor: MONTH_TYPE_COLORS[type] || '#dadce0', color: MONTH_TYPE_COLORS[type] || '#5f6368' }}>
+              {type} {count}
+            </span>
+          ))}
+        </div>
+
+        {sorted.length === 0 ? (
+          <div className="empty-state">해당 월 일지가 없습니다.</div>
+        ) : (
+          <div className="journal-history-detail-list">
+            {sorted.map((entry) => {
+              const data = parseEntryData(entry);
+              const color = MONTH_TYPE_COLORS[entry.activity_type] || '#5f6368';
+              return (
+                <div key={entry.id} className="journal-history-detail-item">
+                  <div className="journal-history-detail-date">
+                    <strong>{entry.target_date.slice(5)}</strong>
+                    <span style={{ background: color + '18', color }}>{entry.activity_type}</span>
+                  </div>
+                  <div className="journal-history-detail-body">
+                    <div className="journal-history-detail-summary">{summarizeEntry(entry) || entry.activity_subtype || '상세 입력 없음'}</div>
+                    {(data.memo || data.note || data.content || data.failReason || entry.fail_reason) && (
+                      <div className="journal-history-detail-memo">{data.memo || data.note || data.content || data.failReason || entry.fail_reason}</div>
+                    )}
+                    <div className="journal-history-detail-flags">
+                      {data.fieldCheckIn && <span>현장출근</span>}
+                      {data.fieldCheckOut && <span>현장퇴근</span>}
+                      {data.bidWon && <span>낙찰</span>}
+                      {entry.completed ? <span>완료</span> : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </aside>
+    );
+  };
 
   const branches = [...new Set(members.map((m) => normalizeBranchName(m.branch)).filter(Boolean))]
     .filter(b => b !== '본사관리')
@@ -397,35 +488,46 @@ export default function Journal() {
             const monthEntries = entries.filter(e => e.target_date.startsWith(historyMonth));
             const dayLabels = ['일', '월', '화', '수', '목', '금', '토'];
             const typeColors = MONTH_TYPE_COLORS;
+            const selectedMember = deptMembers.find(m => m.id === historySelectedMemberId);
+            const selectedMemberEntries = selectedMember
+              ? monthEntries.filter(e => e.user_id === selectedMember.id)
+              : [];
 
             return (
-              <div style={{ overflowX: 'auto' }}>
-                {Object.entries(deptGroups).map(([dept, dMembers]) => (
-                  <div key={dept} style={{ marginBottom: 24 }}>
-                    <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#3c4043', marginBottom: 8, padding: '6px 12px', background: '#f1f3f4', borderRadius: 6, display: 'inline-block' }}>{dept}</div>
-                    <table className="journal-month-table journal-month-table-lg">
-                      <thead>
-                        <tr>
-                          <th style={{ minWidth: 110, position: 'sticky', left: 0, background: '#fff', zIndex: 2, fontSize: '0.82rem' }}>이름</th>
-                          {bizDays.map(d => {
-                            const date = new Date(year, month - 1, d);
-                            const dayName = dayLabels[date.getDay()];
-                            return (
-                              <th key={d} style={{ minWidth: 56, textAlign: 'center', fontSize: '0.78rem' }}>
-                                <div>{d}</div>
-                                <div style={{ color: '#9aa0a6', fontWeight: 400, fontSize: '0.72rem' }}>{dayName}</div>
-                              </th>
-                            );
-                          })}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dMembers.map(m => (
-                          <tr key={m.id} style={m.role === 'manager' ? { background: '#f8faff' } : undefined}>
-                            <td style={{ fontWeight: 600, fontSize: '0.88rem', position: 'sticky', left: 0, background: m.role === 'manager' ? '#f8faff' : '#fff', zIndex: 1, whiteSpace: 'nowrap', padding: '6px 8px' }}>
-                              {m.name}
-                              <span style={{ color: '#9aa0a6', fontSize: '0.72rem', marginLeft: 4 }}>{m.position_title || ''}</span>
-                            </td>
+              <div className={`journal-history-layout ${selectedMember ? 'is-open' : ''}`}>
+                <div className="journal-history-table-wrap">
+                  {Object.entries(deptGroups).map(([dept, dMembers]) => (
+                    <div key={dept} style={{ marginBottom: 24 }}>
+                      <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#3c4043', marginBottom: 8, padding: '6px 12px', background: '#f1f3f4', borderRadius: 6, display: 'inline-block' }}>{dept}</div>
+                      <table className="journal-month-table journal-month-table-lg">
+                        <thead>
+                          <tr>
+                            <th style={{ minWidth: 110, position: 'sticky', left: 0, background: '#fff', zIndex: 2, fontSize: '0.82rem' }}>이름</th>
+                            {bizDays.map(d => {
+                              const date = new Date(year, month - 1, d);
+                              const dayName = dayLabels[date.getDay()];
+                              return (
+                                <th key={d} style={{ minWidth: 56, textAlign: 'center', fontSize: '0.78rem' }}>
+                                  <div>{d}</div>
+                                  <div style={{ color: '#9aa0a6', fontWeight: 400, fontSize: '0.72rem' }}>{dayName}</div>
+                                </th>
+                              );
+                            })}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dMembers.map(m => (
+                            <tr key={m.id} style={m.role === 'manager' ? { background: '#f8faff' } : undefined}>
+                              <td style={{ fontWeight: 600, fontSize: '0.88rem', position: 'sticky', left: 0, background: m.role === 'manager' ? '#f8faff' : '#fff', zIndex: 1, whiteSpace: 'nowrap', padding: '6px 8px' }}>
+                                <button
+                                  type="button"
+                                  className={`journal-history-member-btn ${historySelectedMemberId === m.id ? 'active' : ''}`}
+                                  onClick={() => setHistorySelectedMemberId(prev => prev === m.id ? null : m.id)}
+                                >
+                                  {m.name}
+                                </button>
+                                <span style={{ color: '#9aa0a6', fontSize: '0.72rem', marginLeft: 4 }}>{m.position_title || ''}</span>
+                              </td>
                             {bizDays.map(d => {
                               const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                               const dayEntries = monthEntries.filter(e => e.user_id === m.id && e.target_date === dateStr);
@@ -472,6 +574,8 @@ export default function Journal() {
                   </div>
                 ))}
                 {Object.keys(deptGroups).length === 0 && <div className="empty-state">해당 조건의 인원이 없습니다.</div>}
+                </div>
+                {selectedMember && renderHistoryMemberDetail(selectedMember, selectedMemberEntries)}
               </div>
             );
           })()}

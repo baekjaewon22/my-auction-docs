@@ -24,6 +24,12 @@ async function ensureLeaveRequestSchema(db: D1Database): Promise<void> {
   if (!names.has('half_day_period')) {
     await db.prepare("ALTER TABLE leave_requests ADD COLUMN half_day_period TEXT NOT NULL DEFAULT ''").run();
   }
+  if (!names.has('first_approved_by')) {
+    await db.prepare("ALTER TABLE leave_requests ADD COLUMN first_approved_by TEXT NOT NULL DEFAULT ''").run();
+  }
+  if (!names.has('first_approved_at')) {
+    await db.prepare("ALTER TABLE leave_requests ADD COLUMN first_approved_at TEXT NOT NULL DEFAULT ''").run();
+  }
 }
 
 async function ensureAnnualLeaveSchema(db: D1Database): Promise<void> {
@@ -134,35 +140,98 @@ async function hasActiveSummerVacationRequest(db: D1Database, userId: string, ye
 
 const LEAVE_APPROVER_ROLES = new Set(['admin', 'manager', 'accountant', 'cc_ref']);
 
-async function getLeaveApprovalNotifyPhones(db: D1Database, requesterId: string): Promise<string[]> {
+type LeaveApprovalUser = {
+  id: string;
+  name: string;
+  role: string;
+  phone: string;
+};
+
+type LeaveApprovalFlow = {
+  firstApprover: LeaveApprovalUser | null;
+  finalApprover: LeaveApprovalUser | null;
+  currentApprover: LeaveApprovalUser | null;
+  isFinalStep: boolean;
+};
+
+type LeaveApprovalDecision = LeaveApprovalFlow & {
+  canApprove: boolean;
+};
+
+async function getLeaveApprovalChainUsers(db: D1Database, requesterId: string): Promise<LeaveApprovalUser[]> {
   const chain = await buildOrgApprovalChain(db, requesterId);
+  const users: LeaveApprovalUser[] = [];
   for (const approverId of chain) {
     const approver = await db.prepare(`
-      SELECT phone
+      SELECT id, name, role, phone
       FROM users
       WHERE id = ?
         AND approved = 1
-        AND phone != ''
       LIMIT 1
-    `).bind(approverId).first<{ phone: string }>();
-    if (approver?.phone) return [approver.phone];
+    `).bind(approverId).first<LeaveApprovalUser>();
+    if (approver && LEAVE_APPROVER_ROLES.has(approver.role)) {
+      users.push({ ...approver, phone: approver.phone || '' });
+    }
   }
+  return users;
+}
+
+function pickLeaveFinalApprover(chainUsers: LeaveApprovalUser[]): LeaveApprovalUser | null {
+  return chainUsers.find((approver) => approver.role === 'admin')
+    || chainUsers.find((approver) => approver.role === 'ceo')
+    || chainUsers[chainUsers.length - 1]
+    || null;
+}
+
+async function getLeaveApprovalFlow(db: D1Database, req: any): Promise<LeaveApprovalFlow> {
+  const chainUsers = await getLeaveApprovalChainUsers(db, req.user_id);
+  const finalApprover = pickLeaveFinalApprover(chainUsers);
+  const finalApproverIndex = finalApprover
+    ? chainUsers.findIndex((approver) => approver.id === finalApprover.id)
+    : -1;
+  const beforeFinalApprovers = finalApproverIndex > 0
+    ? chainUsers.slice(0, finalApproverIndex)
+    : [];
+  const firstApprover = finalApprover
+    ? beforeFinalApprovers[0] || finalApprover
+    : null;
+  const hasFirstApproval = Boolean(String(req.first_approved_by || '').trim());
+  const currentApprover = hasFirstApproval || !firstApprover || firstApprover.id === finalApprover?.id
+    ? finalApprover
+    : firstApprover;
+
+  return {
+    firstApprover,
+    finalApprover,
+    currentApprover,
+    isFinalStep: Boolean(currentApprover && finalApprover && currentApprover.id === finalApprover.id),
+  };
+}
+
+async function getLeaveApprovalDecision(
+  db: D1Database,
+  user: { sub: string; role: string; branch?: string; department?: string },
+  req: any,
+  options: { finalOnly?: boolean } = {},
+): Promise<LeaveApprovalDecision> {
+  const flow = await getLeaveApprovalFlow(db, req);
+  if (['master', 'ceo'].includes(user.role)) return { ...flow, canApprove: true, isFinalStep: true };
+  if (!LEAVE_APPROVER_ROLES.has(user.role)) return { ...flow, canApprove: false };
+  if (!flow.currentApprover) return { ...flow, canApprove: false };
+  if (options.finalOnly && flow.currentApprover.id !== flow.finalApprover?.id) {
+    return { ...flow, canApprove: false };
+  }
+  return { ...flow, canApprove: flow.currentApprover.id === user.sub };
+}
+
+async function getLeaveApprovalNotifyPhones(db: D1Database, requesterId: string, req: any = {}): Promise<string[]> {
+  const flow = await getLeaveApprovalFlow(db, { ...req, user_id: requesterId });
+  if (flow.currentApprover?.phone) return [flow.currentApprover.phone];
 
   const fallback = await db.prepare(
     "SELECT phone FROM users WHERE role IN ('master', 'ceo') AND approved = 1 AND phone != ''"
   ).all<{ phone: string }>();
   return Array.from(new Set((fallback.results || []).map(r => r.phone).filter(Boolean)));
-}
-
-async function canApproveLeaveRequest(
-  db: D1Database,
-  user: { sub: string; role: string; branch?: string; department?: string },
-  req: any,
-): Promise<boolean> {
-  if (['master', 'ceo'].includes(user.role)) return true;
-  if (!LEAVE_APPROVER_ROLES.has(user.role)) return false;
-  const chain = await buildOrgApprovalChain(db, req.user_id);
-  return chain.includes(user.sub);
 }
 
 async function filterLeaveRequestsByApprovalLine(
@@ -174,16 +243,11 @@ async function filterLeaveRequestsByApprovalLine(
   if (!LEAVE_APPROVER_ROLES.has(user.role)) return [];
 
   const visible: any[] = [];
-  const chainCache = new Map<string, string[]>();
   for (const request of requests) {
-    const requesterId = String(request.user_id || '');
-    if (!requesterId) continue;
-    let chain = chainCache.get(requesterId);
-    if (!chain) {
-      chain = await buildOrgApprovalChain(db, requesterId);
-      chainCache.set(requesterId, chain);
-    }
-    if (chain.includes(user.sub)) visible.push(request);
+    const decision = await getLeaveApprovalDecision(db, user, request, {
+      finalOnly: request.status === 'cancel_requested',
+    });
+    if (decision.canApprove) visible.push(request);
   }
   return visible;
 }
@@ -992,7 +1056,33 @@ leave.post('/requests/:id/approve', requireRole('master', 'ceo', 'cc_ref', 'admi
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'pending') return c.json({ error: '이미 처리된 신청입니다.' }, 400);
-  if (!(await canApproveLeaveRequest(db, user, req))) return c.json({ error: '승인 권한이 없습니다.' }, 403);
+  const approvalDecision = await getLeaveApprovalDecision(db, user, req);
+  if (!approvalDecision.canApprove) return c.json({ error: '승인 권한이 없습니다.' }, 403);
+
+  if (!approvalDecision.isFinalStep) {
+    await db.prepare(`UPDATE leave_requests SET first_approved_by = ?,
+      first_approved_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+      .bind(user.sub, requestId).run();
+
+    const reqUserForNotify = await db.prepare('SELECT name, branch FROM users WHERE id = ?')
+      .bind(req.user_id).first<{ name: string; branch: string }>();
+    if (approvalDecision.finalApprover?.phone) {
+      c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
+        {
+          user_name: reqUserForNotify?.name || req.user_name || '',
+          leave_type: leaveTypeForMessage(req.leave_type, req.half_day_period),
+          start_date: req.start_date,
+          end_date: req.end_date,
+          branch: reqUserForNotify?.branch || req.branch || '',
+          link: `${APP_URL}/leave`,
+        },
+        [approvalDecision.finalApprover.phone],
+      ).catch(() => {}));
+    }
+
+    return c.json({ success: true, pending_final_approval: true });
+  }
 
   await reinitUserLeave(db, req.user_id);
 
@@ -1058,7 +1148,8 @@ leave.post('/requests/:id/reject', requireRole('master', 'ceo', 'cc_ref', 'admin
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'pending') return c.json({ error: '이미 처리된 신청입니다.' }, 400);
 
-  if (!(await canApproveLeaveRequest(db, user, req))) return c.json({ error: '반려 권한이 없습니다.' }, 403);
+  const rejectDecision = await getLeaveApprovalDecision(db, user, req);
+  if (!rejectDecision.canApprove) return c.json({ error: '반려 권한이 없습니다.' }, 403);
 
   await db.prepare(`UPDATE leave_requests SET status = 'rejected', approved_by = ?,
     reject_reason = ?, approved_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
@@ -1120,12 +1211,14 @@ leave.post('/requests/:id/cancel-approve', requireRole('master', 'ceo', 'cc_ref'
   const requestId = c.req.param('id');
   const db = c.env.DB;
   const user = c.get('user');
+  await ensureLeaveRequestSchema(db);
 
   const req = await db.prepare('SELECT * FROM leave_requests WHERE id = ?').bind(requestId).first<any>();
   if (!req) return c.json({ error: '신청을 찾을 수 없습니다.' }, 404);
   if (req.status !== 'cancel_requested') return c.json({ error: '취소요청 상태가 아닙니다.' }, 400);
 
-  if (!(await canApproveLeaveRequest(db, user, req))) return c.json({ error: '취소 승인 권한이 없습니다.' }, 403);
+  const cancelDecision = await getLeaveApprovalDecision(db, user, req, { finalOnly: true });
+  if (!cancelDecision.canApprove) return c.json({ error: '취소 승인 권한이 없습니다.' }, 403);
 
   await db.prepare("UPDATE leave_requests SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
     .bind(requestId).run();

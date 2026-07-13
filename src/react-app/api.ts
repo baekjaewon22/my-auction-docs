@@ -889,6 +889,20 @@ export const api = {
       }),
     errorSummary: () =>
       request<{ summary: Array<{ category: string; cnt: number; sample_message: string }> }>('/drive/error-summary'),
+    documentRetention: () =>
+      request<{
+        retention_months: number; cutoff: string; dry_run: boolean; documents: number;
+        approval_steps: number; signatures: number; document_logs: number; drive_backup_logs: number;
+        alert_approval_pending: number; document_journal_links: number; document_journal_link_candidates: number;
+        document_journal_link_backfill_log: number; orphan_drive_backup_logs: number;
+      }>('/drive/document-retention'),
+    runDocumentRetention: () =>
+      request<{
+        retention_months: number; cutoff: string; dry_run: boolean; documents: number;
+        approval_steps: number; signatures: number; document_logs: number; drive_backup_logs: number;
+        alert_approval_pending: number; document_journal_links: number; document_journal_link_candidates: number;
+        document_journal_link_backfill_log: number; orphan_drive_backup_logs: number;
+      }>('/drive/document-retention/run', { method: 'POST' }),
   },
 
   cases: {

@@ -410,6 +410,7 @@ export default function Sales() {
   const isMaster = role === 'master' || role === 'accountant' || role === 'accountant_asst'; // 총무/총무보조 = master 동급 (유형변경/확인취소)
   const canModifyAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 수정 권한
   const canApproveAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 입금확인/결제확인
+  const canEditInvoiceInfo = role === 'master' || role === 'accountant' || role === 'accountant_asst'; // 증빙일자/증빙구분 입력
   const canDepositUpload = ['master', 'accountant', 'accountant_asst'].includes(role); // 입금등록/엑셀업로드 (총무 전용)
   const canDeleteAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 삭제/유형변경 (총무보조 로그 강제)
   const canViewAuditLog = role === 'master' || role === 'accountant'; // 활동 로그 조회 (총무보조 제외)
@@ -1932,12 +1933,11 @@ export default function Sales() {
                           <button className="btn btn-sm" onClick={() => setConfirmingId(null)}>취소</button>
                         </div>
                       )}
-                      {/* 세금계산서/현금영수증 발행 기록 (이체/현금 — 총무 메모용) */}
-                      {(r.payment_type === '이체' || r.payment_type === '현금') && r.status !== 'refunded' && canApproveAccounting && (() => {
+                      {/* 세금계산서/현금영수증 발행 기록 (이체/현금 — 총무 입력, 컨설턴트 확인) */}
+                      {(r.payment_type === '이체' || r.payment_type === '현금') && r.status !== 'refunded' && (() => {
                         const taxType = r.tax_invoice_type || '';
                         const taxDate = r.tax_invoice_date || '';
                         const isSet = !!taxDate;
-                        const canEditInvoice = role === 'master' || role === 'accountant' || role === 'accountant_asst';
                         const draft = invoiceDrafts[r.id] ?? '';
                         return (
                           <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
@@ -1945,15 +1945,15 @@ export default function Sales() {
                             {isSet ? (
                               <>
                                 <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#188038', padding: '2px 6px', background: '#e8f5e9', borderRadius: 6 }}>{taxDate}</span>
-                                {canEditInvoice && (
+                                {canEditInvoiceInfo && (
                                   <button className="btn btn-sm" style={{ fontSize: '0.6rem', padding: '1px 4px', color: '#9aa0a6' }}
                                     onClick={async () => {
                                       if (!confirm('증빙일자를 초기화하시겠습니까?')) return;
                                       try { await api.sales.update(r.id, { tax_invoice_date: '' }); load(true); } catch (err: any) { alert(err.message); }
-                                    }}>초기화</button>
+                                  }}>초기화</button>
                                 )}
                               </>
-                            ) : (
+                            ) : canEditInvoiceInfo ? (
                               <>
                                 <input type="date" className="form-input" value={draft}
                                   min="2020-01-01" max="2099-12-31"
@@ -1971,34 +1971,42 @@ export default function Sales() {
                                     } catch (err: any) { alert(err.message); }
                                   }}>확인</button>
                               </>
+                            ) : (
+                              <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#9aa0a6', padding: '2px 6px', background: '#f1f3f4', borderRadius: 6 }}>미등록</span>
                             )}
-                            <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
-                              background: taxType === '영수' ? '#e8f5e9' : '#fff',
-                              color: taxType === '영수' ? '#188038' : '#5f6368',
-                              fontWeight: taxType === '영수' ? 700 : 400,
-                              border: taxType === '영수' ? '1px solid #81c784' : '1px solid #dadce0' }}
-                              onClick={async () => {
-                                const next = taxType === '영수' ? '' : '영수';
-                                try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
-                              }}>영수</button>
-                            <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
-                              background: taxType === '계산' ? '#fff3e0' : '#fff',
-                              color: taxType === '계산' ? '#e65100' : '#5f6368',
-                              fontWeight: taxType === '계산' ? 700 : 400,
-                              border: taxType === '계산' ? '1px solid #ffb74d' : '1px solid #dadce0' }}
-                              onClick={async () => {
-                                const next = taxType === '계산' ? '' : '계산';
-                                try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
-                              }}>계산</button>
-                            <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
-                              background: taxType === '자진' ? '#eef2ff' : '#fff',
-                              color: taxType === '자진' ? '#4338ca' : '#5f6368',
-                              fontWeight: taxType === '자진' ? 700 : 400,
-                              border: taxType === '자진' ? '1px solid #a5b4fc' : '1px solid #dadce0' }}
-                              onClick={async () => {
-                                const next = taxType === '자진' ? '' : '자진';
-                                try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
-                              }}>자진</button>
+                            {canEditInvoiceInfo ? (
+                              <>
+                                <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
+                                  background: taxType === '영수' ? '#e8f5e9' : '#fff',
+                                  color: taxType === '영수' ? '#188038' : '#5f6368',
+                                  fontWeight: taxType === '영수' ? 700 : 400,
+                                  border: taxType === '영수' ? '1px solid #81c784' : '1px solid #dadce0' }}
+                                  onClick={async () => {
+                                    const next = taxType === '영수' ? '' : '영수';
+                                    try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
+                                  }}>영수</button>
+                                <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
+                                  background: taxType === '계산' ? '#fff3e0' : '#fff',
+                                  color: taxType === '계산' ? '#e65100' : '#5f6368',
+                                  fontWeight: taxType === '계산' ? 700 : 400,
+                                  border: taxType === '계산' ? '1px solid #ffb74d' : '1px solid #dadce0' }}
+                                  onClick={async () => {
+                                    const next = taxType === '계산' ? '' : '계산';
+                                    try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
+                                  }}>계산</button>
+                                <button className="btn btn-sm" style={{ fontSize: '0.65rem', padding: '2px 6px',
+                                  background: taxType === '자진' ? '#eef2ff' : '#fff',
+                                  color: taxType === '자진' ? '#4338ca' : '#5f6368',
+                                  fontWeight: taxType === '자진' ? 700 : 400,
+                                  border: taxType === '자진' ? '1px solid #a5b4fc' : '1px solid #dadce0' }}
+                                  onClick={async () => {
+                                    const next = taxType === '자진' ? '' : '자진';
+                                    try { await api.sales.update(r.id, { tax_invoice_type: next }); load(true); } catch (err: any) { alert(err.message); }
+                                  }}>자진</button>
+                              </>
+                            ) : taxType ? (
+                              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#5f6368', padding: '2px 6px', background: '#f8f9fa', border: '1px solid #dadce0', borderRadius: 6 }}>{taxType}</span>
+                            ) : null}
                           </div>
                         );
                       })()}

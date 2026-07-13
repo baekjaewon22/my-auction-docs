@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { User } from './types';
 import { api } from './api';
+import { clearAllPlannerDrafts } from './plannerDraftStorage';
 
 interface AuthState {
   user: User | null;
@@ -28,6 +29,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: () => {
+    clearAllPlannerDrafts();
     localStorage.removeItem('token');
     set({ user: null, token: null, loading: false });
   },
@@ -47,6 +49,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       console.error('[loadUser] failed:', err?.message);
       // 401(인증 만료)인 경우에만 토큰 제거, 그 외 에러는 토큰 유지하고 재시도
       if (err?.message === 'Unauthorized') {
+        clearAllPlannerDrafts();
         localStorage.removeItem('token');
         set({ user: null, token: null, loading: false });
       } else {
@@ -56,6 +59,7 @@ export const useAuthStore = create<AuthState>((set) => ({
             const { user } = await api.auth.me();
             set({ user, token, loading: false });
           } catch {
+            clearAllPlannerDrafts();
             localStorage.removeItem('token');
             set({ user: null, token: null, loading: false });
           }

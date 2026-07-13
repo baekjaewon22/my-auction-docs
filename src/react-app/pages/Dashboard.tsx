@@ -128,11 +128,11 @@ function FreelancerDashboard() {
             <Link to="/admin-notes?tab=legal_support&section=legal_terms" className="dashboard-today-news-more">전체보기</Link>
           </div>
           {!todayLegalFact ? (
-            <div className="dashboard-today-news-empty">등록된 법률용어가 없습니다.</div>
+            <div className="dashboard-today-news-empty">등록된 법률이해가 없습니다.</div>
           ) : (
             <Link to={`/admin-notes?tab=legal_support&section=legal_terms&note=${todayLegalFact.id}`} className="dashboard-my-alert-item priority-3">
               <div className="dashboard-my-alert-row">
-                <span className="dashboard-my-alert-badge">법률용어</span>
+                <span className="dashboard-my-alert-badge">법률이해</span>
               </div>
               <div className="dashboard-my-alert-title">{todayLegalFact.title}</div>
               {legalPreview && <div className="dashboard-my-alert-message">{legalPreview.length > 88 ? legalPreview.slice(0, 88) + '...' : legalPreview}</div>}
@@ -619,11 +619,11 @@ export default function Dashboard() {
         <Link to="/admin-notes?tab=legal_support&section=legal_terms" className="dashboard-today-news-more">전체보기</Link>
       </div>
       {!todayLegalFact ? (
-        <div className="dashboard-today-news-empty">등록된 법률용어가 없습니다.</div>
+        <div className="dashboard-today-news-empty">등록된 법률이해가 없습니다.</div>
       ) : (
         <Link to={`/admin-notes?tab=legal_support&section=legal_terms&note=${todayLegalFact.id}`} className="dashboard-my-alert-item priority-3">
           <div className="dashboard-my-alert-row">
-            <span className="dashboard-my-alert-badge">법률용어</span>
+            <span className="dashboard-my-alert-badge">법률이해</span>
           </div>
           <div className="dashboard-my-alert-title">{todayLegalFact.title}</div>
           {preview && <div className="dashboard-my-alert-message">{preview.length > 88 ? preview.slice(0, 88) + '...' : preview}</div>}

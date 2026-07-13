@@ -430,6 +430,7 @@ def parse_myauction_detail(soup: BeautifulSoup, base_url: str, driver=None) -> d
     data = {
         "court": "", "case_number": "", "address": "", "address_old": "",
         "land_zoning": "", "appraisal_raw": "", "item_type": "",
+        "item_category": "",
         "land_area_m2": "", "land_area_py": "",
         "building_area_m2": "", "building_area_py": "", "xx평형": "",
         "building_structure": "", "building_scale": "",
@@ -446,6 +447,9 @@ def parse_myauction_detail(soup: BeautifulSoup, base_url: str, driver=None) -> d
         if span_case:
             data["case_number"] = span_case.get_text(strip=True)
         full_text = h2.get_text(" ", strip=True)
+        category_match = re.search(r"\[([^\]]+)\]", full_text)
+        if category_match:
+            data["item_category"] = category_match.group(1).strip()
         if data["case_number"]:
             full_text = full_text.replace(data["case_number"], "")
         full_text = re.sub(r"\[.*?\]", "", full_text)

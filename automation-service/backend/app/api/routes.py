@@ -25,6 +25,7 @@ from ..core.utils import normalize_myauction_detail_url
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+AGENT_VERSION = "2026.07.13.4"
 
 # 진행상황 저장소 (간단한 in-memory)
 progress_store: dict[str, list[ProgressUpdate]] = {}
@@ -380,7 +381,7 @@ def _run_rights_certificate_batch(request: RightsCertificateBatchRequest, task_i
 
 @router.get("/health")
 async def health_check():
-    content = json.dumps({"status": "ok", "title": settings.app_title}, ensure_ascii=False)
+    content = json.dumps({"status": "ok", "title": settings.app_title, "version": AGENT_VERSION}, ensure_ascii=False)
     return Response(content=content, media_type="application/json; charset=utf-8")
 
 
