@@ -13698,6 +13698,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   padding: 14px 20px 18px;
 }
 
+.planner-optional-modal { max-width: 500px; }
+.planner-optional-missing-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.planner-optional-missing-list span { background: #f1f5f9; border: 1px solid #dbe3ec; border-radius: 999px; color: #475569; font-size: .78rem; font-weight: 700; padding: 6px 10px; }
+
 .document-work-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -54,10 +54,12 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   const [agentState, setAgentState] = useState<AgentState>('checking');
   const [agentStatus, setAgentStatus] = useState<AutomationAgentStatus | null>(null);
   const [agentModalOpen, setAgentModalOpen] = useState(false);
+  const [plannerOptionalNotice, setPlannerOptionalNotice] = useState<string[] | null>(null);
   const [plannerSnapshots, setPlannerSnapshots] = useState<PlannerSnapshot[]>([]);
   const [plannerWorkspace, setPlannerWorkspace] = useState<PlannerWorkspace>({});
   const plannerHydratedUserRef = useRef('');
   const plannerExportAllRef = useRef<(() => Promise<PlannerSnapshot[]>) | null>(null);
+  const plannerOptionalResolveRef = useRef<((proceed: boolean) => void) | null>(null);
   const diagnosticSyncRef = useRef('');
 
   const canUseRights = user?.role === 'master' || reportPermission === 'special';
@@ -277,14 +279,32 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     auction_references: await loadAutomationReferences(),
   });
 
-  const collectLatestPlannerSnapshots = async () => {
-    if (!plannerExportAllRef.current) throw new Error('옥션플래너 연결을 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.');
-    const exported = await plannerExportAllRef.current();
+  const confirmWithoutPlanner = (missingLabels: string[]) => new Promise<boolean>((resolve) => {
+    plannerOptionalResolveRef.current = resolve;
+    setPlannerOptionalNotice(missingLabels);
+  });
+
+  const closePlannerOptionalNotice = (proceed: boolean) => {
+    setPlannerOptionalNotice(null);
+    const resolve = plannerOptionalResolveRef.current;
+    plannerOptionalResolveRef.current = null;
+    resolve?.(proceed);
+  };
+
+  const collectLatestPlannerSnapshots = async (): Promise<PlannerSnapshot[] | null> => {
     const required = ['acquisition-tax', 'loan-bid-estimator', 'acquisition-cost-sheet'];
+    const hasPlannerInput = Object.keys(plannerWorkspace.calculatorDrafts || {}).some((key) => required.includes(key));
+    if (!hasPlannerInput) {
+      const proceed = await confirmWithoutPlanner(required.map((key) => PLANNER_CALCULATORS.find((item) => item.key === key)?.label || key));
+      return proceed ? [] : null;
+    }
+
+    const exported = plannerExportAllRef.current ? await plannerExportAllRef.current() : [];
     const missing = required.filter((calculator) => !exported.some((item) => item.calculator === calculator && item.image_data_url));
     if (missing.length > 0) {
       const labels = missing.map((key) => PLANNER_CALCULATORS.find((item) => item.key === key)?.label || key);
-      throw new Error(`옥션플래너 이미지 생성 실패: ${labels.join(', ')}. 각 계산표를 한 번 열어 계산한 뒤 다시 시도해 주세요.`);
+      const proceed = await confirmWithoutPlanner(labels);
+      if (!proceed) return null;
     }
     setPlannerSnapshots(exported);
     return exported;
@@ -312,6 +332,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     setDiagnostics([]);
     try {
       const latestPlannerSnapshots = isRights ? plannerSnapshots : await collectLatestPlannerSnapshots();
+      if (latestPlannerSnapshots === null) return;
       const payload = await commonPayload(latestPlannerSnapshots);
       const res = isRights && rightsUrls.length > 1
         ? await automationApi.startBatch({
@@ -399,6 +420,29 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
           onClose={() => setAgentModalOpen(false)}
           onRecheck={() => refreshAgentStatus(false, true, true)}
         />
+      )}
+
+      {plannerOptionalNotice && (
+        <div className="automation-agent-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="planner-optional-title">
+          <div className="automation-agent-modal planner-optional-modal">
+            <div className="automation-agent-modal-head">
+              <div>
+                <span className="automation-agent-kicker">선택 자료 안내</span>
+                <h3 id="planner-optional-title">옥션플래너 자료를 추가하지 않았습니다</h3>
+              </div>
+            </div>
+            <div className="automation-agent-modal-body">
+              <p>옥션플래너 자료는 필수값이 아닙니다. 아래 자료 없이 브리핑 자료를 계속 생성할 수 있습니다.</p>
+              <div className="planner-optional-missing-list">
+                {plannerOptionalNotice.map((label) => <span key={label}>{label}</span>)}
+              </div>
+            </div>
+            <div className="automation-agent-modal-actions">
+              <button className="btn btn-secondary" type="button" onClick={() => closePlannerOptionalNotice(false)}>닫기</button>
+              <button className="btn btn-primary" type="button" onClick={() => closePlannerOptionalNotice(true)}>계속</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {error && (
@@ -1424,14 +1468,16 @@ function PlannerReferencePanel({
   });
 
   const requestPlannerExportAll = async () => {
-    const calculators: PlannerCalculatorKey[] = ['acquisition-tax', 'loan-bid-estimator', 'acquisition-cost-sheet'];
+    const calculators = (Object.keys(workspace.calculatorDrafts || {}) as PlannerCalculatorKey[])
+      .filter((key) => PLANNER_CALCULATORS.some((item) => item.key === key));
+    if (calculators.length === 0) return [];
     const snapshots = await Promise.all(calculators.map(requestCalculatorImage));
     return snapshots.filter((item): item is PlannerSnapshot => Boolean(item?.image_data_url));
   };
 
   useEffect(() => {
     registerExportAll(requestPlannerExportAll);
-  }, [plannerOrigin, registerExportAll]);
+  }, [plannerOrigin, registerExportAll, workspace.calculatorDrafts]);
 
   const saveSnapshot = async () => {
     if (!result) return;
