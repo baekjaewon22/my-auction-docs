@@ -40,6 +40,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-claude-revi
 npm run ai:review:check
 ```
 
+명령 입력 없이 실행하려면 바탕화면의 `Claude 리뷰 실행` 바로가기를 더블클릭하고 외부 전송 승인창에서 `예`를 누릅니다. 바로가기는 `scripts/start-claude-review.ps1`을 실행하므로 어느 폴더에서 시작해도 저장소 경로를 자동으로 찾습니다.
+
 리뷰에 성공하면 `.ai/reviews/`에 시각이 포함된 JSON·Markdown 파일을 만들고, 같은 결과를 다음 고정 경로에도 저장합니다.
 
 - `.ai/reviews/latest-claude-review.json`
