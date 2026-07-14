@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Archive, CheckCircle2, Copy, Download, FileText, History, Pencil, Play, Plus, RefreshCw, Save, ShieldCheck, Trash2, X } from 'lucide-react';
 import { api } from '../api';
-import { automationApi, REQUIRED_AUTOMATION_AGENT_VERSION, type AutomationAgentStatus, type DownloadFormat, type DownloadHistoryItem, type OutputType, type ProgressUpdate } from '../automationApi';
+import { automationApi, REQUIRED_AUTOMATION_AGENT_VERSION, type AutomationAgentStatus, type AutomationDiagnostic, type DownloadFormat, type DownloadHistoryItem, type OutputType, type ProgressUpdate } from '../automationApi';
 import { DEFAULT_AUCTION_REFERENCES, type AuctionReferenceItem, type AuctionReferenceType } from '../data/auctionReference';
 import { clearPlannerDraft, loadPlannerDraft, savePlannerDraft } from '../plannerDraftStorage';
 import { useAuthStore } from '../store';
 
 type View = 'select' | 'input' | 'progress' | 'result' | 'history';
 type DocumentToolTab = 'briefing' | 'rightsReference' | 'checklistReference' | 'plannerReference';
-type AgentState = 'checking' | 'connected' | 'missing' | 'outdated';
+type AgentState = 'checking' | 'connected' | 'missing' | 'outdated' | 'unverified';
 type PlannerSnapshot = {
   id: string;
   calculator: string;
@@ -46,6 +46,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   const [updates, setUpdates] = useState<ProgressUpdate[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
   const [result, setResult] = useState<{ success: boolean; message: string; outputType: OutputType; taskId: string; isBatch: boolean } | null>(null);
+  const [diagnostics, setDiagnostics] = useState<AutomationDiagnostic[]>([]);
   const [historyItems, setHistoryItems] = useState<DownloadHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState('');
@@ -99,14 +100,16 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     if (user?.id) clearPlannerDraft(user.id);
   };
 
-  const refreshAgentStatus = async (showWhenMissing = false, showChecking = true) => {
+  const refreshAgentStatus = async (showWhenMissing = false, showChecking = true, showDetails = false) => {
     if (showChecking) setAgentState('checking');
     const status = await automationApi.checkAgent();
     setAgentStatus(status);
-    const nextState: AgentState = status.ok ? (status.updateRequired ? 'outdated' : 'connected') : 'missing';
+    const nextState: AgentState = status.ok
+      ? (!status.latestVersionVerified ? 'unverified' : status.updateRequired ? 'outdated' : 'connected')
+      : 'missing';
     setAgentState(nextState);
-    if (nextState !== 'connected' && showWhenMissing) setAgentModalOpen(true);
-    if (nextState === 'connected') setAgentModalOpen(false);
+    if (showDetails || (nextState !== 'connected' && showWhenMissing)) setAgentModalOpen(true);
+    else if (nextState === 'connected') setAgentModalOpen(false);
     return nextState === 'connected';
   };
 
@@ -178,6 +181,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
       try {
         const res = await automationApi.progress(taskId);
         if (stopped) return;
+        if (Array.isArray(res.diagnostics) && res.diagnostics.length > 0) setDiagnostics(res.diagnostics);
         mergeUpdates(res.updates || []);
         const last = res.updates?.[res.updates.length - 1];
         finishFrom(last);
@@ -280,6 +284,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     }
     setStarting(true);
     setError('');
+    setDiagnostics([]);
     try {
       const latestPlannerSnapshots = isRights ? plannerSnapshots : await collectLatestPlannerSnapshots();
       const payload = await commonPayload(latestPlannerSnapshots);
@@ -337,7 +342,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
           </div>
         </div>
         <div className="document-page-actions">
-          <button className={`automation-agent-badge ${agentState}`} onClick={() => refreshAgentStatus(true)} type="button">
+          <button className={`automation-agent-badge ${agentState}`} onClick={() => refreshAgentStatus(false, true, true)} type="button">
             {agentState === 'connected' ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
             {agentState === 'checking'
               ? '실행기 확인 중'
@@ -345,6 +350,8 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
                 ? '자동화 실행기 최신'
                 : agentState === 'outdated'
                   ? '자동화 실행기 업데이트 필요'
+                  : agentState === 'unverified'
+                    ? '최신 버전 확인 필요'
                   : '자동화 실행기 필요'}
           </button>
           <button className="btn btn-sm" onClick={() => setView('select')}>작업 선택</button>
@@ -365,7 +372,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
           state={agentState}
           status={agentStatus}
           onClose={() => setAgentModalOpen(false)}
-          onRecheck={() => refreshAgentStatus(true)}
+          onRecheck={() => refreshAgentStatus(false, true, true)}
         />
       )}
 
@@ -561,6 +568,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
                   {result.isBatch && <DownloadButton taskId={result.taskId} format="zip" label="ZIP 다운로드" />}
                 </div>
               )}
+              {diagnostics.length > 0 && <AutomationDiagnostics diagnostics={diagnostics} />}
             </div>
           )}
         </div>
@@ -579,6 +587,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
               {result.isBatch && <DownloadButton taskId={result.taskId} format="zip" label="ZIP 다운로드" />}
             </div>
           )}
+          {diagnostics.length > 0 && <AutomationDiagnostics diagnostics={diagnostics} />}
         </div>
       )}
 
@@ -596,13 +605,18 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
           ) : (
             <div className="table-wrapper">
               <table className="data-table">
-                <thead><tr><th>파일</th><th>종류</th><th>생성일</th><th>다운로드</th></tr></thead>
+                <thead><tr><th>파일</th><th>종류</th><th>생성일</th><th>진단</th><th>다운로드</th></tr></thead>
                 <tbody>
                   {historyItems.map((item) => (
                     <tr key={item.id}>
                       <td>{item.file_name || item.title}</td>
                       <td>{item.output_type === 'rights_certificate' ? '권리분석 보증서' : '브리핑자료'}</td>
                       <td>{item.created_at ? new Date(item.created_at).toLocaleString('ko-KR') : '-'}</td>
+                      <td>
+                        {item.diagnostics?.length
+                          ? <AutomationDiagnostics diagnostics={item.diagnostics} compact />
+                          : <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>진단정보 없음</span>}
+                      </td>
                       <td>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {item.formats.map((format) => (
@@ -1291,7 +1305,7 @@ function PlannerReferencePanel({
     const timeout = window.setTimeout(() => {
       window.removeEventListener('message', handleExport);
       reject(new Error('옥션플래너 이미지 생성 응답 시간이 초과되었습니다.'));
-    }, 6000);
+    }, 20000);
     function handleExport(event: MessageEvent) {
       if (plannerOrigin && event.origin !== plannerOrigin) return;
       const data = event.data as PlannerMessage;
@@ -1315,7 +1329,7 @@ function PlannerReferencePanel({
     const timeout = window.setTimeout(() => {
       window.removeEventListener('message', handleExportAll);
       resolve([]);
-    }, 6000);
+    }, 20000);
     function handleExportAll(event: MessageEvent) {
       if (plannerOrigin && event.origin !== plannerOrigin) return;
       const data = event.data as PlannerMessage & { snapshots?: unknown[]; payload?: { snapshots?: unknown[]; [key: string]: unknown } };
@@ -1475,19 +1489,82 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
+function AutomationDiagnostics({ diagnostics, compact = false }: { diagnostics: AutomationDiagnostic[]; compact?: boolean }) {
+  const issueCount = diagnostics.filter((item) => item.status === 'warning' || item.status === 'error').length;
+  const summary = issueCount > 0 ? `확인 필요 ${issueCount}건` : '전체 정상';
+  const copyDiagnostics = async () => {
+    const text = diagnostics
+      .map((item) => `[${item.status.toUpperCase()}] ${item.label}: ${item.message}`)
+      .join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      window.prompt('아래 진단 내용을 복사해 주세요.', text);
+    }
+  };
+
+  const list = (
+    <div className="automation-diagnostic-list">
+      {diagnostics.map((item) => (
+        <div key={item.key} className={`automation-diagnostic-item ${item.status}`}>
+          <span>{item.status === 'ok' ? '정상' : item.status === 'skipped' ? '생략' : '확인'}</span>
+          <div><strong>{item.label}</strong><small>{item.message}</small></div>
+        </div>
+      ))}
+    </div>
+  );
+
+  if (compact) {
+    return (
+      <details className={`automation-diagnostic-details ${issueCount ? 'has-issues' : ''}`}>
+        <summary>{summary}</summary>
+        {list}
+        <button className="btn btn-sm" type="button" onClick={copyDiagnostics}><Copy size={13} /> 진단 복사</button>
+      </details>
+    );
+  }
+
+  return (
+    <section className={`automation-diagnostics ${issueCount ? 'has-issues' : ''}`}>
+      <div className="automation-diagnostics-head">
+        <div><strong>자동 생성 진단 결과</strong><span>{summary}</span></div>
+        <button className="btn btn-sm" type="button" onClick={copyDiagnostics}><Copy size={13} /> 진단내용 복사</button>
+      </div>
+      {list}
+    </section>
+  );
+}
+
 function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: AgentState; status: AutomationAgentStatus | null; onClose: () => void; onRecheck: () => void }) {
   const isOutdated = state === 'outdated';
-  const title = isOutdated ? '자동화 실행기 업데이트가 필요합니다' : '자동화 실행기 설치가 필요합니다';
+  const isConnected = state === 'connected';
+  const isUnverified = state === 'unverified';
+  const title = isConnected
+    ? '자동화 실행기 버전 확인'
+    : isOutdated
+      ? '자동화 실행기 업데이트가 필요합니다'
+      : isUnverified
+        ? '최신 버전을 확인하지 못했습니다'
+        : '자동화 실행기 설치가 필요합니다';
   const statusText = state === 'connected'
     ? '자동화 실행기가 최신 버전으로 연결되었습니다.'
     : state === 'checking'
       ? '자동화 실행기 연결을 확인하고 있습니다.'
       : isOutdated
         ? `현재 버전 ${status?.version || '확인 불가'} · 필요 버전 ${status?.requiredVersion || REQUIRED_AUTOMATION_AGENT_VERSION}`
+        : isUnverified
+          ? '이 PC의 실행기는 연결됐지만 서버 최신 버전을 확인하지 못했습니다.'
         : '현재 PC에서 자동화 실행기를 찾지 못했습니다.';
-  const description = isOutdated
-    ? '이 PC에 설치된 자동화 실행기가 구버전입니다. 최신 설치관리자를 다시 받아 실행하면 기존 실행기를 종료하고 새 버전으로 업데이트합니다.'
-    : '브리핑자료와 권리분석 보증서 자동 생성을 사용하려면 이 PC에 자동화 실행기가 설치되어 있어야 합니다. 설치관리자 실행 후 다시 확인을 눌러 주세요.';
+  const description = isConnected
+      ? '서버의 최신 배포 버전과 이 PC에 설치된 실행기 버전을 캐시 없이 직접 비교한 결과입니다.'
+      : isOutdated
+        ? '이 PC에 설치된 자동화 실행기가 구버전입니다. 최신 설치관리자를 다시 받아 실행하면 기존 실행기를 종료하고 새 버전으로 업데이트합니다.'
+        : isUnverified
+          ? '캐시된 기준값만으로 최신이라고 표시하지 않습니다. 네트워크 연결을 확인한 뒤 지금 다시 확인해 주세요.'
+        : '브리핑자료와 권리분석 보증서 자동 생성을 사용하려면 이 PC에 자동화 실행기가 설치되어 있어야 합니다. 설치관리자 실행 후 다시 확인을 눌러 주세요.';
+  const checkedAt = status?.checkedAt
+    ? new Date(status.checkedAt).toLocaleString('ko-KR', { hour12: false })
+    : '확인 전';
 
   return (
     <div className="automation-agent-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="automation-agent-title">
@@ -1505,22 +1582,40 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
             <span>{statusText}</span>
           </div>
           <p>{description}</p>
-          <div className="automation-agent-steps">
-            <span>1. 최신 설치관리자 다운로드</span>
-            <span>2. MyAuctionAutomationAgentSetup.exe 실행</span>
-            <span>3. 다시 확인</span>
+          <div className="automation-agent-version-grid">
+            <div>
+              <span>이 PC 설치 버전</span>
+              <strong>{status?.version || (state === 'missing' ? '설치되지 않음' : '확인 중')}</strong>
+            </div>
+            <div>
+              <span>최신 배포 버전</span>
+              <strong>{status?.latestVersionVerified ? status.requiredVersion : '서버 확인 필요'}</strong>
+            </div>
+            <div className="automation-agent-version-checked">
+              <span>마지막 확인 시각</span>
+              <strong>{checkedAt}</strong>
+            </div>
           </div>
+          {(isOutdated || state === 'missing') && (
+            <div className="automation-agent-steps">
+              <span>1. 최신 설치관리자 다운로드</span>
+              <span>2. MyAuctionAutomationAgentSetup.exe 실행</span>
+              <span>3. 지금 다시 확인</span>
+            </div>
+          )}
         </div>
         <div className="automation-agent-modal-actions">
-          <button
-            className="btn btn-primary"
-            onClick={() => automationApi.downloadAgentInstaller().catch((err) => alert(err.message))}
-            type="button"
-          >
-            <Download size={14} /> 설치관리자 다운로드
-          </button>
+          {(isOutdated || state === 'missing') && (
+            <button
+              className="btn btn-primary"
+              onClick={() => automationApi.downloadAgentInstaller().catch((err) => alert(err.message))}
+              type="button"
+            >
+              <Download size={14} /> 설치관리자 다운로드
+            </button>
+          )}
           <button className="btn" onClick={onRecheck} type="button">
-            <RefreshCw size={14} /> 설치 후 다시 확인
+            <RefreshCw size={14} /> 지금 다시 확인
           </button>
           <button className="btn btn-secondary" onClick={onClose} type="button">닫기</button>
         </div>

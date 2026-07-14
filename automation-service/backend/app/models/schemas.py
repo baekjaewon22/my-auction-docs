@@ -84,3 +84,4 @@ class ReportResult(BaseModel):
     output_file: Optional[str] = None
     message: str = ""
     data: Optional[PropertyData] = None
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)

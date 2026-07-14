@@ -25,7 +25,7 @@ from ..core.utils import normalize_myauction_detail_url
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-AGENT_VERSION = "2026.07.13.4"
+AGENT_VERSION = "2026.07.14.1"
 
 # 진행상황 저장소 (간단한 in-memory)
 progress_store: dict[str, list[ProgressUpdate]] = {}
@@ -111,12 +111,19 @@ def _download_history_response_item(item: dict) -> dict:
         "file_name": path.name,
         "created_at": item.get("created_at") or "",
         "message": item.get("message") or "",
+        "diagnostics": item.get("diagnostics") if isinstance(item.get("diagnostics"), list) else [],
         "exists": bool(formats),
         "formats": formats,
     }
 
 
-def _register_download_history(task_id: str, output_file: str, output_type: str, message: str = "") -> None:
+def _register_download_history(
+    task_id: str,
+    output_file: str,
+    output_type: str,
+    message: str = "",
+    diagnostics: list[dict] | None = None,
+) -> None:
     if not output_file:
         return
     path = Path(output_file)
@@ -129,12 +136,21 @@ def _register_download_history(task_id: str, output_file: str, output_type: str,
         "output_file": str(path),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "message": message,
+        "diagnostics": diagnostics or [],
     }
     existing = [
         old for old in _download_history_items()
         if str(old.get("output_file") or "") != str(path) and str(old.get("task_id") or "") != task_id
     ]
     _save_download_history_items([item] + existing)
+
+
+def _diagnostics_for_task(task_id: str) -> list[dict]:
+    for item in _download_history_items():
+        if str(item.get("task_id") or "") == task_id:
+            diagnostics = item.get("diagnostics")
+            return diagnostics if isinstance(diagnostics, list) else []
+    return []
 
 
 def _find_download_history_item(history_id: str) -> dict:
@@ -420,12 +436,19 @@ async def api_generate_report(request: ReportRequest):
     )
     if result.get("output_file"):
         report_files[task_id] = result["output_file"]
-        _register_download_history(task_id, result["output_file"], "auction_report", result.get("message", ""))
+        _register_download_history(
+            task_id,
+            result["output_file"],
+            "auction_report",
+            result.get("message", ""),
+            result.get("diagnostics", []),
+        )
 
     return ReportResult(
         success=result.get("success", False),
         output_file=result.get("output_file"),
         message=_clean_error_message(result.get("message", "")) if not result.get("success") else result.get("message", ""),
+        diagnostics=result.get("diagnostics", []),
     )
 
 
@@ -499,7 +522,13 @@ async def api_start_report(request: ReportRequest):
             result = _aio.run(generate_report(request, progress_callback=_sync_progress, task_id=task_id))
             if result.get("output_file"):
                 report_files[task_id] = result["output_file"]
-                _register_download_history(task_id, result["output_file"], "auction_report", result.get("message", ""))
+                _register_download_history(
+                    task_id,
+                    result["output_file"],
+                    "auction_report",
+                    result.get("message", ""),
+                    result.get("diagnostics", []),
+                )
             progress_store.setdefault(task_id, []).append(
                 ProgressUpdate(
                     step=6, total_steps=6,
@@ -567,7 +596,11 @@ async def api_start_rights_certificate_batch(request: RightsCertificateBatchRequ
 async def api_get_progress(task_id: str):
     """진행상황 폴링 조회"""
     updates = progress_store.get(task_id, [])
-    return {"task_id": task_id, "updates": [u.model_dump() for u in updates]}
+    return {
+        "task_id": task_id,
+        "updates": [u.model_dump() for u in updates],
+        "diagnostics": _diagnostics_for_task(task_id),
+    }
 
 
 @router.get("/report/download-history")

@@ -13538,6 +13538,12 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   color: #8a5a00;
 }
 
+.automation-agent-badge.unverified {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #c2410c;
+}
+
 .automation-agent-badge.checking {
   background: #f8fafc;
   color: #64748b;
@@ -13629,6 +13635,42 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   background: #fff8e1;
   border-color: #fbbc04;
   color: #8a5a00;
+}
+
+.automation-agent-status.unverified {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #c2410c;
+}
+
+.automation-agent-version-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.automation-agent-version-grid > div {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 11px 12px;
+}
+
+.automation-agent-version-grid span {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.automation-agent-version-grid strong {
+  color: #172033;
+  font-size: 0.9rem;
+}
+
+.automation-agent-version-grid .automation-agent-version-checked {
+  grid-column: 1 / -1;
 }
 
 .automation-agent-steps {
@@ -14333,6 +14375,116 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.automation-diagnostics {
+  background: #f8fbff;
+  border: 1px solid #dbe7f5;
+  border-radius: 12px;
+  margin-top: 16px;
+  padding: 14px;
+}
+
+.automation-diagnostics.has-issues {
+  background: #fffaf3;
+  border-color: #f2d39b;
+}
+
+.automation-diagnostics-head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.automation-diagnostics-head > div {
+  display: grid;
+  gap: 2px;
+}
+
+.automation-diagnostics-head strong {
+  color: #18304a;
+  font-size: 0.9rem;
+}
+
+.automation-diagnostics-head span {
+  color: #68778a;
+  font-size: 0.74rem;
+}
+
+.automation-diagnostic-list {
+  display: grid;
+  gap: 6px;
+}
+
+.automation-diagnostic-item {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #e4eaf2;
+  border-radius: 8px;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  padding: 8px 10px;
+}
+
+.automation-diagnostic-item > span {
+  background: #e8f5e9;
+  border-radius: 999px;
+  color: #188038;
+  font-size: 0.68rem;
+  font-weight: 900;
+  padding: 3px 6px;
+  text-align: center;
+}
+
+.automation-diagnostic-item.warning > span,
+.automation-diagnostic-item.error > span {
+  background: #fff3e0;
+  color: #b45309;
+}
+
+.automation-diagnostic-item.skipped > span {
+  background: #eef2f6;
+  color: #64748b;
+}
+
+.automation-diagnostic-item > div {
+  display: grid;
+  gap: 2px;
+}
+
+.automation-diagnostic-item strong {
+  color: #26374d;
+  font-size: 0.78rem;
+}
+
+.automation-diagnostic-item small {
+  color: #69788b;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.automation-diagnostic-details summary {
+  color: #188038;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.automation-diagnostic-details.has-issues summary {
+  color: #b45309;
+}
+
+.automation-diagnostic-details[open] {
+  min-width: 310px;
+  padding: 6px 0;
+}
+
+.automation-diagnostic-details .automation-diagnostic-list {
+  margin: 8px 0;
 }
 
 .document-download-button {

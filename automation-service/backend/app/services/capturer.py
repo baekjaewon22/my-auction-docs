@@ -843,6 +843,7 @@ def capture_tenant_and_registry(driver):
     time.sleep(1.0)
 
     tenant_imgs, building_imgs, land_imgs = [], [], []
+    reasons: dict[str, str] = {}
     cap_dir = str(CAPTURE_DIR)
 
     try:
@@ -852,6 +853,7 @@ def capture_tenant_and_registry(driver):
         )
         logger.info(f"임차인현황 캡처 완료 ({len(tenant_imgs)}장)")
     except Exception as e:
+        reasons["tenant-status"] = str(e)[:500] or "임차인현황 표를 찾지 못했습니다."
         logger.warning(f"임차인현황 캡처 실패: {e}")
 
     try:
@@ -861,8 +863,10 @@ def capture_tenant_and_registry(driver):
         )
         logger.info(f"건물 등기부현황 캡처 완료 ({len(building_imgs)}장)")
     except TimeoutException:
+        reasons["building-registry-status"] = "건물 등기부현황 표가 없거나 제한시간 내 표시되지 않았습니다."
         logger.info("건물 등기부현황 없음 → 스킵")
     except Exception as e:
+        reasons["building-registry-status"] = str(e)[:500] or "건물 등기부현황 캡처 실패"
         logger.warning(f"건물 등기부현황 캡처 실패: {e}")
 
     try:
@@ -872,11 +876,15 @@ def capture_tenant_and_registry(driver):
         )
         logger.info(f"토지 등기부현황 캡처 완료 ({len(land_imgs)}장)")
     except TimeoutException:
+        reasons["land-registry-status"] = "토지 등기부현황 표가 없거나 제한시간 내 표시되지 않았습니다."
         logger.info("토지 등기부현황 없음 → 스킵")
     except Exception as e:
+        reasons["land-registry-status"] = str(e)[:500] or "토지 등기부현황 캡처 실패"
         logger.warning(f"토지 등기부현황 캡처 실패: {e}")
 
-    return tenant_imgs, building_imgs, land_imgs
+    if not tenant_imgs and "tenant-status" not in reasons:
+        reasons["tenant-status"] = "임차인현황 표에서 캡처할 행을 찾지 못했습니다."
+    return tenant_imgs, building_imgs, land_imgs, reasons
 
 
 # ============================================================

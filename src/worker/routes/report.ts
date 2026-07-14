@@ -4,6 +4,7 @@ import type { AuthEnv } from '../types';
 
 const report = new Hono<AuthEnv>();
 const AGENT_INSTALLER_KEY = 'downloads/MyAuctionAutomationAgentSetup.exe';
+const AUTOMATION_AGENT_VERSION = '2026.07.14.1';
 
 report.use('*', authMiddleware);
 
@@ -166,6 +167,18 @@ report.get('/agent-installer', async (c) => {
   headers.set('Content-Disposition', 'attachment; filename="MyAuctionAutomationAgentSetup.exe"');
   headers.set('Cache-Control', 'private, max-age=300');
   return new Response(object.body, { headers });
+});
+
+report.get('/agent-version', (c) => {
+  return c.json(
+    { version: AUTOMATION_AGENT_VERSION },
+    200,
+    {
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      Pragma: 'no-cache',
+      Expires: '0',
+    },
+  );
 });
 
 report.post('/start-batch', async (c) => {

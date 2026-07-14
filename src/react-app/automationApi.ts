@@ -2,7 +2,7 @@ const AUTOMATION_API_BASE = (import.meta.env.VITE_AUTOMATION_API_BASE || '/api')
 const LOCAL_AUTOMATION_API_BASE = (import.meta.env.VITE_LOCAL_AUTOMATION_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '');
 const AUTOMATION_WS_BASE = (import.meta.env.VITE_AUTOMATION_WS_BASE || '').replace(/\/$/, '');
 const AUTOMATION_AGENT_INSTALLER_URL = import.meta.env.VITE_AUTOMATION_AGENT_INSTALLER_URL || '/api/report/agent-installer';
-export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.13.4';
+export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.14.1';
 
 function getToken(): string | null {
   return localStorage.getItem('token');
@@ -62,6 +62,13 @@ export interface ProgressUpdate {
   percent: number;
 }
 
+export interface AutomationDiagnostic {
+  key: string;
+  label: string;
+  status: 'ok' | 'warning' | 'error' | 'skipped';
+  message: string;
+}
+
 export interface DownloadHistoryItem {
   id: string;
   task_id: string;
@@ -72,6 +79,7 @@ export interface DownloadHistoryItem {
   message: string;
   exists: boolean;
   formats: DownloadFormat[];
+  diagnostics?: AutomationDiagnostic[];
 }
 
 export interface AutomationAgentStatus {
@@ -79,6 +87,8 @@ export interface AutomationAgentStatus {
   updateRequired?: boolean;
   version?: string;
   requiredVersion?: string;
+  latestVersionVerified?: boolean;
+  checkedAt?: string;
   title?: string;
   error?: string;
 }
@@ -96,6 +106,31 @@ function compareVersions(left: string, right: string) {
 }
 
 export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
+  let requiredVersion = REQUIRED_AUTOMATION_AGENT_VERSION;
+  let latestVersionVerified = false;
+  const checkedAt = new Date().toISOString();
+
+  try {
+    const latestRes = await fetch(`/api/report/agent-version?_=${Date.now()}`, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: authHeaders({
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+      }),
+    });
+    if (latestRes.ok) {
+      const latestData = await latestRes.json().catch(() => ({}));
+      const serverVersion = String(latestData?.version || '').trim();
+      if (serverVersion) {
+        requiredVersion = serverVersion;
+        latestVersionVerified = true;
+      }
+    }
+  } catch {
+    // 서버 조회 실패 시 현재 웹에 포함된 기준 버전으로 계속 확인한다.
+  }
+
   try {
     const res = await fetch(`${LOCAL_AUTOMATION_API_BASE}/health`, {
       method: 'GET',
@@ -105,16 +140,18 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     const data = await res.json().catch(() => ({}));
     const version = String(data?.version || '').trim();
-    const updateRequired = !version || compareVersions(version, REQUIRED_AUTOMATION_AGENT_VERSION) < 0;
+    const updateRequired = !version || compareVersions(version, requiredVersion) < 0;
     return {
       ok: true,
       updateRequired,
       version,
-      requiredVersion: REQUIRED_AUTOMATION_AGENT_VERSION,
+      requiredVersion,
+      latestVersionVerified,
+      checkedAt,
       title: data?.title || 'MyAuction Automation',
     };
   } catch (err: any) {
-    return { ok: false, error: err?.message || 'not_connected' };
+    return { ok: false, requiredVersion, latestVersionVerified, checkedAt, error: err?.message || 'not_connected' };
   }
 }
 
@@ -307,7 +344,7 @@ export const automationApi = {
   startBatch: (body: RightsBatchRequest) =>
     automationRequest<{ task_id: string }>('/report/start-batch', { method: 'POST', body: JSON.stringify(body) }),
   progress: (taskId: string) =>
-    automationRequest<{ task_id: string; updates: ProgressUpdate[] }>(`/report/progress/${taskId}`),
+    automationRequest<{ task_id: string; updates: ProgressUpdate[]; diagnostics?: AutomationDiagnostic[] }>(`/report/progress/${taskId}`),
   progressWsUrl: (taskId: string) => {
     if (AUTOMATION_WS_BASE) return `${AUTOMATION_WS_BASE}/ws/progress/${taskId}`;
     if (AUTOMATION_API_BASE.startsWith('http')) {

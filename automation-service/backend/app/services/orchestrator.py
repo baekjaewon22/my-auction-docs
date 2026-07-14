@@ -120,8 +120,8 @@ def _add_planner_appendix_slide(prs: Presentation, title: str, image_path: str) 
     return True
 
 
-def _insert_planner_snapshots(prs: Presentation, snapshots: list[dict]) -> int:
-    inserted = 0
+def _insert_planner_snapshots(prs: Presentation, snapshots: list[dict]) -> list[str]:
+    inserted: list[str] = []
     handled_calculators: set[str] = set()
     for index, snapshot in enumerate(snapshots or [], start=1):
         if snapshot.get("include") is False:
@@ -144,7 +144,8 @@ def _insert_planner_snapshots(prs: Presentation, snapshots: list[dict]) -> int:
                 f"옥션플래너 - {label}",
                 _planner_snapshot_rows(snapshot),
             )
-        inserted += 1 if ok else 0
+        if ok:
+            inserted.append(calculator)
     return inserted
 
 
@@ -617,6 +618,16 @@ async def generate_report(
     """
     ensure_dirs()
 
+    diagnostics: list[dict] = []
+
+    def add_diagnostic(key: str, label: str, status: str, message: str):
+        diagnostics.append({
+            "key": key,
+            "label": label,
+            "status": status,
+            "message": str(message or "").strip(),
+        })
+
     def emit(step, title, message, status="running", percent=0.0):
         if progress_callback:
             try:
@@ -658,12 +669,18 @@ async def generate_report(
     prs = None
     LAND_MODE = False
     total_building = total_sale = total_registry = total_status = 0
+    total_registry_land = 0
     tenant_imgs = building_registry_imgs = land_registry_imgs = []
     land_use_plan_img = kakao_map_img = kakao_sat_img = ""
     loc_left_img = loc_right_img = ""
     court_start_time = court_end_time = court_capture_png = ""
     building_overview_img = ""
     eviction_cost_basis_img = ""
+    registry_land_img_pattern = ""
+    checklist_match_count = 0
+    checklist_applied = False
+    planner_inserted_calculators: list[str] = []
+    diagnostic_reasons: dict[str, str] = {}
 
     # ===== STEP 0: Selenium 준비 =====
     emit(0, "브라우저 준비", "Chrome 시작 중...")
@@ -729,8 +746,13 @@ async def generate_report(
 
         # 권리분석 OCR 일부가 실패하더라도 선택 물건 체크리스트는 항상 반영한다.
         try:
+            checklist_match_count = len(_find_applicable_checklist_references(
+                data,
+                getattr(request, "auction_references", {}) or {},
+            ))
             special_opinion = _append_briefing_special_references(special_opinion, data, request)
         except Exception as e:
+            diagnostic_reasons["checklist"] = _short_selenium_message(e, "체크리스트 구성 중 오류 발생")
             logger.warning(f"물건별 체크리스트 반영 실패: {e}")
         data["rights_analysis_opinion"] = rights_analysis_opinion
         data["special_opinion"] = special_opinion
@@ -770,8 +792,10 @@ async def generate_report(
         try:
             special_opinion = data.get("special_opinion") or special_opinion
             if ppt_builder.apply_special_opinion(prs, special_opinion):
+                checklist_applied = checklist_match_count > 0
                 logger.info("담당자 종합의견 (3) 특이사항 자동 작성 완료")
         except Exception as e:
+            diagnostic_reasons["checklist"] = _short_selenium_message(e, "특이사항 슬라이드 반영 중 오류 발생")
             logger.warning(f"담당자 종합의견 (3) 특이사항 작성 실패: {e}")
         ppt_builder.insert_main_photo(prs, data.get("photo_url", ""))
         emit(2, "PPT 기본값", "기본값 채우기 완료", percent=25)
@@ -805,7 +829,8 @@ async def generate_report(
         # 임차인/등기부 캡처
         emit(3, "문서 캡처", "임차인/등기부현황 캡처 중...", percent=35)
         try:
-            tenant_imgs, building_registry_imgs, land_registry_imgs = capturer.capture_tenant_and_registry(driver)
+            tenant_imgs, building_registry_imgs, land_registry_imgs, table_capture_reasons = capturer.capture_tenant_and_registry(driver)
+            diagnostic_reasons.update(table_capture_reasons)
             logger.info(
                 "임차인/등기부현황 캡처 파일 확인: "
                 f"tenant={[(p, os.path.exists(p), os.path.getsize(p) if os.path.exists(p) else 0) for p in tenant_imgs]}, "
@@ -813,6 +838,7 @@ async def generate_report(
                 f"land={[(p, os.path.exists(p), os.path.getsize(p) if os.path.exists(p) else 0) for p in land_registry_imgs]}"
             )
         except Exception as e:
+            diagnostic_reasons["tenant-status"] = _short_selenium_message(e, "임차인 현황 캡처 단계 오류")
             logger.warning(f"캡처 실패: {e}")
 
         # 예상명도비용은 캡처 이미지를 삽입하지 않고 템플릿 변수로 자동 입력한다.
@@ -825,6 +851,9 @@ async def generate_report(
             bu_link = _find_public_data_link(driver, timeout=25)
             popup_handle = _open_public_data_page(driver, bu_link, timeout=20)
         except Exception as e:
+            reason = _short_selenium_message(e, "공시자료 팝업 진입 실패")
+            for diagnostic_key in ("building-register", "sale-spec", "registry-summary", "status-report"):
+                diagnostic_reasons[diagnostic_key] = reason
             raise RuntimeError(_short_selenium_message(
                 e,
                 "공시자료 팝업 링크를 찾거나 클릭하지 못했습니다. 마이옥션 사건 상세 화면에서 공시자료/부동산표시 버튼 노출 여부를 확인해 주세요.",
@@ -873,6 +902,7 @@ async def generate_report(
                 pdf_path = pdf_processor.download_pdf_with_cookies(driver, pdf_url, "building_register")
                 total_building = pdf_processor.pdf_to_images(pdf_path, IMG_PATTERN, dpi=250)
             except Exception as e:
+                diagnostic_reasons["building-register"] = _short_selenium_message(e, "건축물대장 캡처 실패")
                 logger.warning(f"건축물대장 실패 → 생략(계속 진행): {e}")
         else:
             logger.info("토지버전 → 건축물대장 생략")
@@ -888,6 +918,7 @@ async def generate_report(
                 pdf_path = pdf_processor.download_pdf_with_cookies(driver, pdf_url, "sale_spec")
                 total_sale = pdf_processor.pdf_to_images(pdf_path, SALE_IMG_PATTERN, dpi=250)
         except Exception as e:
+            diagnostic_reasons["sale-spec"] = _short_selenium_message(e, "매각물건명세서 캡처 실패")
             logger.warning(f"매각물건명세서 실패: {e}")
 
         # 등기부(건물)
@@ -923,12 +954,12 @@ async def generate_report(
 
                 total_registry = pdf_processor.pdf_to_images(reg_pdf, REGISTRY_IMG_PATTERN, dpi=250)
             except Exception as e:
+                diagnostic_reasons["registry-summary"] = _short_selenium_message(e, "건물 등기사항 요약 캡처 실패")
                 logger.warning(f"등기부(건물) 실패 → 생략(계속 진행): {e}")
         else:
             logger.info("토지버전 → 등기부(건물) 생략")
 
         # 등기부(토지) - 토지 모드일 때만
-        total_registry_land = 0
         if LAND_MODE:
             try:
                 emit(3, "문서 캡처", "등기부(토지) 처리 중...", percent=62)
@@ -942,9 +973,10 @@ async def generate_report(
                 if not pdf_url:
                     raise RuntimeError("등기부(토지) iframe src 없음")
                 reg_land_pdf = pdf_processor.download_pdf_with_cookies(driver, pdf_url, "registry_land")
-                reg_land_img_pattern = str(CAPTURE_DIR / "registry_land_{page}.png")
-                total_registry_land = pdf_processor.pdf_to_images(reg_land_pdf, reg_land_img_pattern, dpi=250)
+                registry_land_img_pattern = str(CAPTURE_DIR / "registry_land_{page}.png")
+                total_registry_land = pdf_processor.pdf_to_images(reg_land_pdf, registry_land_img_pattern, dpi=250)
             except Exception as e:
+                diagnostic_reasons["registry-summary"] = _short_selenium_message(e, "토지 등기사항 요약 캡처 실패")
                 logger.warning(f"등기부(토지) 실패 → 생략(계속 진행): {e}")
 
         # 감정평가서
@@ -996,6 +1028,7 @@ async def generate_report(
             if pdf_processor.is_valid_pdf(status_pdf):
                 total_status = pdf_processor.pdf_to_images(status_pdf, STATUS_IMG_PATTERN, dpi=300)
         except Exception as e:
+            diagnostic_reasons["status-report"] = _short_selenium_message(e, "현황조사서 캡처 실패")
             logger.warning(f"현황조사서 실패: {e}")
 
         emit(3, "문서 캡처", "캡처 완료", percent=75)
@@ -1049,6 +1082,14 @@ async def generate_report(
     ppt_builder.insert_images_into_ppt(prs, total_building, "건축물대장", IMG_PATTERN, clone_from_next=True, forced_num="(5)")
     ppt_builder.insert_images_into_ppt(prs, total_sale, "매각물건명세서", SALE_IMG_PATTERN, clone_from_next=True)
     ppt_builder.insert_images_into_ppt(prs, total_registry, "등기사항 요약", REGISTRY_IMG_PATTERN, clone_from_next=True)
+    if not total_registry and total_registry_land and registry_land_img_pattern:
+        ppt_builder.insert_images_into_ppt(
+            prs,
+            total_registry_land,
+            "등기사항 요약",
+            registry_land_img_pattern,
+            clone_from_next=True,
+        )
     ppt_builder.insert_images_into_ppt(prs, total_status, "현황조사서", STATUS_IMG_PATTERN, clone_from_next=True)
 
     # 임차인/등기부현황
@@ -1081,10 +1122,11 @@ async def generate_report(
             logger.warning("물건현황 (1) 위치도/내부구조도 좌우 삽입 실패")
 
     try:
-        planner_inserted = _insert_planner_snapshots(prs, request.planner_snapshots)
-        if planner_inserted:
-            logger.info(f"옥션플래너 스냅샷 {planner_inserted}건 PPT 삽입 완료")
+        planner_inserted_calculators = _insert_planner_snapshots(prs, request.planner_snapshots)
+        if planner_inserted_calculators:
+            logger.info(f"옥션플래너 스냅샷 {len(planner_inserted_calculators)}건 PPT 삽입 완료")
     except Exception as e:
+        diagnostic_reasons["planner"] = _short_selenium_message(e, "옥션플래너 PPT 삽입 실패")
         logger.warning(f"옥션플래너 스냅샷 PPT 삽입 실패: {e}")
 
     logger.info("예상명도비용 산출근거 캡처 이미지 삽입 생략: 템플릿 변수 자동입력 방식 사용")
@@ -1102,6 +1144,76 @@ async def generate_report(
     except Exception as e:
         logger.warning(f"명도 정액제/실비제 비용 반영 실패: {e}")
 
+    required_planner = {
+        "acquisition-tax": "취득세 및 대출",
+        "loan-bid-estimator": "입찰가 산정표",
+        "acquisition-cost-sheet": "취득비용 계산표",
+    }
+    received_snapshots = {
+        str(item.get("calculator") or ""): item
+        for item in (request.planner_snapshots or [])
+        if isinstance(item, dict) and item.get("include") is not False
+    }
+    for calculator, label in required_planner.items():
+        snapshot = received_snapshots.get(calculator)
+        if calculator in planner_inserted_calculators:
+            snapshot_message = snapshot.get("message") if isinstance(snapshot, dict) else {}
+            snapshot_message = snapshot_message if isinstance(snapshot_message, dict) else {}
+            image_data = (
+                snapshot.get("image_data_url")
+                or snapshot.get("imageDataUrl")
+                or snapshot_message.get("image_data_url")
+                or snapshot_message.get("imageDataUrl")
+            ) if snapshot else ""
+            has_image = isinstance(image_data, str) and image_data.startswith("data:image/")
+            add_diagnostic(
+                f"planner:{calculator}",
+                label,
+                "ok" if has_image else "warning",
+                "이미지 수신 및 PPT 반영 완료" if has_image else "이미지 없이 계산값 표로 대체 반영",
+            )
+        elif snapshot:
+            add_diagnostic(
+                f"planner:{calculator}",
+                label,
+                "error",
+                diagnostic_reasons.get("planner") or "자료는 수신했지만 PPT 삽입 위치를 찾지 못함",
+            )
+        else:
+            add_diagnostic(f"planner:{calculator}", label, "error", "브라우저에서 이미지 자료가 전달되지 않음")
+
+    if checklist_match_count and checklist_applied:
+        add_diagnostic("checklist", "물건별 체크리스트", "ok", f"{checklist_match_count}개 항목 매칭 및 특이사항 반영 완료")
+    elif checklist_match_count:
+        add_diagnostic("checklist", "물건별 체크리스트", "error", f"{checklist_match_count}개 항목은 매칭됐지만 PPT 반영 실패")
+    else:
+        add_diagnostic(
+            "checklist",
+            "물건별 체크리스트",
+            "error",
+            diagnostic_reasons.get("checklist") or "공통·물건 카테고리 체크리스트가 매칭되지 않음",
+        )
+
+    document_checks = [
+        ("building-register", "건축물대장", total_building, "skipped" if LAND_MODE else "error"),
+        ("tenant-status", "전입세대·임차인 현황", len(tenant_imgs), "error"),
+        ("registry-summary", "등기사항 요약", total_registry or total_registry_land, "error"),
+        ("status-report", "현황조사서", total_status, "error"),
+        ("sale-spec", "매각물건명세서", total_sale, "error"),
+    ]
+    for key, label, count, empty_status in document_checks:
+        if count:
+            add_diagnostic(key, label, "ok", f"{count}페이지 캡처 및 PPT 삽입 처리")
+        elif empty_status == "skipped":
+            add_diagnostic(key, label, "skipped", "토지 물건으로 판별되어 생략")
+        else:
+            add_diagnostic(
+                key,
+                label,
+                empty_status,
+                diagnostic_reasons.get(key) or "캡처 결과가 없어 PPT에 삽입되지 않음",
+            )
+
     # ===== STEP 5: 저장 =====
     emit(5, "저장", "PPT 저장 중...", percent=90)
     output_file = _briefing_output_file(data, task_id)
@@ -1110,12 +1222,17 @@ async def generate_report(
 
     cleanup_generated_files()
 
-    emit(5, "저장", "완료!", status="completed", percent=100)
+    diagnostic_failures = sum(1 for item in diagnostics if item.get("status") in ("warning", "error"))
+    completion_message = "보고서 생성이 완료되었습니다."
+    if diagnostic_failures:
+        completion_message = f"보고서는 생성됐지만 진단 경고 {diagnostic_failures}건을 확인해 주세요."
+    emit(5, "저장", completion_message, status="completed", percent=100)
     logger.info(f"보고서 생성 완료: {output_file}")
 
     return {
         "success": True,
         "output_file": output_file,
-        "message": "보고서 생성이 완료되었습니다.",
+        "message": completion_message,
         "data": data,
+        "diagnostics": diagnostics,
     }
