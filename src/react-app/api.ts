@@ -297,6 +297,8 @@ export const api = {
   leave: {
     list: () => request<{ leaves: any[] }>('/leave'),
     me: () => request<{ leave: any }>('/leave/me'),
+    holidays: (year: string) =>
+      request<{ holidays: Array<{ holiday_date: string; name: string }> }>('/leave/holidays?year=' + encodeURIComponent(year)),
     userLeave: (userId: string) => request<{ leave: any }>('/leave/user/' + userId),
     init: (userId: string, totalDays: number) =>
       request('/leave/init', { method: 'POST', body: JSON.stringify({ user_id: userId, total_days: totalDays }) }),
@@ -307,6 +309,22 @@ export const api = {
     // 휴가 신청
     createRequest: (data: { leave_type: string; start_date: string; end_date: string; hours?: number; reason: string; user_id?: string; half_day_period?: '오전' | '오후' | '' }) =>
       request('/leave/request', { method: 'POST', body: JSON.stringify(data) }),
+    createSummerRequest: (data: {
+      start_date: string;
+      summer_days: number;
+      chain_days: number;
+      chain_position: 'before' | 'after';
+      summer_reason: string;
+      annual_reason?: string;
+      user_id?: string;
+      client_special_end_date?: string;
+      client_annual_start_date?: string;
+      client_annual_end_date?: string;
+    }) => request<{
+      success: boolean;
+      special: { id: string; start_date: string; end_date: string };
+      annual: { id: string; start_date: string; end_date: string } | null;
+    }>('/leave/request/summer', { method: 'POST', body: JSON.stringify(data) }),
     listRequests: (params?: { status?: string; month?: string; user_id?: string }) =>
       request<{ requests: any[] }>('/leave/requests' + (params ? '?' + new URLSearchParams(params as any).toString() : '')),
     approveRequest: (id: string) =>

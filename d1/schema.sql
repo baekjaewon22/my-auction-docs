@@ -127,11 +127,31 @@ CREATE TABLE IF NOT EXISTS leave_requests (
   reject_reason TEXT,
   branch TEXT NOT NULL DEFAULT '',
   department TEXT NOT NULL DEFAULT '',
+  half_day_period TEXT NOT NULL DEFAULT '',
+  first_approved_by TEXT NOT NULL DEFAULT '',
+  first_approved_at TEXT NOT NULL DEFAULT '',
+  request_group_id TEXT,
+  summer_request_year TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES users(id),
   FOREIGN KEY (approved_by) REFERENCES users(id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_leave_requests_active_exact
+ON leave_requests (
+  user_id,
+  leave_type,
+  start_date,
+  end_date,
+  COALESCE(half_day_period, '')
+)
+WHERE status IN ('pending', 'approved', 'cancel_requested');
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_leave_requests_active_summer_year
+ON leave_requests (user_id, summer_request_year)
+WHERE summer_request_year IS NOT NULL
+  AND status IN ('pending', 'approved', 'cancel_requested');
 
 -- Leave promotion alerts (연차촉진 알림)
 CREATE TABLE IF NOT EXISTS leave_promotion_alerts (

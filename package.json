@@ -64,13 +64,17 @@
 	},
 	"private": true,
 	"scripts": {
+		"ai:review": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/invoke-claude-review.ps1",
+		"ai:review:external": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/invoke-claude-review.ps1 -AllowExternalDisclosure",
+		"ai:review:check": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/invoke-claude-review.ps1 -CheckOnly",
 		"build": "tsc -b && vite build",
 		"cf-typegen": "wrangler types",
 		"check": "tsc && vite build && wrangler deploy --dry-run",
 		"deploy": "wrangler deploy",
 		"dev": "vite",
 		"lint": "eslint .",
-		"preview": "npm run build && vite preview"
+		"preview": "npm run build && vite preview",
+		"test:leave": "node --experimental-strip-types --test tests/leave-calendar.test.ts tests/leave-constraints.test.ts"
 	},
 	"type": "module"
 }

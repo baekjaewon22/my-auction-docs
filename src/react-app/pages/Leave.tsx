@@ -8,6 +8,7 @@ import {
   Calculator, Calendar, Eye
 } from 'lucide-react';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
+import { countLeaveBusinessDays, leaveYearsForRange, planSummerLeave } from '../../shared/leave-calendar';
 
 type FormLeaveType = '연차' | '반차' | '시간차' | '특별휴가';
 
@@ -48,56 +49,6 @@ function isSummerVacationWindowOpen(): boolean {
 function isJulyOrAugustDate(value: string): boolean {
   const month = Number(String(value || '').slice(5, 7));
   return month === 7 || month === 8;
-}
-
-function parseDateString(value: string): Date | null {
-  const [year, month, day] = String(value || '').slice(0, 10).split('-').map(Number);
-  if (!year || !month || !day) return null;
-  return new Date(Date.UTC(year, month - 1, day));
-}
-
-function formatDateString(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function isWeekendDate(date: Date): boolean {
-  const day = date.getUTCDay();
-  return day === 0 || day === 6;
-}
-
-function addBusinessDays(startDate: string, days: number): string {
-  const start = parseDateString(startDate);
-  if (!start) return startDate;
-  const targetDays = Math.max(1, Math.floor(Number(days || 1)));
-  const cursor = new Date(start);
-  let counted = 0;
-  while (counted < targetDays) {
-    if (!isWeekendDate(cursor)) counted += 1;
-    if (counted < targetDays) cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return formatDateString(cursor);
-}
-
-function nextBusinessDay(dateText: string): string {
-  const date = parseDateString(dateText);
-  if (!date) return dateText;
-  do {
-    date.setUTCDate(date.getUTCDate() + 1);
-  } while (isWeekendDate(date));
-  return formatDateString(date);
-}
-
-function countBusinessDays(startDate: string, endDate: string): number {
-  const start = parseDateString(startDate);
-  const end = parseDateString(endDate);
-  if (!start || !end || end < start) return 1;
-  const cursor = new Date(start);
-  let count = 0;
-  while (cursor <= end) {
-    if (!isWeekendDate(cursor)) count += 1;
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return Math.max(1, count);
 }
 
 // 타입 색상 매핑 (목록 표시용)
@@ -187,6 +138,9 @@ export default function Leave() {
   const [summerDays, setSummerDays] = useState(1); // 1~3 (잔여에 따라 제한)
   const [summerChain, setSummerChain] = useState(0); // 0/1/2 연차 연결
   const [summerChainPos, setSummerChainPos] = useState<'after' | 'before'>('after');
+  const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
+  const [holidayLoading, setHolidayLoading] = useState(true);
+  const [holidayError, setHolidayError] = useState('');
 
   // 반려 사유
   const [rejectingId, setRejectingId] = useState<string | null>(null);
@@ -200,6 +154,29 @@ export default function Leave() {
   const canManageAll = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canRequestForOthers = role === 'master';
   const canManualAdjustLeave = role === 'master';
+  const holidayYearsKey = leaveYearsForRange(formStartDate, formEndDate).join(',');
+
+  useEffect(() => {
+    const years = holidayYearsKey.split(',').filter(Boolean);
+    if (years.length === 0) return;
+    let cancelled = false;
+    setHolidayLoading(true);
+    setHolidayError('');
+    Promise.all(years.map((year) => api.leave.holidays(year)))
+      .then((results) => {
+        if (cancelled) return;
+        setHolidayDates(new Set(results.flatMap((result) => result.holidays || []).map((holiday) => holiday.holiday_date)));
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setHolidayDates(new Set());
+        setHolidayError(err?.message || '공휴일 정보를 불러오지 못했습니다.');
+      })
+      .finally(() => {
+        if (!cancelled) setHolidayLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [holidayYearsKey]);
 
   // 담당자 열람 기능
   const [members, setMembers] = useState<User[]>([]);
@@ -299,6 +276,9 @@ export default function Leave() {
         alert(`${specialSubtype} 사유를 입력하세요.`); return;
       }
       if (specialSubtype === '여름휴가') {
+        if (holidayLoading || holidayError) {
+          alert(holidayError || '공휴일 정보를 확인하고 있습니다. 잠시 후 다시 신청해주세요.'); return;
+        }
         if (!summerVacationOpen) {
           alert('여름 특별휴가는 매년 7~8월에만 신청할 수 있습니다. 9월부터는 사용이 불가합니다.'); return;
         }
@@ -317,56 +297,44 @@ export default function Leave() {
       }
     }
 
-    // ━━━ 여름휴가 전용 제출 (2 API: 특별휴가 + 옵션 연차) ━━━
+    // ━━━ 여름휴가 전용 제출 (서버 단일 트랜잭션) ━━━
     if (formType === '특별휴가' && specialSubtype === '여름휴가') {
-      // 여름휴가 구간 계산
-      let summerStartText: string;
-      let summerEndText: string;
-      let chainStartText = '';
-      let chainEndText = '';
-      if (summerChain === 0) {
-        summerStartText = formStartDate;
-        summerEndText = addBusinessDays(summerStartText, summerDays);
-      } else if (summerChainPos === 'after') {
-        summerStartText = formStartDate;
-        summerEndText = addBusinessDays(summerStartText, summerDays);
-        chainStartText = nextBusinessDay(summerEndText);
-        chainEndText = addBusinessDays(chainStartText, summerChain);
-      } else {
-        chainStartText = formStartDate;
-        chainEndText = addBusinessDays(chainStartText, summerChain);
-        summerStartText = nextBusinessDay(chainEndText);
-        summerEndText = addBusinessDays(summerStartText, summerDays);
+      let plan;
+      try {
+        plan = planSummerLeave({
+          startDate: formStartDate,
+          summerDays,
+          chainDays: summerChain,
+          chainPosition: summerChainPos,
+          holidays: holidayDates,
+        });
+      } catch (err: any) {
+        alert(err?.message || '여름휴가 날짜를 계산할 수 없습니다.'); return;
       }
-      const rangeDates = [summerStartText, summerEndText, chainStartText, chainEndText].filter(Boolean);
+      const rangeDates = [plan.specialStartDate, plan.specialEndDate, plan.annualStartDate, plan.annualEndDate]
+        .filter((date): date is string => Boolean(date));
       if (rangeDates.some(d => !isJulyOrAugustDate(d))) {
         alert('여름 특별휴가와 연결 연차는 모두 7~8월 안에서만 사용할 수 있습니다.'); return;
       }
-      const annualType = '연차';
       const summerReason = summerChain > 0
-        ? `[여름휴가] ${summerDays}일 (${annualType} ${summerChain}일 연결 ${summerChainPos === 'after' ? '뒤' : '앞'})`
+        ? `[여름휴가] ${summerDays}일 (연차 ${summerChain}일 연결 ${summerChainPos === 'after' ? '뒤' : '앞'})`
         : `[여름휴가] ${summerDays}일`;
+      const annualReason = summerChain > 0 ? `[여름휴가 연결] ${summerChain}일` : '';
 
       setSubmitting(true);
       try {
-        await api.leave.createRequest({
+        await api.leave.createSummerRequest({
           user_id: requestUserId,
-          leave_type: '특별휴가',
-          start_date: summerStartText,
-          end_date: summerEndText,
-          hours: 8,
-          reason: summerReason,
+          start_date: formStartDate,
+          summer_days: summerDays,
+          chain_days: summerChain,
+          chain_position: summerChainPos,
+          summer_reason: summerReason,
+          annual_reason: annualReason,
+          client_special_end_date: plan.specialEndDate,
+          client_annual_start_date: plan.annualStartDate || undefined,
+          client_annual_end_date: plan.annualEndDate || undefined,
         });
-        if (summerChain > 0 && chainStartText && chainEndText) {
-          await api.leave.createRequest({
-            user_id: requestUserId,
-            leave_type: annualType,
-            start_date: chainStartText,
-            end_date: chainEndText,
-            hours: 8,
-            reason: `[여름휴가 연결] ${summerChain}일`,
-          });
-        }
         setShowForm(false); setFormReason(''); setSpecialEtcReason('');
         setSummerChain(0); setSummerDays(1);
         if (requestUserId) loadFormUser(requestUserId);
@@ -505,7 +473,7 @@ export default function Leave() {
     if (formType === '특별휴가' && specialSubtype === '여름휴가') {
       return summerDays * 8; // 여름휴가 자체는 연차 차감 없음, 이어붙인 연차는 별도 계산
     }
-    return countBusinessDays(formStartDate, formEndDate) * 8;
+    return countLeaveBusinessDays(formStartDate, formEndDate, holidayDates) * 8;
   };
 
   const formatLeavePeriod = (req: LeaveRequest): string => {
@@ -1002,6 +970,8 @@ export default function Leave() {
               <div style={{ padding: '10px 14px', borderRadius: 8, background: '#f8f9fa', marginBottom: 16, fontSize: '0.85rem' }}>
                 <span style={{ color: '#5f6368' }}>차감시간: </span>
                 <strong style={{ color: '#d93025' }}>{formatLeaveHours(previewHours())}</strong>
+                {holidayLoading && <span style={{ color: '#5f6368', marginLeft: 8, fontSize: '0.78rem' }}>공휴일 확인 중</span>}
+                {holidayError && <span style={{ color: '#d93025', marginLeft: 8, fontSize: '0.78rem' }}>공휴일 확인 실패</span>}
                 {formType === '특별휴가' && specialSubtype === '특별유급휴가' && (
                   <span style={{ color: '#7b1fa2', marginLeft: 8, fontSize: '0.78rem' }}>({SPECIAL_LEAVE_ITEMS[specialItem].label})</span>
                 )}
@@ -1011,7 +981,7 @@ export default function Leave() {
                 <button
                   className="btn btn-primary"
                   onClick={handleSubmit}
-                  disabled={submitting || (formType === '특별휴가' && specialSubtype === '여름휴가' && summerBlocked)}
+                  disabled={submitting || holidayLoading || Boolean(holidayError) || (formType === '특별휴가' && specialSubtype === '여름휴가' && summerBlocked)}
                   style={{ flex: 1 }}
                 >
                   {submitting ? '제출중...' : '신청하기'}

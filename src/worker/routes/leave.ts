@@ -4,6 +4,15 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { isHeadOfficeBranch } from '../lib/branchAliases';
 import { buildOrgApprovalChain } from '../lib/org-approval-chain';
+import {
+  countLeaveBusinessDays,
+  isLeaveDateRange,
+  planSummerLeave,
+  previousLeaveBusinessDay,
+  subtractLeaveBusinessDays,
+  type SummerChainPosition,
+  type SummerLeavePlan,
+} from '../../shared/leave-calendar';
 
 const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
@@ -29,6 +38,12 @@ async function ensureLeaveRequestSchema(db: D1Database): Promise<void> {
   }
   if (!names.has('first_approved_at')) {
     await db.prepare("ALTER TABLE leave_requests ADD COLUMN first_approved_at TEXT NOT NULL DEFAULT ''").run();
+  }
+  if (!names.has('request_group_id')) {
+    await db.prepare('ALTER TABLE leave_requests ADD COLUMN request_group_id TEXT').run();
+  }
+  if (!names.has('summer_request_year')) {
+    await db.prepare('ALTER TABLE leave_requests ADD COLUMN summer_request_year TEXT').run();
   }
 }
 
@@ -75,19 +90,26 @@ function isJulyOrAugustDate(value: string): boolean {
   return month === 7 || month === 8;
 }
 
-function parseDateString(value: string): Date | null {
-  const [year, month, day] = String(value || '').slice(0, 10).split('-').map(Number);
-  if (!year || !month || !day) return null;
-  return new Date(Date.UTC(year, month - 1, day));
+function summerVacationDays(reason: unknown): number | null {
+  const match = String(reason || '').match(/\[여름휴가\]\s*(\d+)일/);
+  if (!match) return null;
+  const days = Number(match[1]);
+  return Number.isInteger(days) && days >= 1 && days <= 3 ? days : null;
 }
 
-function formatDateString(date: Date): string {
-  return date.toISOString().slice(0, 10);
+function summerConnectedAnnualDays(reason: unknown): number | null {
+  const match = String(reason || '').match(/\[여름휴가 연결\]\s*(\d+)일/);
+  if (!match) return null;
+  const days = Number(match[1]);
+  return Number.isInteger(days) && days >= 1 && days <= 2 ? days : null;
 }
 
-function isWeekendDate(date: Date): boolean {
-  const day = date.getUTCDay();
-  return day === 0 || day === 6;
+function summerReasonConnection(reason: unknown): { days: number; position: SummerChainPosition } | null {
+  const match = String(reason || '').match(/\(연차\s*(\d+)일\s*연결\s*(뒤|앞)\)/);
+  if (!match) return null;
+  const days = Number(match[1]);
+  if (!Number.isInteger(days) || days < 1 || days > 2) return null;
+  return { days, position: match[2] === '뒤' ? 'after' : 'before' };
 }
 
 async function getLeaveHolidayDates(db: D1Database, startDate: string, endDate: string): Promise<Set<string>> {
@@ -111,20 +133,6 @@ async function getLeaveHolidayDates(db: D1Database, startDate: string, endDate: 
   }
 }
 
-function countLeaveBusinessDays(startDate: string, endDate: string, holidays = new Set<string>()): number {
-  const start = parseDateString(startDate);
-  const end = parseDateString(endDate);
-  if (!start || !end || end < start) return 1;
-  const cursor = new Date(start);
-  let count = 0;
-  while (cursor <= end) {
-    const dateText = formatDateString(cursor);
-    if (!isWeekendDate(cursor) && !holidays.has(dateText)) count += 1;
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return Math.max(1, count);
-}
-
 async function hasActiveSummerVacationRequest(db: D1Database, userId: string, year: string): Promise<boolean> {
   const row = await db.prepare(`
     SELECT id FROM leave_requests
@@ -136,6 +144,84 @@ async function hasActiveSummerVacationRequest(db: D1Database, userId: string, ye
     LIMIT 1
   `).bind(userId, `${year}-01-01`, `${year}-12-31`).first();
   return Boolean(row);
+}
+
+type SummerLeaveInsertResult = {
+  specialId: string;
+  annualId: string | null;
+};
+
+async function insertSummerLeaveRecords(db: D1Database, input: {
+  targetUserId: string;
+  branch: string;
+  department: string;
+  year: string;
+  summerDays: number;
+  chainDays: number;
+  summerReason: string;
+  annualReason: string;
+  plan: SummerLeavePlan;
+}): Promise<SummerLeaveInsertResult> {
+  if (await hasActiveSummerVacationRequest(db, input.targetUserId, input.year)) {
+    throw new Error('여름 특별휴가는 인당 연 1회만 신청할 수 있습니다.');
+  }
+  if (input.plan.annualStartDate && input.plan.annualEndDate) {
+    const overlappingAnnual = await db.prepare(`
+      SELECT id FROM leave_requests
+      WHERE user_id = ?
+        AND leave_type IN ('연차', '월차')
+        AND status IN ('pending', 'approved', 'cancel_requested')
+        AND NOT (end_date < ? OR start_date > ?)
+      LIMIT 1
+    `).bind(input.targetUserId, input.plan.annualStartDate, input.plan.annualEndDate).first();
+    if (overlappingAnnual) throw new Error('연결 연차 기간에 이미 신청된 연차가 있습니다.');
+  }
+
+  const specialId = crypto.randomUUID();
+  const annualId = input.chainDays > 0 ? crypto.randomUUID() : null;
+  const requestGroupId = crypto.randomUUID();
+  const statements = [db.prepare(`INSERT INTO leave_requests
+    (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period, request_group_id, summer_request_year)
+    VALUES (?, ?, '특별휴가', ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`)
+    .bind(
+      specialId,
+      input.targetUserId,
+      input.plan.specialStartDate,
+      input.plan.specialEndDate,
+      input.summerDays * HOURS_PER_DAY,
+      input.summerDays,
+      input.summerReason,
+      input.branch,
+      input.department,
+      requestGroupId,
+      input.year,
+    )];
+  if (annualId && input.plan.annualStartDate && input.plan.annualEndDate) {
+    statements.push(db.prepare(`INSERT INTO leave_requests
+      (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period, request_group_id)
+      VALUES (?, ?, '연차', ?, ?, ?, ?, ?, ?, ?, '', ?)`)
+      .bind(
+        annualId,
+        input.targetUserId,
+        input.plan.annualStartDate,
+        input.plan.annualEndDate,
+        input.chainDays * HOURS_PER_DAY,
+        input.chainDays,
+        input.annualReason,
+        input.branch,
+        input.department,
+        requestGroupId,
+      ));
+  }
+  try {
+    await db.batch(statements);
+  } catch (err: any) {
+    if (/UNIQUE constraint failed/i.test(String(err?.message || err || ''))) {
+      throw new Error('동일한 여름휴가 또는 연차 신청이 이미 처리 중입니다.');
+    }
+    throw err;
+  }
+  return { specialId, annualId };
 }
 
 const LEAVE_APPROVER_ROLES = new Set(['admin', 'manager', 'accountant', 'cc_ref']);
@@ -651,6 +737,26 @@ leave.get('/me', async (c) => {
   });
 });
 
+// 휴가 신청 화면의 근무일 계산용 공휴일 목록
+// 인증된 전 직원이 날짜와 명칭만 조회할 수 있으며 관리용 메모 등은 노출하지 않는다.
+leave.get('/holidays', async (c) => {
+  const year = String(c.req.query('year') || todayKstDateOnly().slice(0, 4));
+  if (!/^\d{4}$/.test(year)) {
+    return c.json({ error: '공휴일 조회 연도를 YYYY 형식으로 입력해주세요.' }, 400);
+  }
+
+  const result = await c.env.DB.prepare(`
+    SELECT holiday_date, name
+    FROM system_holidays
+    WHERE enabled = 1
+      AND applies_to IN ('all', 'leave')
+      AND substr(holiday_date, 1, 4) = ?
+    ORDER BY holiday_date ASC
+  `).bind(year).all<{ holiday_date: string; name: string }>();
+
+  return c.json({ holidays: result.results || [] });
+});
+
 // ───── 특정 유저 연차 조회 (관리자+) ─────
 leave.get('/user/:userId', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_asst'), async (c) => {
   const userId = c.req.param('userId');
@@ -869,7 +975,130 @@ leave.post('/reinit-all', requireRole('master'), async (c) => {
   return c.json({ success: true, total: usersResult.results?.length || 0, updated: changes.length, changes });
 });
 
-// ───── 휴가 신청 ─────
+// ───── 여름 특별휴가 + 연결 연차 원자적 신청 ─────
+leave.post('/request/summer', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  await ensureLeaveRequestSchema(db);
+  const body = await c.req.json<{
+    start_date: string;
+    summer_days: number;
+    chain_days: number;
+    chain_position: SummerChainPosition;
+    summer_reason: string;
+    annual_reason?: string;
+    user_id?: string;
+    // 구버전 화면이 계산한 값은 진단용으로만 받고 서버 계산에는 사용하지 않는다.
+    client_special_end_date?: string;
+    client_annual_start_date?: string;
+    client_annual_end_date?: string;
+  }>();
+
+  const targetUserId = user.role === 'master' && body.user_id ? body.user_id : user.sub;
+  if (body.user_id && body.user_id !== user.sub && user.role !== 'master') {
+    return c.json({ error: '다른 직원의 휴가는 마스터만 대신 신청할 수 있습니다.' }, 403);
+  }
+  const targetUser = await db.prepare(
+    'SELECT id, name, branch, department FROM users WHERE id = ? AND approved = 1'
+  ).bind(targetUserId).first<any>();
+  if (!targetUser) return c.json({ error: '휴가를 신청할 직원을 찾을 수 없습니다.' }, 404);
+  if (!isSummerVacationWindowOpen()) {
+    return c.json({ error: '여름 특별휴가는 매년 7~8월에만 신청할 수 있습니다. 9월부터는 사용이 불가합니다.' }, 400);
+  }
+
+  const summerDays = Number(body.summer_days);
+  const chainDays = Number(body.chain_days);
+  const summerReasonDays = summerVacationDays(body.summer_reason);
+  const reasonConnection = summerReasonConnection(body.summer_reason);
+  const annualReasonDays = chainDays > 0 ? summerConnectedAnnualDays(body.annual_reason) : null;
+  if (summerReasonDays !== summerDays) {
+    return c.json({ error: '여름 특별휴가 사유의 일수와 신청 일수가 일치하지 않습니다.' }, 400);
+  }
+  if (chainDays > 0 && (
+    !reasonConnection
+    || reasonConnection.days !== chainDays
+    || reasonConnection.position !== body.chain_position
+    || annualReasonDays !== chainDays
+  )) {
+    return c.json({ error: '여름 특별휴가와 연결 연차의 일수 또는 연결 방향이 일치하지 않습니다.' }, 400);
+  }
+  if (chainDays === 0 && (reasonConnection || body.annual_reason)) {
+    return c.json({ error: '연결 연차가 없는데 연결 정보가 포함되어 있습니다.' }, 400);
+  }
+
+  const year = String(body.start_date || '').slice(0, 4);
+  const holidays = await getLeaveHolidayDates(db, `${year}-01-01`, `${year}-12-31`);
+  let plan;
+  try {
+    plan = planSummerLeave({
+      startDate: body.start_date,
+      summerDays,
+      chainDays,
+      chainPosition: body.chain_position,
+      holidays,
+    });
+  } catch (err: any) {
+    return c.json({ error: err?.message || '여름휴가 날짜를 계산할 수 없습니다.' }, 400);
+  }
+
+  const allDates = [
+    plan.specialStartDate,
+    plan.specialEndDate,
+    plan.annualStartDate,
+    plan.annualEndDate,
+  ].filter((date): date is string => Boolean(date));
+  if (allDates.some((date) => !isJulyOrAugustDate(date))) {
+    return c.json({ error: '여름 특별휴가와 연결 연차는 모두 7~8월 안에서만 사용할 수 있습니다.' }, 400);
+  }
+  let inserted: SummerLeaveInsertResult;
+  try {
+    inserted = await insertSummerLeaveRecords(db, {
+      targetUserId,
+      branch: targetUser.branch || '',
+      department: targetUser.department || '',
+      year,
+      summerDays,
+      chainDays,
+      summerReason: body.summer_reason,
+      annualReason: body.annual_reason || '',
+      plan,
+    });
+  } catch (err: any) {
+    return c.json({ error: err?.message || '여름휴가를 저장하지 못했습니다.' }, 400);
+  }
+  const { specialId, annualId } = inserted;
+
+  const phones = await getLeaveApprovalNotifyPhones(db, targetUserId);
+  if (phones.length > 0) {
+    const notifications = [
+      sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
+        { user_name: targetUser.name, leave_type: '특별휴가', start_date: plan.specialStartDate, end_date: plan.specialEndDate, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
+        phones,
+        { db, relatedType: 'leave_request', relatedId: specialId },
+      ),
+    ];
+    if (annualId && plan.annualStartDate && plan.annualEndDate) {
+      notifications.push(sendAlimtalkByTemplate(
+        c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
+        { user_name: targetUser.name, leave_type: '연차', start_date: plan.annualStartDate, end_date: plan.annualEndDate, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
+        phones,
+        { db, relatedType: 'leave_request', relatedId: annualId },
+      ));
+    }
+    c.executionCtx.waitUntil(Promise.all(notifications).then(() => undefined).catch(() => {}));
+  }
+
+  return c.json({
+    success: true,
+    special: { id: specialId, start_date: plan.specialStartDate, end_date: plan.specialEndDate },
+    annual: annualId && plan.annualStartDate && plan.annualEndDate
+      ? { id: annualId, start_date: plan.annualStartDate, end_date: plan.annualEndDate }
+      : null,
+  });
+});
+
+// ───── 일반 휴가 신청 ─────
 leave.post('/request', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
@@ -901,21 +1130,120 @@ leave.post('/request', async (c) => {
     if (!isSummerVacationWindowOpen()) {
       return c.json({ error: '여름 특별휴가는 매년 7~8월에만 신청할 수 있습니다. 9월부터는 사용이 불가합니다.' }, 400);
     }
+    const requestedDays = summerVacationDays(body.reason);
+    if (!requestedDays) {
+      return c.json({ error: '여름 특별휴가 일수를 확인할 수 없습니다.' }, 400);
+    }
+    const year = String(body.start_date || '').slice(0, 4);
+    const holidays = await getLeaveHolidayDates(db, `${year}-01-01`, `${year}-12-31`);
+    const legacyConnection = summerReasonConnection(body.reason);
+    if (legacyConnection) {
+      let overallStartDate = body.start_date;
+      if (legacyConnection.position === 'before') {
+        try {
+          const annualEndDate = previousLeaveBusinessDay(body.start_date, holidays);
+          overallStartDate = subtractLeaveBusinessDays(annualEndDate, legacyConnection.days, holidays);
+        } catch (err: any) {
+          return c.json({ error: err?.message || '연결 연차 날짜를 계산할 수 없습니다.' }, 400);
+        }
+      }
+      let legacyPlan;
+      try {
+        legacyPlan = planSummerLeave({
+          startDate: overallStartDate,
+          summerDays: requestedDays,
+          chainDays: legacyConnection.days,
+          chainPosition: legacyConnection.position,
+          holidays,
+        });
+      } catch (err: any) {
+        return c.json({ error: err?.message || '여름휴가 날짜를 계산할 수 없습니다.' }, 400);
+      }
+      const legacyDates = [
+        legacyPlan.specialStartDate,
+        legacyPlan.specialEndDate,
+        legacyPlan.annualStartDate,
+        legacyPlan.annualEndDate,
+      ].filter((date): date is string => Boolean(date));
+      if (legacyDates.some((date) => !isJulyOrAugustDate(date))) {
+        return c.json({ error: '여름 특별휴가와 연결 연차는 모두 7~8월 안에서만 사용할 수 있습니다.' }, 400);
+      }
+      let inserted: SummerLeaveInsertResult;
+      try {
+        inserted = await insertSummerLeaveRecords(db, {
+          targetUserId,
+          branch: targetUser.branch || '',
+          department: targetUser.department || '',
+          year,
+          summerDays: requestedDays,
+          chainDays: legacyConnection.days,
+          summerReason: body.reason,
+          annualReason: `[여름휴가 연결] ${legacyConnection.days}일`,
+          plan: legacyPlan,
+        });
+      } catch (err: any) {
+        return c.json({ error: err?.message || '여름휴가를 저장하지 못했습니다.' }, 400);
+      }
+      const phones = await getLeaveApprovalNotifyPhones(db, targetUserId);
+      if (phones.length > 0) {
+        const notifications = [
+          sendAlimtalkByTemplate(
+            c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
+            { user_name: targetUser.name, leave_type: '특별휴가', start_date: legacyPlan.specialStartDate, end_date: legacyPlan.specialEndDate, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
+            phones,
+            { db, relatedType: 'leave_request', relatedId: inserted.specialId },
+          ),
+        ];
+        if (inserted.annualId && legacyPlan.annualStartDate && legacyPlan.annualEndDate) {
+          notifications.push(sendAlimtalkByTemplate(
+            c.env as unknown as Record<string, unknown>, 'LEAVE_REQUEST',
+            { user_name: targetUser.name, leave_type: '연차', start_date: legacyPlan.annualStartDate, end_date: legacyPlan.annualEndDate, branch: targetUser.branch || '', link: `${APP_URL}/leave` },
+            phones,
+            { db, relatedType: 'leave_request', relatedId: inserted.annualId },
+          ));
+        }
+        c.executionCtx.waitUntil(Promise.all(notifications).then(() => undefined).catch(() => {}));
+      }
+      return c.json({ success: true, id: inserted.specialId, atomic_summer_request: true });
+    }
+    try {
+      const plan = planSummerLeave({
+        startDate: body.start_date,
+        summerDays: requestedDays,
+        chainDays: 0,
+        chainPosition: 'after',
+        holidays,
+      });
+      body.start_date = plan.specialStartDate;
+      body.end_date = plan.specialEndDate;
+    } catch (err: any) {
+      return c.json({ error: err?.message || '여름휴가 날짜를 계산할 수 없습니다.' }, 400);
+    }
     if (!isJulyOrAugustDate(body.start_date) || !isJulyOrAugustDate(body.end_date)) {
       return c.json({ error: '여름 특별휴가는 사용 기간도 7~8월 안으로만 지정할 수 있습니다.' }, 400);
     }
-    const year = String(body.start_date || '').slice(0, 4);
     if (await hasActiveSummerVacationRequest(db, targetUserId, year)) {
       return c.json({ error: '여름 특별휴가는 인당 연 1회만 신청할 수 있습니다.' }, 400);
     }
   }
   if (requestedLeaveType === '연차' && String(body.reason || '').includes('[여름휴가 연결]')) {
-    if (!isSummerVacationWindowOpen()) {
-      return c.json({ error: '여름 특별휴가 연결 연차는 매년 7~8월에만 신청할 수 있습니다.' }, 400);
+    const existingConnectedAnnual = await db.prepare(`
+      SELECT id FROM leave_requests
+      WHERE user_id = ?
+        AND leave_type = '연차'
+        AND reason = ?
+        AND substr(start_date, 1, 4) = ?
+        AND status IN ('pending', 'approved', 'cancel_requested')
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).bind(targetUserId, body.reason, String(body.start_date || '').slice(0, 4)).first<{ id: string }>();
+    if (existingConnectedAnnual) {
+      return c.json({ success: true, id: existingConnectedAnnual.id, already_created: true });
     }
-    if (!isJulyOrAugustDate(body.start_date) || !isJulyOrAugustDate(body.end_date)) {
-      return c.json({ error: '여름 특별휴가 연결 연차는 7~8월 안으로만 지정할 수 있습니다.' }, 400);
-    }
+    return c.json({ error: '연결 연차는 여름 특별휴가와 함께 신청해야 합니다.' }, 400);
+  }
+  if (!isSummerVacation && !isLeaveDateRange(body.start_date, body.end_date)) {
+    return c.json({ error: '휴가 종료일은 시작일보다 빠를 수 없습니다.' }, 400);
   }
 
   // 차감시간 계산. days는 기존 이력 호환용으로만 함께 저장한다.
@@ -954,11 +1282,20 @@ leave.post('/request', async (c) => {
   // 특별휴가는 연차 차감 안 함 → 잔여 확인 불필요
   if (requestedLeaveType === '특별휴가') {
     const id = crypto.randomUUID();
-    await db.prepare(`INSERT INTO leave_requests
-      (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
-        deductHours, days, body.reason || '', targetUser.branch || '', targetUser.department || '', halfDayPeriod).run();
+    try {
+      await db.prepare(`INSERT INTO leave_requests
+        (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period, request_group_id, summer_request_year)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
+          deductHours, days, body.reason || '', targetUser.branch || '', targetUser.department || '', halfDayPeriod,
+          isSummerVacation ? crypto.randomUUID() : null,
+          isSummerVacation ? String(body.start_date || '').slice(0, 4) : null).run();
+    } catch (err: any) {
+      if (/UNIQUE constraint failed/i.test(String(err?.message || err || ''))) {
+        return c.json({ error: '동일한 휴가 신청이 이미 처리 중입니다.' }, 400);
+      }
+      throw err;
+    }
 
     const phones = await getLeaveApprovalNotifyPhones(db, targetUserId);
     if (phones.length > 0) {
