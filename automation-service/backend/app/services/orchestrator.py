@@ -37,7 +37,7 @@ from . import briefing_rights
 from .selenium_driver import (
     create_driver, login_myauction, click_tab_safe,
     switch_to_new_window, wait_document_ready, safe_click, navigate_with_retry,
-    account_profile_dir, log_detail_page_diagnostics, _dismiss_alert,
+    account_profile_dir, keep_browser_hidden, log_detail_page_diagnostics, _dismiss_alert,
 )
 
 logger = logging.getLogger(__name__)
@@ -564,6 +564,7 @@ def _open_public_data_page(driver, link_el, timeout: int = 15) -> str:
         new_handles = list(set(driver.window_handles) - before_set)
         if new_handles:
             driver.switch_to.window(new_handles[0])
+            keep_browser_hidden(driver)
             wait_document_ready(driver, timeout=timeout)
             logger.info(f"공시자료 새 창 열림: {driver.current_url}")
             return new_handles[0]

@@ -24,7 +24,7 @@ from selenium.common.exceptions import TimeoutException
 
 from ..core.config import CAPTURE_DIR, ensure_dirs
 from ..core.utils import track_file, ensure_dir_for_file
-from .selenium_driver import safe_click, wait_document_ready, switch_to_new_window
+from .selenium_driver import keep_browser_hidden, safe_click, wait_document_ready, switch_to_new_window
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +248,7 @@ def open_court_guide_popup(driver, timeout=15):
         raise RuntimeError("관할법원안내 팝업 핸들을 찾지 못했습니다.")
 
     driver.switch_to.window(popup_handle)
+    keep_browser_hidden(driver)
     WebDriverWait(driver, 10).until(
         lambda d: "입찰" in d.page_source or "시간" in d.page_source
     )
@@ -353,26 +354,33 @@ def capture_kakaomap(driver, out_path: str):
 
 
 def open_kakao_and_capture(driver, popup_handle, link_text: str, out_path: str):
-    before_tabs = list(driver.window_handles)
-
     xpath = (
         f"//a[contains(@href,'map.kakao.com') and "
         f"contains(normalize-space(.), '{link_text}')]"
     )
+    parent_url = driver.current_url
+    map_url = ""
+    navigated = False
     end = time.time() + 15
     while time.time() < end:
         try:
             driver.switch_to.default_content()
             el = driver.find_element(By.XPATH, xpath)
-            safe_click(driver, el)
+            map_url = (el.get_attribute("href") or "").strip()
+            if not map_url:
+                raise RuntimeError("카카오맵 직접 이동 주소가 없습니다.")
+            driver.get(map_url)
+            wait_document_ready(driver, timeout=20)
+            navigated = True
             break
         except Exception:
             time.sleep(0.3)
-
-    new_handle = switch_to_new_window(driver, before_tabs, timeout=20)
+    if not navigated:
+        raise RuntimeError("카카오맵 주소를 찾지 못했습니다.")
     # headless에서는 maximize가 안 먹히므로 항상 크기 강제 설정
     try:
         driver.set_window_size(1920, 1080)
+        keep_browser_hidden(driver)
     except Exception:
         pass
     time.sleep(2)
@@ -381,8 +389,11 @@ def open_kakao_and_capture(driver, popup_handle, link_text: str, out_path: str):
         capture_kakaomap(driver, out_path)
         return out_path
     finally:
-        driver.close()
         driver.switch_to.window(popup_handle)
+        if driver.current_url != parent_url:
+            driver.get(parent_url)
+            wait_document_ready(driver, timeout=20)
+        keep_browser_hidden(driver)
 
 
 # ============================================================
@@ -419,6 +430,7 @@ def capture_land_use_plan(driver, out_path: str, timeout=20):
     try:
         if new_handle:
             driver.switch_to.window(new_handle)
+            keep_browser_hidden(driver)
         wait_document_ready(driver, timeout=30)
         time.sleep(1)
 
@@ -944,6 +956,7 @@ def capture_building_overview(driver, out_path: str, timeout=15):
         raise RuntimeError("건물개황도 새 탭이 열리지 않았습니다.")
 
     driver.switch_to.window(new_handle)
+    keep_browser_hidden(driver)
     wait_document_ready(driver, timeout=20)
     time.sleep(1.5)
 

@@ -45,6 +45,7 @@ from .selenium_driver import (
     account_profile_dir,
     click_tab_safe,
     create_driver,
+    keep_browser_hidden,
     log_detail_page_diagnostics,
     login_myauction,
     navigate_with_retry,
@@ -1170,6 +1171,7 @@ def collect_status_survey_text(driver, safe_task_id: str) -> str:
             if new_handles:
                 opened_handle = new_handles[0]
                 driver.switch_to.window(opened_handle)
+                keep_browser_hidden(driver)
                 wait_document_ready(driver, timeout=15)
                 break
             time.sleep(0.2)
@@ -1261,6 +1263,7 @@ def collect_case_document_text(driver) -> str:
             if new_handles:
                 opened_handle = new_handles[0]
                 driver.switch_to.window(opened_handle)
+                keep_browser_hidden(driver)
                 wait_document_ready(driver, timeout=15)
                 break
             time.sleep(0.2)
@@ -1368,6 +1371,7 @@ def collect_sale_spec_text_and_images(driver, safe_task_id: str, deadline: Optio
             if new_handles:
                 opened_handle = new_handles[0]
                 driver.switch_to.window(opened_handle)
+                keep_browser_hidden(driver)
                 wait_document_ready(driver, timeout=15)
                 break
             time.sleep(0.2)

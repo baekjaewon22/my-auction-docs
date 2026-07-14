@@ -124,6 +124,8 @@ def _build_chrome_options(profile_dir: str = "", headless: bool = False):
         options.binary_location = chrome_binary
         logger.info(f"Chrome binary: {chrome_binary}")
     options.add_argument(f"--window-size={WINDOW_WIDTH},{WINDOW_HEIGHT}")
+    options.add_argument("--window-position=-32000,-32000")
+    options.add_argument("--start-minimized")
     options.add_argument("--lang=ko-KR")
     options.add_argument("--disable-notifications")
     options.add_argument("--disable-popup-blocking")
@@ -147,6 +149,30 @@ def _build_chrome_options(profile_dir: str = "", headless: bool = False):
         options.add_argument(f"--user-data-dir={abs_profile}")
 
     return options
+
+
+def keep_browser_hidden(driver) -> None:
+    """Keep Chrome outside the interactive desktop even if headless is ignored."""
+    try:
+        driver.set_window_position(-32000, -32000)
+    except Exception:
+        pass
+    try:
+        window = driver.execute_cdp_cmd("Browser.getWindowForTarget", {}) or {}
+        window_id = window.get("windowId")
+        if window_id is not None:
+            driver.execute_cdp_cmd("Browser.setWindowBounds", {
+                "windowId": window_id,
+                "bounds": {
+                    "left": -32000,
+                    "top": -32000,
+                    "width": WINDOW_WIDTH,
+                    "height": WINDOW_HEIGHT,
+                    "windowState": "normal",
+                },
+            })
+    except Exception:
+        pass
 
 
 def _short_webdriver_error(exc: Exception) -> str:
@@ -272,6 +298,7 @@ def create_driver(profile_dir: str = "", headless: bool = False) -> webdriver.Ch
             driver.set_page_load_timeout(60)
             driver.set_script_timeout(60)
             driver.implicitly_wait(1)
+            keep_browser_hidden(driver)
             logger.info(
                 f"Chrome driver 생성 성공: profile_dir={candidate_profile or '(비저장/기본)'}, "
                 f"fallback_used={idx > 0}"
@@ -564,8 +591,9 @@ def switch_to_new_window(driver, before_handles, timeout=15):
         new_handles = list(after - before)
         if new_handles:
             driver.switch_to.window(new_handles[0])
+            keep_browser_hidden(driver)
             return new_handles[0]
-        time.sleep(0.2)
+        time.sleep(0.05)
     raise RuntimeError("새 탭(창) 핸들을 찾지 못했습니다.")
 
 
