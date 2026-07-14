@@ -231,3 +231,7 @@ automation-service/**/*.pyc
 
 ### Local test and inspection artifacts ###
 .tmp/
+
+### Local AI collaboration review artifacts ###
+.ai/reviews/*
+!.ai/reviews/.gitkeep

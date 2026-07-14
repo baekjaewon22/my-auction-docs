@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "needs_changes"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "high", "medium", "low"]
+          },
+          "category": {
+            "type": "string",
+            "enum": ["correctness", "regression", "security", "reliability", "testing", "maintainability"]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": ["integer", "null"]
+          },
+          "title": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          }
+        },
+        "required": ["severity", "category", "file", "line", "title", "evidence", "recommendation"]
+      }
+    },
+    "test_gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": ["verdict", "summary", "findings", "test_gaps"]
+}
+
