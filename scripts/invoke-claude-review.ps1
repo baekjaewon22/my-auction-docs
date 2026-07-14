@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$BaseRef = "HEAD",
+  [string]$BaseRef = "",
   [string]$OutputPath = "",
   [switch]$CheckOnly,
   [switch]$AllowExternalDisclosure,
@@ -93,6 +93,27 @@ $codexVersion = if ($codexCommand) { (& $codexCommand.Source --version).Trim() }
 
 Push-Location $repoRoot
 try {
+  if (!$BaseRef) {
+    $latestReviewPath = Join-Path $repoRoot ".ai\reviews\latest-claude-review.json"
+    if (Test-Path -LiteralPath $latestReviewPath) {
+      try {
+        $latestReport = Get-Content -LiteralPath $latestReviewPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $previousHead = [string]$latestReport.head_commit
+        if ($previousHead) {
+          & git merge-base --is-ancestor $previousHead HEAD *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $BaseRef = $previousHead
+          }
+        }
+      } catch {
+        Write-Warning "The latest Claude review marker could not be read; falling back to the previous commit."
+      }
+    }
+    if (!$BaseRef) {
+      $BaseRef = "HEAD~1"
+    }
+  }
+
   & git rev-parse --verify "$BaseRef^{commit}" *> $null
   if ($LASTEXITCODE -ne 0) {
     throw "Git base reference was not found: $BaseRef"
@@ -187,6 +208,7 @@ Inspect untracked files listed in Git status with the read-only tools when they 
     generated_at = (Get-Date).ToString("o")
     repository = $repoRoot
     base_ref = $BaseRef
+    head_commit = (& git rev-parse HEAD).Trim()
     codex_version = $codexVersion
     claude_version = $claudeVersion
     review = $review
