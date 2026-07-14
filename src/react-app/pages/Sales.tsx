@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, setSourcePage } from '../api';
 import { useAuthStore } from '../store';
@@ -304,7 +304,23 @@ export default function Sales() {
   const [hoveredMemoRow, setHoveredMemoRow] = useState<{ id: string; x: number; y: number } | null>(null);
   // 상세 팝업
   const [detailRecord, setDetailRecord] = useState<SalesRecord | null>(null);
+  const detailRecordId = detailRecord?.id;
+  const detailScrollYRef = useRef(0);
+  const closingDetailRef = useRef(false);
+
+  const closeDetail = () => {
+    if (closingDetailRef.current) return;
+    closingDetailRef.current = true;
+
+    // X를 누를 때 포커스 중인 입력값의 기존 onBlur 저장은 먼저 실행한다.
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) activeElement.blur();
+
+    setDetailRecord(null);
+  };
+
   const openDetail = async (r: SalesRecord) => {
+    closingDetailRef.current = false;
     // 총무/관리자면 admin_memos도 로드
     if (isAccountant || isMaster) {
       try {
@@ -316,6 +332,20 @@ export default function Sales() {
       setDetailRecord(r);
     }
   };
+
+  useEffect(() => {
+    if (!detailRecordId) return;
+
+    detailScrollYRef.current = window.scrollY;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      const scrollY = detailScrollYRef.current;
+      window.requestAnimationFrame(() => window.scrollTo({ top: scrollY, left: 0, behavior: 'auto' }));
+    };
+  }, [detailRecordId]);
 
   // 폼
   const [formType, setFormType] = useState('계약');
@@ -2180,7 +2210,21 @@ export default function Sales() {
           <div className="journal-popup" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480 }}>
             <div className="journal-popup-header">
               <h3 style={{ margin: 0 }}>매출 상세</h3>
-              <button className="btn-close" onClick={() => setDetailRecord(null)}>×</button>
+              <button
+                type="button"
+                className="btn-close"
+                aria-label="매출 상세 닫기"
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  closeDetail();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeDetail();
+                }}
+              >×</button>
             </div>
             <div style={{ padding: '16px 20px' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
