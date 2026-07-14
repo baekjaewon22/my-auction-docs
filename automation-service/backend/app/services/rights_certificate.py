@@ -978,13 +978,14 @@ def _tenant_ocr_text_indicates_no_tenants(text: str) -> bool:
     return False
 
 
-def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None) -> dict:
+def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None, deadline: Optional[float] = None) -> dict:
     if not driver or not pytesseract:
         return {}
 
     safe_task_id = re.sub(r"[^0-9A-Za-z._-]", "_", task_id or datetime.now().strftime("%Y%m%d_%H%M%S"))
     image_paths = []
     texts = []
+    timed_out = False
     for h3_text, suffix in (
         ("건물 등기부현황", "building_registry"),
         ("토지 등기부현황", "land_registry"),
@@ -998,18 +999,25 @@ def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None) -> dict
             continue
         image_paths.extend(captured)
         for image_path in captured:
-            text = ocr_image_to_text(image_path)
+            remaining = (deadline - time.monotonic()) if deadline else 30
+            if remaining <= 0:
+                timed_out = True
+                break
+            text = ocr_image_to_text(image_path, timeout_seconds=min(30, max(1, int(remaining))))
             if text:
                 texts.append(text)
+        if timed_out:
+            break
 
     raw_text = normalize_ocr_text("\n".join(texts))
     if not raw_text:
-        return {"rights_ocr_images": image_paths}
+        return {"rights_ocr_images": image_paths, "_timed_out": timed_out}
 
     return {
         "rights": parse_rights_from_ocr(raw_text),
         "rights_ocr_text": raw_text,
         "rights_ocr_images": image_paths,
+        "_timed_out": timed_out,
     }
 
 
@@ -1052,11 +1060,11 @@ def _guess_right_creditor_from_text(line: str, right_type: str) -> str:
     return ""
 
 
-def extract_tenant_context_by_ocr(driver, task_id: Optional[str] = None) -> dict:
+def extract_tenant_context_by_ocr(driver, task_id: Optional[str] = None, deadline: Optional[float] = None) -> dict:
     if not driver or not pytesseract:
         return {}
 
-    sale_spec_context = extract_sale_spec_tenant_context_by_ocr(driver, task_id=task_id)
+    sale_spec_context = extract_sale_spec_tenant_context_by_ocr(driver, task_id=task_id, deadline=deadline)
     if sale_spec_context.get("tenants") or _ocr_text_has_tenant_signals(sale_spec_context.get("tenant_ocr_text", "")):
         return sale_spec_context
 
@@ -1069,39 +1077,50 @@ def extract_tenant_context_by_ocr(driver, task_id: Optional[str] = None) -> dict
         return {}
 
     texts = []
+    timed_out = False
     for image_path in image_paths:
-        text = ocr_image_to_text(image_path)
+        remaining = (deadline - time.monotonic()) if deadline else 30
+        if remaining <= 0:
+            timed_out = True
+            break
+        text = ocr_image_to_text(image_path, timeout_seconds=min(30, max(1, int(remaining))))
         if text:
             texts.append(text)
 
     raw_text = normalize_ocr_text("\n".join(texts))
     if not raw_text:
-        return {"tenant_ocr_images": image_paths}
+        return {"tenant_ocr_images": image_paths, "_timed_out": timed_out}
 
     return {
         "tenants": parse_tenants_from_ocr(raw_text),
         "tenant_source": "tenant_status_ocr",
         "tenant_ocr_text": raw_text,
         "tenant_ocr_images": image_paths,
+        "_timed_out": timed_out,
     }
 
 
-def extract_sale_spec_tenant_context_by_ocr(driver, task_id: Optional[str] = None) -> dict:
+def extract_sale_spec_tenant_context_by_ocr(driver, task_id: Optional[str] = None, deadline: Optional[float] = None) -> dict:
     safe_task_id = re.sub(r"[^0-9A-Za-z._-]", "_", task_id or datetime.now().strftime("%Y%m%d_%H%M%S"))
-    pdf_text, image_paths = collect_sale_spec_text_and_images(driver, safe_task_id)
+    pdf_text, image_paths = collect_sale_spec_text_and_images(driver, safe_task_id, deadline=deadline)
     if not image_paths and not pdf_text:
         return {}
 
     pdf_text = normalize_ocr_text(pdf_text)
     texts = []
+    timed_out = False
     for image_path in image_paths:
-        text = ocr_image_to_text(image_path)
+        remaining = (deadline - time.monotonic()) if deadline else 30
+        if remaining <= 0:
+            timed_out = True
+            break
+        text = ocr_image_to_text(image_path, timeout_seconds=min(30, max(1, int(remaining))))
         if text:
             texts.append(text)
 
     raw_text = normalize_ocr_text("\n".join([pdf_text, *texts]))
     if not raw_text:
-        return {"tenant_source": "sale_spec_ocr", "tenant_ocr_images": image_paths}
+        return {"tenant_source": "sale_spec_ocr", "tenant_ocr_images": image_paths, "_timed_out": timed_out}
 
     tenants = parse_sale_spec_tenants_from_pdf_text(pdf_text) or parse_sale_spec_tenants_from_ocr(raw_text)
     sale_spec_context = parse_sale_spec_document_context(pdf_text or raw_text)
@@ -1118,6 +1137,7 @@ def extract_sale_spec_tenant_context_by_ocr(driver, task_id: Optional[str] = Non
         "sale_spec_base_right": sale_spec_context.get("baseRight") or {},
         "sale_spec_dividend_deadline": dividend_deadline,
         "sale_spec_remarks": sale_spec_context.get("remarks") or "",
+        "_timed_out": timed_out,
     }
 
 
@@ -1332,7 +1352,7 @@ def _dedupe_text_lines(lines: list[str]) -> list[str]:
     return result
 
 
-def collect_sale_spec_text_and_images(driver, safe_task_id: str) -> tuple[str, list[str]]:
+def collect_sale_spec_text_and_images(driver, safe_task_id: str, deadline: Optional[float] = None) -> tuple[str, list[str]]:
     base_handle = driver.current_window_handle
     base_url = driver.current_url
     before_handles = set(driver.window_handles)
@@ -1371,7 +1391,15 @@ def collect_sale_spec_text_and_images(driver, safe_task_id: str) -> tuple[str, l
             return "", _capture_current_page_as_image(driver, safe_task_id)
 
         pdf_text = extract_pdf_text(pdf_path)
-        total = pdf_processor.pdf_to_images(pdf_path, image_pattern, dpi=300)
+        remaining = (deadline - time.monotonic()) if deadline else 90
+        if remaining <= 0:
+            return pdf_text, []
+        total = pdf_processor.pdf_to_images(
+            pdf_path,
+            image_pattern,
+            dpi=300,
+            timeout_seconds=min(90, max(1, int(remaining))),
+        )
         return pdf_text, [image_pattern.format(page=i) for i in range(1, total + 1) if os.path.exists(image_pattern.format(page=i))]
     except Exception as e:
         logger.warning(f"매각물건명세서 이미지 생성 실패: {e}")
@@ -1469,7 +1497,7 @@ def extract_pdf_text(pdf_path: str) -> str:
         return ""
 
 
-def ocr_image_to_text(image_path: str) -> str:
+def ocr_image_to_text(image_path: str, timeout_seconds: int = 30) -> str:
     if not pytesseract:
         return ""
     try:
@@ -1478,9 +1506,12 @@ def ocr_image_to_text(image_path: str) -> str:
         img = ImageEnhance.Contrast(img).enhance(1.8)
         img = ImageOps.autocontrast(img)
         try:
-            return pytesseract.image_to_string(img, lang="kor+eng", config="--psm 6")
-        except Exception:
-            return pytesseract.image_to_string(img, config="--psm 6")
+            return pytesseract.image_to_string(img, lang="kor+eng", config="--psm 6", timeout=timeout_seconds)
+        except RuntimeError as exc:
+            if "timeout" in str(exc).lower():
+                logger.warning(f"이미지 OCR {timeout_seconds}초 제한시간 초과({image_path})")
+                return ""
+            return pytesseract.image_to_string(img, config="--psm 6", timeout=timeout_seconds)
     except Exception as e:
         logger.warning(f"이미지 텍스트 확인 실패({image_path}): {e}")
         return ""

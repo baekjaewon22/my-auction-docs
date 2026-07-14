@@ -740,9 +740,20 @@ async def generate_report(
         special_opinion = ""
         try:
             emit(1, "사이트 파싱", "권리분석 정보 확인 중...", percent=18)
-            rights_context = briefing_rights.extract_context(soup, driver=driver, task_id=task_id)
+            rights_context = briefing_rights.extract_context(
+                soup,
+                driver=driver,
+                task_id=task_id,
+                timeout_seconds=180,
+                progress_callback=lambda message, percent: emit(
+                    1, "사이트 파싱", message, percent=percent
+                ),
+            )
             if rights_context:
                 data.update(rights_context)
+            rights_warnings = data.pop("rights_extraction_warnings", []) or []
+            if rights_warnings:
+                diagnostic_reasons["rights-extraction"] = " / ".join(str(item) for item in rights_warnings)[:500]
             briefing_rights_data = briefing_rights.build_opinion_data(data)
             rights_analysis_opinion = briefing_opinion.build_rights_analysis_opinion(briefing_rights_data)
             special_opinion = briefing_opinion.build_special_opinion(briefing_rights_data)
@@ -1191,7 +1202,17 @@ async def generate_report(
                 diagnostic_reasons.get("planner") or "자료는 수신했지만 PPT 삽입 위치를 찾지 못함",
             )
         else:
-            add_diagnostic(f"planner:{calculator}", label, "error", "브라우저에서 이미지 자료가 전달되지 않음")
+            add_diagnostic(f"planner:{calculator}", label, "skipped", "선택 자료로 입력되지 않아 생략")
+
+    if diagnostic_reasons.get("rights-extraction"):
+        add_diagnostic(
+            "rights-extraction",
+            "권리분석 원자료 OCR",
+            "warning",
+            diagnostic_reasons["rights-extraction"],
+        )
+    else:
+        add_diagnostic("rights-extraction", "권리분석 원자료 OCR", "ok", "제한시간 내 확인 완료")
 
     if checklist_match_count and checklist_applied:
         add_diagnostic("checklist", "물건별 체크리스트", "ok", f"{checklist_match_count}개 항목 매칭 및 특이사항 반영 완료")

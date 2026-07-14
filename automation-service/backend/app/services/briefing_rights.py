@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 from . import rights_certificate as rc
 from .special_situations import (
@@ -17,6 +19,8 @@ from .special_situations import (
     build_special_issue_lines,
     dedupe_lines,
 )
+
+logger = logging.getLogger(__name__)
 
 
 RISK_ORDER = {"상": 0, "중": 1, "하": 2}
@@ -113,15 +117,72 @@ SPECIAL_SITUATION_RULES = [
 ]
 
 
-def extract_context(soup, driver=None, task_id: Optional[str] = None) -> dict:
+def extract_context(
+    soup,
+    driver=None,
+    task_id: Optional[str] = None,
+    progress_callback: Optional[Callable[[str, float], None]] = None,
+    timeout_seconds: int = 180,
+) -> dict:
     """브리핑자료에서 사용할 권리분석 원자료를 추출한다."""
+    started_at = time.monotonic()
+    deadline = started_at + max(30, timeout_seconds)
+    warnings: list[str] = []
+
+    def report(message: str, percent: float) -> None:
+        if progress_callback:
+            try:
+                progress_callback(message, percent)
+            except Exception:
+                pass
+
+    def has_budget(label: str) -> bool:
+        if time.monotonic() - started_at < max(30, timeout_seconds):
+            return True
+        warning = f"권리분석 전체 제한시간({timeout_seconds}초) 초과로 {label}을(를) 생략했습니다."
+        warnings.append(warning)
+        logger.warning(warning)
+        return False
+
     selector_fields = rc._extract_selector_fields(soup)
     rights_selector_text = _extract_rights_selector_text(soup)
-    rights_ocr_context = rc.extract_rights_context_by_ocr(driver, task_id=task_id) if driver else {}
+    rights_ocr_context = {}
+    if driver and has_budget("등기 권리정보 OCR"):
+        report("등기 권리정보 OCR 확인 중...", 18.2)
+        try:
+            rights_ocr_context = rc.extract_rights_context_by_ocr(driver, task_id=task_id, deadline=deadline)
+            if rights_ocr_context.pop("_timed_out", False):
+                warnings.append("등기 권리정보 OCR이 전체 제한시간에 도달해 나머지 페이지를 생략했습니다.")
+        except Exception as exc:
+            warnings.append(f"등기 권리정보 OCR 생략: {exc}")
+            logger.warning(warnings[-1])
     rights = rc.merge_rights(rc._extract_rights(soup), rights_ocr_context.get("rights") or [])
-    tenant_context = rc.extract_tenant_context_by_ocr(driver, task_id=task_id) if driver else {}
-    status_survey_context = rc.extract_status_survey_context_by_ocr(driver, task_id=task_id) if driver else {}
-    case_document_text = rc.collect_case_document_text(driver) if driver else ""
+    tenant_context = {}
+    if driver and has_budget("매각물건명세서·임차인 OCR"):
+        report("매각물건명세서·임차인 OCR 확인 중...", 18.7)
+        try:
+            tenant_context = rc.extract_tenant_context_by_ocr(driver, task_id=task_id, deadline=deadline)
+            if tenant_context.pop("_timed_out", False):
+                warnings.append("매각물건명세서·임차인 OCR이 전체 제한시간에 도달해 나머지 페이지를 생략했습니다.")
+        except Exception as exc:
+            warnings.append(f"매각물건명세서·임차인 OCR 생략: {exc}")
+            logger.warning(warnings[-1])
+    status_survey_context = {}
+    if driver and has_budget("현황조사서 확인"):
+        report("현황조사서 확인 중...", 19.2)
+        try:
+            status_survey_context = rc.extract_status_survey_context_by_ocr(driver, task_id=task_id)
+        except Exception as exc:
+            warnings.append(f"현황조사서 확인 생략: {exc}")
+            logger.warning(warnings[-1])
+    case_document_text = ""
+    if driver and has_budget("사건 관련 문서 확인"):
+        report("사건 관련 문서 확인 중...", 19.6)
+        try:
+            case_document_text = rc.collect_case_document_text(driver)
+        except Exception as exc:
+            warnings.append(f"사건 관련 문서 확인 생략: {exc}")
+            logger.warning(warnings[-1])
 
     context = {
         "rights": rights,
@@ -141,6 +202,7 @@ def extract_context(soup, driver=None, task_id: Optional[str] = None) -> dict:
         "auction_applicant_creditors": rc._extract_auction_applicant_creditors(soup, selector_fields.get("case_number") or ""),
         "management_fee": rc._extract_management_fee(soup),
         "market_data": rc._extract_market_data(soup),
+        "rights_extraction_warnings": warnings,
     }
     if rights_selector_text:
         context["rights_selector_text"] = rights_selector_text

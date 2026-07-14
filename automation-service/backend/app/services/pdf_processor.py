@@ -95,7 +95,7 @@ def is_valid_pdf(pdf_path: str) -> bool:
 # ============================================================
 # PDF → 이미지 변환
 # ============================================================
-def pdf_to_images(pdf_path: str, img_pattern: str, dpi: int = 300) -> int:
+def pdf_to_images(pdf_path: str, img_pattern: str, dpi: int = 300, timeout_seconds: int = 90) -> int:
     if not pdf_path or not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
         logger.error("PDF 파일이 없거나 비어있습니다.")
         return 0
@@ -106,7 +106,7 @@ def pdf_to_images(pdf_path: str, img_pattern: str, dpi: int = 300) -> int:
         except OSError:
             pass
 
-    pages = convert_from_path(pdf_path, dpi=dpi, poppler_path=POPPLER_PATH)
+    pages = convert_from_path(pdf_path, dpi=dpi, poppler_path=POPPLER_PATH, timeout=timeout_seconds)
     total = 0
     for idx, page in enumerate(pages, start=1):
         filename = img_pattern.format(page=idx)
@@ -136,7 +136,7 @@ def _to_landscape_canvas(img: Image.Image, dpi: int = 200) -> Image.Image:
 
 
 def pdf_to_landscape_pdf(src_pdf: str, out_pdf: str, dpi: int = 200) -> str:
-    pages = convert_from_path(src_pdf, dpi=dpi, poppler_path=POPPLER_PATH)
+    pages = convert_from_path(src_pdf, dpi=dpi, poppler_path=POPPLER_PATH, timeout=90)
     rgb_pages = [_to_landscape_canvas(p, dpi) for p in pages]
     first, rest = rgb_pages[0], rgb_pages[1:]
     first.save(out_pdf, save_all=True, append_images=rest)
@@ -145,7 +145,7 @@ def pdf_to_landscape_pdf(src_pdf: str, out_pdf: str, dpi: int = 200) -> str:
 
 def pdf_last_page_to_landscape(src_pdf: str, out_pdf: str, dpi: int = 200) -> str:
     """마지막 페이지만 가로 캔버스로 변환"""
-    pages = convert_from_path(src_pdf, dpi=dpi, poppler_path=POPPLER_PATH)
+    pages = convert_from_path(src_pdf, dpi=dpi, poppler_path=POPPLER_PATH, timeout=90)
     if not pages:
         raise RuntimeError("PDF 페이지를 읽지 못했습니다(0 pages).")
     canvas = _to_landscape_canvas(pages[-1], dpi)
@@ -159,6 +159,7 @@ def pdf_pages_from_to_landscape(src_pdf: str, out_pdf: str, start_0base: int, dp
     pages = convert_from_path(
         src_pdf, dpi=dpi, poppler_path=POPPLER_PATH,
         first_page=start_0base + 1,
+        timeout=90,
     )
     if not pages:
         raise RuntimeError("지정 범위 페이지 변환 실패")
@@ -275,7 +276,7 @@ def find_appraisal_map_pages(pdf_path: str, ocr_zoom: float = 4.0):
         for roi in _title_rois_for_ocr(img):
             try:
                 ocr_text = pytesseract.image_to_string(
-                    roi, lang="kor+eng", config="--oem 3 --psm 6"
+                    roi, lang="kor+eng", config="--oem 3 --psm 6", timeout=30
                 ) or ""
             except Exception:
                 ocr_text = ""
@@ -466,7 +467,7 @@ def find_building_overview_page(pdf_path: str, ocr_zoom: float = 4.0) -> int:
             for roi in _title_rois_for_ocr(img):
                 try:
                     ocr_text = pytesseract.image_to_string(
-                        roi, lang="kor+eng", config="--oem 3 --psm 6"
+                        roi, lang="kor+eng", config="--oem 3 --psm 6", timeout=30
                     ) or ""
                 except Exception:
                     continue
