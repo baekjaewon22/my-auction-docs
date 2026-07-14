@@ -76,3 +76,6 @@ test('역전된 날짜 범위는 유효하지 않고 근무일 수가 0이다', 
   assert.equal(countLeaveBusinessDays('2026-07-21', '2026-07-20', holidays), 0);
 });
 
+test('주말이나 공휴일만 선택한 기간은 사용 가능한 근무일이 0일이다', () => {
+  assert.equal(countLeaveBusinessDays('2026-07-17', '2026-07-19', holidays), 0);
+});

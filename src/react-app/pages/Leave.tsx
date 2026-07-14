@@ -462,6 +462,7 @@ export default function Leave() {
   })();
   const summerRemaining = Math.max(0, SUMMER_TOTAL_DAYS - summerUsed);
   const summerBlocked = !summerVacationOpen || summerAlreadyRequested || summerRemaining === 0;
+  const holidayRequiredForSubmit = formType === '특별휴가' && specialSubtype === '여름휴가';
 
   // 차감시간 미리보기
   const previewHours = (): number => {
@@ -981,7 +982,7 @@ export default function Leave() {
                 <button
                   className="btn btn-primary"
                   onClick={handleSubmit}
-                  disabled={submitting || holidayLoading || Boolean(holidayError) || (formType === '특별휴가' && specialSubtype === '여름휴가' && summerBlocked)}
+                  disabled={submitting || (holidayRequiredForSubmit && (holidayLoading || Boolean(holidayError) || summerBlocked))}
                   style={{ flex: 1 }}
                 >
                   {submitting ? '제출중...' : '신청하기'}

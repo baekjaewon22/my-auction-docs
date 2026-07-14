@@ -20,6 +20,58 @@ leave.use('*', authMiddleware);
 // ───── 헬퍼 ─────
 const HOURS_PER_DAY = 8;
 const HALF_DAY_PERIODS = new Set(['오전', '오후']);
+const ACTIVE_EXACT_LEAVE_INDEX = 'uq_leave_requests_active_exact';
+const ACTIVE_SUMMER_LEAVE_INDEX = 'uq_leave_requests_active_summer_year';
+
+function isUniqueConstraintError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err || '');
+  return /UNIQUE constraint failed/i.test(message);
+}
+
+async function ensureActiveLeaveRequestIndexes(db: D1Database): Promise<void> {
+  const indexes = await db.prepare('PRAGMA index_list(leave_requests)').all<{ name: string }>();
+  const names = new Set((indexes.results || []).map((index) => index.name));
+
+  if (!names.has(ACTIVE_EXACT_LEAVE_INDEX)) {
+    const duplicate = await db.prepare(`
+      SELECT 1
+      FROM leave_requests
+      WHERE status IN ('pending', 'approved', 'cancel_requested')
+      GROUP BY user_id, leave_type, start_date, end_date, COALESCE(half_day_period, '')
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `).first();
+    if (duplicate) {
+      throw new Error('활성 휴가 중복 데이터가 있어 중복 방지 인덱스를 생성할 수 없습니다. 관리자에게 데이터 정리를 요청해주세요.');
+    }
+    await db.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ${ACTIVE_EXACT_LEAVE_INDEX}
+      ON leave_requests (user_id, leave_type, start_date, end_date, COALESCE(half_day_period, ''))
+      WHERE status IN ('pending', 'approved', 'cancel_requested')
+    `).run();
+  }
+
+  if (!names.has(ACTIVE_SUMMER_LEAVE_INDEX)) {
+    const duplicate = await db.prepare(`
+      SELECT 1
+      FROM leave_requests
+      WHERE summer_request_year IS NOT NULL
+        AND status IN ('pending', 'approved', 'cancel_requested')
+      GROUP BY user_id, summer_request_year
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `).first();
+    if (duplicate) {
+      throw new Error('연도별 여름휴가 중복 데이터가 있어 중복 방지 인덱스를 생성할 수 없습니다. 관리자에게 데이터 정리를 요청해주세요.');
+    }
+    await db.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ${ACTIVE_SUMMER_LEAVE_INDEX}
+      ON leave_requests (user_id, summer_request_year)
+      WHERE summer_request_year IS NOT NULL
+        AND status IN ('pending', 'approved', 'cancel_requested')
+    `).run();
+  }
+}
 
 function normalizeLeaveType(type: string): '연차' | '반차' | '시간차' | '특별휴가' {
   if (type === '월차') return '연차';
@@ -45,6 +97,7 @@ async function ensureLeaveRequestSchema(db: D1Database): Promise<void> {
   if (!names.has('summer_request_year')) {
     await db.prepare('ALTER TABLE leave_requests ADD COLUMN summer_request_year TEXT').run();
   }
+  await ensureActiveLeaveRequestIndexes(db);
 }
 
 async function ensureAnnualLeaveSchema(db: D1Database): Promise<void> {
@@ -216,7 +269,7 @@ async function insertSummerLeaveRecords(db: D1Database, input: {
   try {
     await db.batch(statements);
   } catch (err: any) {
-    if (/UNIQUE constraint failed/i.test(String(err?.message || err || ''))) {
+    if (isUniqueConstraintError(err)) {
       throw new Error('동일한 여름휴가 또는 연차 신청이 이미 처리 중입니다.');
     }
     throw err;
@@ -1264,6 +1317,9 @@ leave.post('/request', async (c) => {
     const holidays = await getLeaveHolidayDates(db, body.start_date, body.end_date);
     deductHours = countLeaveBusinessDays(body.start_date, body.end_date, holidays) * HOURS_PER_DAY;
   }
+  if ((requestedLeaveType === '연차' || requestedLeaveType === '특별휴가') && deductHours <= 0) {
+    return c.json({ error: '선택한 기간에 사용할 수 있는 근무일이 없습니다.' }, 400);
+  }
   const days = hoursToDays(deductHours);
 
   // [중복 방지] 같은 user + 같은 날짜 + 같은 타입의 미취소 신청이 이미 있으면 차단
@@ -1291,7 +1347,7 @@ leave.post('/request', async (c) => {
           isSummerVacation ? crypto.randomUUID() : null,
           isSummerVacation ? String(body.start_date || '').slice(0, 4) : null).run();
     } catch (err: any) {
-      if (/UNIQUE constraint failed/i.test(String(err?.message || err || ''))) {
+      if (isUniqueConstraintError(err)) {
         return c.json({ error: '동일한 휴가 신청이 이미 처리 중입니다.' }, 400);
       }
       throw err;
@@ -1313,11 +1369,18 @@ leave.post('/request', async (c) => {
   await reinitUserLeave(db, targetUserId);
 
   const id = crypto.randomUUID();
-  await db.prepare(`INSERT INTO leave_requests
-    (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
-      deductHours, days, body.reason, targetUser.branch || '', targetUser.department || '', halfDayPeriod).run();
+  try {
+    await db.prepare(`INSERT INTO leave_requests
+      (id, user_id, leave_type, start_date, end_date, hours, days, reason, branch, department, half_day_period)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, targetUserId, requestedLeaveType, body.start_date, body.end_date,
+        deductHours, days, body.reason, targetUser.branch || '', targetUser.department || '', halfDayPeriod).run();
+  } catch (err: unknown) {
+    if (isUniqueConstraintError(err)) {
+      return c.json({ error: '동일한 휴가 신청이 이미 처리 중입니다.' }, 400);
+    }
+    throw err;
+  }
 
   // 알림톡: 조직도 직접 부모에게 LEAVE_REQUEST. 직접 부모가 없을 때만 대표/마스터로 fallback.
   const phones = await getLeaveApprovalNotifyPhones(db, targetUserId);
