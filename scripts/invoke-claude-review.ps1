@@ -141,6 +141,13 @@ Inspect untracked files listed in Git status with the read-only tools when they 
   $schemaPath = Join-Path $repoRoot ".ai\claude-review-schema.json"
   $systemPrompt = Get-Content -LiteralPath $promptPath -Raw -Encoding UTF8
   $schema = Get-Content -LiteralPath $schemaPath -Raw -Encoding UTF8 | ConvertFrom-Json | ConvertTo-Json -Depth 20 -Compress
+  # Windows PowerShell 5.1 rebuilds native command lines and otherwise strips
+  # the JSON property's quotes before Claude Code receives this argument.
+  $schemaArgument = if ($PSVersionTable.PSEdition -eq "Desktop") {
+    $schema.Replace('"', '\"')
+  } else {
+    $schema
+  }
 
   $arguments = @(
     "--safe-mode",
@@ -151,7 +158,7 @@ Inspect untracked files listed in Git status with the read-only tools when they 
     "--disallowedTools", "Edit,Write,NotebookEdit,Bash,WebFetch,WebSearch",
     "--system-prompt", $systemPrompt,
     "--output-format", "json",
-    "--json-schema", $schema,
+    "--json-schema", $schemaArgument,
     "-p", "Review the supplied Codex change set and return the required structured result."
   )
 
