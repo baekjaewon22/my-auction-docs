@@ -13,6 +13,11 @@ import {
   type SummerChainPosition,
   type SummerLeavePlan,
 } from '../../shared/leave-calendar';
+import {
+  businessDayLeaveValidationError,
+  CREATE_ACTIVE_EXACT_LEAVE_INDEX_SQL,
+  CREATE_ACTIVE_SUMMER_LEAVE_INDEX_SQL,
+} from '../../shared/leave-request-constraints';
 
 const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
@@ -20,8 +25,7 @@ leave.use('*', authMiddleware);
 // ───── 헬퍼 ─────
 const HOURS_PER_DAY = 8;
 const HALF_DAY_PERIODS = new Set(['오전', '오후']);
-const ACTIVE_EXACT_LEAVE_INDEX = 'uq_leave_requests_active_exact';
-const ACTIVE_SUMMER_LEAVE_INDEX = 'uq_leave_requests_active_summer_year';
+const leaveIndexBootstrapAttempted = new WeakSet<object>();
 
 function isUniqueConstraintError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err || '');
@@ -29,47 +33,17 @@ function isUniqueConstraintError(err: unknown): boolean {
 }
 
 async function ensureActiveLeaveRequestIndexes(db: D1Database): Promise<void> {
-  const indexes = await db.prepare('PRAGMA index_list(leave_requests)').all<{ name: string }>();
-  const names = new Set((indexes.results || []).map((index) => index.name));
-
-  if (!names.has(ACTIVE_EXACT_LEAVE_INDEX)) {
-    const duplicate = await db.prepare(`
-      SELECT 1
-      FROM leave_requests
-      WHERE status IN ('pending', 'approved', 'cancel_requested')
-      GROUP BY user_id, leave_type, start_date, end_date, COALESCE(half_day_period, '')
-      HAVING COUNT(*) > 1
-      LIMIT 1
-    `).first();
-    if (duplicate) {
-      throw new Error('활성 휴가 중복 데이터가 있어 중복 방지 인덱스를 생성할 수 없습니다. 관리자에게 데이터 정리를 요청해주세요.');
+  const key = db as unknown as object;
+  if (leaveIndexBootstrapAttempted.has(key)) return;
+  leaveIndexBootstrapAttempted.add(key);
+  for (const sql of [CREATE_ACTIVE_EXACT_LEAVE_INDEX_SQL, CREATE_ACTIVE_SUMMER_LEAVE_INDEX_SQL]) {
+    try {
+      await db.prepare(sql).run();
+    } catch (err) {
+      // 기존 중복 자료 때문에 인덱스 생성이 실패해도 휴가 조회·신청 전체를 중단하지 않는다.
+      // 운영 진단 로그를 남기고 관리자가 중복 자료를 정리한 뒤 다음 Worker isolate에서 재시도한다.
+      console.error('[leave schema] active unique index bootstrap failed', err);
     }
-    await db.prepare(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${ACTIVE_EXACT_LEAVE_INDEX}
-      ON leave_requests (user_id, leave_type, start_date, end_date, COALESCE(half_day_period, ''))
-      WHERE status IN ('pending', 'approved', 'cancel_requested')
-    `).run();
-  }
-
-  if (!names.has(ACTIVE_SUMMER_LEAVE_INDEX)) {
-    const duplicate = await db.prepare(`
-      SELECT 1
-      FROM leave_requests
-      WHERE summer_request_year IS NOT NULL
-        AND status IN ('pending', 'approved', 'cancel_requested')
-      GROUP BY user_id, summer_request_year
-      HAVING COUNT(*) > 1
-      LIMIT 1
-    `).first();
-    if (duplicate) {
-      throw new Error('연도별 여름휴가 중복 데이터가 있어 중복 방지 인덱스를 생성할 수 없습니다. 관리자에게 데이터 정리를 요청해주세요.');
-    }
-    await db.prepare(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${ACTIVE_SUMMER_LEAVE_INDEX}
-      ON leave_requests (user_id, summer_request_year)
-      WHERE summer_request_year IS NOT NULL
-        AND status IN ('pending', 'approved', 'cancel_requested')
-    `).run();
   }
 }
 
@@ -1317,9 +1291,8 @@ leave.post('/request', async (c) => {
     const holidays = await getLeaveHolidayDates(db, body.start_date, body.end_date);
     deductHours = countLeaveBusinessDays(body.start_date, body.end_date, holidays) * HOURS_PER_DAY;
   }
-  if ((requestedLeaveType === '연차' || requestedLeaveType === '특별휴가') && deductHours <= 0) {
-    return c.json({ error: '선택한 기간에 사용할 수 있는 근무일이 없습니다.' }, 400);
-  }
+  const businessDayError = businessDayLeaveValidationError(requestedLeaveType, deductHours);
+  if (businessDayError) return c.json({ error: businessDayError }, 400);
   const days = hoursToDays(deductHours);
 
   // [중복 방지] 같은 user + 같은 날짜 + 같은 타입의 미취소 신청이 이미 있으면 차단

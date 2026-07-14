@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import Database from 'better-sqlite3';
+import {
+  businessDayLeaveValidationError,
+  CREATE_ACTIVE_EXACT_LEAVE_INDEX_SQL,
+  CREATE_ACTIVE_SUMMER_LEAVE_INDEX_SQL,
+} from '../src/shared/leave-request-constraints.ts';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -75,9 +80,22 @@ test('연도 키가 없는 과거 승인 분할 휴가는 그대로 유지할 �
   db.close();
 });
 
-test('런타임 스키마 보정 경로에도 두 활성 유니크 인덱스 생성문이 있다', () => {
-  const routeSource = readFileSync('src/worker/routes/leave.ts', 'utf8');
-  assert.match(routeSource, /CREATE UNIQUE INDEX IF NOT EXISTS \$\{ACTIVE_EXACT_LEAVE_INDEX\}/);
-  assert.match(routeSource, /CREATE UNIQUE INDEX IF NOT EXISTS \$\{ACTIVE_SUMMER_LEAVE_INDEX\}/);
-  assert.match(routeSource, /await ensureActiveLeaveRequestIndexes\(db\)/);
+test('런타임 인덱스 DDL은 반복 실행 가능하고 실제 활성 중복을 차단한다', () => {
+  const db = createDb();
+  db.exec('DROP INDEX uq_leave_requests_active_exact; DROP INDEX uq_leave_requests_active_summer_year;');
+  db.exec(CREATE_ACTIVE_EXACT_LEAVE_INDEX_SQL);
+  db.exec(CREATE_ACTIVE_SUMMER_LEAVE_INDEX_SQL);
+  const insert = db.prepare(insertSql);
+  insert.run('runtime-1', 'runtime-user', '연차', '2026-07-22', '2026-07-22', '정상', null);
+  assert.throws(() => insert.run(
+    'runtime-2', 'runtime-user', '연차', '2026-07-22', '2026-07-22', '중복', null
+  ), /UNIQUE constraint failed/);
+  db.close();
+});
+
+test('근무일 0일인 연차·특별휴가는 요청 검증 오류를 반환한다', () => {
+  assert.match(businessDayLeaveValidationError('연차', 0), /근무일/);
+  assert.match(businessDayLeaveValidationError('특별휴가', 0), /근무일/);
+  assert.equal(businessDayLeaveValidationError('반차', 4), '');
+  assert.equal(businessDayLeaveValidationError('시간차', 1), '');
 });
