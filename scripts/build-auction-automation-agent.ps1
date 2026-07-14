@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "2026.07.14.6",
+  [string]$Version = "2026.07.14.7",
   [int]$Port = 8001
 )
 
@@ -100,17 +100,42 @@ $installScript = @(
   '',
   ('$runnerPath = Join-Path $installDir "Start-{0}.ps1"' -f $agentName),
   '$runner = @(',
-  '  ''$ErrorActionPreference = "Stop"''',
+  '  ''$ErrorActionPreference = "Continue"''',
   ('  ''$exe = Join-Path $PSScriptRoot "{0}.exe"''' -f $agentName),
-  ('  ''Start-Process -FilePath $exe -ArgumentList "{0}" -WindowStyle Hidden''' -f $Port),
+  ('  ''$port = "{0}"''' -f $Port),
+  '  ''$log = Join-Path $PSScriptRoot "watchdog.log"''',
+  '  ''while ($true) {''',
+  '  ''  try {''',
+  '  ''    $process = Start-Process -FilePath $exe -ArgumentList $port -WindowStyle Hidden -PassThru''',
+  '  ''    $process.WaitForExit()''',
+  '  ''    Add-Content -LiteralPath $log -Value ("{0:o} agent exited ({1}); restarting" -f (Get-Date), $process.ExitCode)''',
+  '  ''  } catch {''',
+  '  ''    Add-Content -LiteralPath $log -Value ("{0:o} watchdog error: {1}" -f (Get-Date), $_.Exception.Message)''',
+  '  ''  }''',
+  '  ''  Start-Sleep -Seconds 5''',
+  '  ''}''',
   ') -join [Environment]::NewLine',
   'Set-Content -LiteralPath $runnerPath -Value $runner -Encoding UTF8',
   '',
-  '$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"',
-  'New-Item -Path $runKey -Force | Out-Null',
-  'Set-ItemProperty -Path $runKey -Name $agentName -Value ("powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{0}""" -f $runnerPath)',
+  '$taskRegistered = $false',
+  'try {',
+  '  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument (''-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"'' -f $runnerPath)',
+  '  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME',
+  '  $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited',
+  '  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1)',
+  '  Register-ScheduledTask -TaskName $agentName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null',
+  '  $taskRegistered = $true',
+  '} catch {',
+  '  $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"',
+  '  New-Item -Path $runKey -Force | Out-Null',
+  '  Set-ItemProperty -Path $runKey -Name $agentName -Value ("powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{0}""" -f $runnerPath)',
+  '}',
   '',
-  'Start-Process -FilePath $exePath -ArgumentList $port -WindowStyle Hidden',
+  'if ($taskRegistered) {',
+  '  Start-ScheduledTask -TaskName $agentName',
+  '} else {',
+  '  Start-Process -FilePath powershell.exe -ArgumentList (''-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"'' -f $runnerPath) -WindowStyle Hidden',
+  '}',
   'Write-Host "MyAuction automation agent installed and started."',
   ('Write-Host "Health: http://127.0.0.1:{0}/api/health"' -f $Port)
 ) -join [Environment]::NewLine
@@ -127,7 +152,7 @@ Version: $Version
 2. 설치 완료 안내가 뜨면 업무 시스템에서 "설치 후 다시 확인"을 누릅니다.
 
 수동 설치가 필요한 경우에만 이 압축 파일을 해제한 뒤 install.ps1을 실행합니다.
-설치 후 자동화 실행기는 Windows 로그인 시 자동 실행됩니다.
+설치 후 자동화 실행기는 Windows 로그인 시 자동 실행되며, 비정상 종료되면 자동 재시작됩니다.
 상태 확인 주소: http://127.0.0.1:$Port/api/health
 "@
 

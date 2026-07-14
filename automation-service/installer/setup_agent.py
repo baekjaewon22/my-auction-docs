@@ -86,8 +86,8 @@ def start_hidden(args: list[str]) -> None:
     )
 
 
-def powershell(command: str) -> None:
-    run_hidden(
+def powershell(command: str) -> subprocess.CompletedProcess:
+    return run_hidden(
         [
             "powershell.exe",
             "-NoProfile",
@@ -104,6 +104,7 @@ def stop_existing_agent() -> None:
     log("Stopping existing agent and port owners")
     powershell(
         "$ErrorActionPreference='SilentlyContinue'; "
+        f"Stop-ScheduledTask -TaskName '{AGENT_NAME}' -ErrorAction SilentlyContinue; "
         f"Get-Process -Name '{SETUP_NAME}' | "
         f"Where-Object {{ $_.Id -ne {os.getpid()} }} | "
         "Stop-Process -Force; "
@@ -122,9 +123,20 @@ def write_startup_runner(install_dir: Path) -> Path:
     runner.write_text(
         "\n".join(
             [
-                '$ErrorActionPreference = "Stop"',
+                '$ErrorActionPreference = "Continue"',
                 f'$exe = Join-Path $PSScriptRoot "{AGENT_EXE}"',
-                f'Start-Process -FilePath $exe -ArgumentList "{PORT}" -WindowStyle Hidden',
+                f'$port = "{PORT}"',
+                '$log = Join-Path $PSScriptRoot "watchdog.log"',
+                'while ($true) {',
+                '  try {',
+                '    $process = Start-Process -FilePath $exe -ArgumentList $port -WindowStyle Hidden -PassThru',
+                '    $process.WaitForExit()',
+                '    Add-Content -LiteralPath $log -Value ("{0:o} agent exited ({1}); restarting" -f (Get-Date), $process.ExitCode)',
+                '  } catch {',
+                '    Add-Content -LiteralPath $log -Value ("{0:o} watchdog error: {1}" -f (Get-Date), $_.Exception.Message)',
+                '  }',
+                '  Start-Sleep -Seconds 5',
+                '}',
             ]
         ),
         encoding="utf-8",
@@ -132,14 +144,56 @@ def write_startup_runner(install_dir: Path) -> Path:
     return runner
 
 
-def register_startup(runner: Path) -> None:
-    command = (
-        "$runKey = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; "
+def register_startup(runner: Path) -> str:
+    escaped_runner = str(runner).replace("'", "''")
+    task_command = (
+        "$ErrorActionPreference='Stop'; "
+        f"$taskName='{AGENT_NAME}'; "
+        f"$runner='{escaped_runner}'; "
+        "$action=New-ScheduledTaskAction -Execute 'powershell.exe' "
+        "-Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{0}\"' -f $runner); "
+        "$trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; "
+        "$principal=New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited; "
+        "$settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable "
+        "-ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1); "
+        "Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null; "
+        "$runKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; "
+        "Remove-ItemProperty -Path $runKey -Name $taskName -ErrorAction SilentlyContinue"
+    )
+    result = powershell(task_command)
+    if result.returncode == 0:
+        log("Registered scheduled task startup with watchdog")
+        return "scheduled_task"
+
+    fallback_command = (
+        "$ErrorActionPreference='Stop'; "
+        "$runKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; "
         "New-Item -Path $runKey -Force | Out-Null; "
         f"Set-ItemProperty -Path $runKey -Name '{AGENT_NAME}' "
         f"-Value 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{runner}\"'"
     )
-    powershell(command)
+    fallback = powershell(fallback_command)
+    if fallback.returncode != 0:
+        raise RuntimeError("Failed to register both scheduled-task and Run-key startup")
+    log("Scheduled task registration failed; registered Run-key watchdog fallback")
+    return "run_key"
+
+
+def start_registered_agent(runner: Path, startup_mode: str) -> None:
+    if startup_mode == "scheduled_task":
+        result = powershell(f"Start-ScheduledTask -TaskName '{AGENT_NAME}'")
+        if result.returncode == 0:
+            return
+    start_hidden([
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-File",
+        str(runner),
+    ])
 
 
 def show_message(title: str, message: str, error: bool = False) -> None:
@@ -191,10 +245,9 @@ def main() -> int:
                 shutil.copy2(item, target)
 
     runner = write_startup_runner(install_dir)
-    register_startup(runner)
+    startup_mode = register_startup(runner)
 
-    agent_exe = install_dir / AGENT_EXE
-    start_hidden([str(agent_exe), PORT])
+    start_registered_agent(runner, startup_mode)
     log("Setup completed")
     show_message(
         "MyAuction Automation Agent",
