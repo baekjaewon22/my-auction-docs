@@ -8,7 +8,7 @@ import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
   PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
-  Scale, ExternalLink,
+  Scale, ExternalLink, Activity,
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
@@ -151,6 +151,11 @@ export default function Layout() {
         {!isFreelancer && (
           <Link to="/rights-analysis-guarantee" className={`nav-item ${isActive('/rights-analysis-guarantee') ? 'active' : ''}`} title="권리분석 보증서" onClick={() => setMobileOpen(false)}>
             <FileSignature size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>권리분석 보증서</span>}
+          </Link>
+        )}
+        {!isFreelancer && (
+          <Link to="/automation-diagnostics" className={`nav-item ${isActive('/automation-diagnostics') ? 'active' : ''}`} title="자동화 통합 진단" onClick={() => setMobileOpen(false)}>
+            <Activity size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>자동화 통합 진단</span>}
           </Link>
         )}
           </>

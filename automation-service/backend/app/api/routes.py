@@ -20,12 +20,12 @@ from fastapi.responses import FileResponse, Response
 from ..models.schemas import ReportRequest, ProgressUpdate, ReportResult, RightsCertificateBatchRequest
 from ..services.orchestrator import generate_report
 from ..services.rights_certificate import generate_rights_certificate, export_pptx_to_pdf
-from ..core.config import settings, OUTPUT_DIR, CAPTURE_DIR, ensure_dirs, load_config, save_config
+from ..core.config import settings, OUTPUT_DIR, CAPTURE_DIR, POPPLER_PATH, ensure_dirs, load_config, save_config
 from ..core.utils import normalize_myauction_detail_url
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-AGENT_VERSION = "2026.07.14.1"
+AGENT_VERSION = "2026.07.14.2"
 
 # 진행상황 저장소 (간단한 in-memory)
 progress_store: dict[str, list[ProgressUpdate]] = {}
@@ -397,7 +397,22 @@ def _run_rights_certificate_batch(request: RightsCertificateBatchRequest, task_i
 
 @router.get("/health")
 async def health_check():
-    content = json.dumps({"status": "ok", "title": settings.app_title, "version": AGENT_VERSION}, ensure_ascii=False)
+    poppler_ready = bool(
+        POPPLER_PATH
+        and os.path.isfile(os.path.join(POPPLER_PATH, "pdfinfo.exe"))
+        and os.path.isfile(os.path.join(POPPLER_PATH, "pdftoppm.exe"))
+    )
+    content = json.dumps({
+        "status": "ok" if poppler_ready else "degraded",
+        "title": settings.app_title,
+        "version": AGENT_VERSION,
+        "dependencies": {
+            "poppler": {
+                "ready": poppler_ready,
+                "path": POPPLER_PATH,
+            },
+        },
+    }, ensure_ascii=False)
     return Response(content=content, media_type="application/json; charset=utf-8")
 
 

@@ -4,7 +4,7 @@ import type { AuthEnv } from '../types';
 
 const report = new Hono<AuthEnv>();
 const AGENT_INSTALLER_KEY = 'downloads/MyAuctionAutomationAgentSetup.exe';
-const AUTOMATION_AGENT_VERSION = '2026.07.14.1';
+const AUTOMATION_AGENT_VERSION = '2026.07.14.2';
 
 report.use('*', authMiddleware);
 
@@ -20,6 +20,30 @@ async function ensureReportColumns(db: D1Database) {
   if (!names.has('report_permission')) {
     await db.prepare("ALTER TABLE users ADD COLUMN report_permission TEXT NOT NULL DEFAULT 'basic'").run();
   }
+}
+
+async function ensureAutomationDiagnosticTable(db: D1Database) {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS automation_generation_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      output_type TEXT NOT NULL DEFAULT 'auction_report',
+      file_name TEXT NOT NULL DEFAULT '',
+      success INTEGER NOT NULL DEFAULT 0,
+      message TEXT NOT NULL DEFAULT '',
+      agent_version TEXT NOT NULL DEFAULT '',
+      diagnostics_json TEXT NOT NULL DEFAULT '[]',
+      issue_count INTEGER NOT NULL DEFAULT 0,
+      review_status TEXT NOT NULL DEFAULT 'open',
+      review_note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(user_id, task_id)
+    )
+  `).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_logs_user_created ON automation_generation_logs(user_id, created_at DESC)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_logs_review_created ON automation_generation_logs(review_status, created_at DESC)').run();
 }
 
 function automationBase(env: Env): string {
@@ -81,6 +105,84 @@ function automationUnavailable(c: any, err: unknown) {
     error: `Python 자동화 서비스에 연결할 수 없습니다. 자동화 서비스를 실행한 뒤 다시 시도해 주세요. (${base})`,
   }, 502);
 }
+
+report.post('/diagnostics', async (c) => {
+  const authUser = c.get('user');
+  const body = await c.req.json<any>();
+  const taskId = String(body.task_id || '').trim();
+  const diagnostics = Array.isArray(body.diagnostics) ? body.diagnostics.slice(0, 100) : [];
+  if (!taskId) return c.json({ error: '작업 식별값이 필요합니다.' }, 400);
+  await ensureAutomationDiagnosticTable(c.env.DB);
+  const issueCount = diagnostics.filter((item: any) => item?.status === 'warning' || item?.status === 'error').length;
+  const existing = await c.env.DB.prepare('SELECT id FROM automation_generation_logs WHERE user_id = ? AND task_id = ?')
+    .bind(authUser.sub, taskId).first<{ id: string }>();
+  const id = existing?.id || crypto.randomUUID();
+  await c.env.DB.prepare(`
+    INSERT INTO automation_generation_logs
+      (id, user_id, task_id, output_type, file_name, success, message, agent_version, diagnostics_json, issue_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, task_id) DO UPDATE SET
+      output_type = excluded.output_type, file_name = excluded.file_name, success = excluded.success,
+      message = excluded.message, agent_version = excluded.agent_version,
+      diagnostics_json = excluded.diagnostics_json, issue_count = excluded.issue_count,
+      updated_at = datetime('now')
+  `).bind(
+    id, authUser.sub, taskId, String(body.output_type || 'auction_report'), String(body.file_name || ''),
+    body.success ? 1 : 0, String(body.message || ''), String(body.agent_version || ''),
+    JSON.stringify(diagnostics), issueCount,
+  ).run();
+  return c.json({ success: true, id, issue_count: issueCount });
+});
+
+report.get('/diagnostics', async (c) => {
+  const masterError = requireMaster(c);
+  if (masterError) return masterError;
+  await ensureAutomationDiagnosticTable(c.env.DB);
+  const userId = String(c.req.query('user_id') || '').trim();
+  const reviewStatus = String(c.req.query('review_status') || '').trim();
+  const limit = Math.min(500, Math.max(1, Number(c.req.query('limit')) || 200));
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+  if (userId) { conditions.push('l.user_id = ?'); values.push(userId); }
+  if (reviewStatus) { conditions.push('l.review_status = ?'); values.push(reviewStatus); }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = await c.env.DB.prepare(`
+    SELECT l.*, u.name AS consultant_name, u.branch, u.department, u.position_title
+    FROM automation_generation_logs l
+    LEFT JOIN users u ON u.id = l.user_id
+    ${where}
+    ORDER BY l.created_at DESC LIMIT ?
+  `).bind(...values, limit).all<any>();
+  const consultants = await c.env.DB.prepare(`
+    SELECT id, name, branch, department, position_title
+    FROM users WHERE approved = 1 AND role != 'resigned'
+    ORDER BY branch, name
+  `).all<any>();
+  return c.json({
+    items: (rows.results || []).map((row: any) => ({
+      ...row,
+      success: Boolean(row.success),
+      diagnostics: (() => { try { return JSON.parse(row.diagnostics_json || '[]'); } catch { return []; } })(),
+      diagnostics_json: undefined,
+    })),
+    consultants: consultants.results || [],
+  });
+});
+
+report.patch('/diagnostics/:id', async (c) => {
+  const masterError = requireMaster(c);
+  if (masterError) return masterError;
+  await ensureAutomationDiagnosticTable(c.env.DB);
+  const body = await c.req.json<any>();
+  const status = String(body.review_status || 'open');
+  if (!['open', 'reviewed', 'resolved'].includes(status)) return c.json({ error: '유효하지 않은 처리 상태입니다.' }, 400);
+  await c.env.DB.prepare(`
+    UPDATE automation_generation_logs
+    SET review_status = ?, review_note = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(status, String(body.review_note || ''), c.req.param('id')).run();
+  return c.json({ success: true });
+});
 
 async function proxyJson(c: any, path: string, init?: RequestInit) {
   let res: Response;

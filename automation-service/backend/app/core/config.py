@@ -69,10 +69,9 @@ TESSERACT_FALLBACKS = [
 
 
 def find_poppler_path() -> str:
-    if POPPLER_BIN_DIR.exists():
-        return str(POPPLER_BIN_DIR)
-    for p in POPPLER_FALLBACKS:
-        if os.path.exists(p):
+    candidates = [str(POPPLER_BIN_DIR), *POPPLER_FALLBACKS]
+    for p in candidates:
+        if os.path.isfile(os.path.join(p, "pdfinfo.exe")) and os.path.isfile(os.path.join(p, "pdftoppm.exe")):
             return p
     return ""
 

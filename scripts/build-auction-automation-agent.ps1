@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "2026.07.14.1",
+  [string]$Version = "2026.07.14.2",
   [int]$Port = 8001
 )
 
@@ -16,12 +16,24 @@ $zipPath = Join-Path $downloadDir "$agentName.zip"
 $setupName = "MyAuctionAutomationAgentSetup"
 $setupScript = Join-Path $root "automation-service\installer\setup_agent.py"
 $setupExePath = Join-Path $downloadDir "$setupName.exe"
+$popplerCandidates = @(
+  (Join-Path $backendDir "bin\poppler\Library\bin"),
+  "C:\poppler\Library\bin",
+  "C:\poppler-25.12.0\Library\bin"
+)
+$popplerBin = $popplerCandidates | Where-Object {
+  (Test-Path -LiteralPath (Join-Path $_ "pdfinfo.exe")) -and
+  (Test-Path -LiteralPath (Join-Path $_ "pdftoppm.exe"))
+} | Select-Object -First 1
 
 if (!(Test-Path $venvPython)) {
   throw "Python virtual environment was not found: $venvPython"
 }
 if (!(Test-Path $setupScript)) {
   throw "Setup script was not found: $setupScript"
+}
+if (!$popplerBin) {
+  throw "Poppler was not found. pdfinfo.exe and pdftoppm.exe are required to build the automation agent."
 }
 
 Push-Location $backendDir
@@ -42,6 +54,7 @@ try {
     --hidden-import selenium.webdriver.chrome.options `
     --hidden-import selenium.webdriver.chrome.service `
     --hidden-import selenium.webdriver.common.driver_finder `
+    --add-binary "$popplerBin;bin/poppler/Library/bin" `
     --add-data "templates;templates" `
     run_server.py
   if ($LASTEXITCODE -ne 0) {

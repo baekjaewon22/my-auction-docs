@@ -56,6 +56,7 @@ import Print from './pages/Print';
 import FreelancerBidHistory from './pages/FreelancerBidHistory';
 import BriefingMaterials from './pages/BriefingMaterials';
 import RightsAnalysisGuarantee from './pages/RightsAnalysisGuarantee';
+import AutomationDiagnosticsAdmin from './pages/AutomationDiagnosticsAdmin';
 import { X } from 'lucide-react';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
@@ -821,6 +822,14 @@ export default function App() {
             element={
               <MasterRoute>
                 <RightsAnalysisGuarantee />
+              </MasterRoute>
+            }
+          />
+          <Route
+            path="automation-diagnostics"
+            element={
+              <MasterRoute>
+                <AutomationDiagnosticsAdmin />
               </MasterRoute>
             }
           />

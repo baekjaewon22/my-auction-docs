@@ -2,7 +2,7 @@ const AUTOMATION_API_BASE = (import.meta.env.VITE_AUTOMATION_API_BASE || '/api')
 const LOCAL_AUTOMATION_API_BASE = (import.meta.env.VITE_LOCAL_AUTOMATION_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '');
 const AUTOMATION_WS_BASE = (import.meta.env.VITE_AUTOMATION_WS_BASE || '').replace(/\/$/, '');
 const AUTOMATION_AGENT_INSTALLER_URL = import.meta.env.VITE_AUTOMATION_AGENT_INSTALLER_URL || '/api/report/agent-installer';
-export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.14.1';
+export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.14.2';
 
 function getToken(): string | null {
   return localStorage.getItem('token');
@@ -90,6 +90,8 @@ export interface AutomationAgentStatus {
   latestVersionVerified?: boolean;
   checkedAt?: string;
   title?: string;
+  dependencyReady?: boolean;
+  dependencyMessage?: string;
   error?: string;
 }
 
@@ -140,7 +142,8 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     const data = await res.json().catch(() => ({}));
     const version = String(data?.version || '').trim();
-    const updateRequired = !version || compareVersions(version, requiredVersion) < 0;
+    const popplerReady = data?.dependencies?.poppler?.ready !== false;
+    const updateRequired = !version || compareVersions(version, requiredVersion) < 0 || !popplerReady;
     return {
       ok: true,
       updateRequired,
@@ -149,6 +152,8 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
       latestVersionVerified,
       checkedAt,
       title: data?.title || 'MyAuction Automation',
+      dependencyReady: popplerReady,
+      dependencyMessage: popplerReady ? undefined : 'PDF 변환 구성요소가 없거나 손상되었습니다.',
     };
   } catch (err: any) {
     return { ok: false, requiredVersion, latestVersionVerified, checkedAt, error: err?.message || 'not_connected' };

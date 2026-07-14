@@ -1,5 +1,34 @@
 const BASE = '/api';
 
+export interface AutomationGenerationLog {
+  id: string;
+  user_id: string;
+  task_id: string;
+  output_type: string;
+  file_name: string;
+  success: boolean;
+  message: string;
+  agent_version: string;
+  issue_count: number;
+  review_status: 'open' | 'reviewed' | 'resolved';
+  review_note: string;
+  created_at: string;
+  updated_at: string;
+  consultant_name?: string;
+  branch?: string;
+  department?: string;
+  position_title?: string;
+  diagnostics: Array<{ section: string; status: 'ok' | 'warning' | 'error' | 'skipped'; message: string }>;
+}
+
+export interface AutomationDiagnosticConsultant {
+  id: string;
+  name: string;
+  branch?: string;
+  department?: string;
+  position_title?: string;
+}
+
 function getToken(): string | null {
   return localStorage.getItem('token');
 }
@@ -84,6 +113,20 @@ export const api = {
       ),
     remove: (id: string) =>
       request<{ success: boolean }>('/auction-reference/items/' + encodeURIComponent(id), { method: 'DELETE' }),
+  },
+
+  automationDiagnostics: {
+    save: (data: { task_id: string; output_type: string; file_name?: string; success: boolean; message?: string; agent_version?: string; diagnostics: unknown[] }) =>
+      request<{ success: boolean; id: string; issue_count: number }>('/report/diagnostics', { method: 'POST', body: JSON.stringify(data) }),
+    list: (params: { user_id?: string; review_status?: string; limit?: number } = {}) => {
+      const q = new URLSearchParams();
+      if (params.user_id) q.set('user_id', params.user_id);
+      if (params.review_status) q.set('review_status', params.review_status);
+      if (params.limit) q.set('limit', String(params.limit));
+      return request<{ items: AutomationGenerationLog[]; consultants: AutomationDiagnosticConsultant[] }>(`/report/diagnostics${q.toString() ? `?${q}` : ''}`);
+    },
+    update: (id: string, data: { review_status: 'open' | 'reviewed' | 'resolved'; review_note?: string }) =>
+      request<{ success: boolean }>(`/report/diagnostics/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
   },
 
   users: {

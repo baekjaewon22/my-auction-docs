@@ -22,7 +22,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 from ..core.config import (
     settings, CAPTURE_DIR, OUTPUT_DIR, SELENIUM_PROFILE_DIR,
-    ensure_dirs, load_config, save_config,
+    POPPLER_PATH, ensure_dirs, load_config, save_config,
 )
 from ..core.utils import normalize_myauction_detail_url, track_file, cleanup_generated_files
 from ..models.schemas import ReportRequest, ProgressUpdate
@@ -663,6 +663,17 @@ async def generate_report(
         f"myauction_id_appended={bool(request.myauction_id and request.myauction_id.strip() and request.myauction_id.strip() in url)}, "
         f"final_url={url}"
     )
+
+    poppler_ready = bool(
+        POPPLER_PATH
+        and os.path.isfile(os.path.join(POPPLER_PATH, "pdfinfo.exe"))
+        and os.path.isfile(os.path.join(POPPLER_PATH, "pdftoppm.exe"))
+    )
+    if not poppler_ready:
+        message = "PDF 변환 구성요소(Poppler)가 설치 파일에 없거나 실행할 수 없습니다. 자동화 실행기를 최신 버전으로 다시 설치해 주세요."
+        add_diagnostic("dependency:poppler", "PDF 변환 구성요소", "error", message)
+        emit(0, "브라우저 준비", message, status="error", percent=0)
+        return {"success": False, "message": message, "diagnostics": diagnostics}
 
     # 초기화
     data = {}

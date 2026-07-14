@@ -58,6 +58,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   const [plannerWorkspace, setPlannerWorkspace] = useState<PlannerWorkspace>({});
   const plannerHydratedUserRef = useRef('');
   const plannerExportAllRef = useRef<(() => Promise<PlannerSnapshot[]>) | null>(null);
+  const diagnosticSyncRef = useRef('');
 
   const canUseRights = user?.role === 'master' || reportPermission === 'special';
   const canManageAuctionReferences = Boolean(
@@ -207,6 +208,34 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     if (logEl) logEl.scrollTop = logEl.scrollHeight;
   }, [updates, view]);
 
+  useEffect(() => {
+    if (!result?.taskId) return;
+    const syncKey = `${result.taskId}:${diagnostics.length}:${diagnostics.map((item) => item.status).join(',')}`;
+    if (diagnosticSyncRef.current === syncKey) return;
+    diagnosticSyncRef.current = syncKey;
+    let cancelled = false;
+    const sync = async () => {
+      try {
+        const history = await automationApi.history();
+        const localItem = (history.items || []).find((item) => item.task_id === result.taskId);
+        if (cancelled) return;
+        await api.automationDiagnostics.save({
+          task_id: result.taskId,
+          output_type: result.outputType,
+          file_name: localItem?.file_name || '',
+          success: result.success,
+          message: result.message,
+          agent_version: agentStatus?.version || '',
+          diagnostics,
+        });
+      } catch {
+        // 중앙 진단 저장 실패가 로컬 파일 생성과 다운로드를 막지 않도록 한다.
+      }
+    };
+    sync();
+    return () => { cancelled = true; };
+  }, [result, diagnostics, agentStatus?.version]);
+
   const selectWork = (next: OutputType) => {
     if (agentState !== 'connected') {
       setAgentModalOpen(true);
@@ -249,20 +278,16 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   });
 
   const collectLatestPlannerSnapshots = async () => {
-    if (!plannerExportAllRef.current) return plannerSnapshots;
-    try {
-      const exported = await plannerExportAllRef.current();
-      if (exported.length === 0) return plannerSnapshots;
-      const exportedCalculators = new Set(exported.map(item => item.calculator));
-      const merged = [
-        ...exported,
-        ...plannerSnapshots.filter(item => !exportedCalculators.has(item.calculator)),
-      ].slice(0, 12);
-      setPlannerSnapshots(merged);
-      return merged;
-    } catch {
-      return plannerSnapshots;
+    if (!plannerExportAllRef.current) throw new Error('옥션플래너 연결을 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+    const exported = await plannerExportAllRef.current();
+    const required = ['acquisition-tax', 'loan-bid-estimator', 'acquisition-cost-sheet'];
+    const missing = required.filter((calculator) => !exported.some((item) => item.calculator === calculator && item.image_data_url));
+    if (missing.length > 0) {
+      const labels = missing.map((key) => PLANNER_CALCULATORS.find((item) => item.key === key)?.label || key);
+      throw new Error(`옥션플래너 이미지 생성 실패: ${labels.join(', ')}. 각 계산표를 한 번 열어 계산한 뒤 다시 시도해 주세요.`);
     }
+    setPlannerSnapshots(exported);
+    return exported;
   };
 
   const validateInput = () => {
@@ -1245,6 +1270,7 @@ function PlannerReferencePanel({
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (plannerOrigin && event.origin !== plannerOrigin) return;
+      if (event.source !== iframeRef.current?.contentWindow) return;
       const data = event.data as PlannerMessage;
       if (!data || typeof data !== 'object') return;
       const knownCalculator = PLANNER_CALCULATORS.some((item) => item.key === data.calculator);
@@ -1324,50 +1350,84 @@ function PlannerReferencePanel({
     }, plannerOrigin || '*');
   });
 
-  const requestPlannerExportAll = () => new Promise<PlannerSnapshot[]>((resolve) => {
-    const calculators = ['acquisition-tax', 'loan-bid-estimator', 'acquisition-cost-sheet'];
-    const timeout = window.setTimeout(() => {
-      window.removeEventListener('message', handleExportAll);
-      resolve([]);
-    }, 20000);
-    function handleExportAll(event: MessageEvent) {
-      if (plannerOrigin && event.origin !== plannerOrigin) return;
-      const data = event.data as PlannerMessage & { snapshots?: unknown[]; payload?: { snapshots?: unknown[]; [key: string]: unknown } };
-      if (!data || data.source !== 'auction-planner' || data.type !== 'calculator-export-all') return;
+  const requestCalculatorImage = (calculator: PlannerCalculatorKey) => new Promise<PlannerSnapshot | null>((resolve) => {
+    const iframe = document.createElement('iframe');
+    const requestId = `${calculator}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let settled = false;
+    const finish = (snapshot: PlannerSnapshot | null) => {
+      if (settled) return;
+      settled = true;
       window.clearTimeout(timeout);
-      window.removeEventListener('message', handleExportAll);
-      const rawSnapshots = Array.isArray(data.snapshots)
-        ? data.snapshots
-        : Array.isArray(data.payload?.snapshots)
-          ? data.payload.snapshots
-          : [];
-      const snapshots = rawSnapshots.flatMap((raw, index) => {
-        if (!raw || typeof raw !== 'object') return [];
-        const message = raw as PlannerMessage & Record<string, unknown>;
-        const calculator = String(message.calculator || '');
-        if (!calculators.includes(calculator)) return [];
-        const imageDataUrl = findPlannerImageDataUrl(message);
-        if (!imageDataUrl) return [];
-        const label = PLANNER_CALCULATORS.find(item => item.key === calculator)?.label || String(message.label || calculator);
-        return [{
-          id: `${calculator}-${Date.now()}-${index}`,
-          calculator,
-          label,
-          captured_at: String(message.timestamp || new Date().toISOString()),
-          message,
-          image_data_url: imageDataUrl,
-          include: true,
-        }];
+      retryTimers.forEach(window.clearTimeout);
+      window.removeEventListener('message', handleExport);
+      iframe.remove();
+      resolve(snapshot);
+    };
+    const handleExport = (event: MessageEvent) => {
+      if (plannerOrigin && event.origin !== plannerOrigin) return;
+      if (event.source !== iframe.contentWindow) return;
+      const message = event.data as PlannerMessage & Record<string, unknown>;
+      if (!message || String(message.calculator || '') !== calculator) return;
+      const imageDataUrl = findPlannerImageDataUrl(message);
+      if (!imageDataUrl) return;
+      const label = PLANNER_CALCULATORS.find((item) => item.key === calculator)?.label || calculator;
+      finish({
+        id: requestId,
+        calculator,
+        label,
+        captured_at: String(message.timestamp || new Date().toISOString()),
+        message,
+        image_data_url: imageDataUrl,
+        include: true,
       });
-      resolve(snapshots);
-    }
-    window.addEventListener('message', handleExportAll);
-    iframeRef.current?.contentWindow?.postMessage({
-      source: 'my-auction-docs',
-      type: 'calculator-export-all-request',
-      calculators,
-    }, plannerOrigin || '*');
+    };
+    const requestExport = () => {
+      const target = iframe.contentWindow;
+      if (!target) return;
+      const draft = workspace.calculatorDrafts?.[calculator];
+      if (draft) {
+        target.postMessage({
+          source: 'my-auction-docs',
+          type: 'planner-restore',
+          calculator,
+          payload: draft,
+        }, plannerOrigin || '*');
+      }
+      target.postMessage({
+        source: 'my-auction-docs',
+        type: 'calculator-export-request',
+        calculator,
+        request_id: requestId,
+      }, plannerOrigin || '*');
+    };
+    const retryTimers: number[] = [];
+    const timeout = window.setTimeout(() => finish(null), 20000);
+    window.addEventListener('message', handleExport);
+    iframe.title = `${calculator} 이미지 내보내기`;
+    iframe.src = `${AUCTION_PLANNER_EMBED_BASE}/embed?calculator=${encodeURIComponent(calculator)}&v=${Date.now()}`;
+    iframe.setAttribute('aria-hidden', 'true');
+    Object.assign(iframe.style, {
+      position: 'fixed',
+      left: '-20000px',
+      top: '0',
+      width: '1280px',
+      height: '1400px',
+      opacity: '0',
+      pointerEvents: 'none',
+    });
+    iframe.addEventListener('load', () => {
+      retryTimers.push(window.setTimeout(requestExport, 500));
+      retryTimers.push(window.setTimeout(requestExport, 4000));
+      retryTimers.push(window.setTimeout(requestExport, 9000));
+    }, { once: true });
+    document.body.appendChild(iframe);
   });
+
+  const requestPlannerExportAll = async () => {
+    const calculators: PlannerCalculatorKey[] = ['acquisition-tax', 'loan-bid-estimator', 'acquisition-cost-sheet'];
+    const snapshots = await Promise.all(calculators.map(requestCalculatorImage));
+    return snapshots.filter((item): item is PlannerSnapshot => Boolean(item?.image_data_url));
+  };
 
   useEffect(() => {
     registerExportAll(requestPlannerExportAll);
