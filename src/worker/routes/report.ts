@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../middleware/auth';
 import type { AuthEnv } from '../types';
+import { canUseBusinessAutomation } from '../../shared/automation-access';
 
 const report = new Hono<AuthEnv>();
 const AGENT_INSTALLER_KEY = 'downloads/MyAuctionAutomationAgentSetup.exe';
@@ -104,6 +105,14 @@ function automationUnavailable(c: any, err: unknown) {
   return c.json({
     error: `Python 자동화 서비스에 연결할 수 없습니다. 자동화 서비스를 실행한 뒤 다시 시도해 주세요. (${base})`,
   }, 502);
+}
+
+function requireBusinessAutomationUser(c: any) {
+  const authUser = c.get('user');
+  if (!canUseBusinessAutomation({ id: authUser?.sub, role: authUser?.role })) {
+    return c.json({ error: '업무 자동화 기능을 사용할 권한이 없습니다.' }, 403);
+  }
+  return null;
 }
 
 report.post('/diagnostics', async (c) => {
@@ -216,8 +225,8 @@ async function proxyFile(c: any, path: string) {
 }
 
 report.post('/start', async (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireBusinessAutomationUser(c);
+  if (permissionError) return permissionError;
 
   const body = await c.req.json<any>();
   const { authUser, user } = await currentReportUser(c);
@@ -237,8 +246,8 @@ report.post('/start', async (c) => {
 });
 
 report.get('/local-profile', async (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireBusinessAutomationUser(c);
+  if (permissionError) return permissionError;
 
   const { authUser, user } = await currentReportUser(c);
   const credentialError = requireMyAuction(user);
@@ -284,8 +293,8 @@ report.get('/agent-version', (c) => {
 });
 
 report.post('/start-batch', async (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireBusinessAutomationUser(c);
+  if (permissionError) return permissionError;
 
   const body = await c.req.json<any>();
   const { authUser, user } = await currentReportUser(c);
@@ -304,28 +313,28 @@ report.post('/start-batch', async (c) => {
 });
 
 report.get('/progress/:taskId', (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireBusinessAutomationUser(c);
+  if (permissionError) return permissionError;
   return proxyJson(c, `/report/progress/${c.req.param('taskId')}`);
 });
 
 report.get('/download/:taskId', (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireBusinessAutomationUser(c);
+  if (permissionError) return permissionError;
 
   const query = c.req.url.split('?')[1];
   return proxyFile(c, `/report/download/${c.req.param('taskId')}${query ? `?${query}` : ''}`);
 });
 
 report.get('/download-history', (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireBusinessAutomationUser(c);
+  if (permissionError) return permissionError;
   return proxyJson(c, '/report/download-history');
 });
 
 report.get('/download-history/:historyId', (c) => {
-  const masterError = requireMaster(c);
-  if (masterError) return masterError;
+  const permissionError = requireBusinessAutomationUser(c);
+  if (permissionError) return permissionError;
 
   const query = c.req.url.split('?')[1];
   return proxyFile(c, `/report/download-history/${c.req.param('historyId')}${query ? `?${query}` : ''}`);

@@ -74,6 +74,7 @@
 		"dev": "vite",
 		"lint": "eslint .",
 		"preview": "npm run build && vite preview",
+		"test:automation-access": "node --experimental-strip-types --test tests/automation-access.test.ts",
 		"test:leave": "node --experimental-strip-types --test tests/leave-calendar.test.ts tests/leave-constraints.test.ts"
 	},
 	"type": "module"

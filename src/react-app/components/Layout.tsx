@@ -4,6 +4,7 @@ import { useAuthStore } from '../store';
 import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import { isHeadOfficeBranch, isRestrictedAccountingBranch } from '../lib/branchAliases';
+import { canUseBusinessAutomation } from '../../shared/automation-access';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
@@ -80,7 +81,8 @@ export default function Layout() {
     CONTRACT_TRACKER_EXTRA_IDS.includes(user?.id || '')
   );
   const canViewMissingDocuments = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant', 'accountant_asst'].includes(role);
-  const canUseDocumentGeneration = role === 'master';
+  const canUseDocumentGeneration = canUseBusinessAutomation(user);
+  const canUseMasterAutomationTools = role === 'master';
 
   const sidebarContent = (
     <>
@@ -148,12 +150,12 @@ export default function Layout() {
             <FileText size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>업무 자동화</span>}
           </Link>
         )}
-        {!isFreelancer && (
+        {!isFreelancer && canUseMasterAutomationTools && (
           <Link to="/rights-analysis-guarantee" className={`nav-item ${isActive('/rights-analysis-guarantee') ? 'active' : ''}`} title="권리분석 보증서" onClick={() => setMobileOpen(false)}>
             <FileSignature size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>권리분석 보증서</span>}
           </Link>
         )}
-        {!isFreelancer && (
+        {!isFreelancer && canUseMasterAutomationTools && (
           <Link to="/automation-diagnostics" className={`nav-item ${isActive('/automation-diagnostics') ? 'active' : ''}`} title="자동화 통합 진단" onClick={() => setMobileOpen(false)}>
             <Activity size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>자동화 통합 진단</span>}
           </Link>

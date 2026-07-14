@@ -58,6 +58,7 @@ import BriefingMaterials from './pages/BriefingMaterials';
 import RightsAnalysisGuarantee from './pages/RightsAnalysisGuarantee';
 import AutomationDiagnosticsAdmin from './pages/AutomationDiagnosticsAdmin';
 import { X } from 'lucide-react';
+import { canUseBusinessAutomation } from '../shared/automation-access';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -334,6 +335,14 @@ function FinanceAnalyticsRoute({ children }: { children: React.ReactNode }) {
   // 회계분석은 cc_ref·총무보조 제외
   const allowed = ['master', 'ceo', 'admin', 'accountant'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function BusinessAutomationRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuthStore();
+  if (loading) return <div className="page-loading">로딩중...</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!canUseBusinessAutomation(user)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -812,9 +821,9 @@ export default function App() {
           <Route
             path="briefing-materials"
             element={
-              <MasterRoute>
+              <BusinessAutomationRoute>
                 <BriefingMaterials />
-              </MasterRoute>
+              </BusinessAutomationRoute>
             }
           />
           <Route
