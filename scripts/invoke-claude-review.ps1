@@ -184,13 +184,23 @@ Inspect untracked files listed in Git status with the read-only tools when they 
     claude_version = $claudeVersion
     review = $review
   }
-  $report | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
-  Convert-ReviewToMarkdown -Review $review -Base $BaseRef -ClaudeVersion $claudeVersion |
-    Set-Content -LiteralPath $markdownPath -Encoding UTF8
+  $reportJson = $report | ConvertTo-Json -Depth 30
+  $reportMarkdown = Convert-ReviewToMarkdown -Review $review -Base $BaseRef -ClaudeVersion $claudeVersion
+  $reportJson | Set-Content -LiteralPath $OutputPath -Encoding UTF8
+  $reportMarkdown | Set-Content -LiteralPath $markdownPath -Encoding UTF8
+
+  # Keep stable aliases so Codex can ingest the newest completed local review
+  # without asking the repository owner to copy findings into every prompt.
+  $latestJsonPath = Join-Path $reviewDir "latest-claude-review.json"
+  $latestMarkdownPath = Join-Path $reviewDir "latest-claude-review.md"
+  $reportJson | Set-Content -LiteralPath $latestJsonPath -Encoding UTF8
+  $reportMarkdown | Set-Content -LiteralPath $latestMarkdownPath -Encoding UTF8
 
   Write-Host "Claude review: $($review.verdict)"
   Write-Host "JSON: $OutputPath"
   Write-Host "Markdown: $markdownPath"
+  Write-Host "Latest JSON: $latestJsonPath"
+  Write-Host "Latest Markdown: $latestMarkdownPath"
   foreach ($finding in @($review.findings)) {
     $line = if ($finding.line) { ":$($finding.line)" } else { "" }
     Write-Host "[$($finding.severity)] $($finding.file)$line - $($finding.title)"
