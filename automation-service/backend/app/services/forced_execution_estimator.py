@@ -116,6 +116,20 @@ def estimate_context_from_data(data: dict) -> tuple[str, bool, dict]:
 
 def build_eviction_cost_values(data: dict) -> dict:
     _, _, cost = estimate_context_from_data(data)
+    myauction_cost = data.get("myauction_eviction_costs") or {}
+    if isinstance(myauction_cost, dict) and int(myauction_cost.get("grandTotal") or 0) > 0:
+        for key in (
+            "filingFee", "transportStorage", "laborTotal", "laborWorkers", "containerCount",
+            "locksmith", "ladderTruck", "witness", "grandTotal", "areaSqm",
+        ):
+            value = myauction_cost.get(key)
+            if value is not None and value != "":
+                cost[key] = value
+        cost["optionsTotal"] = sum(
+            int(cost.get(key) or 0) for key in ("locksmith", "ladderTruck", "witness")
+        )
+        cost["proposedPrice"] = round(int(cost["grandTotal"]) * 0.8)
+        cost["savings"] = int(cost["grandTotal"]) - int(cost["proposedPrice"])
     attorney_fee = _attorney_fee_from_item_type(data.get("item_type") or "")
     normal_execution_cost = int(cost["grandTotal"])
     discounted_execution_cost = int(cost["proposedPrice"])
@@ -128,6 +142,7 @@ def build_eviction_cost_values(data: dict) -> dict:
         "myungsung_execution_cost": discounted_execution_cost,
         "flat_total": flat_total,
         "cost_plus_total": cost_plus_total,
+        "eviction_cost_source": "myauction" if myauction_cost and int(myauction_cost.get("grandTotal") or 0) > 0 else "local_estimate",
         "attorney_fee_won": _format_won_with_space(attorney_fee),
         "normal_execution_cost_won": _format_won_with_space(normal_execution_cost),
         "myungsung_execution_cost_won": _format_won_with_space(discounted_execution_cost),

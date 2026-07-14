@@ -695,6 +695,9 @@ async def generate_report(
     building_register_text_read = False
     building_violation_detected = False
     building_violation_evidence = ""
+    building_register_tab_absent = False
+    myauction_eviction_costs: dict = {}
+    lien_detected = False
     planner_inserted_calculators: list[str] = []
     diagnostic_reasons: dict[str, str] = {}
 
@@ -783,11 +786,20 @@ async def generate_report(
             logger.warning(f"물건별 체크리스트 반영 실패: {e}")
         data["rights_analysis_opinion"] = rights_analysis_opinion
         data["special_opinion"] = special_opinion
+        lien_detected = "유치권" in str(special_opinion or "")
 
         try:
             data["property_status_opinion"] = briefing_opinion.build_property_status_opinion(data)
         except Exception as e:
             logger.warning(f"담당자 종합의견 (1) 물건현황 문안 구성 실패: {e}")
+
+        try:
+            emit(1, "사이트 파싱", "마이옥션 예상명도비용 확인 중...", percent=19.8)
+            myauction_eviction_costs = capturer.extract_eviction_cost_values(driver, detail_url=url, timeout=15)
+            data["myauction_eviction_costs"] = myauction_eviction_costs
+        except Exception as e:
+            diagnostic_reasons["eviction-cost"] = _short_selenium_message(e, "마이옥션 예상명도비용 판독 실패")
+            logger.warning(f"마이옥션 예상명도비용 판독 실패 → 기존 면적 산식 사용: {e}")
 
         try:
             eviction_values = forced_execution_estimator.build_eviction_cost_values(data)
@@ -868,8 +880,8 @@ async def generate_report(
             diagnostic_reasons["tenant-status"] = _short_selenium_message(e, "임차인 현황 캡처 단계 오류")
             logger.warning(f"캡처 실패: {e}")
 
-        # 예상명도비용은 캡처 이미지를 삽입하지 않고 템플릿 변수로 자동 입력한다.
-        emit(3, "문서 캡처", "예상명도비용 계산값 준비 중...", percent=38)
+        # 명도비는 위 파싱 단계에서 확인한 마이옥션 계산값을 템플릿 변수로 사용한다.
+        emit(3, "문서 캡처", "예상명도비용 계산값 준비 완료", percent=38)
 
         # 공시자료 팝업
         emit(3, "문서 캡처", "공시자료 팝업 열기...", percent=40)
@@ -917,9 +929,19 @@ async def generate_report(
         emit(3, "문서 캡처", "건축물대장 처리 중...", percent=50)
         if not LAND_MODE:
             try:
-                clicked = click_tab_safe(wait, driver, ["건축물대장", "건축물"])
+                building_tab_elements = driver.find_elements(
+                    By.XPATH,
+                    "//a[contains(normalize-space(.), '건축물대장') or normalize-space(.)='건축물']",
+                )
+                if not building_tab_elements:
+                    building_register_tab_absent = True
+                    diagnostic_reasons["building-register"] = "건축물대장 탭이 제공되지 않는 물건으로 정상 생략"
+                    logger.info("건축물대장 탭 없음 → 정상 생략")
+                    clicked = ""
+                else:
+                    clicked = click_tab_safe(wait, driver, ["건축물대장", "건축물"])
                 if not clicked:
-                    raise RuntimeError("건축물대장 탭을 찾지 못했습니다.")
+                    raise StopIteration
                 logger.info(f"팝업 내 '{clicked}' 탭 클릭 완료")
                 time.sleep(1)
                 iframe = wait.until(EC.presence_of_element_located((By.ID, "detail_target")))
@@ -962,6 +984,8 @@ async def generate_report(
                     data["special_opinion"] = special_opinion
                     ppt_builder.apply_special_opinion(prs, special_opinion)
                     logger.warning(f"건축물대장 위반건축물 감지 및 특이사항 갱신: {building_violation_evidence}")
+            except StopIteration:
+                pass
             except Exception as e:
                 diagnostic_reasons["building-register"] = _short_selenium_message(e, "건축물대장 캡처 실패")
                 logger.warning(f"건축물대장 실패 → 생략(계속 진행): {e}")
@@ -1194,7 +1218,7 @@ async def generate_report(
 
     emit(4, "PPT 이미지 삽입", "삽입 완료", percent=85)
 
-    # 명도 정액제/실비제 비용: 엑셀 토큰 적용 후에도 파싱 면적 기반 산식이 최종값이 되도록 저장 직전 반영
+    # 명도 정액제/실비제 비용: 마이옥션 계산값(실패 시 면적 산식)이 저장 직전에도 유지되도록 반영
     try:
         eviction_values = forced_execution_estimator.build_eviction_cost_values(data)
         updated = ppt_builder.apply_eviction_cost_estimates(prs, eviction_values)
@@ -1221,8 +1245,25 @@ async def generate_report(
         add_diagnostic("building-violation", "건축물대장 위반건축물", "ok", "위반건축물 표시가 감지되지 않음")
     elif total_building:
         add_diagnostic("building-violation", "건축물대장 위반건축물", "warning", "건축물대장 이미지는 반영됐으나 문자 판독에 실패")
+    elif building_register_tab_absent:
+        add_diagnostic("building-violation", "건축물대장 위반건축물", "skipped", "건축물대장 탭이 없어 판독 대상에서 정상 생략")
     else:
         add_diagnostic("building-violation", "건축물대장 위반건축물", "skipped", "건축물대장을 가져오지 못해 판독 생략")
+
+    if myauction_eviction_costs and int(myauction_eviction_costs.get("grandTotal") or 0) > 0:
+        add_diagnostic(
+            "eviction-cost",
+            "명도비 계산",
+            "ok",
+            f"마이옥션 예상명도비용 {int(myauction_eviction_costs['grandTotal']):,}원 기준 반영 완료",
+        )
+    else:
+        add_diagnostic(
+            "eviction-cost",
+            "명도비 계산",
+            "warning",
+            diagnostic_reasons.get("eviction-cost") or "마이옥션 계산값을 확인하지 못해 면적 기준 산식으로 대체",
+        )
     received_snapshots = {
         str(item.get("calculator") or ""): item
         for item in (request.planner_snapshots or [])
@@ -1266,6 +1307,11 @@ async def generate_report(
     else:
         add_diagnostic("rights-extraction", "권리분석 원자료 OCR", "ok", "제한시간 내 확인 완료")
 
+    if lien_detected:
+        add_diagnostic("lien-detection", "유치권 판정", "warning", "비고·OCR 원자료에서 유치권 신호를 감지하여 특이사항에 반영 완료")
+    else:
+        add_diagnostic("lien-detection", "유치권 판정", "ok", "비고·OCR 원자료에서 유치권 신호가 감지되지 않음")
+
     if checklist_match_count and checklist_applied:
         add_diagnostic("checklist", "물건별 체크리스트", "ok", f"{checklist_match_count}개 항목 매칭 및 특이사항 반영 완료")
     elif checklist_match_count:
@@ -1279,7 +1325,7 @@ async def generate_report(
         )
 
     document_checks = [
-        ("building-register", "건축물대장", total_building, "skipped" if LAND_MODE else "error"),
+        ("building-register", "건축물대장", total_building, "skipped" if LAND_MODE or building_register_tab_absent else "error"),
         ("tenant-status", "전입세대·임차인 현황", len(tenant_imgs), "error"),
         ("registry-summary", "등기사항 요약", total_registry or total_registry_land, "error"),
         ("status-report", "현황조사서", total_status, "error"),
@@ -1289,7 +1335,8 @@ async def generate_report(
         if count:
             add_diagnostic(key, label, "ok", f"{count}페이지 캡처 및 PPT 삽입 처리")
         elif empty_status == "skipped":
-            add_diagnostic(key, label, "skipped", "토지 물건으로 판별되어 생략")
+            message = "건축물대장 탭이 제공되지 않아 정상 생략" if key == "building-register" and building_register_tab_absent else "토지 물건으로 판별되어 생략"
+            add_diagnostic(key, label, "skipped", message)
         else:
             add_diagnostic(
                 key,

@@ -644,6 +644,110 @@ def _close_eviction_cost_basis_layer(driver):
         pass
 
 
+def _parse_won_amount(value: str) -> int:
+    original = re.sub(r"\s+", "", str(value or ""))
+    text = original.replace(",", "")
+    if not text:
+        return 0
+    total = 0
+    for pattern, multiplier in ((r"([0-9]+(?:\.[0-9]+)?)억원", 100_000_000), (r"([0-9]+(?:\.[0-9]+)?)만원", 10_000)):
+        match = re.search(pattern, text)
+        if match:
+            total += int(float(match.group(1)) * multiplier)
+    won_matches = re.findall(r"([0-9]+(?:\.[0-9]+)?)원", text)
+    if won_matches:
+        total += int(float(won_matches[-1]))
+    if total:
+        return total
+    comma_amounts = re.findall(r"([0-9]{1,3}(?:,[0-9]{3})+)", original)
+    return int(comma_amounts[-1].replace(",", "")) if comma_amounts else 0
+
+
+def _parse_eviction_cost_rows(rows: list[str], body_text: str = "") -> dict:
+    label_map = {
+        "filingFee": ("접수비",),
+        "transportStorage": ("운반및보관료", "운반보관료"),
+        "laborTotal": ("노무비",),
+        "locksmith": ("열쇠개문", "개문비"),
+        "ladderTruck": ("사다리차",),
+        "witness": ("입회자동행", "입회인동행", "입회자"),
+        "grandTotal": ("총명도비용", "총강제집행비용", "강제집행예상비용", "예상명도비용"),
+    }
+    parsed: dict[str, int | str] = {}
+    row_lines = [str(row or "") for row in rows if str(row or "").strip()]
+    body_lines = [line for line in str(body_text or "").splitlines() if line.strip()]
+    candidates = row_lines + body_lines
+    candidates.extend(" ".join(body_lines[index:index + 3]) for index in range(len(body_lines)))
+    for key, labels in label_map.items():
+        for line in candidates:
+            compact = re.sub(r"\s+", "", line)
+            if not any(label in compact for label in labels):
+                continue
+            amount = _parse_won_amount(line)
+            if amount > 0:
+                parsed[key] = amount
+                break
+
+    body_compact = re.sub(r"\s+", "", str(body_text or ""))
+    area_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:㎡|m2|m²)", str(body_text or ""), re.I)
+    if area_match:
+        parsed["areaSqm"] = float(area_match.group(1))
+    worker_match = re.search(r"노무(?:인원|자)?[^0-9]{0,12}([0-9]+)명", body_compact)
+    if worker_match:
+        parsed["laborWorkers"] = int(worker_match.group(1))
+    container_match = re.search(r"(?:컨테이너|명도접수건수)[^0-9]{0,12}([0-9]+)(?:개|건)", body_compact)
+    if container_match:
+        parsed["containerCount"] = int(container_match.group(1))
+
+    component_keys = ("filingFee", "transportStorage", "laborTotal", "locksmith", "ladderTruck", "witness")
+    components = [int(parsed[key]) for key in component_keys if int(parsed.get(key) or 0) > 0]
+    if not int(parsed.get("grandTotal") or 0) and len(components) >= 3:
+        parsed["grandTotal"] = sum(components)
+    if parsed:
+        parsed["source"] = "myauction"
+    return parsed
+
+
+def extract_eviction_cost_values(driver, detail_url: str = "", timeout: int = 15) -> dict:
+    """Read MyAuction's eviction-cost calculation and return normalized won values."""
+    base_url = driver.current_url
+    case_idx = _extract_myauction_idx(detail_url, base_url)
+    if not case_idx:
+        raise RuntimeError("예상명도비용 사건번호를 URL에서 찾지 못했습니다.")
+    popup_url = f"https://www.my-auction.co.kr/auction/execution_pop.php?idx={case_idx}"
+    try:
+        logger.info(f"마이옥션 예상명도비용 계산값 확인: {popup_url}")
+        driver.get(popup_url)
+        alert_text = _dismiss_alert_if_present(driver)
+        if alert_text:
+            raise RuntimeError(f"예상명도비용 열람 실패: {alert_text}")
+        wait_document_ready(driver, timeout=min(20, max(5, timeout)))
+        WebDriverWait(driver, timeout).until(
+            lambda d: "명도" in (d.find_element(By.TAG_NAME, "body").text or "")
+            or "노무비" in (d.find_element(By.TAG_NAME, "body").text or "")
+        )
+        payload = driver.execute_script("""
+            const textOf = (el) => `${el.innerText || el.textContent || ''}`.trim();
+            return {
+              bodyText: textOf(document.body),
+              rows: Array.from(document.querySelectorAll('tr')).map(textOf).filter(Boolean),
+            };
+        """) or {}
+        parsed = _parse_eviction_cost_rows(payload.get("rows") or [], payload.get("bodyText") or "")
+        if not int(parsed.get("grandTotal") or 0):
+            raise RuntimeError("마이옥션 예상명도비용 총액을 판독하지 못했습니다.")
+        logger.info(f"마이옥션 예상명도비용 계산값 판독 완료: {parsed}")
+        return parsed
+    finally:
+        try:
+            _dismiss_alert_if_present(driver)
+            driver.get(base_url)
+            wait_document_ready(driver, timeout=20)
+            time.sleep(0.3)
+        except Exception as exc:
+            logger.warning(f"예상명도비용 확인 후 상세 페이지 복귀 실패: {exc}")
+
+
 def capture_eviction_cost_basis(driver, out_path: str, timeout=15, detail_url: str = ""):
     ensure_dir_for_file(out_path)
     wait = WebDriverWait(driver, timeout)

@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "2026.07.14.5",
+  [string]$Version = "2026.07.14.6",
   [int]$Port = 8001
 )
 

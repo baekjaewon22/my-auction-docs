@@ -4,7 +4,7 @@ import type { AuthEnv } from '../types';
 
 const report = new Hono<AuthEnv>();
 const AGENT_INSTALLER_KEY = 'downloads/MyAuctionAutomationAgentSetup.exe';
-const AUTOMATION_AGENT_VERSION = '2026.07.14.5';
+const AUTOMATION_AGENT_VERSION = '2026.07.14.6';
 
 report.use('*', authMiddleware);
 

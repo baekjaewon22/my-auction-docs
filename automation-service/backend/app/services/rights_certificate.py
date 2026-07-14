@@ -1075,7 +1075,7 @@ def extract_tenant_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
         image_paths = capturer.capture_table_split_by_rows(driver, "임차인현황", prefix, rows_per_page=8, timeout=8)
     except Exception as e:
         logger.warning(f"임차인현황 문서 확인 실패: {e}")
-        return {}
+        return sale_spec_context
 
     texts = []
     timed_out = False
@@ -1090,15 +1090,26 @@ def extract_tenant_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
 
     raw_text = normalize_ocr_text("\n".join(texts))
     if not raw_text:
-        return {"tenant_ocr_images": image_paths, "_timed_out": timed_out}
+        result = dict(sale_spec_context)
+        result["tenant_ocr_images"] = list(dict.fromkeys([
+            *(sale_spec_context.get("tenant_ocr_images") or []),
+            *image_paths,
+        ]))
+        result["_timed_out"] = bool(sale_spec_context.get("_timed_out")) or timed_out
+        return result
 
-    return {
+    result = dict(sale_spec_context)
+    result.update({
         "tenants": parse_tenants_from_ocr(raw_text),
         "tenant_source": "tenant_status_ocr",
-        "tenant_ocr_text": raw_text,
-        "tenant_ocr_images": image_paths,
-        "_timed_out": timed_out,
-    }
+        "tenant_ocr_text": "\n".join(filter(None, [sale_spec_context.get("tenant_ocr_text", ""), raw_text])),
+        "tenant_ocr_images": list(dict.fromkeys([
+            *(sale_spec_context.get("tenant_ocr_images") or []),
+            *image_paths,
+        ])),
+        "_timed_out": bool(sale_spec_context.get("_timed_out")) or timed_out,
+    })
+    return result
 
 
 def extract_sale_spec_tenant_context_by_ocr(driver, task_id: Optional[str] = None, deadline: Optional[float] = None) -> dict:
@@ -1124,7 +1135,9 @@ def extract_sale_spec_tenant_context_by_ocr(driver, task_id: Optional[str] = Non
         return {"tenant_source": "sale_spec_ocr", "tenant_ocr_images": image_paths, "_timed_out": timed_out}
 
     tenants = parse_sale_spec_tenants_from_pdf_text(pdf_text) or parse_sale_spec_tenants_from_ocr(raw_text)
-    sale_spec_context = parse_sale_spec_document_context(pdf_text or raw_text)
+    # Embedded PDF text can be incomplete even when non-empty. Use the combined
+    # embedded-text + OCR result so remarks and special-right signals are not lost.
+    sale_spec_context = parse_sale_spec_document_context(raw_text)
     dividend_deadline = sale_spec_context.get("dividendDeadline") or ""
     for tenant in tenants:
         if dividend_deadline and not tenant.get("depositDeadline"):
@@ -1639,14 +1652,14 @@ def _extract_sale_spec_remarks_from_lines(lines: list[str]) -> str:
 
     stop_words = ("사건", "작성", "담임법관", "부동산의 표시", "최선순위", "배당요구종기")
     collected = []
-    for line in lines[start_idx + 1: start_idx + 8]:
+    for line in lines[start_idx + 1: start_idx + 51]:
         if any(line.startswith(word) for word in stop_words):
             break
         if line in ("없음", "해당없음", "해당 사항 없음"):
             return ""
         if line and not line.startswith("※"):
             collected.append(line)
-    return _clean_document_note(" ".join(collected))
+    return _clean_document_note(" ".join(collected), limit=1200)
 
 
 def _clean_document_note(value: str, limit: int = 260) -> str:
