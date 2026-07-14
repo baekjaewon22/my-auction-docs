@@ -100,6 +100,33 @@ SPECIAL_SITUATION_RULES = [
 ]
 
 
+_BUILDING_VIOLATION_KEYWORDS = (
+    "위반건축물", "위반 건축물", "무단증축", "무단 증축", "불법증축", "불법 증축",
+    "무허가", "이행강제금", "시정명령",
+)
+_BUILDING_VIOLATION_NEGATIVE = (
+    "해당없음", "해당 없음", "아님", "아니오", "없음", "미해당", "정상", "부존재",
+)
+
+
+def detect_building_violation(text: str) -> tuple[bool, str]:
+    """Return an affirmative violation marker while excluding negative checkbox/label text."""
+    normalized_lines = [re.sub(r"\s+", " ", line).strip() for line in str(text or "").splitlines()]
+    normalized_lines = [line for line in normalized_lines if line]
+    for index, line in enumerate(normalized_lines):
+        compact = re.sub(r"\s+", "", line)
+        matched = next((keyword for keyword in _BUILDING_VIOLATION_KEYWORDS if re.sub(r"\s+", "", keyword) in compact), "")
+        if not matched:
+            continue
+        nearby = " ".join(normalized_lines[max(0, index - 1):index + 2])
+        nearby_compact = re.sub(r"\s+", "", nearby)
+        if any(re.sub(r"\s+", "", negative) in nearby_compact for negative in _BUILDING_VIOLATION_NEGATIVE):
+            continue
+        evidence = re.sub(r"\s+", " ", line).strip()[:180]
+        return True, evidence or matched
+    return False, ""
+
+
 def build_special_issue_lines(source_text: str, max_items: int = 8, verbose: bool = True) -> list[str]:
     compact = re.sub(r"\s+", "", source_text or "")
     matched = []

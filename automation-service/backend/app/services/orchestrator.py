@@ -34,6 +34,7 @@ from . import ppt_builder
 from . import forced_execution_estimator
 from . import briefing_opinion
 from . import briefing_rights
+from .special_situations import build_special_issue_lines, detect_building_violation
 from .selenium_driver import (
     create_driver, login_myauction, click_tab_safe,
     switch_to_new_window, wait_document_ready, safe_click, navigate_with_retry,
@@ -691,6 +692,9 @@ async def generate_report(
     registry_land_img_pattern = ""
     checklist_match_count = 0
     checklist_applied = False
+    building_register_text_read = False
+    building_violation_detected = False
+    building_violation_evidence = ""
     planner_inserted_calculators: list[str] = []
     diagnostic_reasons: dict[str, str] = {}
 
@@ -923,7 +927,41 @@ async def generate_report(
                 if not pdf_url:
                     raise RuntimeError("건축물대장 iframe src 없음")
                 pdf_path = pdf_processor.download_pdf_with_cookies(driver, pdf_url, "building_register")
-                total_building = pdf_processor.pdf_to_images(pdf_path, IMG_PATTERN, dpi=250)
+                building_register_text = pdf_processor.extract_pdf_text(pdf_path, max_pages=10)
+                building_violation_detected, building_violation_evidence = detect_building_violation(building_register_text)
+                try:
+                    total_building = pdf_processor.pdf_to_images(pdf_path, IMG_PATTERN, dpi=250)
+                except Exception as image_error:
+                    diagnostic_reasons["building-register"] = _short_selenium_message(
+                        image_error,
+                        "건축물대장 이미지 변환 실패",
+                    )
+                    logger.warning(f"건축물대장 이미지 변환 실패(문자 판독은 계속): {image_error}")
+                    total_building = 0
+                building_images = [
+                    IMG_PATTERN.format(page=index)
+                    for index in range(1, total_building + 1)
+                    if os.path.exists(IMG_PATTERN.format(page=index))
+                ]
+                if not building_violation_detected and building_images:
+                    building_ocr_text = pdf_processor.ocr_image_paths(
+                        building_images,
+                        max_images=1,
+                        timeout_seconds=15,
+                    )
+                    building_register_text = "\n".join(filter(None, [building_register_text, building_ocr_text]))
+                    building_violation_detected, building_violation_evidence = detect_building_violation(building_register_text)
+                building_register_text_read = bool(str(building_register_text or "").strip())
+                data["building_register_text"] = building_register_text
+                data["building_violation_detected"] = building_violation_detected
+                if building_violation_detected:
+                    violation_lines = build_special_issue_lines("위반건축물", max_items=1, verbose=True)
+                    for violation_line in violation_lines:
+                        if violation_line and violation_line not in special_opinion:
+                            special_opinion = "\n\n".join(filter(None, [special_opinion.strip(), violation_line])).strip()
+                    data["special_opinion"] = special_opinion
+                    ppt_builder.apply_special_opinion(prs, special_opinion)
+                    logger.warning(f"건축물대장 위반건축물 감지 및 특이사항 갱신: {building_violation_evidence}")
             except Exception as e:
                 diagnostic_reasons["building-register"] = _short_selenium_message(e, "건축물대장 캡처 실패")
                 logger.warning(f"건축물대장 실패 → 생략(계속 진행): {e}")
@@ -1172,6 +1210,19 @@ async def generate_report(
         "loan-bid-estimator": "입찰가 산정표",
         "acquisition-cost-sheet": "취득비용 계산표",
     }
+    if building_violation_detected:
+        add_diagnostic(
+            "building-violation",
+            "건축물대장 위반건축물",
+            "warning",
+            f"위반건축물 표시 감지 및 특이사항 반영 완료: {building_violation_evidence or '위반건축물'}",
+        )
+    elif building_register_text_read:
+        add_diagnostic("building-violation", "건축물대장 위반건축물", "ok", "위반건축물 표시가 감지되지 않음")
+    elif total_building:
+        add_diagnostic("building-violation", "건축물대장 위반건축물", "warning", "건축물대장 이미지는 반영됐으나 문자 판독에 실패")
+    else:
+        add_diagnostic("building-violation", "건축물대장 위반건축물", "skipped", "건축물대장을 가져오지 못해 판독 생략")
     received_snapshots = {
         str(item.get("calculator") or ""): item
         for item in (request.planner_snapshots or [])

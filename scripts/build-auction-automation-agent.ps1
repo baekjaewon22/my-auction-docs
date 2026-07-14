@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "2026.07.14.4",
+  [string]$Version = "2026.07.14.5",
   [int]$Port = 8001
 )
 
@@ -25,6 +25,15 @@ $popplerBin = $popplerCandidates | Where-Object {
   (Test-Path -LiteralPath (Join-Path $_ "pdfinfo.exe")) -and
   (Test-Path -LiteralPath (Join-Path $_ "pdftoppm.exe"))
 } | Select-Object -First 1
+$tesseractCandidates = @(
+  (Join-Path $backendDir "bin\tesseract"),
+  "C:\Program Files\Tesseract-OCR",
+  "C:\Program Files (x86)\Tesseract-OCR"
+)
+$tesseractDir = $tesseractCandidates | Where-Object {
+  (Test-Path -LiteralPath (Join-Path $_ "tesseract.exe")) -and
+  (Test-Path -LiteralPath (Join-Path $_ "tessdata\kor.traineddata"))
+} | Select-Object -First 1
 
 if (!(Test-Path $venvPython)) {
   throw "Python virtual environment was not found: $venvPython"
@@ -34,6 +43,9 @@ if (!(Test-Path $setupScript)) {
 }
 if (!$popplerBin) {
   throw "Poppler was not found. pdfinfo.exe and pdftoppm.exe are required to build the automation agent."
+}
+if (!$tesseractDir) {
+  throw "Tesseract OCR with Korean language data was not found. tesseract.exe and tessdata\kor.traineddata are required."
 }
 
 Push-Location $backendDir
@@ -55,6 +67,7 @@ try {
     --hidden-import selenium.webdriver.chrome.service `
     --hidden-import selenium.webdriver.common.driver_finder `
     --add-binary "$popplerBin;bin/poppler/Library/bin" `
+    --add-binary "$tesseractDir;bin/tesseract" `
     --add-data "templates;templates" `
     run_server.py
   if ($LASTEXITCODE -ne 0) {

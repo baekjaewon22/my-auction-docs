@@ -92,6 +92,46 @@ def is_valid_pdf(pdf_path: str) -> bool:
         return f.read(4) == b"%PDF"
 
 
+def extract_pdf_text(pdf_path: str, max_pages: int = 20) -> str:
+    """Extract embedded PDF text without OCR."""
+    if not is_valid_pdf(pdf_path):
+        return ""
+    try:
+        doc = fitz.open(pdf_path)
+        try:
+            page_count = min(doc.page_count, max(1, max_pages))
+            return "\n".join(doc.load_page(index).get_text("text") or "" for index in range(page_count))
+        finally:
+            doc.close()
+    except Exception as exc:
+        logger.warning(f"PDF 텍스트 추출 실패({pdf_path}): {exc}")
+        return ""
+
+
+def ocr_image_paths(image_paths: list[str], max_images: int = 2, timeout_seconds: int = 20) -> str:
+    """OCR a small number of document pages with a hard per-page timeout."""
+    if not pytesseract:
+        return ""
+    texts: list[str] = []
+    for image_path in image_paths[:max(1, max_images)]:
+        if not image_path or not os.path.exists(image_path):
+            continue
+        try:
+            with Image.open(image_path) as source:
+                image = ImageOps.autocontrast(ImageOps.grayscale(source.convert("RGB")))
+                text = pytesseract.image_to_string(
+                    image,
+                    lang="kor+eng",
+                    config="--psm 6",
+                    timeout=max(1, timeout_seconds),
+                )
+                if text:
+                    texts.append(text)
+        except Exception as exc:
+            logger.warning(f"문서 이미지 OCR 생략({image_path}): {exc}")
+    return "\n".join(texts)
+
+
 # ============================================================
 # PDF → 이미지 변환
 # ============================================================
