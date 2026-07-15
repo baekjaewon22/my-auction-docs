@@ -448,6 +448,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [bidHistoryPage, setBidHistoryPage] = useState(1);
+  const [bidHistoryPageSize, setBidHistoryPageSize] = useState<10 | 20 | 30>(10);
   const [activeLegalSubcategory, setActiveLegalSubcategory] = useState<LegalSubcategory>(() =>
     normalizeLegalSubcategory(searchParams.get('section') || undefined)
   );
@@ -990,6 +992,26 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     (n.court || '').includes(search) || (n.case_number || '').includes(search) ||
     (n.client_name || '').includes(search) || (n.target_date || '').includes(search)
   );
+  const paginateBidHistory = isBidHistoryMode && bidHistorySection === 'briefing_submit';
+  const bidHistoryTotalPages = Math.max(1, Math.ceil(filtered.length / bidHistoryPageSize));
+  const currentBidHistoryPage = Math.min(bidHistoryPage, bidHistoryTotalPages);
+  const bidHistoryPageGroupStart = Math.floor((currentBidHistoryPage - 1) / 5) * 5 + 1;
+  const bidHistoryVisiblePages = Array.from(
+    { length: Math.min(5, bidHistoryTotalPages - bidHistoryPageGroupStart + 1) },
+    (_, index) => bidHistoryPageGroupStart + index,
+  );
+  const displayedNotes = paginateBidHistory
+    ? filtered.slice(
+        (currentBidHistoryPage - 1) * bidHistoryPageSize,
+        currentBidHistoryPage * bidHistoryPageSize,
+      )
+    : filtered;
+
+  useEffect(() => {
+    if (paginateBidHistory && bidHistoryPage > bidHistoryTotalPages) {
+      setBidHistoryPage(bidHistoryTotalPages);
+    }
+  }, [paginateBidHistory, bidHistoryPage, bidHistoryTotalPages]);
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -1319,7 +1341,10 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
             : { display: 'flex', alignItems: 'center', width: 'min(360px, 100%)', border: '1px solid #dadce0', borderRadius: 6, overflow: 'hidden', background: '#fff' }}>
             <input
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                if (isBidHistoryMode) setBidHistoryPage(1);
+              }}
               onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
               placeholder={activeCategory === 'eviction_quote' ? '법원, 사건번호, 내용 검색...' : activeCategory === 'legal_support' ? '궁금한 법률 내용을 검색하세요' : communitySection === 'briefing_schedule' ? '담당자, 사건번호, 계약자명 검색...' : communitySection === 'article_news' ? '뉴스 제목, 내용 검색...' : communitySection === 'resource_library' ? '자료명, 설명, 업로더 검색...' : '제목, 내용, 작성자 검색...'}
               style={{ flex: 1, border: 'none', outline: 'none', padding: activeCategory === 'legal_support' ? '12px 18px' : '8px 12px', fontSize: activeCategory === 'legal_support' ? 15 : 13 }}
@@ -1624,7 +1649,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
         </div>
       ) : (
         <div className="admin-notes-list">
-          {filtered.map((note) => (
+          {displayedNotes.map((note) => (
             <div key={note.id} className={`admin-notes-card ${note.pinned ? 'pinned' : ''}`} onClick={() => openDetail(note)}>
               <div className="admin-notes-card-body">
                 <div className="admin-notes-card-title">
@@ -1688,6 +1713,58 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           ))}
         </div>
       ))}
+      {paginateBidHistory && filtered.length > 0 && (
+        <div className="bid-history-pagination" aria-label="입찰 내역 페이지 이동">
+          <span className="bid-history-pagination-total">총 {filtered.length.toLocaleString('ko-KR')}건</span>
+          <div className="bid-analysis-pages">
+            {bidHistoryPageGroupStart > 1 && (
+              <button
+                type="button"
+                className="prev-group"
+                onClick={() => setBidHistoryPage(Math.max(1, bidHistoryPageGroupStart - 5))}
+                aria-label="이전 페이지 묶음"
+              >
+                ‹
+              </button>
+            )}
+            {bidHistoryVisiblePages.map(pageNumber => (
+              <button
+                key={pageNumber}
+                type="button"
+                className={currentBidHistoryPage === pageNumber ? 'active' : ''}
+                onClick={() => setBidHistoryPage(pageNumber)}
+                aria-current={currentBidHistoryPage === pageNumber ? 'page' : undefined}
+              >
+                {pageNumber}
+              </button>
+            ))}
+            {bidHistoryPageGroupStart + 4 < bidHistoryTotalPages && (
+              <button
+                type="button"
+                className="next-group"
+                onClick={() => setBidHistoryPage(bidHistoryPageGroupStart + 5)}
+                aria-label="다음 페이지 묶음"
+              >
+                ›
+              </button>
+            )}
+          </div>
+          <label className="bid-history-page-size">
+            <span className="sr-only">페이지당 표시 개수</span>
+            <select
+              value={bidHistoryPageSize}
+              onChange={(event) => {
+                setBidHistoryPageSize(Number(event.target.value) as 10 | 20 | 30);
+                setBidHistoryPage(1);
+              }}
+            >
+              <option value={10}>10개 보기</option>
+              <option value={20}>20개 보기</option>
+              <option value={30}>30개 보기</option>
+            </select>
+          </label>
+        </div>
+      )}
       </>}
       </>}
     </div>

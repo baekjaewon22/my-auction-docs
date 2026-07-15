@@ -4554,6 +4554,62 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   place-items: center;
 }
 
+.bid-history-pagination {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 14px;
+  margin-top: 18px;
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.bid-history-pagination .bid-analysis-pages {
+  justify-content: center;
+}
+
+.bid-history-pagination-total {
+  justify-self: start;
+}
+
+.bid-history-page-size {
+  justify-self: end;
+}
+
+.bid-history-page-size select {
+  min-width: 112px;
+  height: 34px;
+  padding: 0 30px 0 11px;
+  border: 1px solid #d6dbe3;
+  border-radius: 7px;
+  background: #fff;
+  color: #475569;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .bid-history-pagination {
+    grid-template-columns: 1fr auto;
+  }
+
+  .bid-history-pagination .bid-analysis-pages {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .bid-history-pagination-total {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .bid-history-page-size {
+    grid-column: 2;
+    grid-row: 2;
+  }
+}
+
 .bid-match-check {
   display: grid;
   gap: 14px;
