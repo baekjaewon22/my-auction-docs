@@ -234,4 +234,5 @@ automation-service/**/*.pyc
 
 ### Local AI collaboration review artifacts ###
 .ai/reviews/*
+.ai/collaboration/*
 !.ai/reviews/.gitkeep
