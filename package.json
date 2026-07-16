@@ -80,6 +80,7 @@
 		"test:leave": "node --experimental-strip-types --test tests/leave-calendar.test.ts tests/leave-constraints.test.ts tests/leave-cancel-migration.test.ts",
 		"test:refund-recovery": "node --experimental-strip-types --test tests/refund-recovery.test.ts",
 		"test:web-push": "node --experimental-strip-types --test tests/web-push.test.ts",
+		"test:community-notifications": "node --experimental-strip-types --test tests/community-notifications.test.ts",
 		"test:web-push:workerd": "node scripts/test-web-push-workerd.mjs"
 	},
 	"type": "module"

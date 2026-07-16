@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { sendWebPushToUser } from '../lib/web-push-delivery';
 
 const cooperation = new Hono<AuthEnv>();
 cooperation.use('*', authMiddleware);
@@ -21,6 +22,11 @@ cooperation.post('/', async (c) => {
   }>();
 
   if (!receiver_id) return c.json({ error: '수신자를 선택하세요.' }, 400);
+  if (receiver_id === user.sub) return c.json({ error: '본인이 아닌 수신자를 선택하세요.' }, 400);
+  const receiver = await db.prepare(
+    'SELECT id FROM users WHERE id = ? AND approved = 1 LIMIT 1'
+  ).bind(receiver_id).first<{ id: string }>();
+  if (!receiver) return c.json({ error: '선택한 수신자를 찾을 수 없습니다.' }, 400);
 
   const id = crypto.randomUUID();
   // 1개월 후 만료
@@ -31,6 +37,15 @@ cooperation.post('/', async (c) => {
     INSERT INTO cooperation_requests (id, sender_id, receiver_id, court, case_year, case_type, case_number, content, expires_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(id, user.sub, receiver_id, court || '', case_year || '', case_type || '타경', case_number || '', content || '', expiresAt).run();
+
+  c.executionCtx.waitUntil(sendWebPushToUser(db, c.env, {
+    userId: receiver_id,
+    eventType: 'cooperation_direct',
+    title: '1:1 업무협조요청이 도착했습니다',
+    body: `${user.name}: ${String(content || '새 업무협조요청').trim().slice(0, 120)}`,
+    url: '/admin-notes?tab=cooperation',
+    tag: `cooperation-direct-${id}`,
+  }).catch((err) => console.error('[web-push] cooperation request notification failed', err)));
 
   return c.json({ success: true, id });
 });
@@ -158,6 +173,14 @@ cooperation.post('/:id/reply', async (c) => {
     return c.json({ error: '내용 또는 사진을 입력하세요.' }, 400);
   }
 
+  const request = await db.prepare(
+    'SELECT sender_id, receiver_id FROM cooperation_requests WHERE id = ? LIMIT 1'
+  ).bind(id).first<{ sender_id: string; receiver_id: string }>();
+  if (!request) return c.json({ error: '요청을 찾을 수 없습니다.' }, 404);
+  if (request.sender_id !== user.sub && request.receiver_id !== user.sub) {
+    return c.json({ error: '접근 권한이 없습니다.' }, 403);
+  }
+
   const replyId = crypto.randomUUID();
   await db.prepare(
     'INSERT INTO cooperation_replies (id, request_id, author_id, content) VALUES (?, ?, ?, ?)'
@@ -173,6 +196,16 @@ cooperation.post('/:id/reply', async (c) => {
       ).bind(photoId, replyId, id, photo.file_name, photo.file_data, photo.file_size).run();
     }
   }
+
+  const recipientId = request.sender_id === user.sub ? request.receiver_id : request.sender_id;
+  c.executionCtx.waitUntil(sendWebPushToUser(db, c.env, {
+    userId: recipientId,
+    eventType: 'cooperation_reply',
+    title: '업무협조요청에 새 답변이 등록됐습니다',
+    body: `${user.name}: ${String(content || '사진 답변').trim().slice(0, 120)}`,
+    url: '/admin-notes?tab=cooperation',
+    tag: `cooperation-reply-${id}`,
+  }).catch((err) => console.error('[web-push] cooperation reply notification failed', err)));
 
   return c.json({ success: true, reply_id: replyId });
 });

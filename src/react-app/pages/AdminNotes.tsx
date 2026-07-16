@@ -758,7 +758,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           content: isBriefingSchedule ? '' : formContent.trim(),
           pinned: formPinned,
           is_anonymous: activeCategory === 'legal_support' ? formAnonymous : formAnonymous,
-          visibility: isNotice ? 'all' : activeCategory === 'community' && !isBriefingSchedule ? formVisibility : 'all',
+          visibility: isNotice || isBriefingSchedule ? 'all' : formVisibility,
           category: isBriefingSchedule ? 'briefing_schedule' : isNotice ? 'notice' : isResourceLibrary ? 'resource_library' : activeCategory,
           legal_subcategory: activeCategory === 'legal_support' ? formLegalSubcategory : undefined,
           lawsuit_cost_requested: activeCategory === 'legal_support' && usesLawsuitCostCheckbox(formLegalSubcategory) ? formLawsuitCostRequested : false,
@@ -1617,13 +1617,16 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           )}
           {!editingId && (
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-              {activeCategory === 'community' && communitySection !== 'briefing_schedule' && communitySection !== 'notice' && (
+              {((activeCategory === 'community' && communitySection !== 'briefing_schedule' && communitySection !== 'notice') || activeCategory === 'eviction_quote' || activeCategory === 'legal_support') && (
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label style={{ fontSize: '0.8rem', marginBottom: 4, display: 'block' }}>공유 범위</label>
+                  <label style={{ fontSize: '0.8rem', marginBottom: 4, display: 'block' }}>공유 범위 / 1:1 수신자</label>
                   <select className="form-input" value={formVisibility} onChange={(e) => setFormVisibility(e.target.value)}
                     style={{ padding: '6px 10px', fontSize: '0.82rem', minWidth: 180 }}>
                     {visibilityOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
+                  {formVisibility.startsWith('user:') && (
+                    <div style={{ marginTop: 4, color: '#1a73e8', fontSize: '0.74rem' }}>선택한 한 사람에게만 게시글 알림이 전송됩니다.</div>
+                  )}
                 </div>
               )}
               {((activeCategory === 'community' && communitySection !== 'briefing_schedule' && communitySection !== 'notice') || activeCategory === 'legal_support') && (

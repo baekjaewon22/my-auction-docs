@@ -6,6 +6,14 @@ import { recheckAlertsAfterEntryDelete, recheckAlertsForJournalEntry } from '../
 import { articleObjectKey, ensureArticlePdfTable, safePdfFileName, sha256Hex } from '../lib/article-pdfs';
 import { ensureBidAnalysisTable, makeBidDedupeKey, normalizeAmount, normalizeBidResult } from '../lib/bid-analysis';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { sendWebPushToUser } from '../lib/web-push-delivery';
+import {
+  communityCategoryLabel,
+  communityNotificationUrl,
+  communityReplyRecipientIds,
+  directRecipientId,
+  TARGETED_COMMUNITY_CATEGORIES,
+} from '../../shared/community-notifications';
 
 const ADMIN_ROLES: Role[] = ['master', 'ceo', 'cc_ref', 'admin'];
 const NOTE_CATEGORIES = ['community', 'notice', 'article_news', 'briefing_schedule', 'resource_library', 'eviction_quote', 'legal_support'] as const;
@@ -1421,6 +1429,17 @@ adminNotes.post('/', async (c) => {
     return c.json({ error: '법률이해는 법률지원팀 및 관리자급 이상만 작성할 수 있습니다.' }, 403);
   }
 
+  const requestedVisibility = String(visibility || 'all').trim() || 'all';
+  const finalVisibility = category === 'briefing_schedule' || category === 'notice' ? 'all' : requestedVisibility;
+  const directTargetId = directRecipientId(finalVisibility);
+  if (directTargetId) {
+    if (directTargetId === user.sub) return c.json({ error: '본인이 아닌 수신자를 선택하세요.' }, 400);
+    const directTarget = await db.prepare(
+      'SELECT id FROM users WHERE id = ? AND approved = 1 LIMIT 1'
+    ).bind(directTargetId).first<{ id: string }>();
+    if (!directTarget) return c.json({ error: '선택한 수신자를 찾을 수 없습니다.' }, 400);
+  }
+
   let assignee: { id: string; name: string; branch: string; department: string; approved: number } | null = null;
   let journalEntryId: string | null = null;
   let finalTitle = title?.trim() || '';
@@ -1497,7 +1516,7 @@ adminNotes.post('/', async (c) => {
     canPin && pinned ? 1 : 0,
     source_type || null, source_id || null,
     is_anonymous ? 1 : 0,
-    category === 'briefing_schedule' || category === 'notice' ? 'all' : visibility || 'all',
+    finalVisibility,
     profile?.branch || '', profile?.department || '',
     category,
     category === 'eviction_quote' || category === 'briefing_schedule' || (category === 'legal_support' && legalSubcategory === 'auction') ? String(court || '').trim() : null,
@@ -1595,7 +1614,7 @@ adminNotes.post('/', async (c) => {
       id,
       title: finalTitle,
       category,
-      visibility: category === 'briefing_schedule' || category === 'notice' ? 'all' : visibility || 'all',
+      visibility: finalVisibility,
       legal_subcategory: legalSubcategory,
       court: category === 'eviction_quote' ? court.trim() : null,
       case_number: category === 'eviction_quote' ? case_number.trim() : null,
@@ -1604,6 +1623,17 @@ adminNotes.post('/', async (c) => {
       is_anonymous: is_anonymous ? 1 : 0,
     },
   ).catch((err) => console.error('[community alimtalk] create notification failed', err)));
+
+  if (directTargetId && TARGETED_COMMUNITY_CATEGORIES.includes(category as typeof TARGETED_COMMUNITY_CATEGORIES[number])) {
+    c.executionCtx.waitUntil(sendWebPushToUser(db, c.env, {
+      userId: directTargetId,
+      eventType: 'community_direct',
+      title: `1:1 ${communityCategoryLabel(category)}이 도착했습니다`,
+      body: `${is_anonymous ? '익명' : user.name}: ${finalTitle}`,
+      url: communityNotificationUrl(category),
+      tag: `community-direct-${id}`,
+    }).catch((err) => console.error('[web-push] direct community notification failed', err)));
+  }
 
   return c.json({ success: true, id });
 });
@@ -1717,6 +1747,7 @@ adminNotes.post('/:id/comments', async (c) => {
   await ensureAdminNoteExtensions(db);
   const note = await db.prepare(`
     SELECT n.id, n.title, n.category, n.legal_subcategory, n.court, n.case_number, n.author_id, n.author_name,
+      n.visibility, n.author_branch, n.author_department,
       u.name as receiver_name, u.phone as receiver_phone
     FROM admin_notes n
     LEFT JOIN users u ON u.id = n.author_id
@@ -1730,10 +1761,19 @@ adminNotes.post('/:id/comments', async (c) => {
     case_number: string | null;
     author_id: string;
     author_name: string;
+    visibility: string | null;
+    author_branch: string | null;
+    author_department: string | null;
     receiver_name: string | null;
     receiver_phone: string | null;
   }>();
   if (!note) return c.json({ error: '게시글을 찾을 수 없습니다.' }, 404);
+  const viewerInfo = await db.prepare(
+    'SELECT branch, department, role FROM users WHERE id = ? LIMIT 1'
+  ).bind(user.sub).first<{ branch: string | null; department: string | null; role: string | null }>();
+  if (!canReadNote(note, user, viewerInfo, viewerInfo?.role || user.role)) {
+    return c.json({ error: '접근 권한이 없습니다.' }, 403);
+  }
   if (note.category === 'legal_support' && !canAnswerLegalSubcategory(note.legal_subcategory)) {
     return c.json({ error: '법률이해 게시글은 답변을 받지 않습니다.' }, 400);
   }
@@ -1749,6 +1789,23 @@ adminNotes.post('/:id/comments', async (c) => {
     note,
     { id, authorId: user.sub, authorName: user.name, isAnonymous: !!is_anonymous },
   ).catch((err) => console.error('[community alimtalk] comment notification failed', err)));
+
+  const pushRecipients = communityReplyRecipientIds({
+    category: note.category,
+    authorId: note.author_id,
+    visibility: note.visibility,
+    actorId: user.sub,
+  });
+  for (const recipientId of pushRecipients) {
+    c.executionCtx.waitUntil(sendWebPushToUser(db, c.env, {
+      userId: recipientId,
+      eventType: 'community_reply',
+      title: `새 ${note.category === 'legal_support' ? '답변' : '댓글'}이 등록됐습니다`,
+      body: `${is_anonymous ? '익명' : user.name}: ${String(content).trim().slice(0, 120)}`,
+      url: communityNotificationUrl(note.category),
+      tag: `community-reply-${noteId}`,
+    }).catch((err) => console.error('[web-push] community reply notification failed', err)));
+  }
 
   return c.json({ success: true, id });
 });
