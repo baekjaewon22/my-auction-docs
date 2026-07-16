@@ -4,6 +4,8 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
+import { calculateRefundRecoveryAmount } from '../../shared/refund-recovery';
+import { resolveRefundRecovery } from '../lib/refund-recovery';
 
 const sales = new Hono<AuthEnv>();
 sales.use('*', authMiddleware);
@@ -40,7 +42,7 @@ function hasAlimtalkBranch(settings: string | null | undefined, branch: string |
 
 type LogUser = { sub: string; name?: string; role: string };
 type LogInput = {
-  action: 'update' | 'delete' | 'status_change' | 'refund_approve' | 'deposit_claim_approve' | 'deposit_delete' | 'payment_method_change' | 'memo_add' | 'memo_update' | 'memo_delete';
+  action: 'update' | 'delete' | 'status_change' | 'refund_approve' | 'refund_recovery_resolve' | 'deposit_claim_approve' | 'deposit_delete' | 'payment_method_change' | 'memo_add' | 'memo_update' | 'memo_delete';
   target_type?: string;
   target_id: string;
   target_label: string;
@@ -995,6 +997,10 @@ sales.get('/dashboard/refund-impacts', async (c) => {
     LEFT JOIN user_accounting ua ON ua.user_id = sr.user_id
     WHERE sr.status = 'refunded'
       AND sr.refund_approved_at >= datetime('now', '-60 days')
+      AND NOT EXISTS (
+        SELECT 1 FROM refund_recovery_resolutions rrr
+        WHERE rrr.sales_record_id = sr.id
+      )
     ORDER BY sr.refund_approved_at DESC
   `).all();
 
@@ -1020,12 +1026,11 @@ sales.get('/dashboard/refund-impacts', async (c) => {
     const affectsCommission = r.pay_type === 'commission';
 
     // 회수 금액 계산
-    let recoveryAmount = 0;
-    if (affectsCommission) {
-      const supply = Math.round(r.amount / 1.1);
-      const commission = Math.round(supply * (r.commission_rate || 0) / 100);
-      recoveryAmount = Math.round(commission * (1 - 0.033)); // 원천세 제외 실지급분
-    }
+    const recoveryAmount = calculateRefundRecoveryAmount({
+      amount: r.amount,
+      payType: r.pay_type,
+      commissionRate: r.commission_rate,
+    });
 
     impacts.push({
       id: r.id,
@@ -1062,6 +1067,41 @@ sales.get('/dashboard/refund-impacts', async (c) => {
   }
 
   return c.json({ impacts: finalImpacts });
+});
+
+// POST /api/sales/:id/refund-recovery-resolve — 급여정산 확정 후 환불 회수 완료
+sales.post('/:id/refund-recovery-resolve', requireRole('master', 'accountant'), async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const salesRecordId = c.req.param('id');
+  const body = await c.req.json<{ payroll_month?: string }>()
+    .catch(() => ({} as { payroll_month?: string }));
+  const result = await resolveRefundRecovery(db, {
+    salesRecordId,
+    payrollMonth: String(body.payroll_month || ''),
+    resolvedBy: user.sub,
+  });
+  if (!result.success) {
+    return c.json({ error: result.error, code: result.code }, result.status);
+  }
+
+  if (!result.alreadyResolved) {
+    await logActivity(db, user, {
+      action: 'refund_recovery_resolve',
+      target_type: 'refund_recovery',
+      target_id: salesRecordId,
+      target_label: `${result.payrollPeriod} 환불 회수`,
+      diff_summary: `급여정산 확정 후 환불 회수 완료${result.recoveryAmount > 0 ? ` (${result.recoveryAmount.toLocaleString('ko-KR')}원)` : ''}`,
+      after: { payroll_period: result.payrollPeriod, recovery_amount: result.recoveryAmount },
+    }, 'accounting');
+  }
+
+  return c.json({
+    success: true,
+    already_resolved: result.alreadyResolved,
+    recovery_amount: result.recoveryAmount,
+    payroll_period: result.payrollPeriod,
+  });
 });
 
 // GET /api/sales/dashboard/refund-requests — 환불 신청 건 (대시보드)

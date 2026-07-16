@@ -8,6 +8,7 @@ import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLin
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 import { sameBranchName } from '../lib/branchAliases';
+import { refundApprovalMonth, refundRecoveryPayrollUrl } from '../../shared/refund-recovery';
 
 const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
 
@@ -179,6 +180,7 @@ export default function Dashboard() {
   const [refundRequests, setRefundRequests] = useState<SalesRecord[]>([]);
   const [depositNotices, setDepositNotices] = useState<DepositNotice[]>([]);
   const [refundImpacts, setRefundImpacts] = useState<any[]>([]);
+  const [resolvingRefundId, setResolvingRefundId] = useState('');
   const [scheduleGaps, setScheduleGaps] = useState<ScheduleGapAlert[]>([]);
   const [exemptionSubmitting, setExemptionSubmitting] = useState(false);
   const [contractAlerts, setContractAlerts] = useState<SalesRecord[]>([]);
@@ -199,7 +201,31 @@ export default function Dashboard() {
   const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '')
     || ACCOUNTING_ALERT_EXTRA_USER_IDS.includes(user?.id || '');
   const isMaster = user?.role === 'master';
+  const canResolveRefundRecovery = ['master', 'accountant'].includes(user?.role || '');
   const canDismissScheduleGapAlerts = ['master', 'admin'].includes(user?.role || '');
+
+  const handleResolveRefundRecovery = async (impact: any) => {
+    const payrollMonth = refundApprovalMonth(impact.refund_approved_at);
+    if (!payrollMonth) {
+      alert('환불 승인월을 확인할 수 없습니다.');
+      return;
+    }
+    const recoveryText = impact.recovery_amount > 0
+      ? `\n회수금액: ${Number(impact.recovery_amount).toLocaleString('ko-KR')}원`
+      : '\n성과금 재계산 및 공제 반영 여부를 확인해 주세요.';
+    if (!confirm(`해당 직원의 ${payrollMonth} 급여정산에 환불 회수를 반영하고 정산 확정까지 완료했습니까?${recoveryText}\n\n완료 처리 후 이 알림은 전체 대시보드에서 제거됩니다.`)) return;
+
+    setResolvingRefundId(impact.id);
+    try {
+      await api.sales.resolveRefundRecovery(impact.id, payrollMonth);
+      setRefundImpacts(prev => prev.filter(item => item.id !== impact.id));
+      alert('환불 회수 처리가 완료되었습니다.');
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setResolvingRefundId('');
+    }
+  };
 
   // 마스터 전용 섹션 전체 삭제 버튼 — 실수 방지를 위해 명확한 라벨 표시
   const MasterCloseBtn = ({ alertType, keys, onClose }: { alertType: string; keys: string[]; onClose: () => void }) => isMaster ? (
@@ -1170,7 +1196,7 @@ export default function Dashboard() {
           <div className="doc-list">
             {refundImpacts.map((imp: any) => (
               <div key={imp.id} style={{ position: 'relative' }}>
-                <Link to="/payroll" className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
+                <Link to={refundRecoveryPayrollUrl({ salesRecordId: imp.id, userId: imp.user_id, refundApprovedAt: imp.refund_approved_at || '' })} className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
                   <div className="doc-info">
                     <AlertTriangle size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
                     <div>
@@ -1191,6 +1217,25 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </Link>
+                {canResolveRefundRecovery && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '6px 10px 10px', borderLeft: '3px solid #e65100' }}>
+                    <Link
+                      to={refundRecoveryPayrollUrl({ salesRecordId: imp.id, userId: imp.user_id, refundApprovedAt: imp.refund_approved_at || '' })}
+                      className="btn btn-sm"
+                      style={{ fontSize: '0.75rem' }}
+                    >
+                      정산하러 가기
+                    </Link>
+                    <button
+                      className="btn btn-sm btn-success"
+                      style={{ fontSize: '0.75rem' }}
+                      disabled={resolvingRefundId === imp.id}
+                      onClick={() => handleResolveRefundRecovery(imp)}
+                    >
+                      {resolvingRefundId === imp.id ? '확인중...' : '처리완료'}
+                    </button>
+                  </div>
+                )}
                 {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="refund_impact" alertKey={`refund_impact_${imp.id}`} /></div>}
               </div>
             ))}

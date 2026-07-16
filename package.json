@@ -75,7 +75,8 @@
 		"lint": "eslint .",
 		"preview": "npm run build && vite preview",
 		"test:automation-access": "node --experimental-strip-types --test tests/automation-access.test.ts",
-		"test:leave": "node --experimental-strip-types --test tests/leave-calendar.test.ts tests/leave-constraints.test.ts tests/leave-cancel-migration.test.ts"
+		"test:leave": "node --experimental-strip-types --test tests/leave-calendar.test.ts tests/leave-constraints.test.ts tests/leave-cancel-migration.test.ts",
+		"test:refund-recovery": "node --experimental-strip-types --test tests/refund-recovery.test.ts"
 	},
 	"type": "module"
 }

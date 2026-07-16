@@ -11,6 +11,7 @@ import EmployeePayrollListTab from '../components/EmployeePayrollListTab';
 import { Receipt, Camera } from 'lucide-react';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
+import { refundApprovalMonth } from '../../shared/refund-recovery';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
 function truncMoney(n: number): number { return Math.trunc((Number(n) || 0) / 10) * 10; }
@@ -81,9 +82,10 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   // 추가 정산/공제 (동적 배열 — 급여제/비율제 공통)
   // 비율제: skipTax=원천세면제, skipRate=비율면제
   const [commExtras, setCommExtras] = useState<{ label: string; amount: string; skipTax?: boolean; skipRate?: boolean }[]>([]);
-  const [commDeductions, setCommDeductions] = useState<{ label: string; amount: string; isFood?: boolean; skipTax?: boolean }[]>([]);
+  const [commDeductions, setCommDeductions] = useState<{ label: string; amount: string; isFood?: boolean; skipTax?: boolean; sourceId?: string }[]>([]);
   const [isLocked, setIsLocked] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [refundRecoveryResolved, setRefundRecoveryResolved] = useState(false);
   // 안건 수당 (외부 사건 수신 — 2개월 단위 짝수월에만 지급)
   const [caseAllowance, setCaseAllowance] = useState<{ total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; period_label: string; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null } | null>(null);
 
@@ -112,6 +114,19 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
     setSelectedUserId('');
     setData(null);
   }, [requireBranchSelection, searchParams]);
+
+  const refundRecoveryId = searchParams.get('refund_recovery') || '';
+  const refundRecoveryUserId = searchParams.get('user_id') || '';
+  const refundRecoveryMonth = refundApprovalMonth(searchParams.get('month'));
+
+  useEffect(() => {
+    if (!refundRecoveryId || !refundRecoveryUserId || !refundRecoveryMonth || users.length === 0) return;
+    if (!users.some(u => u.id === refundRecoveryUserId)) return;
+    setFilterBranch('');
+    setSelectedMonth(refundRecoveryMonth);
+    setSelectedUserId(refundRecoveryUserId);
+    setTab('payroll');
+  }, [refundRecoveryId, refundRecoveryMonth, refundRecoveryUserId, users]);
 
   const loadPayroll = async () => {
     if (!selectedUserId) return;
@@ -149,6 +164,17 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           setIsLocked(!!saveRes.save.locked);
         }
       } catch { /* 저장 없음 */ }
+
+      const linkedRecovery = (res.refund_recoveries || []).find((item: any) => item.id === refundRecoveryId);
+      if (linkedRecovery && res.accounting?.pay_type === 'commission' && Number(linkedRecovery.recovery_amount) > 0) {
+        setCommDeductions(prev => prev.some(item => item.sourceId === refundRecoveryId)
+          ? prev
+          : [...prev, {
+              label: `환불 회수 · ${linkedRecovery.client_name || '고객명 미기재'}`,
+              amount: String(Number(linkedRecovery.recovery_amount)),
+              sourceId: refundRecoveryId,
+            }]);
+      }
 
       // 안건 수당 — 짝수월에만 (예: 4월 → 3~4월 합계)
       try {
@@ -230,6 +256,18 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       alert('확정취소되었습니다.');
       await loadPayroll();
     } catch (err: any) { alert(err.message); }
+  };
+
+  const handleCompleteRefundRecovery = async () => {
+    if (!refundRecoveryId || !refundRecoveryMonth) return;
+    if (!confirm('환불 회수 공제 또는 성과금 재계산이 정산표에 반영되었는지 마지막으로 확인해 주세요.\n\n이 급여정산을 환불 회수 처리완료로 기록하시겠습니까?')) return;
+    try {
+      await api.sales.resolveRefundRecovery(refundRecoveryId, refundRecoveryMonth);
+      setRefundRecoveryResolved(true);
+      alert('환불 회수 처리가 완료되어 대시보드 알림에서 제거됩니다.');
+    } catch (err: any) {
+      alert(err.message);
+    }
   };
 
   useEffect(() => { if (selectedUserId) loadPayroll(); }, [selectedUserId, selectedMonth]);
@@ -347,6 +385,28 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       <div className="page-header">
         <h2><Receipt size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 급여정산</h2>
       </div>
+
+      {refundRecoveryId && (
+        <div style={{ marginBottom: 14, padding: '14px 16px', borderRadius: 10, border: '1px solid #ffcc80', background: refundRecoveryResolved ? '#e8f5e9' : '#fff8e1', color: refundRecoveryResolved ? '#137333' : '#8d4e00' }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+            {refundRecoveryResolved ? '환불 회수 처리완료' : '환불 회수 정산 진행 중'}
+          </div>
+          <div style={{ fontSize: '0.82rem', lineHeight: 1.5 }}>
+            대시보드에서 연결된 환불 건입니다. 공제 또는 성과금 재계산을 반영한 뒤 `정산 저장 → 확정 → 처리완료` 순서로 진행해 주세요.
+          </div>
+          {!refundRecoveryResolved && ['master', 'accountant'].includes(currentUser?.role || '') && (
+            <button
+              className="btn btn-sm btn-success"
+              style={{ marginTop: 10 }}
+              disabled={!isLocked}
+              title={!isLocked ? '정산 저장 후 확정해야 처리완료할 수 있습니다.' : '환불 회수 처리완료'}
+              onClick={handleCompleteRefundRecovery}
+            >
+              {isLocked ? '환불 회수 처리완료' : '정산 확정 후 처리 가능'}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 필터 */}
       <div className="payroll-control-panel">

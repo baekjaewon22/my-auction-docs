@@ -582,6 +582,11 @@ export const api = {
       request<{ records: import('./types').SalesRecord[] }>('/sales/dashboard/refund-requests'),
     dashboardRefundImpacts: () =>
       request<{ impacts: any[] }>('/sales/dashboard/refund-impacts'),
+    resolveRefundRecovery: (id: string, payrollMonth: string) =>
+      request<{ success: boolean; already_resolved: boolean; recovery_amount: number; payroll_period: string }>(
+        '/sales/' + id + '/refund-recovery-resolve',
+        { method: 'POST', body: JSON.stringify({ payroll_month: payrollMonth }) },
+      ),
     stats: (params?: { month?: string; month_end?: string; branch?: string; department?: string; user_id?: string }) => {
       const q = new URLSearchParams();
       if (params?.month) q.set('month', params.month);
