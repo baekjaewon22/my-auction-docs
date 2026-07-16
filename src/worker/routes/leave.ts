@@ -17,7 +17,9 @@ import {
   businessDayLeaveValidationError,
   CREATE_ACTIVE_EXACT_LEAVE_INDEX_SQL,
   CREATE_ACTIVE_SUMMER_LEAVE_INDEX_SQL,
+  markApprovedLeaveCancelRequested,
 } from '../../shared/leave-request-constraints';
+import { sumApprovedLeave, type LeaveCycle } from '../../shared/leave-balance';
 
 const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
@@ -484,8 +486,6 @@ function leaveDisplayFields(data: any) {
 /**
  * leave_requests 이력 기반으로 사용 시간 합계 산출 (사용자 타입 인자 받음)
  */
-type LeaveCycle = { start: string; end: string };
-
 function todayKstDateOnly(): string {
   return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
@@ -533,38 +533,6 @@ function getCurrentLeaveCycle(hireDate: string, userType: 'monthly' | 'annual'):
   return {
     start,
     end: nextStart ? addDaysDateString(nextStart, -1) : today,
-  };
-}
-
-async function sumApprovedLeave(db: D1Database, userId: string, userType: 'monthly' | 'annual', cycle?: LeaveCycle | null): Promise<{ used_days: number; monthly_used: number; used_hours: number; monthly_used_hours: number }> {
-  const cycleStart = cycle?.start || null;
-  const cycleEnd = cycle?.end || null;
-
-  const result = await db.prepare(`
-    SELECT leave_type,
-      COALESCE(SUM(CASE WHEN leave_type = '시간차' THEN hours ELSE days * ? END), 0) as total_hours
-    FROM leave_requests
-    WHERE user_id = ? AND status = 'approved' AND leave_type != '특별휴가'
-      AND (? IS NULL OR start_date >= ?)
-      AND (? IS NULL OR start_date <= ?)
-    GROUP BY leave_type
-  `).bind(HOURS_PER_DAY, userId, cycleStart, cycleStart, cycleEnd, cycleEnd).all<{ leave_type: string; total_hours: number }>();
-
-  let usedHours = 0;
-  let monthlyUsedHours = 0;
-  for (const row of (result.results || [])) {
-    const rowHours = Number(row.total_hours) || 0;
-    if (userType === 'monthly') {
-      monthlyUsedHours += rowHours;
-    } else {
-      usedHours += rowHours;
-    }
-  }
-  return {
-    used_hours: usedHours,
-    monthly_used_hours: monthlyUsedHours,
-    used_days: hoursToDays(usedHours),
-    monthly_used: hoursToDays(monthlyUsedHours),
   };
 }
 
@@ -1567,8 +1535,8 @@ leave.post('/requests/:id/cancel', async (c) => {
         .catch((err) => console.error('[leave archive auto-cancel]', err));
     } else {
       // 일반 유저: 취소요청 상태로 변경 (관리자 확인 필요)
-      await db.prepare("UPDATE leave_requests SET status = 'cancel_requested', updated_at = datetime('now') WHERE id = ?")
-        .bind(requestId).run();
+      const cancelResult = await markApprovedLeaveCancelRequested(db, requestId);
+      if (!cancelResult.success) return c.json(cancelResult.body, cancelResult.status);
     }
   } else {
     // pending → 바로 취소
