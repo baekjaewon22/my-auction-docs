@@ -1228,10 +1228,15 @@ adminNotes.get('/bid-match-check', async (c) => {
   };
 
   const briefing = await db.prepare(`
-    SELECT id, title, target_date, assignee_id, case_number, item_no, client_name, court, created_at
-    FROM admin_notes
-    WHERE category = 'briefing_schedule'
-    ORDER BY target_date DESC, created_at DESC
+    SELECT n.id, n.title, n.target_date, n.assignee_id, n.case_number, n.item_no,
+           n.client_name, n.court, n.created_at,
+           COALESCE(u.name, '') AS assignee_name,
+           COALESCE(u.branch, '') AS assignee_branch,
+           COALESCE(u.department, '') AS assignee_department
+    FROM admin_notes n
+    LEFT JOIN users u ON u.id = n.assignee_id
+    WHERE n.category = 'briefing_schedule'
+    ORDER BY n.target_date DESC, n.created_at DESC
   `).all<any>();
   const analysis = await db.prepare(`
     SELECT id, bid_datetime, assignee_name, branch_name, case_number, property_type, bid_result, client_name, source_type, created_at
