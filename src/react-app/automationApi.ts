@@ -2,7 +2,7 @@ const AUTOMATION_API_BASE = (import.meta.env.VITE_AUTOMATION_API_BASE || '/api')
 const LOCAL_AUTOMATION_API_BASE = (import.meta.env.VITE_LOCAL_AUTOMATION_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '');
 const AUTOMATION_WS_BASE = (import.meta.env.VITE_AUTOMATION_WS_BASE || '').replace(/\/$/, '');
 const AUTOMATION_AGENT_INSTALLER_URL = import.meta.env.VITE_AUTOMATION_AGENT_INSTALLER_URL || '/api/report/agent-installer';
-export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.14.7';
+export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.16.1';
 
 function getToken(): string | null {
   return localStorage.getItem('token');
@@ -92,7 +92,20 @@ export interface AutomationAgentStatus {
   title?: string;
   dependencyReady?: boolean;
   dependencyMessage?: string;
+  connectionIssue?: 'permission_denied' | 'browser_blocked' | 'not_connected';
   error?: string;
+}
+
+async function getLoopbackPermissionState(): Promise<PermissionState | 'unsupported'> {
+  if (typeof navigator === 'undefined' || !navigator.permissions?.query) return 'unsupported';
+  try {
+    const permission = await navigator.permissions.query(
+      { name: 'local-network-access' } as unknown as PermissionDescriptor,
+    );
+    return permission.state;
+  } catch {
+    return 'unsupported';
+  }
 }
 
 function compareVersions(left: string, right: string) {
@@ -133,6 +146,18 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
     // 서버 조회 실패 시 현재 웹에 포함된 기준 버전으로 계속 확인한다.
   }
 
+  const loopbackPermission = await getLoopbackPermissionState();
+  if (loopbackPermission === 'denied') {
+    return {
+      ok: false,
+      requiredVersion,
+      latestVersionVerified,
+      checkedAt,
+      connectionIssue: 'permission_denied',
+      error: 'local_network_access_denied',
+    };
+  }
+
   try {
     const res = await fetch(`${LOCAL_AUTOMATION_API_BASE}/health`, {
       method: 'GET',
@@ -156,7 +181,14 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
       dependencyMessage: popplerReady ? undefined : 'PDF 변환 구성요소가 없거나 손상되었습니다.',
     };
   } catch (err: any) {
-    return { ok: false, requiredVersion, latestVersionVerified, checkedAt, error: err?.message || 'not_connected' };
+    return {
+      ok: false,
+      requiredVersion,
+      latestVersionVerified,
+      checkedAt,
+      connectionIssue: loopbackPermission === 'unsupported' ? 'not_connected' : 'browser_blocked',
+      error: err?.message || 'not_connected',
+    };
   }
 }
 

@@ -1645,6 +1645,8 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
   const isOutdated = state === 'outdated';
   const isConnected = state === 'connected';
   const isUnverified = state === 'unverified';
+  const isPermissionDenied = status?.connectionIssue === 'permission_denied';
+  const isBrowserBlocked = status?.connectionIssue === 'browser_blocked';
   const title = isConnected
     ? '자동화 실행기 버전 확인'
     : isOutdated
@@ -1660,14 +1662,22 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
         ? `현재 버전 ${status?.version || '확인 불가'} · 필요 버전 ${status?.requiredVersion || REQUIRED_AUTOMATION_AGENT_VERSION}`
         : isUnverified
           ? '이 PC의 실행기는 연결됐지만 서버 최신 버전을 확인하지 못했습니다.'
-        : '현재 PC에서 자동화 실행기를 찾지 못했습니다.';
+        : isPermissionDenied
+          ? 'Chrome에서 이 사이트의 로컬 네트워크 접근이 차단되어 있습니다.'
+          : isBrowserBlocked
+            ? 'Chrome의 로컬 네트워크 연결 허용이 필요합니다.'
+            : '현재 PC에서 자동화 실행기를 찾지 못했습니다.';
   const description = isConnected
       ? '서버의 최신 배포 버전과 이 PC에 설치된 실행기 버전을 캐시 없이 직접 비교한 결과입니다.'
       : isOutdated
         ? '이 PC에 설치된 자동화 실행기가 구버전입니다. 최신 설치관리자를 다시 받아 실행하면 기존 실행기를 종료하고 새 버전으로 업데이트합니다.'
         : isUnverified
           ? '캐시된 기준값만으로 최신이라고 표시하지 않습니다. 네트워크 연결을 확인한 뒤 지금 다시 확인해 주세요.'
-        : '브리핑자료와 권리분석 보증서 자동 생성을 사용하려면 이 PC에 자동화 실행기가 설치되어 있어야 합니다. 설치관리자 실행 후 다시 확인을 눌러 주세요.';
+        : isPermissionDenied
+          ? '주소창 왼쪽의 사이트 설정을 열어 “로컬 네트워크 액세스”를 허용한 뒤 페이지를 새로고침하고 다시 확인해 주세요. 실행기를 다시 설치할 필요는 없습니다.'
+          : isBrowserBlocked
+            ? '주소창에 표시되는 로컬 네트워크 연결 요청에서 허용을 선택한 뒤 다시 확인해 주세요. 요청이 보이지 않으면 사이트 설정에서 로컬 네트워크 액세스를 허용해 주세요.'
+            : '브리핑자료와 권리분석 보증서 자동 생성을 사용하려면 이 PC에 자동화 실행기가 설치되어 있어야 합니다. 설치관리자 실행 후 다시 확인을 눌러 주세요.';
   const checkedAt = status?.checkedAt
     ? new Date(status.checkedAt).toLocaleString('ko-KR', { hour12: false })
     : '확인 전';
@@ -1691,7 +1701,7 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
           <div className="automation-agent-version-grid">
             <div>
               <span>이 PC 설치 버전</span>
-              <strong>{status?.version || (state === 'missing' ? '설치되지 않음' : '확인 중')}</strong>
+              <strong>{status?.version || (isPermissionDenied || isBrowserBlocked ? '브라우저에서 확인 차단' : state === 'missing' ? '설치되지 않음' : '확인 중')}</strong>
             </div>
             <div>
               <span>최신 배포 버전</span>
@@ -1702,7 +1712,7 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
               <strong>{checkedAt}</strong>
             </div>
           </div>
-          {(isOutdated || state === 'missing') && (
+          {(isOutdated || (state === 'missing' && !isPermissionDenied && !isBrowserBlocked)) && (
             <div className="automation-agent-steps">
               <span>1. 최신 설치관리자 다운로드</span>
               <span>2. MyAuctionAutomationAgentSetup.exe 실행</span>
@@ -1711,7 +1721,7 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
           )}
         </div>
         <div className="automation-agent-modal-actions">
-          {(isOutdated || state === 'missing') && (
+          {(isOutdated || (state === 'missing' && !isPermissionDenied && !isBrowserBlocked)) && (
             <button
               className="btn btn-primary"
               onClick={() => automationApi.downloadAgentInstaller().catch((err) => alert(err.message))}

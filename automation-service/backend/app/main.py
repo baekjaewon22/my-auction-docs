@@ -45,6 +45,20 @@ app.add_middleware(
     expose_headers=["Content-Disposition", "Content-Length"],
 )
 
+
+@app.middleware("http")
+async def allow_private_network_preflight(request, call_next):
+    """Allow the public HTTPS site to reach this loopback-only agent.
+
+    Chrome may send a Private Network Access preflight before a request from
+    my-docs.kr to 127.0.0.1. CORSMiddleware handles the regular CORS headers,
+    but Starlette does not add this PNA-specific response header.
+    """
+    response = await call_next(request)
+    if request.headers.get("access-control-request-private-network", "").lower() == "true":
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
 # API 라우트
 app.include_router(api_router, prefix="/api")
 
