@@ -1,9 +1,23 @@
-import { Context, Next } from 'hono';
+import type { Context, Next } from 'hono';
 import { jwtVerify, SignJWT } from 'jose';
 import type { AuthEnv, JwtPayload, Role } from '../types';
 
-const JWT_SECRET = new TextEncoder().encode('auction-docs-secret-key-2025');
 const TOKEN_EXPIRY = '24h';
+
+export class JwtConfigurationError extends Error {
+  constructor() {
+    super('JWT signing secret is not configured.');
+    this.name = 'JwtConfigurationError';
+  }
+}
+
+function jwtSecret(env: Env): Uint8Array {
+  const configured = String(env.JWT_SIGNING_SECRET || '').trim();
+  if (!configured || configured.length < 32) {
+    throw new JwtConfigurationError();
+  }
+  return new TextEncoder().encode(configured);
+}
 
 type ServiceTokenScope = 'read' | 'write' | 'admin';
 
@@ -25,16 +39,16 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function createToken(payload: JwtPayload): Promise<string> {
+export async function createToken(payload: JwtPayload, env: Env): Promise<string> {
   return new SignJWT({ ...payload })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime(TOKEN_EXPIRY)
-    .sign(JWT_SECRET);
+    .sign(jwtSecret(env));
 }
 
-export async function verifyToken(token: string): Promise<JwtPayload> {
-  const { payload } = await jwtVerify(token, JWT_SECRET);
+export async function verifyToken(token: string, env: Env): Promise<JwtPayload> {
+  const { payload } = await jwtVerify(token, jwtSecret(env));
   return payload as unknown as JwtPayload;
 }
 
@@ -103,7 +117,7 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
     : String(serviceHeader || deviceKeyHeader || '');
 
   try {
-    const payload = await verifyToken(token);
+    const payload = await verifyToken(token, c.env);
     const db = c.env.DB;
     const freshUser = await db.prepare(
       'SELECT id, role, team_id, branch, department, login_type FROM users WHERE id = ?'
@@ -123,7 +137,11 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
     payload.auth_type = 'user';
     c.set('user', payload);
     await next();
-  } catch {
+  } catch (error) {
+    if (error instanceof JwtConfigurationError) {
+      console.error('[auth] JWT_SIGNING_SECRET is missing or shorter than 32 characters.');
+      return c.json({ error: '서버 인증 설정을 확인하고 있습니다. 잠시 후 다시 시도해 주세요.' }, 503);
+    }
     const serviceError = await authenticateServiceToken(c, token);
     if (serviceError) return serviceError;
     await next();
@@ -138,6 +156,32 @@ export function requireRole(...roles: Role[]) {
     if (!roles.includes(user.role) && !roles.includes(effectiveRole as Role)) {
       return c.json({ error: 'Permission denied.' }, 403);
     }
+    await next();
+  };
+}
+
+export function requireHumanUser() {
+  return async (c: Context<AuthEnv>, next: Next) => {
+    const user = c.get('user');
+    const machineCredentialHeader = c.req.header('X-Service-Token') || c.req.header('X-AFO-Device-Key');
+    if (machineCredentialHeader || !user || user.auth_type !== 'user' || user.sub.startsWith('service-token:')) {
+      return c.json({ error: '사용자 계정으로 로그인해야 합니다.' }, 403);
+    }
+    const exists = await c.env.DB.prepare('SELECT id FROM users WHERE id = ? LIMIT 1').bind(user.sub).first();
+    if (!exists) return c.json({ error: '사용자 계정을 확인할 수 없습니다.' }, 403);
+    await next();
+  };
+}
+
+export function requireHumanMaster() {
+  return async (c: Context<AuthEnv>, next: Next) => {
+    const user = c.get('user');
+    const machineCredentialHeader = c.req.header('X-Service-Token') || c.req.header('X-AFO-Device-Key');
+    if (machineCredentialHeader || !user || user.auth_type !== 'user' || user.role !== 'master' || user.sub.startsWith('service-token:')) {
+      return c.json({ error: '마스터 사용자 계정만 접근할 수 있습니다.' }, 403);
+    }
+    const exists = await c.env.DB.prepare("SELECT id FROM users WHERE id = ? AND role = 'master' LIMIT 1").bind(user.sub).first();
+    if (!exists) return c.json({ error: '마스터 사용자 계정을 확인할 수 없습니다.' }, 403);
     await next();
   };
 }

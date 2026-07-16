@@ -5,6 +5,7 @@ import { calculateCaseAllowance, isCaseAllowanceExcludedName } from './cases';
 import { reinitUserLeave } from './leave';
 import { normalizeBranchName } from '../lib/branchAliases';
 import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotForMonth, payTypeAtMonthSql, resolvePayTypeFromHistory } from '../lib/pay-type-history';
+import { calculateRefundRecoveryAmount } from '../../shared/refund-recovery';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -607,11 +608,12 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     return sd && sd < monthStart;
   }).map((r: any) => {
     const supply = vatSupplyAmount(r.amount, month);
-    let recovery = 0;
-    if (isCommission) {
-      const comm = truncMoney(supply * effectiveRate / 100);
-      recovery = truncMoney(comm * (1 - 0.033));
-    }
+    const recovery = calculateRefundRecoveryAmount({
+      amount: r.amount,
+      payType: isCommission ? 'commission' : 'salary',
+      commissionRate: effectiveRate,
+      payrollMonth: month,
+    });
     return { ...r, supply_amount: supply, recovery_amount: recovery };
   });
 

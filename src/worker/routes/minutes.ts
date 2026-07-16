@@ -76,7 +76,7 @@ minutes.use('*', async (c, next) => {
     if (!token) return c.json({ error: '인증이 필요합니다.' }, 401);
 
     try {
-      const payload = await verifyToken(token);
+      const payload = await verifyToken(token, c.env);
       // DB에서 최신 역할 확인. 열람 권한은 각 회의록 조회 단계에서 다시 검사한다.
       const db = c.env.DB;
       const user = await db.prepare('SELECT role FROM users WHERE id = ?').bind(payload.sub).first<{ role: Role }>();

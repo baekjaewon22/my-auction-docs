@@ -13,6 +13,12 @@ declare namespace Cloudflare {
 		ENVIRONMENT: "development" | "staging" | "production";
 		/** Space-separated origins allowed to embed admin pages, e.g. https://all-for-one.example.com */
 		ALL_FOR_ONE_FRAME_ANCESTORS?: string;
+		/** JWT signing secret (Wrangler secret, at least 32 characters) */
+		JWT_SIGNING_SECRET: string;
+		/** Web Push VAPID configuration (Wrangler secrets) */
+		VAPID_PUBLIC_KEY?: string;
+		VAPID_PRIVATE_KEY?: string;
+		VAPID_SUBJECT?: string;
 		/** Slack incoming webhook for room reservation notifications */
 		SLACK_ROOM_RESERVATION_WEBHOOK_URL?: string;
 		/** Shared Slack incoming webhook fallback */

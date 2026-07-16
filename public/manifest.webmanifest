@@ -1,0 +1,18 @@
+{
+  "name": "My-Auction Office",
+  "short_name": "My-Auction",
+  "description": "My-Auction 사내 업무 시스템",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#174ea6",
+  "icons": [
+    {
+      "src": "/logo2.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

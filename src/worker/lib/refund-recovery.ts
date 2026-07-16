@@ -21,11 +21,14 @@ export async function resolveRefundRecovery(
 
   const record = await db.prepare(`
     SELECT sr.id, sr.user_id, sr.status, sr.amount, sr.refund_approved_at,
-           ua.pay_type, ua.commission_rate
+           ua.pay_type, ua.commission_rate,
+           COALESCE(cro.commission_rate, ua.commission_rate) AS effective_commission_rate
     FROM sales_records sr
     LEFT JOIN user_accounting ua ON ua.user_id = sr.user_id
+    LEFT JOIN commission_rate_overrides cro
+      ON cro.user_id = sr.user_id AND cro.year_month = ?
     WHERE sr.id = ?
-  `).bind(input.salesRecordId).first<{
+  `).bind(input.payrollMonth, input.salesRecordId).first<{
     id: string;
     user_id: string;
     status: string;
@@ -33,6 +36,7 @@ export async function resolveRefundRecovery(
     refund_approved_at: string | null;
     pay_type: string | null;
     commission_rate: number | null;
+    effective_commission_rate: number | null;
   }>();
   if (!record) {
     return { success: false, status: 404, code: 'REFUND_NOT_FOUND', error: '환불 내역을 찾을 수 없습니다.' };
@@ -60,7 +64,8 @@ export async function resolveRefundRecovery(
   const recoveryAmount = calculateRefundRecoveryAmount({
     amount: record.amount,
     payType: record.pay_type,
-    commissionRate: record.commission_rate,
+    commissionRate: record.effective_commission_rate,
+    payrollMonth: input.payrollMonth,
   });
   const payrollSave = await db.prepare(`
     SELECT locked, data FROM payroll_saves WHERE user_id = ? AND period = ?

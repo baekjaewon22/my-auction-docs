@@ -28,9 +28,15 @@ export function calculateRefundRecoveryAmount(input: {
   amount: number;
   payType?: string | null;
   commissionRate?: number | null;
+  payrollMonth?: string | null;
 }): number {
   if (input.payType !== 'commission') return 0;
-  const supply = Math.round((Number(input.amount) || 0) / 1.1);
-  const commission = Math.round(supply * (Number(input.commissionRate) || 0) / 100);
-  return Math.round(commission * (1 - 0.033));
+  const month = String(input.payrollMonth || '');
+  const shouldTruncate = /^\d{4}-\d{2}$/.test(month) && month >= '2026-06';
+  const payrollMoney = (value: number) => shouldTruncate
+    ? Math.trunc((Number(value) || 0) / 10) * 10
+    : Math.round(Number(value) || 0);
+  const supply = payrollMoney((Number(input.amount) || 0) * 10 / 11);
+  const commission = payrollMoney(supply * (Number(input.commissionRate) || 0) / 100);
+  return payrollMoney(commission * (1 - 0.033));
 }

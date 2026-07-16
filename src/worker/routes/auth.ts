@@ -77,7 +77,7 @@ auth.post('/login', async (c) => {
     role: user.role, team_id: user.team_id, branch: user.branch, department: user.department,
     position_title: user.position_title,
     login_type: userLoginType,
-  });
+  }, c.env);
 
   return c.json({
     token,

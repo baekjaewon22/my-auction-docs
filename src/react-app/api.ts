@@ -29,6 +29,34 @@ export interface AutomationDiagnosticConsultant {
   position_title?: string;
 }
 
+export interface WebPushSubscriptionInfo {
+  id: string;
+  provider: string;
+  device_label: string;
+  active: number;
+  last_success_at?: string | null;
+  last_failure_at?: string | null;
+  last_failure_code?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WebPushDiagnostics {
+  configured: boolean;
+  summary: { total: number; active: number; active_users: number };
+  recent: Array<{
+    id: string;
+    event_type: string;
+    status: 'sent' | 'failed' | 'skipped';
+    status_code?: number | null;
+    error_code?: string;
+    created_at: string;
+    user_name?: string;
+    provider?: string;
+    device_label?: string;
+  }>;
+}
+
 function getToken(): string | null {
   return localStorage.getItem('token');
 }
@@ -127,6 +155,21 @@ export const api = {
     },
     update: (id: string, data: { review_status: 'open' | 'reviewed' | 'resolved'; review_note?: string }) =>
       request<{ success: boolean }>(`/report/diagnostics/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  },
+
+  webPush: {
+    config: () => request<{ supported: boolean; public_key?: string; reason?: string }>('/web-push/config'),
+    subscriptions: () => request<{ subscriptions: WebPushSubscriptionInfo[] }>('/web-push/subscriptions'),
+    subscribe: (subscription: PushSubscriptionJSON, device_label: string) =>
+      request<{ success: boolean; subscription_id: string }>('/web-push/subscriptions', {
+        method: 'POST', body: JSON.stringify({ subscription, device_label }),
+      }),
+    unsubscribe: (endpoint: string) =>
+      request<{ success: boolean }>('/web-push/subscriptions', {
+        method: 'DELETE', body: JSON.stringify({ endpoint }),
+      }),
+    selfTest: () => request<{ supported: boolean; reason?: string; sent?: number; failed?: number }>('/web-push/self-test', { method: 'POST' }),
+    diagnostics: () => request<WebPushDiagnostics>('/web-push/diagnostics'),
   },
 
   users: {

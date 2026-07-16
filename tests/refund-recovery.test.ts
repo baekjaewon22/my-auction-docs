@@ -52,6 +52,12 @@ function createDb() {
       pay_type TEXT,
       commission_rate REAL
     );
+    CREATE TABLE commission_rate_overrides (
+      user_id TEXT NOT NULL,
+      year_month TEXT NOT NULL,
+      commission_rate REAL NOT NULL,
+      PRIMARY KEY (user_id, year_month)
+    );
     CREATE TABLE payroll_saves (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -81,7 +87,29 @@ test('환불 회수 링크는 담당자와 환불 승인월을 급여정산에 �
     '/payroll?branch=__all&user_id=consultant-1&month=2026-07&refund_recovery=refund-1',
   );
   assert.equal(calculateRefundRecoveryAmount({ amount: 1100000, payType: 'commission', commissionRate: 50 }), 483500);
+  assert.equal(calculateRefundRecoveryAmount({ amount: 500000, payType: 'commission', commissionRate: 50, payrollMonth: '2026-07' }), 219770);
   assert.equal(calculateRefundRecoveryAmount({ amount: 1100000, payType: 'salary', commissionRate: 50 }), 0);
+});
+
+test('10원 절사와 월별 수수료율 예외를 급여 표시와 회수 완료에서 동일하게 적용한다', async () => {
+  const db = createDb();
+  db.prepare('UPDATE sales_records SET amount = 500000 WHERE id = ?').run('refund-1');
+  db.prepare('INSERT INTO commission_rate_overrides VALUES (?, ?, ?)').run('consultant-1', '2026-07', 40);
+  const recoveryAmount = calculateRefundRecoveryAmount({
+    amount: 500000,
+    payType: 'commission',
+    commissionRate: 40,
+    payrollMonth: '2026-07',
+  });
+  assert.equal(recoveryAmount, 175810);
+  db.prepare('INSERT INTO payroll_saves VALUES (?, ?, ?, ?, ?)').run('payroll-override', 'consultant-1', '2026년 7월', JSON.stringify({
+    commDeductions: [{ label: '환불 회수', amount: String(recoveryAmount), sourceId: 'refund-1' }],
+  }), 1);
+  const result = await resolveRefundRecovery(d1Adapter(db) as D1Database, {
+    salesRecordId: 'refund-1', payrollMonth: '2026-07', resolvedBy: 'accountant-1',
+  });
+  assert.deepEqual(result, { success: true, alreadyResolved: false, recoveryAmount: 175810, payrollPeriod: '2026년 7월' });
+  db.close();
 });
 
 test('급여정산을 확정하지 않으면 환불 회수를 완료 처리할 수 없다', async () => {

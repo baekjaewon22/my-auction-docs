@@ -7,6 +7,7 @@ import Select, { toOptions } from '../components/Select';
 import { useDepartments } from '../hooks/useDepartments';
 import { useBranches } from '../hooks/useBranches';
 import { Trash2, Pencil } from 'lucide-react';
+import WebPushSettings from '../components/WebPushSettings';
 
 const SIG_KEY = 'myauction_saved_signature';
 
@@ -277,6 +278,8 @@ export default function Profile() {
             </div>
           )}
         </div>
+
+        <WebPushSettings />
 
         {message && (
           <div className={`alert ${message.includes('저장') ? 'alert-success' : 'alert-error'}`}>

@@ -4,7 +4,7 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
-import { calculateRefundRecoveryAmount } from '../../shared/refund-recovery';
+import { calculateRefundRecoveryAmount, refundApprovalMonth } from '../../shared/refund-recovery';
 import { resolveRefundRecovery } from '../lib/refund-recovery';
 
 const sales = new Hono<AuthEnv>();
@@ -991,7 +991,15 @@ sales.get('/dashboard/refund-impacts', async (c) => {
 
   // 최근 60일 이내 환불 승인된 건 조회
   const refunded = await db.prepare(`
-    SELECT sr.*, u.name as user_name, u.branch as user_branch, ua.pay_type, ua.commission_rate, ua.standard_sales, ua.salary
+    SELECT sr.*, u.name as user_name, u.branch as user_branch, ua.pay_type,
+      COALESCE((
+        SELECT cro.commission_rate
+        FROM commission_rate_overrides cro
+        WHERE cro.user_id = sr.user_id
+          AND cro.year_month = substr(sr.refund_approved_at, 1, 7)
+        LIMIT 1
+      ), ua.commission_rate) AS commission_rate,
+      ua.standard_sales, ua.salary
     FROM sales_records sr
     JOIN users u ON u.id = sr.user_id
     LEFT JOIN user_accounting ua ON ua.user_id = sr.user_id
@@ -1030,6 +1038,7 @@ sales.get('/dashboard/refund-impacts', async (c) => {
       amount: r.amount,
       payType: r.pay_type,
       commissionRate: r.commission_rate,
+      payrollMonth: refundApprovalMonth(r.refund_approved_at),
     });
 
     impacts.push({

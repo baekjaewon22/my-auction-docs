@@ -40,6 +40,7 @@
 		"react-router-dom": "^7.13.2",
 		"react-select": "^5.10.2",
 		"recharts": "^3.8.1",
+		"web-push": "^3.6.7",
 		"xlsx": "^0.18.5",
 		"xlsx-js-style": "^1.2.0",
 		"zustand": "^5.0.12"
@@ -51,6 +52,7 @@
 		"@types/react": "19.2.7",
 		"@types/react-datepicker": "^6.2.0",
 		"@types/react-dom": "19.2.3",
+		"@types/web-push": "^3.6.4",
 		"@vitejs/plugin-react": "5.1.1",
 		"better-sqlite3": "^12.9.0",
 		"eslint": "9.39.2",
@@ -76,7 +78,9 @@
 		"preview": "npm run build && vite preview",
 		"test:automation-access": "node --experimental-strip-types --test tests/automation-access.test.ts",
 		"test:leave": "node --experimental-strip-types --test tests/leave-calendar.test.ts tests/leave-constraints.test.ts tests/leave-cancel-migration.test.ts",
-		"test:refund-recovery": "node --experimental-strip-types --test tests/refund-recovery.test.ts"
+		"test:refund-recovery": "node --experimental-strip-types --test tests/refund-recovery.test.ts",
+		"test:web-push": "node --experimental-strip-types --test tests/web-push.test.ts",
+		"test:web-push:workerd": "node scripts/test-web-push-workerd.mjs"
 	},
 	"type": "module"
 }
