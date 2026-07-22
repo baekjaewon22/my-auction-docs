@@ -2,7 +2,7 @@ const AUTOMATION_API_BASE = (import.meta.env.VITE_AUTOMATION_API_BASE || '/api')
 const LOCAL_AUTOMATION_API_BASE = (import.meta.env.VITE_LOCAL_AUTOMATION_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '');
 const AUTOMATION_WS_BASE = (import.meta.env.VITE_AUTOMATION_WS_BASE || '').replace(/\/$/, '');
 const AUTOMATION_AGENT_INSTALLER_URL = import.meta.env.VITE_AUTOMATION_AGENT_INSTALLER_URL || '/api/report/agent-installer';
-export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.16.1';
+export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.21.1';
 
 function getToken(): string | null {
   return localStorage.getItem('token');

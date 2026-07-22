@@ -1665,7 +1665,7 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
         : isPermissionDenied
           ? 'Chrome에서 이 사이트의 로컬 네트워크 접근이 차단되어 있습니다.'
           : isBrowserBlocked
-            ? 'Chrome의 로컬 네트워크 연결 허용이 필요합니다.'
+            ? '실행기가 꺼져 있거나 Chrome의 로컬 네트워크 연결 허용이 필요합니다.'
             : '현재 PC에서 자동화 실행기를 찾지 못했습니다.';
   const description = isConnected
       ? '서버의 최신 배포 버전과 이 PC에 설치된 실행기 버전을 캐시 없이 직접 비교한 결과입니다.'
@@ -1676,7 +1676,7 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
         : isPermissionDenied
           ? '주소창 왼쪽의 사이트 설정을 열어 “로컬 네트워크 액세스”를 허용한 뒤 페이지를 새로고침하고 다시 확인해 주세요. 실행기를 다시 설치할 필요는 없습니다.'
           : isBrowserBlocked
-            ? '주소창에 표시되는 로컬 네트워크 연결 요청에서 허용을 선택한 뒤 다시 확인해 주세요. 요청이 보이지 않으면 사이트 설정에서 로컬 네트워크 액세스를 허용해 주세요.'
+            ? '먼저 바탕화면의 “마이옥션 업무자동화 실행기”를 실행해 주세요. 계속 연결되지 않으면 주소창 왼쪽의 사이트 설정에서 로컬 네트워크 액세스를 허용한 뒤 다시 확인해 주세요.'
             : '브리핑자료와 권리분석 보증서 자동 생성을 사용하려면 이 PC에 자동화 실행기가 설치되어 있어야 합니다. 설치관리자 실행 후 다시 확인을 눌러 주세요.';
   const checkedAt = status?.checkedAt
     ? new Date(status.checkedAt).toLocaleString('ko-KR', { hour12: false })
@@ -1701,7 +1701,7 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
           <div className="automation-agent-version-grid">
             <div>
               <span>이 PC 설치 버전</span>
-              <strong>{status?.version || (isPermissionDenied || isBrowserBlocked ? '브라우저에서 확인 차단' : state === 'missing' ? '설치되지 않음' : '확인 중')}</strong>
+              <strong>{status?.version || (isPermissionDenied ? '브라우저에서 확인 차단' : isBrowserBlocked ? '실행기 연결 전' : state === 'missing' ? '설치되지 않음' : '확인 중')}</strong>
             </div>
             <div>
               <span>최신 배포 버전</span>

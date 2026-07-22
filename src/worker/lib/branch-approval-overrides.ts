@@ -1,5 +1,5 @@
-import { branchAliases, normalizeBranchName } from './branchAliases';
-import type { JwtPayload } from '../types';
+import { branchAliases, normalizeBranchName } from './branchAliases.ts';
+import type { JwtPayload } from '../types.ts';
 
 const ADMIN_EXTRA_BRANCHES: Record<string, string[]> = {
   // 진성헌(서초·admin·본부장): 서초 + 대전 열람

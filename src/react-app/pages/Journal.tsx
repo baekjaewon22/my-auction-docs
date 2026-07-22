@@ -12,6 +12,7 @@ import DatePicker, { registerLocale } from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { ko } from 'date-fns/locale';
 import { CANONICAL_BRANCHES, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { businessDaysInMonth } from '../../shared/work-calendar';
 
 const koCustom = {
   ...ko,
@@ -61,6 +62,7 @@ export default function Journal() {
   const [activeBranch, setActiveBranch] = useState(0);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [hoverCell, setHoverCell] = useState<HoverCellInfo | null>(null);
+  const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
 
   // 캘린더 선택 날짜
   const [selectedDate, setSelectedDate] = useState<Date>(() => {
@@ -78,11 +80,23 @@ export default function Journal() {
     return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
   });
 
-  const today = getToday();
-  const tomorrow = getTomorrow();
+  const today = getToday(holidayDates);
+  const tomorrow = getTomorrow(holidayDates);
   const isCeoPlus = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref';
   const canSwitchBranches = isCeoPlus || user?.role === 'admin';
   const canDelegateJournal = isCeoPlus || user?.role === 'admin';
+
+  const holidayYearsKey = [...new Set([
+    String(new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCFullYear()),
+    historyMonth.slice(0, 4),
+  ])].sort().join(',');
+
+  useEffect(() => {
+    const years = holidayYearsKey.split(',').filter(Boolean);
+    Promise.all(years.map((year) => api.journal.holidays(year)))
+      .then((results) => setHolidayDates(new Set(results.flatMap((result) => result.holidays.map((holiday) => holiday.holiday_date)))))
+      .catch(() => setHolidayDates(new Set()));
+  }, [holidayYearsKey]);
 
   // 현재 탭에서 보여줄 날짜
   const activeDate = tab === 'today' ? today : tab === 'tomorrow' ? tomorrow : tab === 'calendar' ? selectedDateStr : '';
@@ -107,7 +121,7 @@ export default function Journal() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, [tab, selectedDateStr]);
+  useEffect(() => { load(); }, [tab, selectedDateStr, holidayDates]);
 
   useEffect(() => {
     setHistorySelectedMemberId(null);
@@ -271,7 +285,7 @@ export default function Journal() {
     const isMine = member.id === user?.id;
     const isReadonly = !isMine && !['master', 'ceo', 'cc_ref'].includes(user?.role || '')
       ? true
-      : !isEditable(dateStr, user?.role);
+      : !isEditable(dateStr, user?.role, holidayDates);
 
     if (hasEntries) {
       return (
@@ -461,14 +475,7 @@ export default function Journal() {
             let deptMembers = members.filter(m => sameBranchName(m.branch, hBranch) && (historyDept === '' || m.department === historyDept) && m.role !== 'resigned');
 
             const [year, month] = historyMonth.split('-').map(Number);
-            const daysInMonth = new Date(year, month, 0).getDate();
-
-            const bizDays: number[] = [];
-            for (let d = 1; d <= daysInMonth; d++) {
-              const date = new Date(year, month - 1, d);
-              const day = date.getDay();
-              if (day !== 0 && day !== 6) bizDays.push(d);
-            }
+            const bizDays = businessDaysInMonth(year, month, holidayDates);
 
             const HIDDEN_DEPTS = ['명도팀', '지원팀'];
             const deptGroups: Record<string, typeof deptMembers> = {};

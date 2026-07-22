@@ -128,70 +128,24 @@ function formatDateStr(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-// 한국 공휴일 (고정 + 대체공휴일은 매년 수동 추가 필요)
-const HOLIDAYS_2026 = [
-  '2026-01-01', // 신정
-  '2026-01-28', '2026-01-29', '2026-01-30', // 설날 연휴
-  '2026-03-01', // 삼일절
-  '2026-05-01', // 근로자의 날
-  '2026-05-05', // 어린이날
-  '2026-05-24', // 부처님오신날
-  '2026-05-25', // substitute holiday
-  '2026-06-03', // election day
-  '2026-06-06', // 현충일
-  '2026-08-15', // 광복절
-  '2026-09-24', '2026-09-25', '2026-09-26', // 추석 연휴
-  '2026-10-03', // 개천절
-  '2026-10-09', // 한글날
-  '2026-12-25', // 성탄절
-];
-
-function isHoliday(dateStr: string): boolean {
-  return HOLIDAYS_2026.includes(dateStr);
-}
-
-function isWeekend(d: Date): boolean {
-  const day = d.getUTCDay(); // 0=일, 6=토
-  return day === 0 || day === 6;
-}
-
-/** 주말/공휴일이면 다음 영업일로 이동 */
-function nextBusinessDay(d: Date): Date {
-  let result = new Date(d.getTime());
-  while (isWeekend(result) || isHoliday(formatDateStr(result))) {
-    result = new Date(result.getTime() + 86400000);
-  }
-  return result;
-}
-
-/** 주말/공휴일이면 이전 영업일로 이동 */
-function prevBusinessDay(d: Date): Date {
-  let result = new Date(d.getTime());
-  while (isWeekend(result) || isHoliday(formatDateStr(result))) {
-    result = new Date(result.getTime() - 86400000);
-  }
-  return result;
-}
-
-export function getToday(): string {
+export function getToday(holidays: ReadonlySet<string> = new Set()): string {
   const kst = getKSTDate(0);
+  const dateText = formatDateStr(kst);
   // 주말/공휴일이면 이전 영업일 (금요일)
-  if (isWeekend(kst) || isHoliday(formatDateStr(kst))) {
-    return formatDateStr(prevBusinessDay(kst));
-  }
-  return formatDateStr(kst);
+  return isNonWorkingDate(dateText, holidays) ? previousWorkDate(dateText, holidays) : dateText;
 }
 
-export function getTomorrow(): string {
+export function getTomorrow(holidays: ReadonlySet<string> = new Set()): string {
   const kst = getKSTDate(0);
+  const dateText = formatDateStr(kst);
   // 오늘 기준 다음 영업일
-  if (isWeekend(kst) || isHoliday(formatDateStr(kst))) {
+  if (isNonWorkingDate(dateText, holidays)) {
     // 주말/공휴일이면: 오늘 = 이전 영업일, 내일 = 다음 영업일
-    return formatDateStr(nextBusinessDay(kst));
+    return nextWorkDate(dateText, holidays);
   }
   // 평일이면: 내일부터 다음 영업일 찾기
   const tomorrow = getKSTDate(1);
-  return formatDateStr(nextBusinessDay(tomorrow));
+  return nextWorkDate(formatDateStr(tomorrow), holidays);
 }
 
 /** KST 기준 현재 시(hour) 반환 */
@@ -212,12 +166,12 @@ export function getKSTMonth(): string {
  * - 익일건: 언제든 수정 가능
  * - 과거: 수정 불가 (ceo/cc_ref/master는 가능)
  */
-export function isEditable(entryDate: string, userRole?: string): boolean {
+export function isEditable(entryDate: string, userRole?: string, holidays: ReadonlySet<string> = new Set()): boolean {
   // ceo/cc_ref/master/admin은 항상 수정 가능
   if (userRole && ['master', 'ceo', 'cc_ref', 'admin'].includes(userRole)) return true;
 
-  const today = getToday();
-  const tomorrow = getTomorrow();
+  const today = getToday(holidays);
+  const tomorrow = getTomorrow(holidays);
   const hour = getKSTHour();
 
   if (entryDate === today) return hour < 18;
@@ -243,3 +197,4 @@ export function formatShortDate(dateStr: string): string {
   const parts = dateStr.split('-');
   return `${parts[0].slice(2)}.${Number(parts[1])}.${Number(parts[2])}`;
 }
+import { isNonWorkingDate, nextWorkDate, previousWorkDate } from '../../shared/work-calendar';

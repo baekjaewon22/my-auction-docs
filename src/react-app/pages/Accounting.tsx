@@ -8,6 +8,7 @@ import type { Role } from '../types';
 import Select from '../components/Select';
 import { isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
+import { normalizeSalesRecognition } from '../../shared/sales-recognition';
 import {
   BookOpenCheck, ChevronLeft, ChevronRight, CalendarDays, TrendingDown, TrendingUp, AlertTriangle,
   ArrowDownCircle, Plus, X, Pencil, RotateCcw, Users as UsersIcon
@@ -297,7 +298,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
   const loadSales = async () => {
     try {
       const res = await api.sales.list({ month: filterMonth, month_end: filterMonthEnd || undefined, user_id: filterUser || undefined });
-      setAllSales((res.records || []).filter((r: SalesRecord) => {
+      setAllSales((res.records || []).map(normalizeSalesRecognition).filter((r: SalesRecord) => {
         if (r.status === 'pending') return false;
         // 카드결제 건은 정산일 적용 후에만 회계장부에 표시
         if (r.payment_type === '카드' && !r.card_deposit_date) return false;
@@ -552,7 +553,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
         api.accounting.evaluations(u.id),
         api.sales.list({ user_id: u.id }),
       ]);
-      setUserSalesRecords(salesRes.records || []);
+      setUserSalesRecords((salesRes.records || []).map(normalizeSalesRecognition) as SalesRecord[]);
       const acc = accRes.account;
       setSelectedAccount(acc);
       setSalaryInput(acc?.salary?.toString() || '');

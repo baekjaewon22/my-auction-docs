@@ -12,6 +12,37 @@ import {
   validatePushKey,
 } from '../src/shared/web-push.ts';
 import { authMiddleware, requireHumanMaster, requireHumanUser } from '../src/worker/middleware/auth.ts';
+import {
+  getPushSetupStatusForViewer,
+  managerMissingPushUsers,
+  runWebPushSetupReminders,
+  type PushSetupUser,
+} from '../src/worker/lib/web-push-setup-reminders.ts';
+
+function d1(db: Database.Database): D1Database {
+  return {
+    prepare(sql: string) {
+      const statement = db.prepare(sql);
+      const bound = (...values: unknown[]) => ({
+        all: async <T>() => ({ results: statement.all(...values) as T[] }),
+        first: async <T>() => (statement.get(...values) as T | undefined) || null,
+        run: async () => {
+          const info = statement.run(...values);
+          return { meta: { changes: info.changes } };
+        },
+      });
+      return {
+        bind: (...values: unknown[]) => bound(...values),
+        all: async <T>() => ({ results: statement.all() as T[] }),
+        first: async <T>() => (statement.get() as T | undefined) || null,
+        run: async () => {
+          const info = statement.run();
+          return { meta: { changes: info.changes } };
+        },
+      } as unknown as D1PreparedStatement;
+    },
+  } as unknown as D1Database;
+}
 
 test('known browser push services are allowed', () => {
   assert.equal(isAllowedPushHost('fcm.googleapis.com'), true);
@@ -115,6 +146,88 @@ test('web push migration is idempotent and enforces endpoint ownership uniquenes
   assert.equal(db.prepare(`SELECT COUNT(DISTINCT attempt_id) AS count FROM web_push_delivery_logs WHERE user_id = 'u1' AND attempt_id != ''`).get().count, 2);
   db.prepare("DELETE FROM users WHERE id = 'u1'").run();
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM web_push_subscriptions').get().count, 0);
+  db.close();
+});
+
+test('push setup reminder migration is idempotent and prevents duplicate daily reminders', () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY); INSERT INTO users (id) VALUES ('manager-1');`);
+  const migration = readFileSync(new URL('../d1/migrate-web-push-setup-reminders.sql', import.meta.url), 'utf8');
+  db.exec(migration);
+  db.exec(migration);
+  const insert = db.prepare(`
+    INSERT INTO web_push_setup_reminder_runs
+      (id, alert_date, recipient_id, recipient_role, scope_label, missing_count)
+    VALUES (?, '2026-07-20', 'manager-1', 'manager', '의정부 경매사업부1팀', 1)
+  `);
+  insert.run('run-1');
+  assert.throws(() => insert.run('run-2'));
+  db.close();
+});
+
+test('manager reminder scope includes unconfigured team members even when the manager has push enabled', async () => {
+  const users: PushSetupUser[] = [
+    { id: 'manager-1', name: '팀장', role: 'manager', branch: '의정부', department: '경매사업부1팀', active_push_count: 1 },
+    { id: 'member-1', name: '미설정 팀원', role: 'member', branch: '의정부', department: '경매사업부1팀', active_push_count: 0 },
+    { id: 'member-2', name: '설정 팀원', role: 'member', branch: '의정부', department: '경매사업부1팀', active_push_count: 1 },
+    { id: 'member-3', name: '다른 팀원', role: 'member', branch: '의정부', department: '경매사업부2팀', active_push_count: 0 },
+  ];
+  assert.deepEqual(managerMissingPushUsers(users[0], users).map((item) => item.id), ['member-1']);
+  const status = await getPushSetupStatusForViewer({} as D1Database, users[0], users);
+  assert.equal(status.total_count, 3);
+  assert.deepEqual(status.missing.map((item) => item.id), ['member-1']);
+});
+
+test('master reminder includes an unconfigured manager for upper-level follow-up', async () => {
+  const users: PushSetupUser[] = [
+    { id: 'master-1', name: '마스터', role: 'master', branch: '본사', department: '', active_push_count: 1 },
+    { id: 'manager-1', name: '미설정 팀장', role: 'manager', branch: '의정부', department: '경매사업부1팀', active_push_count: 0 },
+  ];
+  const status = await getPushSetupStatusForViewer({} as D1Database, users[0], users);
+  assert.deepEqual(status.missing.map((item) => item.id), ['manager-1']);
+});
+
+test('production cron includes the weekday 09:30 KST push setup reminder', () => {
+  const config = JSON.parse(readFileSync(new URL('../wrangler.json', import.meta.url), 'utf8'));
+  assert.ok(config.triggers.crons.includes('30 0 * * 1-5'));
+});
+
+test('push setup reminder skips a configured weekday holiday', async () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE system_holidays (holiday_date TEXT PRIMARY KEY, applies_to TEXT NOT NULL, enabled INTEGER NOT NULL);
+    INSERT INTO system_holidays VALUES ('2026-07-17', 'all', 1);
+  `);
+  const result = await runWebPushSetupReminders({ DB: d1(db) } as Env, new Date('2026-07-17T00:30:00.000Z'));
+  assert.equal(result.due, false);
+  assert.equal(result.reason, 'non_working_day');
+  db.close();
+});
+
+test('push setup reminder claims each recipient once per business day', async () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY, name TEXT, role TEXT, branch TEXT, department TEXT,
+      approved INTEGER, login_type TEXT
+    );
+    CREATE TABLE web_push_subscriptions (
+      id TEXT PRIMARY KEY, user_id TEXT, active INTEGER, updated_at TEXT
+    );
+    CREATE TABLE system_holidays (holiday_date TEXT PRIMARY KEY, applies_to TEXT NOT NULL, enabled INTEGER NOT NULL);
+    INSERT INTO users VALUES
+      ('manager-1', '팀장', 'manager', '의정부', '경매사업부1팀', 1, 'employee'),
+      ('member-1', '미설정 팀원', 'member', '의정부', '경매사업부1팀', 1, 'employee');
+  `);
+  const env = { DB: d1(db) } as Env;
+  const now = new Date('2026-07-20T00:30:00.000Z');
+  const first = await runWebPushSetupReminders(env, now);
+  const second = await runWebPushSetupReminders(env, now);
+  assert.equal(first.recipients, 1);
+  assert.equal(second.recipients, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM web_push_setup_reminder_runs').get().count, 1);
   db.close();
 });
 

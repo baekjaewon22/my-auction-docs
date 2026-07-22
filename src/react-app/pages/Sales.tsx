@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, setSourcePage } from '../api';
 import { useAuthStore } from '../store';
 import type { SalesRecord, DepositNotice } from '../types';
@@ -12,6 +12,7 @@ import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Too
 import type { JournalEntry } from '../journal/types';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
+import { normalizeSalesRecognition } from '../../shared/sales-recognition';
 
 const TYPE_OPTIONS = [
   { value: '계약', label: '계약' },
@@ -252,6 +253,9 @@ const CONFIRM_WAITING_STATUSES = ['pending', 'card_pending', 'refund_requested']
 export default function Sales() {
   const { user: currentUser } = useAuthStore();
   const { branches: BRANCHES } = useBranches();
+  const [searchParams] = useSearchParams();
+  const dashboardFocusType = searchParams.get('focus') || '';
+  const dashboardFocusId = searchParams.get('id') || '';
   const [records, setRecords] = useState<SalesRecord[]>([]);
   const [deposits, setDeposits] = useState<DepositNotice[]>([]);
   const [members, setMembers] = useState<{ id: string; name: string; role: string; branch: string; department: string }[]>([]);
@@ -274,6 +278,10 @@ export default function Sales() {
   useEffect(() => {
     if (branchDefaultApplied) return;
     if (!currentUser?.id) return;
+    if (dashboardFocusType === 'sales' && dashboardFocusId) {
+      setBranchDefaultApplied(true);
+      return;
+    }
     if (!['accountant', 'accountant_asst'].includes(currentUser.role || '')) return;
     api.users.getAlimtalkSettings(currentUser.id).then(res => {
       setFilterBranch(prev => {
@@ -292,8 +300,8 @@ export default function Sales() {
       });
       setBranchDefaultApplied(true);
     });
-  }, [currentUser?.id]);
-  const [filterMonth, setFilterMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  }, [currentUser?.id, dashboardFocusType, dashboardFocusId]);
+  const [filterMonth, setFilterMonth] = useState(() => searchParams.get('month') || new Date().toISOString().slice(0, 7));
   const [filterMonthEnd, setFilterMonthEnd] = useState('');
 
   // 입금확인 시 입금일자
@@ -455,7 +463,7 @@ export default function Sales() {
     if (!silent) setLoading(true);
     try {
       const salesRes = await api.sales.list({ month: filterMonth, month_end: filterMonthEnd || undefined, user_id: filterUser || undefined });
-      setRecords(salesRes.records);
+      setRecords(salesRes.records.map(normalizeSalesRecognition) as SalesRecord[]);
       // 총무급이면 총무메모 맵 로드 (row hover 팝업용)
       if (isAccountant || isMaster) {
         try {
@@ -491,6 +499,32 @@ export default function Sales() {
   };
 
   useEffect(() => { load(); }, [filterMonth, filterMonthEnd, filterUser, rankingYearly, rankingPeriodIdx]);
+
+  useEffect(() => {
+    if (loading || !dashboardFocusId || !['sales', 'deposit'].includes(dashboardFocusType)) return;
+
+    if (dashboardFocusType === 'sales') {
+      if (!records.some(record => record.id === dashboardFocusId)) return;
+      setSalesTab('list');
+      setFilterBranch('');
+      setFilterUser('');
+      setFilterType('');
+      setFilterStatus('');
+      setSearchQuery('');
+      setExpandedIds(prev => new Set(prev).add(dashboardFocusId));
+    } else if (!deposits.some(deposit => deposit.id === dashboardFocusId)) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const focusKey = `${dashboardFocusType}-${dashboardFocusId}`;
+      const target = Array.from(document.querySelectorAll<HTMLElement>('[data-dashboard-focus]'))
+        .find(element => element.dataset.dashboardFocus === focusKey && element.getClientRects().length > 0);
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+
+    return () => window.clearTimeout(timer);
+  }, [loading, dashboardFocusType, dashboardFocusId, records, deposits]);
 
   const resetForm = () => {
     setFormType('계약'); setFormTypeDetail(''); setFormClientName('');
@@ -627,7 +661,7 @@ export default function Sales() {
         api.sales.list({ user_id: userId || undefined }),
       ]);
       setActivityEntries(jRes.entries);
-      setAllRecords(sRes.records);
+      setAllRecords(sRes.records.map(normalizeSalesRecognition) as SalesRecord[]);
       setSelectedClient(null);
       setActivityPage(0);
     } catch { setActivityEntries([]); setAllRecords([]); }
@@ -1005,7 +1039,7 @@ export default function Sales() {
             ...clientSales.map(r => ({ date: r.contract_date, kind: 'sale' as const, data: r })),
             ...clientJournals.map(e => ({ date: e.target_date, kind: 'journal' as const, data: e })),
           ].sort((a, b) => a.date.localeCompare(b.date));
-          const totalAmount = clientSales.filter(r => r.status === 'confirmed' || r.status === 'card_pending').reduce((s, r) => s + r.amount, 0);
+          const totalAmount = clientSales.filter(r => r.status === 'confirmed').reduce((s, r) => s + r.amount, 0);
           const COLORS: Record<string, string> = { '입찰': '#1a73e8', '임장': '#188038', '미팅': '#e65100', '브리핑자료제출': '#0d47a1', '사무': '#7b1fa2' };
 
           return (
@@ -1744,7 +1778,7 @@ export default function Sales() {
               const dDay = Math.ceil((new Date(dep.deposit_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
               const isClaiming = claimingId === dep.id;
               return (
-                <div key={dep.id} style={{ padding: '12px 16px', borderRadius: 8, background: dep.status === 'claimed' ? '#f0fdf4' : '#eff6ff', border: dep.status === 'claimed' ? '1px solid #bbf7d0' : '1px solid #bfdbfe' }}>
+                <div key={dep.id} data-dashboard-focus={`deposit-${dep.id}`} className={dashboardFocusType === 'deposit' && dashboardFocusId === dep.id ? 'dashboard-focus-target' : undefined} style={{ padding: '12px 16px', borderRadius: 8, background: dep.status === 'claimed' ? '#f0fdf4' : '#eff6ff', border: dep.status === 'claimed' ? '1px solid #bbf7d0' : '1px solid #bfdbfe' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                       <strong style={{ fontSize: '0.9rem' }}>{dep.depositor}</strong>
@@ -1843,7 +1877,7 @@ export default function Sales() {
               const isRefunded = r.status === 'refunded';
               const isConfirming = confirmingId === r.id;
               return (
-                <tr key={r.id} onClick={() => openDetail(r)} className="clickable-row"
+                <tr key={r.id} data-dashboard-focus={`sales-${r.id}`} onClick={() => openDetail(r)} className={`clickable-row${dashboardFocusType === 'sales' && dashboardFocusId === r.id ? ' dashboard-focus-target' : ''}`}
                   onMouseEnter={(e) => { if ((isAccountant || isMaster) && adminMemosMap[r.id]) setHoveredMemoRow({ id: r.id, x: e.clientX, y: e.clientY }); }}
                   onMouseMove={(e) => { if (hoveredMemoRow && hoveredMemoRow.id === r.id) setHoveredMemoRow({ id: r.id, x: e.clientX, y: e.clientY }); }}
                   onMouseLeave={() => { if (hoveredMemoRow && hoveredMemoRow.id === r.id) setHoveredMemoRow(null); }}
@@ -2115,7 +2149,7 @@ export default function Sales() {
             const isRefunded = r.status === 'refunded';
             const expanded = expandedIds.has(r.id);
             return (
-              <div key={r.id} className="sales-card" style={isRefunded ? { color: '#d93025', background: '#fef7f6', borderLeft: '3px solid #d93025' } : r.type === '낙찰' ? { borderLeft: '3px solid #7c4dff' } : r.type === '계약' ? { borderLeft: '3px solid #1a73e8' } : {}}>
+              <div key={r.id} data-dashboard-focus={`sales-${r.id}`} className={`sales-card${dashboardFocusType === 'sales' && dashboardFocusId === r.id ? ' dashboard-focus-target' : ''}`} style={isRefunded ? { color: '#d93025', background: '#fef7f6', borderLeft: '3px solid #d93025' } : r.type === '낙찰' ? { borderLeft: '3px solid #7c4dff' } : r.type === '계약' ? { borderLeft: '3px solid #1a73e8' } : {}}>
                 <div className="sales-card-header" onClick={() => toggleExpand(r.id)}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>

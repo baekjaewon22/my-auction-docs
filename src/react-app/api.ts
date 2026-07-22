@@ -57,6 +57,19 @@ export interface WebPushDiagnostics {
   }>;
 }
 
+export interface WebPushSetupStatus {
+  scope_label: string;
+  total_count: number;
+  missing: Array<{
+    id: string;
+    name: string;
+    role: string;
+    branch: string;
+    department: string;
+    active_push_count: number;
+  }>;
+}
+
 function getToken(): string | null {
   return localStorage.getItem('token');
 }
@@ -160,6 +173,10 @@ export const api = {
   webPush: {
     config: () => request<{ supported: boolean; public_key?: string; reason?: string }>('/web-push/config'),
     subscriptions: () => request<{ subscriptions: WebPushSubscriptionInfo[] }>('/web-push/subscriptions'),
+    currentSubscription: (endpoint: string) =>
+      request<{ owned: boolean; active: boolean }>('/web-push/subscriptions/current', {
+        method: 'POST', body: JSON.stringify({ endpoint }),
+      }),
     subscribe: (subscription: PushSubscriptionJSON, device_label: string) =>
       request<{ success: boolean; subscription_id: string }>('/web-push/subscriptions', {
         method: 'POST', body: JSON.stringify({ subscription, device_label }),
@@ -170,6 +187,7 @@ export const api = {
       }),
     selfTest: () => request<{ supported: boolean; reason?: string; sent?: number; failed?: number }>('/web-push/self-test', { method: 'POST' }),
     diagnostics: () => request<WebPushDiagnostics>('/web-push/diagnostics'),
+    setupStatus: () => request<WebPushSetupStatus>('/web-push/setup-status'),
   },
 
   users: {
@@ -1055,6 +1073,8 @@ export const api = {
   },
 
   journal: {
+    holidays: (year: string) =>
+      request<{ holidays: Array<{ holiday_date: string }> }>('/journal/holidays?year=' + encodeURIComponent(year)),
     members: () =>
       request<{ members: { id: string; name: string; role: string; branch: string; department: string; position_title?: string; login_type?: string }[] }>('/journal/members'),
     list: (params?: { date?: string; range?: string }) => {

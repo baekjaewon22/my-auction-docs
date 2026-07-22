@@ -5,58 +5,18 @@ import { recheckAlertsForJournalEntry, recheckAlertsAfterEntryDelete } from '../
 import { deleteBidAnalysisForJournal, upsertBidAnalysisFromJournal } from '../lib/bid-analysis';
 import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
-
-// KST (한국 시간) 기준 날짜 — 연도별 공휴일
-const HOLIDAYS: Record<string, string[]> = {
-  '2026': [
-    '2026-01-01','2026-01-28','2026-01-29','2026-01-30','2026-03-01',
-    '2026-05-05','2026-05-24','2026-05-25','2026-06-03','2026-06-06','2026-08-15',
-    '2026-09-24','2026-09-25','2026-09-26','2026-10-03','2026-10-09','2026-12-25',
-  ],
-  '2027': [
-    '2027-01-01','2027-02-15','2027-02-16','2027-02-17','2027-03-01',
-    '2027-05-05','2027-05-13','2027-06-06','2027-08-15',
-    '2027-10-13','2027-10-14','2027-10-15','2027-10-03','2027-10-09','2027-12-25',
-  ],
-};
-const STATIC_HOLIDAYS = new Set(Object.values(HOLIDAYS).flat());
+import { isNonWorkingDate, previousWorkDate } from '../../shared/work-calendar';
+import { loadSystemHolidayDates } from '../lib/system-holidays';
 
 function fmtDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-function isOffDay(d: Date, extraHolidays = new Set<string>()): boolean {
-  const day = d.getUTCDay();
-  const date = fmtDate(d);
-  return day === 0 || day === 6 || STATIC_HOLIDAYS.has(date) || extraHolidays.has(date);
-}
-
-function prevBizDay(d: Date, extraHolidays = new Set<string>()): Date {
-  let r = new Date(d.getTime());
-  while (isOffDay(r, extraHolidays)) r = new Date(r.getTime() - 86400000);
-  return r;
-}
-
-async function loadDynamicJournalHolidays(db: D1Database, year: string): Promise<Set<string>> {
-  try {
-    const result = await db.prepare(`
-      SELECT holiday_date
-      FROM system_holidays
-      WHERE enabled = 1
-        AND substr(holiday_date, 1, 4) = ?
-        AND (applies_to = 'all' OR applies_to = 'journal')
-    `).bind(year).all<{ holiday_date: string }>();
-    return new Set((result.results || []).map((row) => row.holiday_date).filter(Boolean));
-  } catch (err) {
-    console.warn('[journal holidays] dynamic holiday table unavailable', err);
-    return new Set();
-  }
-}
-
 async function getKSTToday(db: D1Database): Promise<string> {
   const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  const extraHolidays = await loadDynamicJournalHolidays(db, String(kst.getUTCFullYear()));
-  return isOffDay(kst, extraHolidays) ? fmtDate(prevBizDay(kst, extraHolidays)) : fmtDate(kst);
+  const dateText = fmtDate(kst);
+  const extraHolidays = await loadSystemHolidayDates(db, [String(kst.getUTCFullYear())], 'journal');
+  return isNonWorkingDate(dateText, extraHolidays) ? previousWorkDate(dateText, extraHolidays) : dateText;
 }
 
 interface JournalEntry {
@@ -88,6 +48,12 @@ journal.use('*', authMiddleware);
 const canManageJournalAssignees = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
 const canViewSuggestedPrice = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
 const FIELD_ACTIVITY_TYPES = new Set(['입찰', '미팅', '임장']);
+
+journal.get('/holidays', async (c) => {
+  const year = String(c.req.query('year') || new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCFullYear()).slice(0, 4);
+  const holidays = await loadSystemHolidayDates(c.env.DB, [year], 'journal');
+  return c.json({ holidays: [...holidays].sort().map((holiday_date) => ({ holiday_date })) });
+});
 
 async function getJournalAssignee(db: D1Database, userId: string) {
   return db.prepare('SELECT id, role, branch, department, approved FROM users WHERE id = ?')

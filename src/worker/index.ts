@@ -424,6 +424,13 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
         console.error('[cron approval-alerts] error', err);
       }
     })());
+  } else if (cron === '30 0 * * 1-5') {
+    ctx.waitUntil(import('./lib/web-push-setup-reminders').then(({ runWebPushSetupReminders }) =>
+      runWebPushSetupReminders(env, new Date((event as any).scheduledTime || Date.now())).then(
+        (r) => console.log('[cron web-push-setup-reminders] done', r),
+        (err) => console.error('[cron web-push-setup-reminders] error', err),
+      ),
+    ));
   } else if (cron === '0 0,6 * * 1-5') {
     ctx.waitUntil(import('./lib/accounting-slack-checklist').then(({ accountingSlackSlotForTime, sendAccountingSlackChecklist }) => {
       const slot = accountingSlackSlotForTime(new Date((event as any).scheduledTime || Date.now()));

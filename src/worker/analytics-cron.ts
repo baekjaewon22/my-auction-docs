@@ -2,6 +2,8 @@
 // - user_monthly_stats: 직원별 월 집계
 // - analytics_snapshots: 조직 단위 집계 (조직 평균, 비율제 평균 등)
 
+import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from './lib/sales-recognition';
+
 const KST_OFFSET = 9 * 60 * 60 * 1000;
 
 function nowKST() {
@@ -52,19 +54,21 @@ export async function aggregateMonth(env: any, ym: string): Promise<{ users: num
 
   // 2) 매출 집계 (지정 기간 내, 본인 user_id 기준)
   const salesRes = await db.prepare(`
-    SELECT user_id, status, COUNT(*) as cnt, COALESCE(SUM(amount), 0) as total
+    SELECT user_id,
+      CASE WHEN ${confirmedSalesSql('sales_records')} THEN 'confirmed' ELSE status END as status,
+      COUNT(*) as cnt, COALESCE(SUM(amount), 0) as total
     FROM sales_records
-    WHERE contract_date BETWEEN ? AND ?
+    WHERE ${salesPeriodSql('sales_records')}
       AND direction != 'expense'
       AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY user_id, status
-  `).bind(start, end).all<any>();
+  `).bind(start, end, start, end).all<any>();
   const salesMap: Record<string, { confirmed: number; pending: number; refunded: number; sales_count: number; refund_count: number }> = {};
   (salesRes.results || []).forEach((r: any) => {
     const uid = r.user_id;
     if (!salesMap[uid]) salesMap[uid] = { confirmed: 0, pending: 0, refunded: 0, sales_count: 0, refund_count: 0 };
     salesMap[uid].sales_count += r.cnt;
-    if (r.status === 'confirmed' || r.status === 'card_pending') salesMap[uid].confirmed += r.total || 0;
+    if (r.status === 'confirmed') salesMap[uid].confirmed += r.total || 0;
     else if (r.status === 'pending') salesMap[uid].pending += r.total || 0;
     else if (r.status === 'refunded') {
       salesMap[uid].refunded += r.total || 0;
@@ -174,8 +178,8 @@ export async function aggregateOrgSnapshot(env: any, ym: string): Promise<void> 
       SELECT sr.user_id, SUM(sr.amount) as total
       FROM sales_records sr
       JOIN user_accounting ua ON ua.user_id = sr.user_id
-      WHERE sr.contract_date BETWEEN ? AND ?
-        AND sr.status IN ('confirmed', 'card_pending')
+      WHERE ${recognizedSalesDateSql('sr')} BETWEEN ? AND ?
+        AND ${confirmedSalesSql('sr')}
         AND sr.direction != 'expense'
         AND COALESCE(sr.exclude_from_count, 0) = 0
         AND ua.pay_type = 'commission'
@@ -260,8 +264,8 @@ export async function runMonthlyAggregation(env: any): Promise<{ prevMonth: stri
     // 직전 2개월 매출 합계 (확정만)
     const totRes = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total FROM sales_records
-      WHERE user_id = ? AND contract_date BETWEEN ? AND ?
-        AND status IN ('confirmed', 'card_pending')
+      WHERE user_id = ? AND ${recognizedSalesDateSql('sales_records')} BETWEEN ? AND ?
+        AND ${confirmedSalesSql('sales_records')}
         AND direction != 'expense'
         AND COALESCE(exclude_from_count, 0) = 0
     `).bind(u.id, period_start, period_end).first<{ total: number }>();

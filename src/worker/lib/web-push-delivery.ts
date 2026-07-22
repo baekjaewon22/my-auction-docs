@@ -1,5 +1,5 @@
 import webpush from 'web-push';
-import { isExpiredPushStatus } from '../../shared/web-push';
+import { isExpiredPushStatus } from '../../shared/web-push.ts';
 
 type PushSubscriptionRow = {
   id: string;
@@ -10,7 +10,7 @@ type PushSubscriptionRow = {
 
 export type WebPushMessage = {
   userId: string;
-  eventType: 'community_direct' | 'community_reply' | 'cooperation_direct' | 'cooperation_reply';
+  eventType: 'community_direct' | 'community_reply' | 'cooperation_direct' | 'cooperation_reply' | 'push_setup_missing';
   title: string;
   body: string;
   url: string;

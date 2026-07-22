@@ -3,32 +3,10 @@ import { Bell, BellOff, Send, ShieldCheck, Smartphone } from 'lucide-react';
 import { api } from '../api';
 import type { WebPushDiagnostics, WebPushSubscriptionInfo } from '../api';
 import { useAuthStore } from '../store';
-
-function base64UrlToUint8Array(value: string): Uint8Array<ArrayBuffer> {
-  const padding = '='.repeat((4 - (value.length % 4)) % 4);
-  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const raw = atob(base64);
-  return Uint8Array.from(raw, (char) => char.charCodeAt(0));
-}
-
-function deviceLabel(): string {
-  const ua = navigator.userAgent;
-  if (/iPhone|iPad|iPod/i.test(ua)) return 'iPhone/iPad';
-  if (/Android/i.test(ua)) return 'Android Chrome';
-  if (/Windows/i.test(ua)) return 'Windows Chrome';
-  if (/Macintosh/i.test(ua)) return 'Mac';
-  return '웹 브라우저';
-}
+import { browserSupportsWebPush, clearWebPushPromptSuppression, enableWebPush, webPushOptOutKey } from '../lib/webPushClient';
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function sameApplicationServerKey(subscription: PushSubscription, expected: Uint8Array<ArrayBuffer>): boolean {
-  const current = subscription.options.applicationServerKey;
-  if (!current) return false;
-  const bytes = new Uint8Array(current);
-  return bytes.length === expected.length && bytes.every((value, index) => value === expected[index]);
 }
 
 export default function WebPushSettings() {
@@ -44,7 +22,7 @@ export default function WebPushSettings() {
   const [diagnostics, setDiagnostics] = useState<WebPushDiagnostics | null>(null);
 
   const refresh = async () => {
-    if (!user || !('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    if (!user || !browserSupportsWebPush()) {
       setSupported(false);
       setReason('browser_not_supported');
       return;
@@ -77,22 +55,9 @@ export default function WebPushSettings() {
     setBusy(true);
     setMessage('');
     try {
-      const nextPermission = await Notification.requestPermission();
-      setPermission(nextPermission);
-      if (nextPermission !== 'granted') throw new Error('브라우저 알림 권한이 허용되지 않았습니다.');
-      const registration = await navigator.serviceWorker.register('/push-sw.js', { scope: '/' });
-      const expectedKey = base64UrlToUint8Array(publicKey);
-      let subscription = await registration.pushManager.getSubscription();
-      if (subscription && !sameApplicationServerKey(subscription, expectedKey)) {
-        await api.webPush.unsubscribe(subscription.endpoint).catch(() => undefined);
-        await subscription.unsubscribe();
-        subscription = null;
-      }
-      subscription = subscription || await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: expectedKey,
-      });
-      await api.webPush.subscribe(subscription.toJSON(), deviceLabel());
+      await enableWebPush(publicKey);
+      if (user?.id) clearWebPushPromptSuppression(user.id);
+      setPermission(Notification.permission);
       setMessage('이 기기의 웹푸시 알림을 연결했습니다.');
       await refresh();
     } catch (error: unknown) {
@@ -113,6 +78,7 @@ export default function WebPushSettings() {
         await subscription.unsubscribe();
       }
       setEnabledHere(false);
+      if (user?.id) localStorage.setItem(webPushOptOutKey(user.id), '1');
       setMessage('이 기기의 웹푸시 알림을 해제했습니다.');
       await refresh();
     } catch (error: unknown) {

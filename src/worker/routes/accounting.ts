@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { branchAliases, isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { confirmedSalesSql, recognizedSalesDateSql } from '../lib/sales-recognition';
 
 const accounting = new Hono<AuthEnv>();
 accounting.use('*', authMiddleware);
@@ -439,15 +440,15 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
     ? await monthsStatement.bind(...monthBinds).all<{ month: string }>()
     : await monthsStatement.all<{ month: string }>();
   const bookMonthWhere = [
-    `status = 'confirmed'`,
-    `COALESCE(NULLIF(deposit_date, ''), contract_date) <> ''`,
+    confirmedSalesSql('sales_records'),
+    `${recognizedSalesDateSql('sales_records')} <> ''`,
   ];
   const bookMonthBinds: any[] = [];
   if (branch) {
     pushReportBranchWhere(bookMonthWhere, bookMonthBinds, 'branch', branch);
   }
   const bookMonthsSql = `
-    SELECT DISTINCT substr(COALESCE(NULLIF(deposit_date, ''), contract_date), 1, 7) AS month
+    SELECT DISTINCT substr(${recognizedSalesDateSql('sales_records')}, 1, 7) AS month
     FROM sales_records
     WHERE ${bookMonthWhere.join(' AND ')}
     ORDER BY month DESC
@@ -626,7 +627,7 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
   const result = binds.length ? await statement.bind(...binds).all<any>() : await statement.all<any>();
   let rows = result.results || [];
   if (!isReconciliationReport && ['sales', 'expense', 'profit-loss', 'tax'].includes(reportType)) {
-    const bookWhere = [`sr.status = 'confirmed'`, `COALESCE(sr.exclude_from_count, 0) = 0`];
+    const bookWhere = [confirmedSalesSql('sr'), `COALESCE(sr.exclude_from_count, 0) = 0`];
     const bookBinds: any[] = [];
     if (reportType === 'sales') bookWhere.push(`COALESCE(sr.direction, 'income') != 'expense'`);
     if (reportType === 'expense' || reportType === 'tax') bookWhere.push(`COALESCE(sr.direction, 'income') = 'expense'`);
@@ -638,7 +639,7 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
       )`);
     }
     if (month) {
-      bookWhere.push(`substr(COALESCE(NULLIF(sr.deposit_date, ''), sr.contract_date), 1, 7) = ?`);
+      bookWhere.push(`substr(${recognizedSalesDateSql('sr')}, 1, 7) = ?`);
       bookBinds.push(month);
     }
     if (branch) {
@@ -659,7 +660,7 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
         '' AS reconciliation_id,
         '' AS source_row_id,
         CASE WHEN COALESCE(sr.direction, 'income') = 'expense' THEN 'expense' ELSE 'sales' END AS ledger_type,
-        COALESCE(NULLIF(sr.deposit_date, ''), sr.contract_date) AS entry_date,
+        ${recognizedSalesDateSql('sr')} AS entry_date,
         sr.branch,
         COALESCE(u.name, '') AS owner_name,
         CASE
@@ -673,7 +674,7 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
         COALESCE(sr.memo, '') AS memo,
         sr.status,
         'accountingBook' AS source_type,
-        COALESCE(NULLIF(sr.deposit_date, ''), sr.contract_date) AS transaction_at,
+        ${recognizedSalesDateSql('sr')} AS transaction_at,
         COALESCE(NULLIF(sr.depositor_name, ''), NULLIF(sr.client_name, ''), '') AS merchant_name,
         COALESCE(NULLIF(sr.client_name, ''), NULLIF(sr.type_detail, ''), '') AS description,
         '' AS card_last4,
@@ -1841,7 +1842,9 @@ accounting.get('/card-settlements/list', requireRole(...ACCOUNTING_ROLES), async
     SELECT sr.*, u.name as user_name, u.department as user_department
     FROM sales_records sr
     JOIN users u ON u.id = sr.user_id
-    WHERE sr.status = 'card_pending' AND sr.payment_type = '카드'
+    WHERE sr.status IN ('confirmed', 'card_pending')
+      AND sr.payment_type = '카드'
+      AND TRIM(COALESCE(sr.card_deposit_date, '')) = ''
   `;
   const salesParams: any[] = [];
   if (month) {
@@ -1890,7 +1893,7 @@ accounting.post('/card-settlements/:id/confirm', requireRole(...ACCOUNTING_ROLES
 
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
-  if (record.status !== 'card_pending' || record.payment_type !== '카드') {
+  if (!['confirmed', 'card_pending'].includes(record.status) || record.payment_type !== '카드' || String(record.card_deposit_date || '').trim()) {
     return c.json({ error: '카드대기 상태의 매출만 정산 확정할 수 있습니다.' }, 400);
   }
 

@@ -5,7 +5,7 @@ import { canUseBusinessAutomation } from '../../shared/automation-access';
 
 const report = new Hono<AuthEnv>();
 const AGENT_INSTALLER_KEY = 'downloads/MyAuctionAutomationAgentSetup.exe';
-const AUTOMATION_AGENT_VERSION = '2026.07.16.1';
+const AUTOMATION_AGENT_VERSION = '2026.07.21.1';
 
 report.use('*', authMiddleware);
 

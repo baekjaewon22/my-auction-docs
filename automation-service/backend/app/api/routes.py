@@ -25,7 +25,7 @@ from ..core.utils import normalize_myauction_detail_url
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-AGENT_VERSION = "2026.07.16.1"
+AGENT_VERSION = "2026.07.21.1"
 
 # 진행상황 저장소 (간단한 in-memory)
 progress_store: dict[str, list[ProgressUpdate]] = {}

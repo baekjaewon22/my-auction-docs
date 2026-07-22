@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { confirmedSalesSql, recognizedSalesDateSql } from '../lib/sales-recognition';
 
 const analytics = new Hono<AuthEnv>();
 analytics.use('*', authMiddleware);
@@ -12,15 +13,15 @@ function buildExpenseSourceSql(includeSessionLedger: boolean) {
   const parts = [
     `
       SELECT
-        contract_date AS transaction_date,
+        ${recognizedSalesDateSql('sales_records')} AS transaction_date,
         COALESCE(NULLIF(type_detail, ''), NULLIF(type, ''), '회계장부 지출') AS category,
         amount AS amount,
         branch,
         '회계장부' AS source
       FROM sales_records
-      WHERE status = 'confirmed'
+      WHERE ${confirmedSalesSql('sales_records')}
         AND direction = 'expense'
-        AND contract_date >= ?
+        AND ${recognizedSalesDateSql('sales_records')} >= ?
     `,
   ];
 
@@ -110,12 +111,13 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
 
   // 1. 월별 매출 (confirmed) — 공급가액 기준 (÷1.1)
   const salesByMonth = await db.prepare(`
-    SELECT substr(contract_date, 1, 7) as month,
-      SUM(CASE WHEN status = 'confirmed' THEN ROUND(amount / 1.1) ELSE 0 END) as revenue,
+    SELECT substr(CASE WHEN ${confirmedSalesSql('sales_records')} THEN ${recognizedSalesDateSql('sales_records')} ELSE contract_date END, 1, 7) as month,
+      SUM(CASE WHEN ${confirmedSalesSql('sales_records')} THEN ROUND(amount / 1.1) ELSE 0 END) as revenue,
       SUM(CASE WHEN status = 'refunded' THEN ROUND(amount / 1.1) ELSE 0 END) as refunded,
-      COUNT(CASE WHEN status = 'confirmed' THEN 1 END) as confirmed_count
+      COUNT(CASE WHEN ${confirmedSalesSql('sales_records')} THEN 1 END) as confirmed_count
     FROM sales_records
-    WHERE contract_date >= ?
+    WHERE (${confirmedSalesSql('sales_records')} OR status = 'refunded')
+      AND CASE WHEN ${confirmedSalesSql('sales_records')} THEN ${recognizedSalesDateSql('sales_records')} ELSE contract_date END >= ?
       AND direction != 'expense'
       AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY month ORDER BY month
@@ -144,7 +146,7 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
   const salesByType = await db.prepare(`
     SELECT type, SUM(ROUND(amount / 1.1)) as total, COUNT(*) as count
     FROM sales_records
-    WHERE status = 'confirmed' AND contract_date >= ?
+    WHERE ${confirmedSalesSql('sales_records')} AND ${recognizedSalesDateSql('sales_records')} >= ?
       AND direction != 'expense'
       AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY type ORDER BY total DESC
@@ -156,7 +158,7 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
       SUM(ROUND(sr.amount / 1.1)) as total, COUNT(*) as count
     FROM sales_records sr
     JOIN users u ON sr.user_id = u.id
-    WHERE sr.status = 'confirmed' AND sr.contract_date >= ?
+    WHERE ${confirmedSalesSql('sr')} AND ${recognizedSalesDateSql('sr')} >= ?
       AND sr.direction != 'expense'
       AND COALESCE(sr.exclude_from_count, 0) = 0
     GROUP BY sr.user_id ORDER BY total DESC LIMIT 15
@@ -166,7 +168,7 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
   const salesByBranch = await db.prepare(`
     SELECT branch, SUM(ROUND(amount / 1.1)) as total, COUNT(*) as count
     FROM sales_records
-    WHERE status = 'confirmed' AND contract_date >= ?
+    WHERE ${confirmedSalesSql('sales_records')} AND ${recognizedSalesDateSql('sales_records')} >= ?
       AND direction != 'expense'
       AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY branch ORDER BY total DESC

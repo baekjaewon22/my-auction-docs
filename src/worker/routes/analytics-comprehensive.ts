@@ -9,13 +9,12 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 import { ensureBidAnalysisTable } from '../lib/bid-analysis';
 import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
+import { countBusinessDates } from '../../shared/work-calendar';
+import { loadSystemHolidayDates } from '../lib/system-holidays';
+import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 
 const comprehensive = new Hono<AuthEnv>();
 comprehensive.use('*', authMiddleware);
-
-const HOLIDAYS = new Set([
-  '2026-05-25',
-]);
 
 // 백필/수동 갱신 엔드포인트 (master·ceo·accountant만)
 comprehensive.post('/backfill', requireRole('master', 'ceo', 'accountant'), async (c) => {
@@ -327,20 +326,21 @@ comprehensive.get('/', async (c) => {
 
   // 3. 매출 (기간 내)
   const salesRes = await db.prepare(`
-    SELECT user_id, status,
+    SELECT user_id,
+      CASE WHEN ${confirmedSalesSql('sales_records')} THEN 'confirmed' ELSE status END as status,
       COUNT(*) as cnt,
       SUM(amount) as total
     FROM sales_records
-    WHERE contract_date BETWEEN ? AND ?
+    WHERE ${salesPeriodSql('sales_records')}
       AND direction != 'expense'
       AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY user_id, status
-  `).bind(periodStart, periodEnd).all<any>();
+  `).bind(periodStart, periodEnd, periodStart, periodEnd).all<any>();
   const salesMap: Record<string, { confirmed: number; pending: number; refunded: number; confirmed_count: number; refunded_count: number; sales_count: number }> = {};
   (salesRes.results || []).forEach((r: any) => {
     if (!salesMap[r.user_id]) salesMap[r.user_id] = { confirmed: 0, pending: 0, refunded: 0, confirmed_count: 0, refunded_count: 0, sales_count: 0 };
     salesMap[r.user_id].sales_count += r.cnt;
-    if (r.status === 'confirmed' || r.status === 'card_pending') {
+    if (r.status === 'confirmed') {
       salesMap[r.user_id].confirmed += r.total || 0;
       salesMap[r.user_id].confirmed_count += r.cnt;
     } else if (r.status === 'pending') {
@@ -371,10 +371,10 @@ comprehensive.get('/', async (c) => {
   // 캐시가 비어있으면(첫 실행, 백필 전) 원본에서 fallback 집계
   if ((trendRes.results || []).length === 0) {
     const fallback = await db.prepare(`
-      SELECT user_id, substr(contract_date, 1, 7) as ym, SUM(amount) as total
+      SELECT user_id, substr(${recognizedSalesDateSql('sales_records')}, 1, 7) as ym, SUM(amount) as total
       FROM sales_records
-      WHERE contract_date >= ?
-        AND status IN ('confirmed', 'card_pending')
+      WHERE ${recognizedSalesDateSql('sales_records')} >= ?
+        AND ${confirmedSalesSql('sales_records')}
         AND direction != 'expense'
         AND COALESCE(exclude_from_count, 0) = 0
       GROUP BY user_id, ym
@@ -389,8 +389,8 @@ comprehensive.get('/', async (c) => {
     const todayDelta = await db.prepare(`
       SELECT user_id, SUM(amount) as total
       FROM sales_records
-      WHERE contract_date = ?
-        AND status IN ('confirmed', 'card_pending')
+      WHERE ${recognizedSalesDateSql('sales_records')} = ?
+        AND ${confirmedSalesSql('sales_records')}
         AND direction != 'expense'
         AND COALESCE(exclude_from_count, 0) = 0
       GROUP BY user_id
@@ -430,8 +430,8 @@ comprehensive.get('/', async (c) => {
         SELECT sr.user_id, SUM(sr.amount) as total
         FROM sales_records sr
         JOIN user_accounting ua ON ua.user_id = sr.user_id
-        WHERE sr.contract_date BETWEEN ? AND ?
-          AND sr.status IN ('confirmed', 'card_pending')
+        WHERE ${recognizedSalesDateSql('sr')} BETWEEN ? AND ?
+          AND ${confirmedSalesSql('sr')}
           AND sr.direction != 'expense'
           AND COALESCE(sr.exclude_from_count, 0) = 0
           AND ua.pay_type = 'commission'
@@ -444,8 +444,11 @@ comprehensive.get('/', async (c) => {
   // 8. 조직 평균 활동 (활동량 비교용)
   const orgActivityAvg = members.reduce((sum, m) => sum + Object.values(activityMap[m.id] || {}).reduce((a, b) => a + b, 0), 0) / members.length;
 
-  // 9. 평일 수 (작성률 계산용) — 매우 단순화: 기간 내 평일 수
-  const weekdays = countWeekdays(periodStart, periodEnd);
+  // 9. 근무일 수 (작성률 계산용) — 공용 기본 달력 + 운영 공휴일 설정
+  const holidayYears: string[] = [];
+  for (let year = Number(periodStart.slice(0, 4)); year <= Number(periodEnd.slice(0, 4)); year += 1) holidayYears.push(String(year));
+  const statisticsHolidays = await loadSystemHolidayDates(db, holidayYears, ['journal', 'statistics']);
+  const weekdays = countBusinessDates(periodStart, periodEnd, statisticsHolidays);
 
   // ─── 멤버별 데이터 합성 ───
   const result = members.map((m: any) => {
@@ -558,19 +561,5 @@ comprehensive.get('/', async (c) => {
     metadata: { period_start: periodStart, period_end: periodEnd },
   });
 });
-
-function countWeekdays(start: string, end: string): number {
-  let count = 0;
-  const s = new Date(start);
-  const e = new Date(end);
-  const cur = new Date(s);
-  while (cur <= e) {
-    const day = cur.getDay();
-    const dateStr = cur.toISOString().slice(0, 10);
-    if (day !== 0 && day !== 6 && !HOLIDAYS.has(dateStr)) count++;
-    cur.setDate(cur.getDate() + 1);
-  }
-  return count;
-}
 
 export default comprehensive;

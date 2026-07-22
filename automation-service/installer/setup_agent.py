@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -127,6 +128,9 @@ def write_startup_runner(install_dir: Path) -> Path:
                 f'$exe = Join-Path $PSScriptRoot "{AGENT_EXE}"',
                 f'$port = "{PORT}"',
                 '$log = Join-Path $PSScriptRoot "watchdog.log"',
+                '$createdNew = $false',
+                '$mutex = [System.Threading.Mutex]::new($true, "Local\\MyAuctionAutomationAgentWatchdog", [ref]$createdNew)',
+                'if (-not $createdNew) { $mutex.Dispose(); exit 0 }',
                 'while ($true) {',
                 '  try {',
                 '    $process = Start-Process -FilePath $exe -ArgumentList $port -WindowStyle Hidden -PassThru',
@@ -144,6 +148,80 @@ def write_startup_runner(install_dir: Path) -> Path:
     return runner
 
 
+def write_manual_launcher(install_dir: Path) -> Path:
+    launcher = install_dir / f"Launch-{AGENT_NAME}.ps1"
+    launcher.write_text(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "SilentlyContinue"',
+                f'$taskName = "{AGENT_NAME}"',
+                f'$runner = Join-Path $PSScriptRoot "Start-{AGENT_NAME}.ps1"',
+                f'$healthUrl = "http://127.0.0.1:{PORT}/api/health"',
+                '$shell = New-Object -ComObject WScript.Shell',
+                'function Test-AgentHealth {',
+                '  try {',
+                '    $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2',
+                '    return $response.StatusCode -eq 200',
+                '  } catch { return $false }',
+                '}',
+                'if (Test-AgentHealth) {',
+                '  $null = $shell.Popup("업무자동화 실행기가 이미 정상 실행 중입니다.", 4, "마이옥션 업무자동화", 64)',
+                '  exit 0',
+                '}',
+                '$runKey = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"',
+                'New-Item -Path $runKey -Force | Out-Null',
+                'Set-ItemProperty -Path $runKey -Name $taskName -Value (\'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"\' -f $runner)',
+                '$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue',
+                'if ($task) { Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue }',
+                'Start-Sleep -Seconds 2',
+                'if (-not (Test-AgentHealth)) {',
+                '  Start-Process -FilePath powershell.exe -ArgumentList (\'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"\' -f $runner) -WindowStyle Hidden',
+                '}',
+                '1..12 | ForEach-Object { if (-not (Test-AgentHealth)) { Start-Sleep -Milliseconds 500 } }',
+                'if (Test-AgentHealth) {',
+                '  $null = $shell.Popup("업무자동화 실행기를 시작했습니다.", 4, "마이옥션 업무자동화", 64)',
+                '} else {',
+                '  $null = $shell.Popup("실행기를 시작하지 못했습니다. 최신 설치관리자를 다시 실행해 주세요.", 8, "마이옥션 업무자동화", 16)',
+                '  exit 1',
+                '}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return launcher
+
+
+def create_shortcuts(install_dir: Path, launcher: Path, runner: Path) -> None:
+    escaped_dir = str(install_dir).replace("'", "''")
+    escaped_launcher = str(launcher).replace("'", "''")
+    escaped_runner = str(runner).replace("'", "''")
+    escaped_icon = str(install_dir / AGENT_EXE).replace("'", "''")
+    command = (
+        "$ErrorActionPreference='Stop'; "
+        "$desktop=[Environment]::GetFolderPath('Desktop'); "
+        "$startup=[Environment]::GetFolderPath('Startup'); "
+        "$shell=New-Object -ComObject WScript.Shell; "
+        "$shortcut=$shell.CreateShortcut((Join-Path $desktop '마이옥션 업무자동화 실행기.lnk')); "
+        "$shortcut.TargetPath='powershell.exe'; "
+        f"$shortcut.Arguments='-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{escaped_launcher}\"'; "
+        f"$shortcut.WorkingDirectory='{escaped_dir}'; "
+        f"$shortcut.IconLocation='{escaped_icon},0'; "
+        "$shortcut.Description='마이옥션 업무자동화 실행기를 시작하거나 상태를 확인합니다.'; "
+        "$shortcut.WindowStyle=7; $shortcut.Save(); "
+        "$startupShortcut=$shell.CreateShortcut((Join-Path $startup '마이옥션 업무자동화 자동시작.lnk')); "
+        "$startupShortcut.TargetPath='powershell.exe'; "
+        f"$startupShortcut.Arguments='-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{escaped_runner}\"'; "
+        f"$startupShortcut.WorkingDirectory='{escaped_dir}'; "
+        f"$startupShortcut.IconLocation='{escaped_icon},0'; "
+        "$startupShortcut.Description='Windows 로그인 시 마이옥션 업무자동화를 자동으로 시작합니다.'; "
+        "$startupShortcut.WindowStyle=7; $startupShortcut.Save()"
+    )
+    result = powershell(command)
+    if result.returncode != 0:
+        raise RuntimeError("Failed to create the desktop shortcut")
+    log("Created desktop launcher and Startup-folder shortcuts")
+
+
 def register_startup(runner: Path) -> str:
     escaped_runner = str(runner).replace("'", "''")
     task_command = (
@@ -158,11 +236,13 @@ def register_startup(runner: Path) -> str:
         "-ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1); "
         "Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null; "
         "$runKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; "
-        "Remove-ItemProperty -Path $runKey -Name $taskName -ErrorAction SilentlyContinue"
+        "New-Item -Path $runKey -Force | Out-Null; "
+        "Set-ItemProperty -Path $runKey -Name $taskName "
+        "-Value ('powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{0}\"' -f $runner)"
     )
     result = powershell(task_command)
     if result.returncode == 0:
-        log("Registered scheduled task startup with watchdog")
+        log("Registered scheduled task and Run-key startup with watchdog")
         return "scheduled_task"
 
     fallback_command = (
@@ -194,6 +274,21 @@ def start_registered_agent(runner: Path, startup_mode: str) -> None:
         "-File",
         str(runner),
     ])
+
+
+def wait_for_agent_health(timeout_seconds: float = 15.0) -> bool:
+    deadline = time.time() + timeout_seconds
+    url = f"http://127.0.0.1:{PORT}/api/health"
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                if response.status == 200:
+                    log("Agent health check passed")
+                    return True
+        except Exception:
+            time.sleep(0.5)
+    log("Agent health check did not pass before timeout")
+    return False
 
 
 def show_message(title: str, message: str, error: bool = False) -> None:
@@ -245,13 +340,17 @@ def main() -> int:
                 shutil.copy2(item, target)
 
     runner = write_startup_runner(install_dir)
+    launcher = write_manual_launcher(install_dir)
+    create_shortcuts(install_dir, launcher, runner)
     startup_mode = register_startup(runner)
 
     start_registered_agent(runner, startup_mode)
+    if not wait_for_agent_health():
+        raise RuntimeError("The agent was installed but did not start on port 8001")
     log("Setup completed")
     show_message(
         "MyAuction Automation Agent",
-        "Installation/update completed.\nReturn to the site and click Recheck.",
+        "Installation/update completed.\nA desktop launcher was created.\nReturn to the site and click Recheck.",
     )
     return 0
 

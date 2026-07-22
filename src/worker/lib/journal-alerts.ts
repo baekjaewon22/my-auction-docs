@@ -1,3 +1,6 @@
+import { isNonWorkingDate } from '../../shared/work-calendar.ts';
+import { loadSystemHolidayDates } from './system-holidays.ts';
+
 // 일지 기반 검증형 알림 영속화 (Phase 1 — 4종)
 // - alert_personal_doc_missing
 // - alert_bid_field_missing
@@ -283,6 +286,13 @@ const LUNCH_END_MIN = 13 * 60;
 const MIN_GAP_MINUTES = 30;            // 30분 이상 공백만 알림
 
 export async function refreshScheduleGapForUserDate(db: DB, userId: string, targetDate: string): Promise<void> {
+  const holidays = await loadSystemHolidayDates(db, [targetDate.slice(0, 4)], 'journal');
+  if (isNonWorkingDate(targetDate, holidays)) {
+    await db.prepare(
+      "UPDATE alert_schedule_gap SET status='resolved', resolved_at=datetime('now'), last_checked_at=datetime('now') WHERE user_id=? AND target_date=? AND status='open'"
+    ).bind(userId, targetDate).run();
+    return;
+  }
   const entriesRes = await db.prepare(
     'SELECT id, user_id, target_date, activity_type, activity_subtype, data FROM journal_entries WHERE user_id = ? AND target_date = ?'
   ).bind(userId, targetDate).all<JournalEntry>();

@@ -8,6 +8,7 @@ import {
   validatePushEndpoint,
   validatePushKey,
 } from '../../shared/web-push';
+import { getPushSetupStatusForViewer } from '../lib/web-push-setup-reminders';
 
 type PushSubscriptionRow = {
   id: string;
@@ -67,6 +68,20 @@ webPush.get('/config', requireHumanUser(), (c) => {
     : { supported: false, reason: config.reason });
 });
 
+webPush.get('/setup-status', requireHumanUser(), async (c) => {
+  const user = c.get('user');
+  if (!['manager', 'admin', 'master'].includes(user.role)) {
+    return c.json({ scope_label: '', missing: [], total_count: 0 });
+  }
+  const status = await getPushSetupStatusForViewer(c.env.DB, {
+    id: user.sub,
+    role: user.role,
+    branch: user.branch || '',
+    department: user.department || '',
+  });
+  return c.json(status);
+});
+
 webPush.get('/subscriptions', requireHumanUser(), async (c) => {
   const user = c.get('user');
   const result = await c.env.DB.prepare(`
@@ -77,6 +92,26 @@ webPush.get('/subscriptions', requireHumanUser(), async (c) => {
     ORDER BY active DESC, updated_at DESC
   `).bind(user.sub).all();
   return c.json({ subscriptions: result.results || [] });
+});
+
+// 현재 브라우저의 구독이 로그인한 사용자 소유인지 확인한다.
+// endpoint 원문은 응답하지 않고 해시 비교 결과만 돌려준다.
+webPush.post('/subscriptions/current', requireHumanUser(), async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json<{ endpoint?: string }>();
+  let validated: ReturnType<typeof validatePushEndpoint>;
+  try {
+    validated = validatePushEndpoint(body.endpoint);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : '유효하지 않은 푸시 구독 정보입니다.' }, 400);
+  }
+  const endpointHash = await sha256Hex(validated.endpoint);
+  const existing = await c.env.DB.prepare(`
+    SELECT active FROM web_push_subscriptions
+    WHERE endpoint_hash = ? AND user_id = ?
+    LIMIT 1
+  `).bind(endpointHash, user.sub).first<{ active: number }>();
+  return c.json({ owned: !!existing, active: Number(existing?.active || 0) === 1 });
 });
 
 webPush.post('/subscriptions', requireHumanUser(), async (c) => {

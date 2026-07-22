@@ -5,6 +5,7 @@ import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import { isHeadOfficeBranch, isRestrictedAccountingBranch } from '../lib/branchAliases';
 import { canUseBusinessAutomation } from '../../shared/automation-access';
+import WebPushConsentPrompt from './WebPushConsentPrompt';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
@@ -313,6 +314,7 @@ export default function Layout() {
 
   return (
     <div className={`app-layout ${collapsed ? 'sidebar-collapsed' : ''}`}>
+      <WebPushConsentPrompt />
       {/* Mobile header */}
       <div className="mobile-header">
         <button className="mobile-menu-btn" onClick={() => setMobileOpen(true)}>

@@ -6,6 +6,7 @@ import { reinitUserLeave } from './leave';
 import { normalizeBranchName } from '../lib/branchAliases';
 import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotForMonth, payTypeAtMonthSql, resolvePayTypeFromHistory } from '../lib/pay-type-history';
 import { calculateRefundRecoveryAmount } from '../../shared/refund-recovery';
+import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -255,7 +256,7 @@ async function calcContractAwardForUser(
         SUM(sr.amount) as customer_amount
       FROM sales_records sr
       JOIN users u ON u.id = sr.user_id
-      WHERE sr.type = '계약' AND sr.status = 'confirmed'
+      WHERE sr.type = '계약' AND ${confirmedSalesSql('sr')}
         AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
         AND (
           (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
@@ -449,7 +450,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
           END as customer_key,
           SUM(amount) as customer_amount
         FROM sales_records
-        WHERE user_id = ? AND type = '계약' AND status = 'confirmed'
+        WHERE user_id = ? AND type = '계약' AND ${confirmedSalesSql('sales_records')}
           AND (exclude_from_count IS NULL OR exclude_from_count = 0)
           AND (
             (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
@@ -710,8 +711,16 @@ payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
 
   // 조건
   let branchWhere = '';
-  const params: any[] = [month + '%'];
-  if (filterBranch) { branchWhere = ' AND sr.branch = ?'; params.push(filterBranch); }
+  const [summaryYear, summaryMonth] = month.split('-').map(Number);
+  const summaryStart = `${month}-01`;
+  const summaryEnd = `${month}-${String(new Date(summaryYear, summaryMonth, 0).getDate()).padStart(2, '0')}`;
+  const baseParams: any[] = [summaryStart, summaryEnd, summaryStart, summaryEnd];
+  const contractParams: any[] = [summaryStart, summaryEnd];
+  if (filterBranch) {
+    branchWhere = ' AND sr.branch = ?';
+    baseParams.push(filterBranch);
+    contractParams.push(filterBranch);
+  }
 
   // 매출 합산
   const salesResult = await db.prepare(`
@@ -724,11 +733,11 @@ payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
     FROM (
       SELECT sr.branch,
         COUNT(*) as total_count,
-        SUM(CASE WHEN sr.status = 'confirmed' THEN sr.amount ELSE 0 END) as confirmed_total,
+        SUM(CASE WHEN ${confirmedSalesSql('sr')} THEN sr.amount ELSE 0 END) as confirmed_total,
         SUM(CASE WHEN sr.status = 'refunded' THEN sr.amount ELSE 0 END) as refunded_total,
         SUM(CASE WHEN sr.status = 'pending' THEN sr.amount ELSE 0 END) as pending_total
       FROM sales_records sr
-      WHERE sr.contract_date LIKE ?${branchWhere}
+      WHERE ${salesPeriodSql('sr')}${branchWhere}
       GROUP BY sr.branch
     ) base
     LEFT JOIN (
@@ -742,14 +751,14 @@ payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
           END as customer_key,
           SUM(sr.amount) as customer_amount
         FROM sales_records sr
-        WHERE sr.contract_date LIKE ?${branchWhere}
-          AND sr.type = '계약' AND sr.status = 'confirmed'
+        WHERE ${recognizedSalesDateSql('sr')} BETWEEN ? AND ?${branchWhere}
+          AND sr.type = '계약' AND ${confirmedSalesSql('sr')}
           AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
         GROUP BY sr.branch, customer_key
       )
       GROUP BY branch
     ) cnt ON cnt.branch = base.branch
-  `).bind(...params, ...params).all();
+  `).bind(...baseParams, ...contractParams).all();
 
   // 인건비 합산 (급여 + 직급수당)
   const laborResult = await db.prepare(`
@@ -943,7 +952,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
     const salesRes = await db.prepare(`
       SELECT type, type_detail, amount, proxy_cost, direction, payment_type, card_deposit_date, deposit_date, contract_date
       FROM sales_records
-      WHERE user_id = ? AND status = 'confirmed'
+      WHERE user_id = ? AND ${confirmedSalesSql('sales_records')}
         AND (
           (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
           OR (payment_type != '카드' AND payment_type != '' AND deposit_date >= ? AND deposit_date <= ?)

@@ -19,13 +19,25 @@ months AS (
   FROM sales_records
   WHERE direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0 AND user_id IN (SELECT id FROM consultants)
   UNION
+  SELECT DISTINCT user_id,
+    substr(CASE WHEN payment_type = '카드' THEN card_deposit_date ELSE COALESCE(NULLIF(TRIM(deposit_date), ''), contract_date) END, 1, 7) as ym
+  FROM sales_records
+  WHERE ((payment_type = '카드' AND status IN ('confirmed','card_pending') AND TRIM(COALESCE(card_deposit_date, '')) != '')
+      OR (COALESCE(payment_type, '') != '카드' AND status IN ('confirmed','card_pending')))
+    AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0 AND user_id IN (SELECT id FROM consultants)
+  UNION
   SELECT DISTINCT user_id, substr(target_date,1,7)
   FROM journal_entries
   WHERE user_id IN (SELECT id FROM consultants)
 )
 SELECT
   m.user_id, m.ym,
-  COALESCE((SELECT SUM(amount) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status IN ('confirmed','card_pending') AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),
+  COALESCE((SELECT SUM(amount) FROM sales_records
+    WHERE user_id = m.user_id
+      AND substr(CASE WHEN payment_type = '카드' THEN card_deposit_date ELSE COALESCE(NULLIF(TRIM(deposit_date), ''), contract_date) END, 1, 7) = m.ym
+      AND ((payment_type = '카드' AND status IN ('confirmed','card_pending') AND TRIM(COALESCE(card_deposit_date, '')) != '')
+        OR (COALESCE(payment_type, '') != '카드' AND status IN ('confirmed','card_pending')))
+      AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),
   COALESCE((SELECT SUM(amount) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status = 'pending' AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),
   COALESCE((SELECT SUM(amount) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND status = 'refunded' AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),
   COALESCE((SELECT COUNT(*) FROM sales_records WHERE user_id = m.user_id AND substr(contract_date,1,7) = m.ym AND direction != 'expense' AND COALESCE(exclude_from_count, 0) = 0), 0),

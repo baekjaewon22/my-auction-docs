@@ -16,6 +16,7 @@ import { useBranches } from '../hooks/useBranches';
 import ComprehensiveAnalysis from '../components/ComprehensiveAnalysis';
 import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
+import { isNonWorkingDate } from '../../shared/work-calendar';
 
 interface Member {
   id: string; name: string; role: string; branch: string; department: string; login_type?: string;
@@ -117,6 +118,7 @@ export default function Statistics() {
   const [filterMonth, setFilterMonth] = useState('');
   const [filterMonthEnd, setFilterMonthEnd] = useState('');
   const [salesRecords, setSalesRecords] = useState<SalesRecord[]>([]);
+  const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
   const isDirector = user?.role === 'director';
   const isSalesVisible = user?.role === 'master' || user?.role === 'ceo' || user?.role === 'cc_ref' || user?.role === 'accountant' || (user?.role === 'admin' && isHeadOfficeBranch(user?.branch)) || isDirector;
   const tabs = isDirector
@@ -134,11 +136,14 @@ export default function Statistics() {
       api.adminNotes.bidAnalysisStats({ from: statsFrom, to: statsTo }).catch(() => ({ rows: [] })),
       api.sales.stats({ month: filterMonth || undefined, month_end: filterMonthEnd || undefined, branch: filterBranch || undefined, department: filterDept || undefined, user_id: filterUser || undefined }).catch(() => ({ records: [] })),
     ])
-      .then(([eRes, mRes, bRes, sRes]) => {
+      .then(async ([eRes, mRes, bRes, sRes]) => {
         setEntries(eRes.entries);
         setMembers(mRes.members);
         setBidAnalysisEntries(bidRowsToJournalEntries(bRes.rows || [], mRes.members));
         setSalesRecords(sRes.records || []);
+        const years = [...new Set((eRes.entries as JournalEntry[]).map((entry) => entry.target_date.slice(0, 4)).filter(Boolean))];
+        const results = await Promise.all(years.map((year) => api.journal.holidays(year).catch(() => ({ holidays: [] }))));
+        setHolidayDates(new Set(results.flatMap((result) => result.holidays.map((holiday) => holiday.holiday_date))));
       })
       .finally(() => setLoading(false));
   }, [filterMonth, filterMonthEnd, filterBranch, filterDept, filterUser]);
@@ -302,7 +307,7 @@ export default function Statistics() {
         {tabs[tab] === '입찰 분석' && <BidAnalysis entries={filteredBidAnalysisEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={bidAnalysisEntries.filter(e => branchNames.includes(normalizeBranchName(e.branch)))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(normalizeBranchName(m.branch)) && !isHQStaff(m))} />}
         {tabs[tab] === '브리핑 분석' && <BriefingAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} />}
         {tabs[tab] === '근태 분석' && <AttendanceAnalysis entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} allEntries={entries.filter(e => branchNames.includes(normalizeBranchName(e.branch)) && !isCompanionEntry(e))} allMembers={members.filter(m => m.role !== 'master' && branchNames.includes(normalizeBranchName(m.branch)) && !isHQStaff(m))} />}
-        {tabs[tab] === '이상 감지' && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m) && m.role !== 'freelancer' && (m as any).login_type !== 'freelancer')} />}
+        {tabs[tab] === '이상 감지' && <AnomalyDetection entries={filteredEntries} members={filteredMembers.filter(m => !isHQStaff(m) && m.role !== 'freelancer' && (m as any).login_type !== 'freelancer')} holidayDates={holidayDates} />}
         {tabs[tab] === '매출/환불' && <SalesAnalysis records={isDirector ? salesRecords.filter(r => { const eb = normalizeBranchName(r.attribution_branch || r.branch); return eb === '대전지사' || eb === '부산지사' || r.user_id === user?.id; }) : salesRecords} members={filteredMembers.filter(m => !isHQStaff(m))} viewLevel={filterUser ? 'person' : filterDept ? 'team' : filterBranch ? 'branch' : 'all'} />}
         {tabs[tab] === '종합분석' && <ComprehensiveAnalysis filterBranch={filterBranch} filterDept={filterDept} filterUser={filterUser} filterMonth={filterMonth} filterMonthEnd={filterMonthEnd} />}
       </div>
@@ -767,7 +772,7 @@ function AttendanceAnalysis({ entries, members, viewLevel, allEntries, allMember
 /* ============================================================ */
 /* 3. 이상 감지                                                   */
 /* ============================================================ */
-function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; members: Member[] }) {
+function AnomalyDetection({ entries, members, holidayDates }: { entries: JournalEntry[]; members: Member[]; holidayDates: ReadonlySet<string> }) {
   // 파이프라인: 임장 → 브리핑 → 입찰
   // 사건번호 기준으로 각 단계 매칭
 
@@ -890,13 +895,12 @@ function AnomalyDetection({ entries, members }: { entries: JournalEntry[]; membe
   });
 
   // 5. 일지 미작성
-  const HOLIDAYS = new Set(['2026-05-25', '2026-06-03']);
   const today = new Date();
   const last30: string[] = [];
   for (let i = 0; i < 30; i++) {
     const d = new Date(today); d.setDate(d.getDate() - i);
     const dateStr = d.toISOString().split('T')[0];
-    if (d.getDay() !== 0 && d.getDay() !== 6 && !HOLIDAYS.has(dateStr)) last30.push(dateStr);
+    if (!isNonWorkingDate(dateStr, holidayDates)) last30.push(dateStr);
   }
   const missingDays = members.filter((m) => ['member', 'manager'].includes(m.role)).map((m) => {
     const myDates = new Set(entries.filter((e) => e.user_id === m.id).map((e) => e.target_date));

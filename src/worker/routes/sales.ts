@@ -6,6 +6,8 @@ import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName 
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { calculateRefundRecoveryAmount, refundApprovalMonth } from '../../shared/refund-recovery';
 import { resolveRefundRecovery } from '../lib/refund-recovery';
+import { effectiveSalesStatus, normalizeSalesRecognition } from '../../shared/sales-recognition';
+import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 
 const sales = new Hono<AuthEnv>();
 sales.use('*', authMiddleware);
@@ -218,8 +220,10 @@ sales.get('/', async (c) => {
       )`);
       params.push(mStart, mEnd, mStart, mEnd, mStart, mEnd);
     } else {
-      conditions.push("sr.contract_date >= ? AND sr.contract_date <= ?");
-      params.push(mStart, mEnd);
+      // 확정매출은 실제 인식일(카드=정산일, 그 외=입금일),
+      // 비확정 건은 기존 계약일 기준으로 조회한다.
+      conditions.push(salesPeriodSql('sr'));
+      params.push(mStart, mEnd, mStart, mEnd);
     }
   }
 
@@ -230,7 +234,7 @@ sales.get('/', async (c) => {
     ? await db.prepare(query).bind(...params).all()
     : await db.prepare(query).all();
 
-  return c.json({ records: result.results });
+  return c.json({ records: (result.results || []).map((row: any) => normalizeSalesRecognition(row)) });
 });
 
 // GET /api/sales/contract-tracker — 실시간 컨설턴트 계약 현황 (대표·총무·정민호 열람)
@@ -333,10 +337,10 @@ sales.get('/contract-tracker', async (c) => {
         COUNT(*) as raw_count
       FROM sales_records
       WHERE type = '계약'
-        AND status != 'refunded'
+        AND ${confirmedSalesSql('sales_records')}
         AND (exclude_from_count IS NULL OR exclude_from_count = 0)
-        AND deposit_date IS NOT NULL AND deposit_date != ''
-        AND deposit_date >= ? AND deposit_date <= ?
+        AND ${recognizedSalesDateSql('sales_records')} >= ?
+        AND ${recognizedSalesDateSql('sales_records')} <= ?
       GROUP BY user_id, customer_key
     )
     GROUP BY user_id
@@ -494,7 +498,7 @@ sales.get('/ranking', async (c) => {
         SUM(sr.amount) as customer_amount
       FROM sales_records sr
       JOIN users u ON u.id = sr.user_id
-      WHERE sr.type = '계약' AND sr.status = 'confirmed'
+      WHERE sr.type = '계약' AND ${confirmedSalesSql('sr')}
         AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
         AND (
           (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
@@ -661,16 +665,15 @@ sales.put('/:id', async (c) => {
     return c.json({ error: '증빙/정산 정보는 총무만 수정할 수 있습니다.' }, 403);
   }
 
-  // card_pending 상태에서 card_deposit_date 입력 시 → confirmed 전환
+  // 카드의 확정 여부는 상품 유형이나 이전 상태가 아니라 정산일로만 결정한다.
   const newCardDepDate = body.card_deposit_date ?? record.card_deposit_date ?? '';
-  let statusUpdate = record.status;
-  if (record.status === 'card_pending' && body.card_deposit_date && body.card_deposit_date.trim()) {
-    statusUpdate = 'confirmed';
-  }
-  // card_deposit_date 초기화 시 confirmed → card_pending 복귀
-  if (record.status === 'confirmed' && record.payment_type === '카드' && body.card_deposit_date === '') {
-    statusUpdate = 'card_pending';
-  }
+  const nextPaymentType = body.payment_type ?? record.payment_type ?? '';
+  const previousEffectiveStatus = effectiveSalesStatus(record);
+  const statusUpdate = effectiveSalesStatus({
+    status: record.status,
+    payment_type: nextPaymentType,
+    card_deposit_date: newCardDepDate,
+  });
 
   // 매수신청대리: amount 또는 proxy_cost 변경 시 type_detail 자동 갱신
   // (총무가 detail 뷰에서 proxy_cost를 편집할 때 type_detail이 stale로 남는 문제 방지)
@@ -696,7 +699,7 @@ sales.put('/:id', async (c) => {
     amount: resolvedAmount,
     contract_date: body.contract_date ?? record.contract_date,
     deposit_date: body.deposit_date ?? record.deposit_date,
-    payment_type: body.payment_type ?? record.payment_type ?? '',
+    payment_type: nextPaymentType,
     card_deposit_date: newCardDepDate,
     tax_invoice_date: body.tax_invoice_date ?? record.tax_invoice_date ?? '',
     tax_invoice_type: body.tax_invoice_type ?? record.tax_invoice_type ?? '',
@@ -717,7 +720,7 @@ sales.put('/:id', async (c) => {
     body.depositor_different !== undefined ? (body.depositor_different ? 1 : 0) : record.depositor_different,
     resolvedAmount, body.contract_date ?? record.contract_date,
     body.deposit_date ?? record.deposit_date ?? '',
-    body.payment_type ?? record.payment_type ?? '', body.receipt_type ?? record.receipt_type ?? '',
+    nextPaymentType, body.receipt_type ?? record.receipt_type ?? '',
     body.receipt_phone ?? record.receipt_phone ?? '', newCardDepDate,
     body.tax_invoice_date ?? record.tax_invoice_date ?? '',
     body.tax_invoice_type ?? record.tax_invoice_type ?? '',
@@ -738,7 +741,7 @@ sales.put('/:id', async (c) => {
   }
 
   // 알림톡: 카드 정산일 입력으로 card_pending → confirmed 전환 시 담당자에게 ACCOUNTING_CONFIRMED
-  if (record.status === 'card_pending' && statusUpdate === 'confirmed') {
+  if (previousEffectiveStatus === 'card_pending' && statusUpdate === 'confirmed') {
     const consultant = await db.prepare('SELECT name, phone FROM users WHERE id = ?').bind(record.user_id).first<{ name: string; phone: string }>();
     if (consultant?.phone) {
       c.executionCtx.waitUntil(sendAlimtalkByTemplate(
@@ -767,7 +770,11 @@ sales.post('/:id/confirm', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
 
   const depDate = deposit_date || new Date().toISOString().slice(0, 10);
   // 카드 결제 → card_pending (카드 정산일 입력 전까지 대기)
-  const newStatus = record.payment_type === '카드' ? 'card_pending' : 'confirmed';
+  const newStatus = effectiveSalesStatus({
+    status: 'confirmed',
+    payment_type: record.payment_type,
+    card_deposit_date: record.card_deposit_date,
+  });
   await db.prepare(`
     UPDATE sales_records SET status = ?, confirmed_at = datetime('now', '+9 hours'), confirmed_by = ?, deposit_date = ?, updated_at = datetime('now', '+9 hours')
     WHERE id = ?
@@ -979,7 +986,7 @@ sales.get('/dashboard/pending', async (c) => {
     ? await db.prepare(query).bind(...params).all()
     : await db.prepare(query).all();
 
-  return c.json({ records: result.results });
+  return c.json({ records: (result.results || []).map((row: any) => normalizeSalesRecognition(row)) });
 });
 
 // GET /api/sales/dashboard/refund-impacts — 환불로 인한 성과금/랭킹 영향 알림 (총무/관리자)
@@ -1128,7 +1135,7 @@ sales.get('/dashboard/refund-requests', async (c) => {
     ORDER BY sr.refund_requested_at DESC
   `).all();
 
-  return c.json({ records: result.results });
+  return c.json({ records: (result.results || []).map((row: any) => normalizeSalesRecognition(row)) });
 });
 
 // GET /api/sales/stats — 매출/환불 통계
@@ -1152,8 +1159,8 @@ sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'
     const mStart = month + '-01';
     const [ey, em] = endMonth.split('-').map(Number);
     const mEnd = `${endMonth}-${new Date(ey, em, 0).getDate()}`;
-    query += " AND sr.contract_date >= ? AND sr.contract_date <= ?";
-    params.push(mStart, mEnd);
+    query += ` AND ${salesPeriodSql('sr')}`;
+    params.push(mStart, mEnd, mStart, mEnd);
   }
   if (branch) { query += " AND sr.branch = ?"; params.push(branch); }
   if (department) { query += " AND sr.department = ?"; params.push(department); }
@@ -1177,7 +1184,7 @@ sales.get('/stats', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'
     ? await db.prepare(query).bind(...params).all()
     : await db.prepare(query).all();
 
-  return c.json({ records: result.results });
+  return c.json({ records: (result.results || []).map((row: any) => normalizeSalesRecognition(row)) });
 });
 
 // ━━━ 입금 등록 (역방향: 회계 → 담당자) ━━━
@@ -1263,7 +1270,7 @@ sales.get('/manager-performance', async (c) => {
   const ids = members.map((m: any) => m.id);
   const placeholders = ids.map(() => '?').join(',');
   const salesResult = await db.prepare(`
-    SELECT sr.user_id, substr(sr.contract_date, 1, 7) as month,
+    SELECT sr.user_id, substr(${recognizedSalesDateSql('sr')}, 1, 7) as month,
       SUM(
         CASE
           WHEN sr.type = '매수신청대리'
@@ -1272,14 +1279,14 @@ sales.get('/manager-performance', async (c) => {
         END
       ) as amount
     FROM sales_records sr
-    WHERE sr.status IN ('confirmed', 'card_pending')
+    WHERE ${confirmedSalesSql('sr')}
       AND ${excludeCaseAllowanceSalesSql('sr')}
       AND sr.direction != 'expense'
       AND COALESCE(sr.exclude_from_count, 0) = 0
-      AND sr.contract_date >= ?
-      AND sr.contract_date <= ?
+      AND ${recognizedSalesDateSql('sr')} >= ?
+      AND ${recognizedSalesDateSql('sr')} <= ?
       AND sr.user_id IN (${placeholders})
-    GROUP BY sr.user_id, substr(sr.contract_date, 1, 7)
+    GROUP BY sr.user_id, substr(${recognizedSalesDateSql('sr')}, 1, 7)
   `).bind(startDate, endDate, ...ids).all<any>();
 
   const amountMap = new Map<string, number>();
@@ -1460,6 +1467,7 @@ sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
 
   const dir = direction === 'expense' ? 'expense' : 'income';
   const paymentType = payment_method === '카드' ? '카드' : '이체';
+  const initialStatus = paymentType === '카드' ? 'card_pending' : 'confirmed';
   const actualAssignee = assignee_id === '__all__' ? user.sub : assignee_id;
   const assignee = await db.prepare('SELECT id, branch, department FROM users WHERE id = ?').bind(actualAssignee).first<any>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
@@ -1467,8 +1475,8 @@ sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
   const id = crypto.randomUUID();
   await db.prepare(`
     INSERT INTO sales_records (id, user_id, type, type_detail, client_name, amount, contract_date, status, confirmed_at, confirmed_by, direction, branch, department, payment_type)
-    VALUES (?, ?, '기타', ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, ?)
-  `).bind(id, actualAssignee, content, content, amount, date, user.sub, dir, assignee.branch || '', assignee.department || '', paymentType).run();
+    VALUES (?, ?, '기타', ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?)
+  `).bind(id, actualAssignee, content, content, amount, date, initialStatus, user.sub, dir, assignee.branch || '', assignee.department || '', paymentType).run();
 
   return c.json({ success: true, id });
 });
@@ -1788,6 +1796,7 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
     if (!u && userName) memoParts.push(`미가입 담당자: ${userName}`);
     if (r.memo_s && !receiptPhone) memoParts.push(String(r.memo_s).slice(0, 200));
 
+    const importedStatus = paymentType === '카드' && !cardDepDate ? 'card_pending' : 'confirmed';
     const id = crypto.randomUUID();
     batchStatements.push(
       db.prepare(`
@@ -1796,10 +1805,10 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
            amount, contract_date, deposit_date, card_deposit_date, status,
            confirmed_at, confirmed_by, branch, department, memo,
            payment_type, receipt_type, receipt_phone)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         id, userId, type, finalTypeDetail, clientName, clientName, r.client_phone || '',
-        amount, contractDate, depositDate, cardDepDate, user.sub,
+        amount, contractDate, depositDate, cardDepDate, importedStatus, user.sub,
         branch, department, memoParts.join(' | '),
         paymentType, receiptType, receiptPhone,
       )
@@ -1807,7 +1816,7 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
     // in-memory 매칭 캐시에 추가 (같은 업로드 내 환불과 매칭 가능하게)
     existingList.push({
       id, user_id: userId, client_name: clientName, depositor_name: clientName,
-      amount, contract_date: contractDate, payment_type: paymentType, status: 'confirmed', branch
+      amount, contract_date: contractDate, payment_type: paymentType, status: importedStatus, branch
     });
     count++;
     if (!u && userName) skipped.push(`행${rowNo}: ${userName} 미가입 (총무 명의로 등록됨)`);

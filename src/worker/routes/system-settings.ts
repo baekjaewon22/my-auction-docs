@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { refreshScheduleGapForUserDate } from '../lib/journal-alerts';
 
 type HolidayType = 'legal' | 'substitute' | 'temporary' | 'company';
 type HolidayAppliesTo = 'all' | 'journal' | 'leave' | 'statistics';
@@ -25,6 +26,16 @@ const READ_ROLES = ['master', 'ceo', 'admin', 'accountant'] as const;
 const WRITE_ROLES = ['master', 'ceo', 'admin'] as const;
 const TYPES = new Set<HolidayType>(['legal', 'substitute', 'temporary', 'company']);
 const APPLIES_TO = new Set<HolidayAppliesTo>(['all', 'journal', 'leave', 'statistics']);
+
+async function recheckJournalAlertsForDate(db: D1Database, holidayDate: string): Promise<void> {
+  if (!holidayDate) return;
+  const users = await db.prepare(
+    'SELECT DISTINCT user_id FROM journal_entries WHERE target_date = ?'
+  ).bind(holidayDate).all<{ user_id: string }>();
+  for (const row of users.results || []) {
+    await refreshScheduleGapForUserDate(db, row.user_id, holidayDate);
+  }
+}
 
 function normalizeDate(value: unknown): string {
   const date = String(value || '').trim();
@@ -94,6 +105,8 @@ systemSettings.post('/holidays', requireRole(...WRITE_ROLES), async (c) => {
   const holiday = await db.prepare('SELECT * FROM system_holidays WHERE id = ?')
     .bind(id)
     .first<SystemHoliday>();
+  await recheckJournalAlertsForDate(db, holidayDate)
+    .catch((error) => console.error('[system holidays] journal alert refresh failed', error));
   return c.json({ holiday }, existing ? 200 : 201);
 });
 
@@ -107,9 +120,9 @@ systemSettings.put('/holidays/:id', requireRole(...WRITE_ROLES), async (c) => {
   if (!holidayDate) return c.json({ error: '공휴일 날짜를 YYYY-MM-DD 형식으로 입력해주세요.' }, 400);
   if (!name) return c.json({ error: '공휴일 이름을 입력해주세요.' }, 400);
 
-  const existing = await db.prepare('SELECT id FROM system_holidays WHERE id = ?')
+  const existing = await db.prepare('SELECT id, holiday_date FROM system_holidays WHERE id = ?')
     .bind(id)
-    .first<{ id: string }>();
+    .first<{ id: string; holiday_date: string }>();
   if (!existing) return c.json({ error: '공휴일 설정을 찾을 수 없습니다.' }, 404);
 
   await db.prepare(`
@@ -129,13 +142,24 @@ systemSettings.put('/holidays/:id', requireRole(...WRITE_ROLES), async (c) => {
   const holiday = await db.prepare('SELECT * FROM system_holidays WHERE id = ?')
     .bind(id)
     .first<SystemHoliday>();
+  for (const date of new Set([existing.holiday_date, holidayDate])) {
+    await recheckJournalAlertsForDate(db, date)
+      .catch((error) => console.error('[system holidays] journal alert refresh failed', error));
+  }
   return c.json({ holiday });
 });
 
 systemSettings.delete('/holidays/:id', requireRole(...WRITE_ROLES), async (c) => {
   const id = c.req.param('id');
   const db = c.env.DB;
+  const existing = await db.prepare('SELECT holiday_date FROM system_holidays WHERE id = ?')
+    .bind(id)
+    .first<{ holiday_date: string }>();
   await db.prepare('DELETE FROM system_holidays WHERE id = ?').bind(id).run();
+  if (existing?.holiday_date) {
+    await recheckJournalAlertsForDate(db, existing.holiday_date)
+      .catch((error) => console.error('[system holidays] journal alert refresh failed', error));
+  }
   return c.json({ success: true });
 });
 

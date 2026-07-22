@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../store';
 import { api } from '../api';
+import type { WebPushSetupStatus } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, BellOff, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 import { sameBranchName } from '../lib/branchAliases';
 import { refundApprovalMonth, refundRecoveryPayrollUrl } from '../../shared/refund-recovery';
+import { isNonWorkingDate } from '../../shared/work-calendar';
 
 const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
 
@@ -37,6 +39,12 @@ interface ScheduleGapAlert {
 
 const dashboardNewsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 const dashboardNewsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
+
+function dashboardSalesFocusUrl(record: { id: string; contract_date?: string }, focus: 'sales' | 'deposit' = 'sales') {
+  const params = new URLSearchParams({ focus, id: record.id });
+  if (focus === 'sales' && record.contract_date) params.set('month', record.contract_date.slice(0, 7));
+  return `/sales?${params.toString()}`;
+}
 
 function pickTodayLegalFact(legalFacts: any[]) {
   if (legalFacts.length === 0) return null;
@@ -148,7 +156,7 @@ function FreelancerDashboard() {
           <h3 className="section-title"><DollarSign size={18} /> 최근 매출</h3>
           <div className="doc-list">
             {mySales.slice(0, 10).map(r => (
-              <Link key={r.id} to="/sales" className="doc-item">
+              <Link key={r.id} to={dashboardSalesFocusUrl(r)} className="doc-item">
                 <div className="doc-item-header">
                   <span className={`doc-status status-${r.status === 'confirmed' ? 'approved' : r.status === 'pending' ? 'submitted' : r.status === 'card_pending' ? 'submitted' : 'draft'}`}>
                     {r.status === 'confirmed' ? '확정' : r.status === 'pending' ? '입금신청' : r.status === 'card_pending' ? '카드대기' : r.status}
@@ -195,6 +203,7 @@ export default function Dashboard() {
   const [todayNews, setTodayNews] = useState<any[]>([]);
   const [legalFacts, setLegalFacts] = useState<any[]>([]);
   const [driveStatus, setDriveStatus] = useState<{ last_backup_at: string | null; pending_count: number; connected: boolean } | null>(null);
+  const [pushSetupStatus, setPushSetupStatus] = useState<WebPushSetupStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '');
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
@@ -203,6 +212,7 @@ export default function Dashboard() {
   const isMaster = user?.role === 'master';
   const canResolveRefundRecovery = ['master', 'accountant'].includes(user?.role || '');
   const canDismissScheduleGapAlerts = ['master', 'admin'].includes(user?.role || '');
+  const canSeePushSetupStatus = ['manager', 'admin', 'master'].includes(user?.role || '');
 
   const handleResolveRefundRecovery = async (impact: any) => {
     const payrollMonth = refundApprovalMonth(impact.refund_approved_at);
@@ -277,6 +287,21 @@ export default function Dashboard() {
   }, [canSeeAccountingAlerts]);
 
   useEffect(() => {
+    if (!canSeePushSetupStatus) {
+      setPushSetupStatus(null);
+      return;
+    }
+    api.webPush.setupStatus()
+      .then(setPushSetupStatus)
+      .catch(() => setPushSetupStatus(null));
+  }, [canSeePushSetupStatus, user?.id, user?.branch, user?.department]);
+
+  useEffect(() => {
+    if (!pushSetupStatus || new URLSearchParams(window.location.search).get('focus') !== 'web-push-setup') return;
+    document.getElementById('web-push-setup')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [pushSetupStatus]);
+
+  useEffect(() => {
     if (dismissedKeys.size === 0) return;
     setCoopAlerts(prev => prev.filter((a: any) => !dismissedKeys.has(`coop_${a.id}`)));
     setMyMissingDocs(prev => prev.filter(r => !dismissedKeys.has(`my_doc_missing_${r.id}`)));
@@ -330,6 +355,9 @@ export default function Dashboard() {
 
         if (journalRes) {
           const entries = (journalRes as { entries: JournalEntry[] }).entries;
+          const holidayYears = [...new Set(entries.map((entry) => entry.target_date.slice(0, 4)).filter(Boolean))];
+          const holidayResults = await Promise.all(holidayYears.map((year) => api.journal.holidays(year).catch(() => ({ holidays: [] }))));
+          const journalHolidays = new Set(holidayResults.flatMap((result) => result.holidays.map((holiday) => holiday.holiday_date)));
           // 미제출 감지 범위 — 사용자가 볼 수 있는 문서 범위와 일치시켜야 함
           // - member: 본인만 (팀 일지가 들어와도 본인 문서만 매칭 가능)
           // - manager: 본인 팀(department)만 — 일지는 지사 전체로 들어오나 문서는 팀 단위라 비대칭
@@ -353,7 +381,7 @@ export default function Dashboard() {
             linkedEntryIds = new Set(linkRes.entry_ids);
           } catch { /* */ }
           setAlerts(detectMissing(entriesForDetect, docsForDetect, linkedEntryIds));
-          setScheduleGaps(detectScheduleGaps(entriesForDetect));
+          setScheduleGaps(detectScheduleGaps(entriesForDetect, journalHolidays));
         }
 
         // 취소 신청 목록 (Phase 1 결과 — 즉시 처리 가능)
@@ -674,6 +702,30 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {pushSetupStatus && pushSetupStatus.missing.length > 0 && (
+        <section id="web-push-setup" className="section" style={{ marginBottom: 16 }}>
+          <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #f5c2c7', background: 'linear-gradient(135deg, #fff7f7 0%, #fffdf8 100%)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, color: '#9f1c27', fontWeight: 800 }}>
+              <BellOff size={18} />
+              <span>웹 알림 미설정 인원 {pushSetupStatus.missing.length}명</span>
+              <span style={{ marginLeft: 'auto', fontSize: '0.74rem', color: '#7d5a5e', fontWeight: 600 }}>
+                {pushSetupStatus.scope_label} · 전체 {pushSetupStatus.total_count}명
+              </span>
+            </div>
+            <p style={{ margin: '8px 0 10px', color: '#6b4b4f', fontSize: '0.8rem' }}>
+              아래 직원에게 새 기기 로그인 시 표시되는 알림 설정을 완료하도록 안내해 주세요.
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+              {pushSetupStatus.missing.map((item) => (
+                <span key={item.id} title={`${item.branch} ${item.department}`.trim()} style={{ padding: '5px 9px', borderRadius: 999, background: '#fff', border: '1px solid #edcbd0', color: '#74343c', fontSize: '0.76rem', fontWeight: 650 }}>
+                  {item.name}<small style={{ marginLeft: 5, color: '#97757a' }}>{item.department || item.branch}</small>
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
       <div className="stats-grid">
         <div className="stat-card"><Files size={28} className="stat-icon" /><div className="stat-number">{stats.total}</div><div className="stat-label">전체 문서</div></div>
         <div className="stat-card stat-draft"><FilePlus size={28} className="stat-icon" /><div className="stat-number">{stats.draft}</div><div className="stat-label">작성중</div></div>
@@ -846,7 +898,7 @@ export default function Dashboard() {
               const docLabel = r.type === '낙찰' ? '물건분석보고서' : '컨설팅계약서';
               return (
                 <div key={r.id} style={{ position: 'relative' }}>
-                  <Link to="/sales" className="missing-alert-item" style={{ borderLeft: '3px solid #d93025', textDecoration: 'none' }}>
+                  <Link to={dashboardSalesFocusUrl(r)} className="missing-alert-item" style={{ borderLeft: '3px solid #d93025', textDecoration: 'none' }}>
                     <div style={{ flex: 1 }}>
                       <div className="missing-alert-main">
                         <span className="missing-alert-doc" style={{ color: '#d93025' }}>{docLabel} 미작성</span>
@@ -1058,18 +1110,25 @@ export default function Dashboard() {
             <MasterCloseBtn alertType="contract_alert" keys={contractAlerts.map(r => `contract_${r.id}`)} onClose={() => setContractAlerts([])} />
           </h3>
           <div className="missing-alert-list">
-            {contractAlerts.slice(0, 10).map((r, i) => (
-              <div key={i} className="missing-alert-item" style={{ borderLeft: `3px solid ${r.contract_submitted ? '#1a73e8' : '#d93025'}`, position: 'relative' }}>
+            {contractAlerts.slice(0, 10).map((r) => (
+              <div key={r.id} style={{ position: 'relative' }}>
                 {isMaster && <div style={{ position: 'absolute', top: 6, right: 6 }}><MasterItemCloseBtn alertType="contract_alert" alertKey={`contract_${r.id}`} /></div>}
-                <div className="missing-alert-content">
-                  <div className="missing-alert-main">
-                    <strong>{r.user_name}</strong> — {r.client_name}
-                    <span style={{ marginLeft: 8, padding: '1px 6px', borderRadius: 8, fontSize: '0.7rem', fontWeight: 600, background: r.contract_submitted ? '#e3f2fd' : '#fce4ec', color: r.contract_submitted ? '#1a73e8' : '#d93025' }}>
-                      {r.contract_submitted ? '제출 확인 대기' : '미작성 승인 대기'}
-                    </span>
+                <Link to={dashboardSalesFocusUrl(r)} className="missing-alert-item" style={{ borderLeft: `3px solid ${r.contract_submitted ? '#1a73e8' : '#d93025'}`, textDecoration: 'none' }}>
+                  <div className="missing-alert-content">
+                    <div className="missing-alert-main">
+                      <strong>{r.user_name}</strong> — {r.client_name}
+                      {r.contract_date && (
+                        <span title="계약일" style={{ marginLeft: 6, color: '#5f6368', fontSize: '0.76rem', fontWeight: 500 }}>
+                          {r.contract_date.replace(/-/g, '.')}
+                        </span>
+                      )}
+                      <span style={{ marginLeft: 8, padding: '1px 6px', borderRadius: 8, fontSize: '0.7rem', fontWeight: 600, background: r.contract_submitted ? '#e3f2fd' : '#fce4ec', color: r.contract_submitted ? '#1a73e8' : '#d93025' }}>
+                        {r.contract_submitted ? '제출 확인 대기' : '미작성 승인 대기'}
+                      </span>
+                    </div>
+                    {r.contract_not_reason && <div className="missing-alert-detail">사유: {r.contract_not_reason}</div>}
                   </div>
-                  {r.contract_not_reason && <div className="missing-alert-detail">사유: {r.contract_not_reason}</div>}
-                </div>
+                </Link>
               </div>
             ))}
           </div>
@@ -1135,7 +1194,7 @@ export default function Dashboard() {
           <div className="doc-list">
             {filteredPending.slice(0, 10).map((r: any) => (
               <div key={r.id} style={{ position: 'relative' }}>
-                <Link to="/sales" className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
+                <Link to={dashboardSalesFocusUrl(r)} className="doc-item" style={{ borderLeft: '3px solid #e65100' }}>
                   <div className="doc-info">
                     <DollarSign size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
                     <div>
@@ -1166,7 +1225,7 @@ export default function Dashboard() {
           <div className="doc-list">
             {refundRequests.map((r: any) => (
               <div key={r.id} style={{ position: 'relative' }}>
-                <Link to="/sales" className="doc-item" style={{ borderLeft: '3px solid #d93025' }}>
+                <Link to={dashboardSalesFocusUrl(r)} className="doc-item" style={{ borderLeft: '3px solid #d93025' }}>
                   <div className="doc-info">
                     <RotateCcw size={16} style={{ color: '#d93025', marginRight: 8, flexShrink: 0 }} />
                     <div>
@@ -1256,7 +1315,7 @@ export default function Dashboard() {
               const dDay = Math.ceil((new Date(d.deposit_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
               return (
                 <div key={d.id} style={{ position: 'relative' }}>
-                  <Link to="/sales" className="doc-item" style={{ borderLeft: '3px solid #d93025' }}>
+                  <Link to={dashboardSalesFocusUrl(d, 'deposit')} className="doc-item" style={{ borderLeft: '3px solid #d93025' }}>
                     <div className="doc-info">
                       <Clock size={16} style={{ color: '#d93025', marginRight: 8, flexShrink: 0 }} />
                       <div>
@@ -1612,7 +1671,7 @@ function detectMissing(entries: JournalEntry[], docs: Document[], linkedEntryIds
 }
 
 // [3-3] 일정 공백 감지: 09:00~18:00 중 11:30~12:30 제외한 시간대에 빈 구간
-function detectScheduleGaps(entries: JournalEntry[]): ScheduleGapAlert[] {
+function detectScheduleGaps(entries: JournalEntry[], holidays: ReadonlySet<string> = new Set()): ScheduleGapAlert[] {
   const alerts: ScheduleGapAlert[] = [];
 
   // 사용자+날짜별 그룹
@@ -1632,6 +1691,7 @@ function detectScheduleGaps(entries: JournalEntry[]): ScheduleGapAlert[] {
   Object.values(byUserDate).forEach((dayEntries) => {
     const userName = dayEntries[0].user_name || '';
     const date = dayEntries[0].target_date;
+    if (isNonWorkingDate(date, holidays)) return;
 
     // 개인(연차 등) 전일이면 공백 아님
     const hasFullDayOff = dayEntries.some(e => e.activity_type === '개인');
