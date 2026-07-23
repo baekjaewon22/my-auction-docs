@@ -1,5 +1,6 @@
 export const MIN_PASSWORD_LENGTH = 8;
-const PBKDF2_ITERATIONS = 210_000;
+// Cloudflare Workers WebCrypto rejects PBKDF2 iteration counts above 100,000.
+export const PBKDF2_ITERATIONS = 100_000;
 const HASH_PREFIX = 'pbkdf2-sha256';
 const LEGACY_SALT = 'auction-docs-salt';
 
@@ -51,7 +52,7 @@ export async function verifyPassword(password: string, storedHash: string): Prom
 
   const [prefix, iterationText, saltText, hashText] = storedHash.split('$');
   const iterations = Number(iterationText);
-  if (prefix !== HASH_PREFIX || !Number.isInteger(iterations) || iterations < 100_000 || iterations > 1_000_000 || !saltText || !hashText) {
+  if (prefix !== HASH_PREFIX || iterations !== PBKDF2_ITERATIONS || !saltText || !hashText) {
     return false;
   }
   try {
@@ -66,7 +67,7 @@ export async function verifyPassword(password: string, storedHash: string): Prom
 export function passwordNeedsRehash(storedHash: string): boolean {
   if (!storedHash.startsWith(`${HASH_PREFIX}$`)) return true;
   const iterations = Number(storedHash.split('$')[1]);
-  return !Number.isInteger(iterations) || iterations < PBKDF2_ITERATIONS;
+  return iterations !== PBKDF2_ITERATIONS;
 }
 
 export function createSecureToken(byteLength = 32): string {

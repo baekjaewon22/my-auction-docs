@@ -9,6 +9,7 @@ import {
   createSixDigitCode,
   hashPassword,
   hashResetSecret,
+  PBKDF2_ITERATIONS,
   passwordNeedsRehash,
   verifyPassword,
 } from '../src/shared/password-security.ts';
@@ -37,7 +38,8 @@ const LEGACY_HASH = '7b2572b527081a350af94572d06c4531d264a5223f14c1c3ecd459a881d
 test('new password hashes use random salts and PBKDF2 verification', async () => {
   const first = await hashPassword('strong-password');
   const second = await hashPassword('strong-password');
-  assert.match(first, /^pbkdf2-sha256\$210000\$/);
+  assert.equal(PBKDF2_ITERATIONS, 100_000);
+  assert.match(first, /^pbkdf2-sha256\$100000\$/);
   assert.notEqual(first, second);
   assert.equal(await verifyPassword('strong-password', first), true);
   assert.equal(await verifyPassword('wrong-password', first), false);
@@ -48,6 +50,47 @@ test('legacy hashes remain valid only so a successful login can upgrade them', a
   assert.equal(await verifyPassword('legacy-pass', LEGACY_HASH), true);
   assert.equal(await verifyPassword('wrong', LEGACY_HASH), false);
   assert.equal(passwordNeedsRehash(LEGACY_HASH), true);
+});
+
+test('legacy user login upgrades to the Workers-compatible PBKDF2 limit', async () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL,
+      name TEXT NOT NULL, phone TEXT NOT NULL, role TEXT NOT NULL,
+      team_id TEXT, branch TEXT NOT NULL, department TEXT NOT NULL,
+      position_title TEXT, login_type TEXT, approved INTEGER NOT NULL,
+      auth_version INTEGER NOT NULL DEFAULT 0, updated_at TEXT
+    );
+  `);
+  db.prepare(`
+    INSERT INTO users
+      (id, email, password_hash, name, phone, role, branch, department, login_type, approved)
+    VALUES ('user-1', 'legacy@example.com', ?, '기존 사용자', '01000000000',
+      'member', '서울', '컨설팅', 'employee', 1)
+  `).run(LEGACY_HASH);
+
+  const env = {
+    DB: d1(db),
+    JWT_SIGNING_SECRET: 'test-signing-secret-that-is-at-least-32-characters',
+  } as Env;
+  const app = new Hono().route('/api/auth', auth);
+  const response = await app.request('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: 'legacy@example.com',
+      password: 'legacy-pass',
+      login_type: 'employee',
+    }),
+  }, env);
+
+  assert.equal(response.status, 200);
+  const stored = db.prepare('SELECT password_hash FROM users WHERE id = ?')
+    .get('user-1') as { password_hash: string };
+  assert.match(stored.password_hash, /^pbkdf2-sha256\$100000\$/);
+  assert.equal(await verifyPassword('legacy-pass', stored.password_hash), true);
+  db.close();
 });
 
 test('reset codes and tokens use cryptographic randomness and expected formats', () => {
