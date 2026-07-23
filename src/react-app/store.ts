@@ -3,6 +3,16 @@ import type { User } from './types';
 import { api } from './api';
 import { clearAllPlannerDrafts } from './plannerDraftStorage';
 
+// 과거 버전이 저장한 평문 비밀번호를 앱 시작 즉시 제거하고 이메일만 유지한다.
+try {
+  const key = 'myauction_saved_cred';
+  const raw = localStorage.getItem(key);
+  const saved = raw ? JSON.parse(raw) as { email?: string; password?: string } : null;
+  if (saved?.password) localStorage.setItem(key, JSON.stringify({ email: String(saved.email || '') }));
+} catch {
+  localStorage.removeItem('myauction_saved_cred');
+}
+
 interface AuthState {
   user: User | null;
   token: string | null;

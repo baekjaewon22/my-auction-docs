@@ -11,7 +11,7 @@ import {
   validatePushEndpoint,
   validatePushKey,
 } from '../src/shared/web-push.ts';
-import { authMiddleware, requireHumanMaster, requireHumanUser } from '../src/worker/middleware/auth.ts';
+import { authMiddleware, createToken, requireHumanMaster, requireHumanUser } from '../src/worker/middleware/auth.ts';
 import {
   getPushSetupStatusForViewer,
   managerMissingPushUsers,
@@ -124,6 +124,42 @@ test('missing JWT signing secret returns an operator-visible 503 instead of a mi
   assert.match(await response.text(), /서버 인증 설정/);
 });
 
+test('deleted, unapproved and resigned users cannot reuse an existing JWT', async () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY, role TEXT, team_id TEXT, branch TEXT, department TEXT,
+      login_type TEXT, approved INTEGER, auth_version INTEGER
+    );
+    CREATE TABLE service_tokens (
+      id TEXT PRIMARY KEY, name TEXT, scope TEXT, token_hash TEXT,
+      expires_at TEXT, revoked_at TEXT, last_used_at TEXT, last_used_ip TEXT, updated_at TEXT
+    );
+    INSERT INTO users VALUES ('user-1', 'member', NULL, '의정부본사', '영업팀', 'employee', 1, 0);
+  `);
+  const env = { DB: d1(db), JWT_SIGNING_SECRET: 'test-secret-that-is-at-least-32-characters-long' } as Env;
+  const token = await createToken({
+    sub: 'user-1', email: 'user@example.com', name: '사용자', phone: '', role: 'member',
+    team_id: null, branch: '의정부본사', department: '영업팀',
+  }, env);
+  const app = new Hono<any>(); // eslint-disable-line @typescript-eslint/no-explicit-any
+  app.use('*', authMiddleware);
+  app.get('/', (c) => c.json({ ok: true }));
+  const request = () => app.request('/', { headers: { Authorization: `Bearer ${token}` } }, env);
+
+  assert.equal((await request()).status, 200);
+  db.prepare("UPDATE users SET auth_version = 1 WHERE id = 'user-1'").run();
+  assert.equal((await request()).status, 401);
+  db.prepare("UPDATE users SET auth_version = 0 WHERE id = 'user-1'").run();
+  db.prepare("UPDATE users SET approved = 0 WHERE id = 'user-1'").run();
+  assert.equal((await request()).status, 403);
+  db.prepare("UPDATE users SET approved = 1, role = 'resigned' WHERE id = 'user-1'").run();
+  assert.equal((await request()).status, 403);
+  db.prepare("DELETE FROM users WHERE id = 'user-1'").run();
+  assert.equal((await request()).status, 401);
+  db.close();
+});
+
 test('web push migration is idempotent and enforces endpoint ownership uniqueness', () => {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -177,6 +213,27 @@ test('manager reminder scope includes unconfigured team members even when the ma
   const status = await getPushSetupStatusForViewer({} as D1Database, users[0], users);
   assert.equal(status.total_count, 3);
   assert.deepEqual(status.missing.map((item) => item.id), ['member-1']);
+});
+
+test('manager scope normalizes department spaces without grouping empty departments', async () => {
+  const manager: PushSetupUser = {
+    id: 'manager-1', name: '팀장', role: 'manager', branch: '의정부', department: '경매 사업부 1팀', active_push_count: 1,
+  };
+  const users: PushSetupUser[] = [
+    manager,
+    { id: 'member-1', name: '팀원', role: 'member', branch: '의정부본사', department: '경매사업부1팀', active_push_count: 0 },
+  ];
+  assert.deepEqual(managerMissingPushUsers(manager, users).map((item) => item.id), ['member-1']);
+  assert.deepEqual(managerMissingPushUsers({ ...manager, department: '' }, users), []);
+});
+
+test('non-manager viewers do not receive company-wide push setup counts', async () => {
+  const viewer: PushSetupUser = {
+    id: 'member-1', name: '직원', role: 'member', branch: '의정부', department: '경매사업부1팀', active_push_count: 0,
+  };
+  const status = await getPushSetupStatusForViewer({} as D1Database, viewer, [viewer]);
+  assert.equal(status.total_count, 0);
+  assert.deepEqual(status.missing, []);
 });
 
 test('master reminder includes an unconfigured manager for upper-level follow-up', async () => {

@@ -4,6 +4,7 @@ import { authMiddleware, requireRole, hashPassword } from '../middleware/auth';
 import { sendAlimtalkByTemplate } from '../alimtalk';
 import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { currentKstMonth, ensurePayTypeHistoryTable, normalizeYearMonth, previousMonth } from '../lib/pay-type-history';
+import { MIN_PASSWORD_LENGTH } from '../../shared/password-security';
 
 const users = new Hono<AuthEnv>();
 users.use('*', authMiddleware);
@@ -414,6 +415,9 @@ users.put('/:id', async (c) => {
     }
   }
 
+  if (password && password.length < MIN_PASSWORD_LENGTH) {
+    return c.json({ error: `비밀번호는 ${MIN_PASSWORD_LENGTH}자 이상이어야 합니다.` }, 400);
+  }
   const newHash = password ? await hashPassword(password) : existing.password_hash;
   const nextName = name !== undefined ? String(name || '').trim() : existing.name;
   if (!nextName) return c.json({ error: '이름을 입력하세요.' }, 400);
@@ -424,7 +428,8 @@ users.put('/:id', async (c) => {
   await db.prepare(
     `UPDATE users
      SET name = ?, phone = ?, branch = ?, department = ?, position_title = ?, password_hash = ?, api_key = ?,
-         myauction_id = ?, myauction_pw = ?, report_permission = ?, updated_at = datetime('now')
+         myauction_id = ?, myauction_pw = ?, report_permission = ?,
+         auth_version = auth_version + ?, updated_at = datetime('now')
      WHERE id = ?`
   ).bind(
     nextName,
@@ -437,6 +442,7 @@ users.put('/:id', async (c) => {
     nextMyauctionId,
     nextMyauctionPw,
     nextReportPermission,
+    password ? 1 : 0,
     id,
   ).run();
 

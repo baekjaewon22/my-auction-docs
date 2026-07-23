@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
+import { signatureDisplayName } from '../../shared/signature-display';
 
 interface Sig {
   id: string;
@@ -152,7 +153,7 @@ function GenericDocPrint({ doc, signatures, steps }: { doc: Doc; signatures: Sig
                   {s.sig && (
                     <>
                       <img src={s.sig.signature_data} style={{ width: 55, height: 28, objectFit: 'contain' }} />
-                      <div style={{ fontSize: 8, color: '#666', marginTop: 2 }}>{s.sig.user_name || ''}</div>
+                      <div style={{ fontSize: 8, color: '#666', marginTop: 2 }}>{signatureDisplayName(s.sig)}</div>
                     </>
                   )}
                 </td>

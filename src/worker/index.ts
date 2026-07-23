@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { appendFrameAncestorsDirective } from '../shared/content-security-policy';
 import auth from './routes/auth';
 import teams from './routes/teams';
 import templates from './routes/templates';
@@ -24,7 +25,7 @@ import casesRoute from './routes/cases';
 import adminNotesRoute from './routes/admin-notes';
 import cooperationRoute from './routes/cooperation';
 import roomsRoute from './routes/rooms';
-import driveRoute, { OAUTH_STATE_SECRET } from './routes/drive';
+import driveRoute from './routes/drive';
 import linksRoute from './routes/links';
 import approvalAlertsRoute from './routes/approval-alerts';
 import journalAlertsRoute from './routes/journal-alerts';
@@ -35,12 +36,13 @@ import reportRoute from './routes/report';
 import auctionReferenceRoute from './routes/auction-reference';
 import announcementPopupsRoute from './routes/announcement-popups';
 import webPushRoute from './routes/web-push';
-import { jwtVerify } from 'jose';
 import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
 import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
 import { cleanupExpiredArticlePdfs } from './lib/article-pdfs';
 import { cleanupOldDocuments } from './lib/document-retention';
+import { consumeDriveOAuthState, DRIVE_OAUTH_ADMIN_ROLES, verifyDriveOAuthState } from './lib/drive-oauth-state';
+import { escapeHtml } from '../shared/html';
 
 const app = new Hono<{ Bindings: Env }>();
 const EMBED_PAGES = ['/users', '/accounting', '/payroll', '/alimtalk-logs', '/org'];
@@ -66,7 +68,8 @@ function frameAncestorsCsp(env: Env): string {
 app.use('*', async (c, next) => {
   await next();
   c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
-  c.header('Content-Security-Policy', frameAncestorsCsp(c.env));
+  const existingCsp = c.res.headers.get('Content-Security-Policy') || '';
+  c.header('Content-Security-Policy', appendFrameAncestorsDirective(existingCsp, frameAncestorsCsp(c.env)));
   c.header('X-Embed-Allowed-Pages', EMBED_PAGES.join(','));
 });
 
@@ -123,29 +126,52 @@ app.get('/oauth/drive/callback', async (c) => {
   const db = c.env.DB;
   const clientSecret = (c.env as any).GOOGLE_CLIENT_SECRET as string | undefined;
 
-  const renderPage = (title: string, body: string, color = '#d93025') => c.html(`
-    <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${title}</title></head>
+  const oauthHeaders = {
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+  };
+  const renderHtml = (html: string) => c.html(html, 200, oauthHeaders);
+  const renderPage = (title: string, body: string, color = '#d93025') => renderHtml(`
+    <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>
     <body style="font-family: sans-serif; padding: 40px; text-align: center;">
-      <h2 style="color:${color};">${title}</h2>
+      <h2 style="color:${color};">${escapeHtml(title)}</h2>
       <div style="max-width:600px; margin:0 auto; color:#444; line-height:1.6;">${body}</div>
       <p style="margin-top:24px;"><a href="/archive?drive=1" style="color:#1a73e8;">문서보관함으로 돌아가기</a></p>
     </body></html>
   `);
 
-  if (error) return renderPage('연결 취소됨', `사유: <code>${error}</code>`);
+  if (error) return renderPage('연결 취소됨', `사유: <code>${escapeHtml(error)}</code>`);
   if (!code) return renderPage('연결 실패', '<code>code</code> 파라미터가 없습니다.', '#d93025');
   if (!clientSecret) return renderPage('서버 설정 오류', 'GOOGLE_CLIENT_SECRET이 Worker에 설정되어 있지 않습니다.', '#d93025');
 
-  // state JWT 서명 검증 (CSRF) — 쿠키 대신 서명 토큰 사용
+  // state는 서버 비밀키 서명 + D1 일회용 nonce로 서명 위조와 재사용을 모두 차단한다.
   if (!state) return renderPage('state 누락', 'OAuth state가 전달되지 않았습니다. 다시 연결을 시도해 주세요.');
+  let oauthUserId = '';
+  let oauthNonce = '';
   try {
-    await jwtVerify(state, OAUTH_STATE_SECRET);
+    const verifiedState = await verifyDriveOAuthState(clientSecret, state);
+    oauthUserId = verifiedState.userId;
+    oauthNonce = verifiedState.nonce;
   } catch (err: any) {
     return renderPage('state 검증 실패', `
       OAuth state 서명 검증 실패. 토큰이 만료됐거나 변조됐습니다.<br/>
-      <small>${(err?.message || err).toString().slice(0, 200)}</small><br/>
+      <small>${escapeHtml((err?.message || err).toString().slice(0, 200))}</small><br/>
       다시 연결을 시도해 주세요.
     `);
+  }
+
+  const oauthUser = await db.prepare('SELECT approved, role FROM users WHERE id = ?')
+    .bind(oauthUserId).first<{ approved: number; role: string }>();
+  if (
+    !oauthUser
+    || oauthUser.approved !== 1
+    || !DRIVE_OAUTH_ADMIN_ROLES.includes(oauthUser.role as typeof DRIVE_OAUTH_ADMIN_ROLES[number])
+  ) {
+    return renderPage('권한 확인 실패', 'Google Drive를 연결할 수 있는 관리자 권한이 없습니다.');
+  }
+  if (!await consumeDriveOAuthState(db, oauthUserId, oauthNonce)) {
+    return renderPage('state 검증 실패', '이미 사용됐거나 만료된 OAuth 요청입니다. 다시 연결을 시도해 주세요.');
   }
 
   try {
@@ -167,18 +193,18 @@ app.get('/oauth/drive/callback', async (c) => {
       WHERE id = 'default'
     `).bind(ct, iv, email).run();
 
-    return c.html(`
+    return renderHtml(`
       <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>연결 완료</title>
       <meta http-equiv="refresh" content="2;url=/archive?drive=1"></head>
       <body style="font-family: sans-serif; padding: 40px; text-align: center;">
         <h2 style="color:#188038;">✓ Google Drive 연결 완료</h2>
-        <p>연결 계정: <strong>${email}</strong></p>
+        <p>연결 계정: <strong>${escapeHtml(email)}</strong></p>
         <p>이제 매주 토요일 03:00 KST에 자동으로 문서가 백업됩니다.</p>
         <p><a href="/archive?drive=1" style="color:#1a73e8;">지금 문서보관함으로 이동</a></p>
       </body></html>
     `);
   } catch (err: any) {
-    return renderPage('연결 실패', `<pre style="text-align:left;white-space:pre-wrap;">${(err.message || err).toString().slice(0, 800)}</pre>`);
+    return renderPage('연결 실패', `<pre style="text-align:left;white-space:pre-wrap;">${escapeHtml((err.message || err).toString().slice(0, 800))}</pre>`);
   }
 });
 

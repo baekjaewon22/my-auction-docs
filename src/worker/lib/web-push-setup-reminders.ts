@@ -71,10 +71,12 @@ export function managerMissingPushUsers(recipient: PushSetupUser, users: readonl
 }
 
 export function managerPushUsers(recipient: PushSetupUser, users: readonly PushSetupUser[]): PushSetupUser[] {
+  const recipientDepartment = String(recipient.department || '').replace(/\s+/g, '');
+  if (!recipientDepartment) return [];
   return users.filter((candidate) =>
     ['member', 'manager'].includes(candidate.role)
     && sameBranchName(candidate.branch, recipient.branch)
-    && candidate.department === recipient.department,
+    && String(candidate.department || '').replace(/\s+/g, '') === recipientDepartment,
   );
 }
 
@@ -110,7 +112,7 @@ export async function getPushSetupStatusForViewer(
     const scopedUsers = branchPushUsers(branches, users);
     return { scope_label: normalizeBranchName(viewer.branch) || viewer.branch, missing: scopedUsers.filter((item) => item.active_push_count === 0), total_count: scopedUsers.length };
   }
-  return { scope_label: '', missing: [], total_count: users.length };
+  return { scope_label: '', missing: [], total_count: 0 };
 }
 
 function reminderBody(status: PushSetupStatus): string {

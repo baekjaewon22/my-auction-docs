@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { branchAliases, isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
-import { confirmedSalesSql, recognizedSalesDateSql } from '../lib/sales-recognition';
+import { confirmedSalesSql, pendingCardSettlementSql, recognizedSalesDateSql } from '../lib/sales-recognition';
 
 const accounting = new Hono<AuthEnv>();
 accounting.use('*', authMiddleware);
@@ -1842,9 +1842,7 @@ accounting.get('/card-settlements/list', requireRole(...ACCOUNTING_ROLES), async
     SELECT sr.*, u.name as user_name, u.department as user_department
     FROM sales_records sr
     JOIN users u ON u.id = sr.user_id
-    WHERE sr.status IN ('confirmed', 'card_pending')
-      AND sr.payment_type = '카드'
-      AND TRIM(COALESCE(sr.card_deposit_date, '')) = ''
+    WHERE ${pendingCardSettlementSql('sr')}
   `;
   const salesParams: any[] = [];
   if (month) {

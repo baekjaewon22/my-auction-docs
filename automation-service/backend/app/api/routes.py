@@ -14,18 +14,44 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, Request, WebSocket, WebSocketDisconnect, WebSocketException, HTTPException, Query
 from fastapi.responses import FileResponse, Response
+from starlette.requests import HTTPConnection
 
 from ..models.schemas import ReportRequest, ProgressUpdate, ReportResult, RightsCertificateBatchRequest
 from ..services.orchestrator import generate_report
 from ..services.rights_certificate import generate_rights_certificate, export_pptx_to_pdf
 from ..core.config import settings, OUTPUT_DIR, CAPTURE_DIR, POPPLER_PATH, ensure_dirs, load_config, save_config
+from ..core.security import AGENT_SESSION_TOKEN, fetch_trusted_profile, is_allowed_origin, is_valid_agent_token
 from ..core.utils import normalize_myauction_detail_url
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
-AGENT_VERSION = "2026.07.21.1"
+AGENT_VERSION = "2026.07.23.1"
+
+
+async def _require_agent_token(connection: HTTPConnection) -> None:
+    token = connection.headers.get("x-myauction-agent-token")
+    if connection.scope.get("type") == "websocket":
+        token = connection.query_params.get("token")
+    if not is_valid_agent_token(token):
+        if connection.scope.get("type") == "websocket":
+            raise WebSocketException(code=1008, reason="자동화 실행기 인증이 필요합니다.")
+        raise HTTPException(status_code=401, detail="자동화 실행기 인증이 필요합니다.")
+
+
+async def _trusted_profile(
+    authorization: str | None = Header(default=None),
+) -> dict:
+    try:
+        return await asyncio.to_thread(fetch_trusted_profile, authorization)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+public_router = APIRouter()
+router = APIRouter(dependencies=[Depends(_require_agent_token)])
 
 # 진행상황 저장소 (간단한 in-memory)
 progress_store: dict[str, list[ProgressUpdate]] = {}
@@ -395,7 +421,15 @@ def _run_rights_certificate_batch(request: RightsCertificateBatchRequest, task_i
     )
 
 
-@router.get("/health")
+@public_router.get("/session")
+async def create_browser_session(request: Request):
+    """허용된 업무시스템 Origin에만 실행기 세션 토큰을 전달한다."""
+    if not is_allowed_origin(request.headers.get("origin")):
+        raise HTTPException(status_code=403, detail="허용되지 않은 요청 출처입니다.")
+    return {"token": AGENT_SESSION_TOKEN, "version": AGENT_VERSION}
+
+
+@public_router.get("/health")
 async def health_check():
     poppler_ready = bool(
         POPPLER_PATH
@@ -417,8 +451,9 @@ async def health_check():
 
 
 @router.post("/report/generate", response_model=ReportResult)
-async def api_generate_report(request: ReportRequest):
+async def api_generate_report(request: ReportRequest, trusted_profile: dict = Depends(_trusted_profile)):
     """보고서 생성 (동기적 실행, 결과 반환)"""
+    request = request.model_copy(update=trusted_profile)
     import uuid
     task_id = str(uuid.uuid4())[:8]
     progress_store[task_id] = []
@@ -468,8 +503,9 @@ async def api_generate_report(request: ReportRequest):
 
 
 @router.post("/report/start")
-async def api_start_report(request: ReportRequest):
+async def api_start_report(request: ReportRequest, trusted_profile: dict = Depends(_trusted_profile)):
     """보고서 생성 시작 (비동기, task_id 반환)"""
+    request = request.model_copy(update=trusted_profile)
     import uuid
     task_id = str(uuid.uuid4())[:8]
     progress_store[task_id] = []
@@ -571,9 +607,14 @@ async def api_start_report(request: ReportRequest):
 
 
 @router.post("/report/start-batch")
-async def api_start_rights_certificate_batch(request: RightsCertificateBatchRequest):
+async def api_start_rights_certificate_batch(
+    request: RightsCertificateBatchRequest,
+    trusted_profile: dict = Depends(_trusted_profile),
+):
     """권리분석 보증서 다건 생성 시작 (예약/순차 실행, task_id 반환)"""
     import uuid
+
+    request = request.model_copy(update=trusted_profile)
 
     task_id = str(uuid.uuid4())[:8]
     progress_store[task_id] = []
@@ -664,6 +705,12 @@ async def api_download_report():
 @router.websocket("/ws/progress/{task_id}")
 async def ws_progress(websocket: WebSocket, task_id: str):
     """WebSocket으로 실시간 진행상황 수신"""
+    if (
+        not is_allowed_origin(websocket.headers.get("origin"))
+        or not is_valid_agent_token(websocket.query_params.get("token"))
+    ):
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
     router._progress_loop = asyncio.get_running_loop()
     await websocket.accept()
 

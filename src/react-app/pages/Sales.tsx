@@ -13,6 +13,8 @@ import type { JournalEntry } from '../journal/types';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
+import { canAssignSalesToAnotherUser } from '../../shared/sales-assignment';
+import { dashboardFocusKey, shouldPrepareDashboardFocus } from '../../shared/dashboard-focus';
 
 const TYPE_OPTIONS = [
   { value: '계약', label: '계약' },
@@ -315,6 +317,8 @@ export default function Sales() {
   const detailRecordId = detailRecord?.id;
   const detailScrollYRef = useRef(0);
   const closingDetailRef = useRef(false);
+  const preparedDashboardFocusRef = useRef('');
+  const scrolledDashboardFocusRef = useRef('');
 
   const closeDetail = () => {
     if (closingDetailRef.current) return;
@@ -373,6 +377,7 @@ export default function Sales() {
   const [formPaymentType, setFormPaymentType] = useState<'이체' | '카드'>('이체');
   const [formReceiptType, setFormReceiptType] = useState<'' | '현금영수증' | '세금계산서'>('');
   const [formReceiptPhone, setFormReceiptPhone] = useState('');
+  const [formAssigneeId, setFormAssigneeId] = useState(() => currentUser?.id || '');
 
   // 입금등록 폼
   const [depDepositor, setDepDepositor] = useState('');
@@ -458,6 +463,7 @@ export default function Sales() {
   const isManager = role === 'manager';
   const canViewManagerPerformance = role === 'master' || role === 'admin' || role === 'manager';
   const showUserFilter = isAdminPlus || isAccountant || isManager || isDirector;
+  const canAssignSalesOwner = canAssignSalesToAnotherUser(role);
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
@@ -502,25 +508,32 @@ export default function Sales() {
 
   useEffect(() => {
     if (loading || !dashboardFocusId || !['sales', 'deposit'].includes(dashboardFocusType)) return;
+    const focusKey = dashboardFocusKey(dashboardFocusType, dashboardFocusId);
+    if (scrolledDashboardFocusRef.current === focusKey) return;
 
     if (dashboardFocusType === 'sales') {
       if (!records.some(record => record.id === dashboardFocusId)) return;
-      setSalesTab('list');
-      setFilterBranch('');
-      setFilterUser('');
-      setFilterType('');
-      setFilterStatus('');
-      setSearchQuery('');
-      setExpandedIds(prev => new Set(prev).add(dashboardFocusId));
+      if (shouldPrepareDashboardFocus(preparedDashboardFocusRef.current, focusKey)) {
+        preparedDashboardFocusRef.current = focusKey;
+        setSalesTab('list');
+        setFilterBranch('');
+        setFilterUser('');
+        setFilterType('');
+        setFilterStatus('');
+        setSearchQuery('');
+        setExpandedIds(prev => new Set(prev).add(dashboardFocusId));
+      }
     } else if (!deposits.some(deposit => deposit.id === dashboardFocusId)) {
       return;
     }
 
     const timer = window.setTimeout(() => {
-      const focusKey = `${dashboardFocusType}-${dashboardFocusId}`;
       const target = Array.from(document.querySelectorAll<HTMLElement>('[data-dashboard-focus]'))
         .find(element => element.dataset.dashboardFocus === focusKey && element.getClientRects().length > 0);
-      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        scrolledDashboardFocusRef.current = focusKey;
+      }
     }, 120);
 
     return () => window.clearTimeout(timer);
@@ -534,6 +547,7 @@ export default function Sales() {
     setFormPhone('');
     setFormProxyCost('');
     setFormPaymentType('이체'); setFormReceiptType(''); setFormReceiptPhone('');
+    setFormAssigneeId(currentUser?.id || '');
     setShowAddForm(false);
   };
 
@@ -606,6 +620,7 @@ export default function Sales() {
       const proxyPayrollAmount = proxySupply - proxyCost;
       const finalAmount = rawAmount;
       await api.sales.create({
+        ...(canAssignSalesOwner ? { user_id: formAssigneeId || currentUser?.id } : {}),
         type: formType, type_detail: formType === '기타' ? formTypeDetail : (formType === '매수신청대리' ? `대리비용 ${proxyCost.toLocaleString()}원 / 급여반영 ${proxyPayrollAmount >= 0 ? '' : '-'}${Math.abs(proxyPayrollAmount).toLocaleString()}원` : rateDeviationReason),
         client_name: formClientName, depositor_name: formDepositorDiff ? formDepositorName : '',
         depositor_different: formDepositorDiff, amount: finalAmount,
@@ -701,6 +716,16 @@ export default function Sales() {
     .filter(m => m.role !== 'master')
     .filter(m => (m.role as string) !== 'resigned' || resignedWithSales.has(m.id));
   const memberOpts = groupUserOptions(filteredMembers, m => ` (${m.department || ''})`);
+  const assignmentMembers = members
+    .filter(m => m.role !== 'resigned')
+    .concat(currentUser && !members.some(m => m.id === currentUser.id) ? [{
+      id: currentUser.id,
+      name: currentUser.name,
+      role: currentUser.role,
+      branch: currentUser.branch,
+      department: currentUser.department,
+    }] : []);
+  const assignmentOpts = groupUserOptions(assignmentMembers, m => ` (${m.department || '부서 미지정'})`);
   const branchOpts = BRANCHES.map(b => ({ value: b, label: b }));
 
   // 지사 + 유형 + 담당자 + 상태 필터 적용된 records
@@ -742,7 +767,10 @@ export default function Sales() {
       <div className="page-header">
         <h2><DollarSign size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 매출확인</h2>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-primary" onClick={() => setShowAddForm(true)}>
+          <button className="btn btn-primary" onClick={() => {
+            if (canAssignSalesOwner && !formAssigneeId) setFormAssigneeId(currentUser?.id || '');
+            setShowAddForm(true);
+          }}>
             <Plus size={14} /> 매출내역 추가
           </button>
           {canDepositUpload && (
@@ -1599,6 +1627,21 @@ export default function Sales() {
             <button className="btn-icon" onClick={resetForm}><X size={16} /></button>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+            {canAssignSalesOwner && (
+              <div>
+                <label className="form-label">담당자</label>
+                <Select
+                  options={assignmentOpts}
+                  value={findUserOption(assignmentOpts, formAssigneeId || currentUser?.id || '')}
+                  onChange={(option: any) => setFormAssigneeId(option?.value || '')}
+                  placeholder="담당자 선택"
+                  isSearchable
+                />
+                <div style={{ marginTop: 4, fontSize: '0.7rem', color: '#5f6368' }}>
+                  선택한 담당자의 업무성과로 등록됩니다.
+                </div>
+              </div>
+            )}
             <div>
               <label className="form-label">유형</label>
               <select className="form-input" value={formType} onChange={(e) => setFormType(e.target.value)} style={{ width: '100%' }}>

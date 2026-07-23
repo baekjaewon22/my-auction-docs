@@ -116,8 +116,7 @@ analytics.get('/summary', requireRole(...ANALYTICS_ROLES), async (c) => {
       SUM(CASE WHEN status = 'refunded' THEN ROUND(amount / 1.1) ELSE 0 END) as refunded,
       COUNT(CASE WHEN ${confirmedSalesSql('sales_records')} THEN 1 END) as confirmed_count
     FROM sales_records
-    WHERE (${confirmedSalesSql('sales_records')} OR status = 'refunded')
-      AND CASE WHEN ${confirmedSalesSql('sales_records')} THEN ${recognizedSalesDateSql('sales_records')} ELSE contract_date END >= ?
+    WHERE CASE WHEN ${confirmedSalesSql('sales_records')} THEN ${recognizedSalesDateSql('sales_records')} ELSE contract_date END >= ?
       AND direction != 'expense'
       AND COALESCE(exclude_from_count, 0) = 0
     GROUP BY month ORDER BY month

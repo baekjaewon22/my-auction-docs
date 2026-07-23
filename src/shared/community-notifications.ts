@@ -7,6 +7,20 @@ export function directRecipientId(visibility: unknown): string | null {
   return userId || null;
 }
 
+export function communityCreatedNotificationMode(input: {
+  category: string | null | undefined;
+  visibility?: string | null;
+  legalSubcategory?: string | null;
+}): 'direct' | 'broadcast' | 'none' {
+  if (directRecipientId(input.visibility)) return 'direct';
+  if (String(input.visibility || 'all') !== 'all') return 'none';
+  if (input.category === 'eviction_quote') return 'broadcast';
+  if (input.category === 'legal_support' && !['legal_terms', 'law_reference'].includes(input.legalSubcategory || 'lawsuit')) {
+    return 'broadcast';
+  }
+  return 'none';
+}
+
 export function communityReplyRecipientIds(input: {
   category: string | null | undefined;
   authorId: string | null | undefined;

@@ -6,8 +6,9 @@ import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName 
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { calculateRefundRecoveryAmount, refundApprovalMonth } from '../../shared/refund-recovery';
 import { resolveRefundRecovery } from '../lib/refund-recovery';
-import { effectiveSalesStatus, normalizeSalesRecognition } from '../../shared/sales-recognition';
+import { accountingEntryInitialStatus, effectiveSalesStatus, normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
+import { canUseRequestedSalesOwner } from '../../shared/sales-assignment';
 
 const sales = new Hono<AuthEnv>();
 sales.use('*', authMiddleware);
@@ -527,6 +528,7 @@ sales.post('/', async (c) => {
     client_phone?: string;
     payment_type?: string; receipt_type?: string; receipt_phone?: string;
     proxy_cost?: number;
+    user_id?: string;
   }>();
 
   if (!['계약', '낙찰', '중개', '권리분석보증서', '매수신청대리', '기타'].includes(body.type)) {
@@ -538,6 +540,35 @@ sales.post('/', async (c) => {
   let ownerName = user.name || '';
   let ownerBranch = user.branch;
   let ownerDepartment = user.department;
+
+  const requestedOwnerId = String(body.user_id || '').trim();
+  if (!canUseRequestedSalesOwner(user.role, user.sub, requestedOwnerId)) {
+    return c.json({ error: '다른 담당자의 매출을 등록할 권한이 없습니다.' }, 403);
+  }
+
+  if (requestedOwnerId && requestedOwnerId !== user.sub) {
+    const requestedOwner = await db.prepare(`
+      SELECT id, name, role, branch, department, approved
+      FROM users
+      WHERE id = ?
+    `).bind(requestedOwnerId).first<{
+      id: string;
+      name: string;
+      role: string;
+      branch: string;
+      department: string;
+      approved: number;
+    }>();
+
+    if (!requestedOwner || requestedOwner.approved !== 1 || requestedOwner.role === 'resigned') {
+      return c.json({ error: '등록 가능한 담당자를 찾을 수 없습니다.' }, 404);
+    }
+
+    ownerId = requestedOwner.id;
+    ownerName = requestedOwner.name || '';
+    ownerBranch = requestedOwner.branch || '';
+    ownerDepartment = requestedOwner.department || '';
+  }
 
   if (body.journal_entry_id) {
     const linkedEntry = await db.prepare(`
@@ -671,6 +702,7 @@ sales.put('/:id', async (c) => {
   const previousEffectiveStatus = effectiveSalesStatus(record);
   const statusUpdate = effectiveSalesStatus({
     status: record.status,
+    direction: record.direction,
     payment_type: nextPaymentType,
     card_deposit_date: newCardDepDate,
   });
@@ -1467,7 +1499,8 @@ sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
 
   const dir = direction === 'expense' ? 'expense' : 'income';
   const paymentType = payment_method === '카드' ? '카드' : '이체';
-  const initialStatus = paymentType === '카드' ? 'card_pending' : 'confirmed';
+  // 카드 정산대기는 수입 매출에만 적용한다. 지출은 입력일에 즉시 회계 인식한다.
+  const initialStatus = accountingEntryInitialStatus(dir, paymentType);
   const actualAssignee = assignee_id === '__all__' ? user.sub : assignee_id;
   const assignee = await db.prepare('SELECT id, branch, department FROM users WHERE id = ?').bind(actualAssignee).first<any>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);

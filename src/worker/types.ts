@@ -22,6 +22,7 @@ export interface User {
   has_myauction_credentials?: number;
   report_permission?: 'basic' | 'special';
   approved: number;
+  auth_version?: number;
   created_at: string;
   updated_at: string;
 }
@@ -124,6 +125,7 @@ export interface JwtPayload {
   auth_type?: 'user' | 'service_token';
   service_token_id?: string;
   service_token_scope?: 'read' | 'write' | 'admin';
+  auth_version?: number;
 }
 
 export interface AuthEnv {

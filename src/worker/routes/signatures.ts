@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import type { AuthEnv, Document, Signature } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { canReadDocument } from '../lib/document-access';
+import { canProxyApproval, evaluateSignaturePolicy, type PendingSignatureStep } from '../../shared/signature-policy';
 
 const signatures = new Hono<AuthEnv>();
 signatures.use('*', authMiddleware);
@@ -8,32 +10,67 @@ signatures.use('*', authMiddleware);
 // POST /api/signatures - sign a document
 signatures.post('/', async (c) => {
   const user = c.get('user');
-  const { document_id, signature_data } = await c.req.json<{
+  const { document_id, signature_data, signature_type, step_id } = await c.req.json<{
     document_id: string;
     signature_data: string;
+    signature_type: 'author' | 'approver';
+    step_id?: string;
   }>();
 
-  if (!document_id || !signature_data) {
-    return c.json({ error: '문서 ID와 서명 데이터는 필수입니다.' }, 400);
+  if (!document_id || !signature_data || !['author', 'approver'].includes(signature_type)) {
+    return c.json({ error: '문서 ID, 서명 데이터, 서명 종류는 필수입니다.' }, 400);
+  }
+  const isStamp = signature_data === '/LNCstemp.png';
+  const isPngDataUrl = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(signature_data);
+  if ((!isStamp && !isPngDataUrl) || signature_data.length > 1_500_000) {
+    return c.json({ error: '유효한 PNG 서명 데이터가 아닙니다.' }, 400);
   }
 
   const db = c.env.DB;
 
-  // Verify document exists and is submitted or approved
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(document_id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
 
-  if (doc.status === 'rejected') {
-    return c.json({ error: '반려된 문서는 서명할 수 없습니다. 내용 수정 후 다시 서명해주세요.' }, 400);
+  if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
+
+  let pendingSteps: PendingSignatureStep[] = [];
+  let totalStepCount = 0;
+  if (signature_type === 'approver') {
+    const pendingResult = await db.prepare(
+      `SELECT s.id, s.approver_id, s.step_order, u.role as approver_role
+       FROM approval_steps s
+       LEFT JOIN users u ON u.id = s.approver_id
+       WHERE s.document_id = ? AND s.status = 'pending'
+       ORDER BY s.step_order ASC`
+    ).bind(document_id).all<PendingSignatureStep>();
+    pendingSteps = pendingResult.results || [];
+    if (pendingSteps.length === 0) {
+      const stepCount = await db.prepare(
+        'SELECT COUNT(*) as cnt FROM approval_steps WHERE document_id = ?'
+      ).bind(document_id).first<{ cnt: number }>();
+      totalStepCount = stepCount?.cnt || 0;
+    }
   }
 
-  // Check if already signed by this user (권한자는 대리 승인용 2회 서명 허용)
+  const policy = evaluateSignaturePolicy({
+    userId: user.sub,
+    userRole: user.role,
+    documentAuthorId: doc.author_id,
+    documentStatus: doc.status,
+    signatureType: signature_type,
+    isCeoStamp: isStamp,
+    stepId: step_id,
+    pendingSteps,
+    totalStepCount,
+  });
+  if (!policy.allowed) return c.json({ error: policy.error }, policy.status);
+
+  // 작성자/일반 결재자는 중복 서명을 막고, 권한자의 순차 대리 결재만 여러 번 허용한다.
   const existingCount = await db.prepare(
     'SELECT COUNT(*) as cnt FROM signatures WHERE document_id = ? AND user_id = ?'
   ).bind(document_id, user.sub).first<{ cnt: number }>();
 
-  const isSuperApprover = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role);
-  const maxSigns = isSuperApprover ? 10 : 1;
+  const maxSigns = signature_type === 'approver' && canProxyApproval(user.role) ? 10 : 1;
   if (existingCount && existingCount.cnt >= maxSigns) {
     return c.json({ error: '이미 서명한 문서입니다.' }, 409);
   }
@@ -59,11 +96,15 @@ signatures.post('/', async (c) => {
 // GET /api/signatures/document/:documentId
 signatures.get('/document/:documentId', async (c) => {
   const documentId = c.req.param('documentId');
+  const user = c.get('user');
   const db = c.env.DB;
+  const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(documentId).first<Document>();
+  if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const result = await db.prepare(
-    'SELECT s.*, u.name as user_name, u.email as user_email FROM signatures s LEFT JOIN users u ON s.user_id = u.id WHERE s.document_id = ? ORDER BY s.signed_at ASC'
-  ).bind(documentId).all<Signature & { user_name: string; user_email: string }>();
+    "SELECT s.*, COALESCE(NULLIF(TRIM(u.name), ''), '탈퇴 사용자') as user_name FROM signatures s LEFT JOIN users u ON s.user_id = u.id WHERE s.document_id = ? ORDER BY s.signed_at ASC"
+  ).bind(documentId).all<Signature & { user_name: string }>();
 
   return c.json({ signatures: result.results });
 });

@@ -10,6 +10,7 @@ import { Trash2, UserCheck, UserX, UserCog, ChevronLeft, TrendingDown, TrendingU
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 import { useDepartments } from '../hooks/useDepartments';
+import { MIN_PASSWORD_LENGTH } from '../../shared/password-security';
 const ROLE_OPTS = [...VISIBLE_ROLES, 'resigned' as const].map((v) => ({ value: v, label: ROLE_LABELS[v] }));
 // BRANCH_OPTS는 컴포넌트 내부에서 동적 생성
 const POSITION_TITLES = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '사무장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴', 'PD'];
@@ -203,8 +204,8 @@ export default function UserManagement() {
   const handlePasswordReset = async () => {
     if (!selectedUser || !isAdminPlus || selectedUser.id === currentUser?.id) return;
     const nextPassword = resetPasswordInput.trim();
-    if (nextPassword.length < 4) {
-      alert('임시 비밀번호는 4자 이상으로 입력하세요.');
+    if (nextPassword.length < MIN_PASSWORD_LENGTH) {
+      alert(`임시 비밀번호는 ${MIN_PASSWORD_LENGTH}자 이상으로 입력하세요.`);
       return;
     }
     if (!confirm(`${selectedUser.name}님의 비밀번호를 입력한 임시 비밀번호로 초기화하시겠습니까?`)) return;
@@ -475,7 +476,7 @@ export default function UserManagement() {
                   type="button"
                   className="btn btn-sm btn-danger"
                   onClick={handlePasswordReset}
-                  disabled={resettingPassword || resetPasswordInput.trim().length < 4}
+                  disabled={resettingPassword || resetPasswordInput.trim().length < MIN_PASSWORD_LENGTH}
                 >
                   {resettingPassword ? '초기화 중...' : '비밀번호 초기화'}
                 </button>

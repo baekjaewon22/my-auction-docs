@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { SignJWT } from 'jose';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import {
@@ -9,13 +8,12 @@ import {
   findOrCreateFolder,
 } from '../drive-oauth';
 import { cleanupOldDocuments } from '../lib/document-retention';
-
-const OAUTH_STATE_SECRET = new TextEncoder().encode('drive-oauth-state-v1');
+import { createDriveOAuthState, DRIVE_OAUTH_ADMIN_ROLES } from '../lib/drive-oauth-state';
 
 const drive = new Hono<AuthEnv>();
 
 const DRIVE_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
-const DRIVE_ADMIN_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'] as const;
+const DRIVE_ADMIN_ROLES = DRIVE_OAUTH_ADMIN_ROLES;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // OAuth 연결 — 인증이 필요 없음 (콜백은 쿠키/state로 보호)
@@ -27,12 +25,9 @@ const DRIVE_ADMIN_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'] as 
 drive.get('/oauth/start', authMiddleware, requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
   const user = c.get('user');
   const redirectUri = resolveRedirectUri(c.req.raw);
-  // 10분 유효 JWT — userId + 랜덤 nonce 포함
-  const state = await new SignJWT({ sub: user.sub, nonce: crypto.randomUUID() })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setIssuedAt()
-    .setExpirationTime('10m')
-    .sign(OAUTH_STATE_SECRET);
+  const clientSecret = String((c.env as any).GOOGLE_CLIENT_SECRET || '');
+  if (!clientSecret) return c.json({ error: 'GOOGLE_CLIENT_SECRET이 설정되지 않았습니다.' }, 503);
+  const state = await createDriveOAuthState(c.env.DB, user.sub, clientSecret);
   const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   authUrl.searchParams.set('client_id', GOOGLE_CLIENT_ID);
   authUrl.searchParams.set('redirect_uri', redirectUri);
@@ -44,8 +39,6 @@ drive.get('/oauth/start', authMiddleware, requireRole(...DRIVE_ADMIN_ROLES), asy
   authUrl.searchParams.set('state', state);
   return c.json({ url: authUrl.toString(), state });
 });
-
-export { OAUTH_STATE_SECRET };
 
 // OAuth callback은 최상위 경로 /oauth/drive/callback (index.ts)에서 직접 처리
 

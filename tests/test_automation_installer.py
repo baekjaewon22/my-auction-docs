@@ -34,6 +34,13 @@ class AutomationInstallerTests(unittest.TestCase):
         self.assertIn("GetFolderPath('Startup')", source)
         self.assertIn("마이옥션 업무자동화 자동시작.lnk", source)
 
+    def test_slow_start_is_reported_as_warning_after_successful_install(self):
+        self.assertIn("Installation/update completed", setup_agent.installation_result_message(False))
+        self.assertIn("desktop launcher", setup_agent.installation_result_message(False))
+        self.assertEqual(setup_agent.wait_for_agent_health.__defaults__, (60.0,))
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn('raise RuntimeError("The agent was installed but did not start', source)
+
 
 if __name__ == "__main__":
     unittest.main()

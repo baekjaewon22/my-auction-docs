@@ -11,9 +11,10 @@ import {
 } from '../lib/approval-alerts';
 import { dispatchApprovalAlerts } from '../lib/approval-alerts-dispatcher';
 import { recheckAlertsAfterDocumentChange } from '../lib/journal-alerts';
-import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
+import { isHeadOfficeBranch } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { buildOrgApprovalChain } from '../lib/org-approval-chain';
+import { canReadDocument } from '../lib/document-access';
 
 const LEAVE_REQUEST_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
 
@@ -73,6 +74,7 @@ async function buildApprovalChain(db: D1Database, authorId: string): Promise<str
 
 const documents = new Hono<AuthEnv>();
 documents.use('*', authMiddleware);
+const ASSIGNED_APPROVER_EXISTS = 'EXISTS (SELECT 1 FROM approval_steps aps WHERE aps.document_id = d.id AND aps.approver_id = ?)';
 
 // Permission-based document visibility:
 // master/ceo: all documents
@@ -132,9 +134,9 @@ documents.get('/', async (c) => {
     params.push(user.sub);
   } else if (user.role === 'director') {
     // 총괄이사: 본인 + 대전/부산 지사 — 타인 draft 제외
-    conditions.push("(d.author_id = ? OR d.branch IN ('대전', '대전지사', '부산', '부산지사'))");
+    conditions.push(`(d.author_id = ? OR d.branch IN ('대전', '대전지사', '부산', '부산지사') OR ${ASSIGNED_APPROVER_EXISTS})`);
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
-    params.push(user.sub, user.sub);
+    params.push(user.sub, user.sub, user.sub);
   } else if (user.role === 'admin' && isHeadOfficeBranch(user.branch)) {
     // 의정부 관리자: 전체 열람 — 타인 draft 제외
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
@@ -143,20 +145,19 @@ documents.get('/', async (c) => {
     // 기타 지사 관리자: 본인 지사 — 타인 draft 제외
     const allBranches = await getAdminVisibleBranches(db, user);
     const placeholders = allBranches.map(() => '?').join(',');
-    conditions.push(`d.branch IN (${placeholders})`);
+    conditions.push(`(d.branch IN (${placeholders}) OR ${ASSIGNED_APPROVER_EXISTS})`);
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(...allBranches);
-    params.push(user.sub);
+    params.push(user.sub, user.sub);
   } else if (user.role === 'manager') {
-    conditions.push('d.branch = ?');
-    conditions.push('d.department = ?');
+    conditions.push(`((d.branch = ? AND d.department = ?) OR ${ASSIGNED_APPROVER_EXISTS})`);
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(user.branch);
     params.push(user.department);
-    params.push(user.sub);
+    params.push(user.sub, user.sub);
   } else {
-    conditions.push('d.author_id = ?');
-    params.push(user.sub);
+    conditions.push(`(d.author_id = ? OR (d.status != 'draft' AND ${ASSIGNED_APPROVER_EXISTS}))`);
+    params.push(user.sub, user.sub);
   }
 
   // 추가 필터
@@ -210,20 +211,7 @@ documents.get('/:id', async (c) => {
   ).bind(id).first<Document & { author_name: string }>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
 
-  // Permission check
-  if (user.role === 'member' && doc.author_id !== user.sub) {
-    return c.json({ error: '권한이 없습니다.' }, 403);
-  }
-  if (user.role === 'manager' && doc.author_id !== user.sub && (!sameBranchName(doc.branch, user.branch) || doc.department !== user.department)) {
-    return c.json({ error: '권한이 없습니다.' }, 403);
-  }
-  // 의정부 관리자는 타지사 열람 가능, 기타 관리자는 본인 지사만
-  if (
-    user.role === 'admin'
-    && !isHeadOfficeBranch(user.branch)
-    && doc.author_id !== user.sub
-    && !(await getAdminVisibleBranches(db, user)).some((branch) => sameBranchName(doc.branch, branch))
-  ) {
+  if (!(await canReadDocument(db, user, doc))) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
@@ -784,7 +772,12 @@ documents.delete('/:id', async (c) => {
 // GET /api/documents/:id/steps — 결재선 단계 조회
 documents.get('/:id/steps', async (c) => {
   const id = c.req.param('id');
+  const user = c.get('user');
   const db = c.env.DB;
+  const doc = await db.prepare('SELECT author_id, branch, department, status FROM documents WHERE id = ?')
+    .bind(id).first<Document>();
+  if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
   const result = await db.prepare(
     'SELECT s.*, u.name as approver_name, u.position_title as approver_title, u.role as approver_role FROM approval_steps s LEFT JOIN users u ON s.approver_id = u.id WHERE s.document_id = ? ORDER BY s.step_order'
   ).bind(id).all();
@@ -793,19 +786,32 @@ documents.get('/:id/steps', async (c) => {
 
 // POST /api/documents/steps-batch — 여러 문서의 결재선 단계를 한 번에 조회 (대시보드 N+1 방지)
 documents.post('/steps-batch', async (c) => {
+  const user = c.get('user');
   const { ids } = await c.req.json<{ ids: string[] }>().catch(() => ({ ids: [] as string[] }));
   if (!ids || ids.length === 0) return c.json({ steps: {} });
   const db = c.env.DB;
   // 안전 상한 (한 요청에 200개까지)
   const safeIds = ids.slice(0, 200);
-  const placeholders = safeIds.map(() => '?').join(',');
+  const requestedPlaceholders = safeIds.map(() => '?').join(',');
+  const docs = await db.prepare(
+    `SELECT id, author_id, branch, department, status FROM documents WHERE id IN (${requestedPlaceholders})`
+  ).bind(...safeIds).all<Document>();
+  const adminBranches = user.role === 'admin' && !isHeadOfficeBranch(user.branch)
+    ? await getAdminVisibleBranches(db, user)
+    : undefined;
+  const readableIds: string[] = [];
+  for (const doc of docs.results || []) {
+    if (await canReadDocument(db, user, doc, adminBranches)) readableIds.push(doc.id);
+  }
+  if (readableIds.length === 0) return c.json({ steps: {} });
+  const placeholders = readableIds.map(() => '?').join(',');
   const result = await db.prepare(
     `SELECT s.*, u.name as approver_name, u.position_title as approver_title, u.role as approver_role
      FROM approval_steps s
      LEFT JOIN users u ON s.approver_id = u.id
      WHERE s.document_id IN (${placeholders})
      ORDER BY s.document_id, s.step_order`
-  ).bind(...safeIds).all();
+  ).bind(...readableIds).all();
 
   const grouped: Record<string, any[]> = {};
   for (const row of (result.results || []) as any[]) {
@@ -814,7 +820,7 @@ documents.post('/steps-batch', async (c) => {
     grouped[docId].push(row);
   }
   // 빈 배열도 채워줌 (요청한 모든 id에 대해 키 존재 보장)
-  for (const id of safeIds) {
+  for (const id of readableIds) {
     if (!grouped[id]) grouped[id] = [];
   }
   return c.json({ steps: grouped });
@@ -823,7 +829,12 @@ documents.post('/steps-batch', async (c) => {
 // GET /api/documents/:id/logs
 documents.get('/:id/logs', async (c) => {
   const id = c.req.param('id');
+  const user = c.get('user');
   const db = c.env.DB;
+  const doc = await db.prepare('SELECT author_id, branch, department, status FROM documents WHERE id = ?')
+    .bind(id).first<Document>();
+  if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
   const result = await db.prepare(
     'SELECT dl.*, u.name as user_name FROM document_logs dl LEFT JOIN users u ON dl.user_id = u.id WHERE dl.document_id = ? ORDER BY dl.created_at DESC'
   ).bind(id).all();

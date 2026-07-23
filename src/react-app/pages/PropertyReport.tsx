@@ -89,7 +89,7 @@ export default function PropertyReport() {
       approvingRef.current = true;
       setApproving(true);
       try {
-        await api.signatures.sign(docId, '/LNCstemp.png');
+        await api.signatures.sign(docId, '/LNCstemp.png', type, stepId);
         if (type === 'approver') {
           await api.documents.approve(docId, stepId ? { step_id: stepId } : undefined);
         }
@@ -109,7 +109,7 @@ export default function PropertyReport() {
             await api.documents.approve(docId, stepId ? { step_id: stepId } : undefined);
           }
           await loadDoc(docId);
-        });
+        }, stepId);
       } catch (err: any) { alert(err.message); }
       finally { approvingRef.current = false; setApproving(false); }
     } else {
@@ -435,7 +435,7 @@ export default function PropertyReport() {
       {showSignPanel && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ background: '#fff', borderRadius: 12, padding: 20, maxWidth: 400, width: '90%' }}>
-            <SignaturePanel documentId={docId} signatureType={signType} onSign={handleSignComplete} onClose={() => setShowSignPanel(false)} />
+            <SignaturePanel documentId={docId} signatureType={signType} stepId={signStepId} onSign={handleSignComplete} onClose={() => setShowSignPanel(false)} />
           </div>
         </div>
       )}

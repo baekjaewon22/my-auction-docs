@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AuthEnv, Role } from '../types';
 import { authMiddleware } from '../middleware/auth';
-import { sendCommunityCommentAlimtalk, sendCommunityNoteCreatedAlimtalk } from '../lib/community-alimtalk';
+import { communityBroadcastRecipientIds, sendCommunityCommentAlimtalk, sendCommunityNoteCreatedAlimtalk } from '../lib/community-alimtalk';
 import { recheckAlertsAfterEntryDelete, recheckAlertsForJournalEntry } from '../lib/journal-alerts';
 import { articleObjectKey, ensureArticlePdfTable, safePdfFileName, sha256Hex } from '../lib/article-pdfs';
 import { ensureBidAnalysisTable, makeBidDedupeKey, normalizeAmount, normalizeBidResult } from '../lib/bid-analysis';
@@ -9,6 +9,7 @@ import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { sendWebPushToUser } from '../lib/web-push-delivery';
 import {
   communityCategoryLabel,
+  communityCreatedNotificationMode,
   communityNotificationUrl,
   communityReplyRecipientIds,
   directRecipientId,
@@ -1633,6 +1634,22 @@ adminNotes.post('/', async (c) => {
       url: communityNotificationUrl(category),
       tag: `community-direct-${id}`,
     }).catch((err) => console.error('[web-push] direct community notification failed', err)));
+  } else if (communityCreatedNotificationMode({
+    category,
+    visibility: finalVisibility,
+    legalSubcategory,
+  }) === 'broadcast') {
+    c.executionCtx.waitUntil(communityBroadcastRecipientIds(db, category).then(async (recipientIds) => {
+      const recipients = [...new Set(recipientIds)].filter((recipientId) => recipientId !== user.sub);
+      await Promise.all(recipients.map((recipientId) => sendWebPushToUser(db, c.env, {
+        userId: recipientId,
+        eventType: 'community_team',
+        title: `새 ${communityCategoryLabel(category)}이 등록됐습니다`,
+        body: `${is_anonymous ? '익명' : user.name}: ${finalTitle}`,
+        url: communityNotificationUrl(category),
+        tag: `community-team-${id}`,
+      })));
+    }).catch((err) => console.error('[web-push] team community notification failed', err)));
   }
 
   return c.json({ success: true, id });

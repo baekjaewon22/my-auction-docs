@@ -2,7 +2,7 @@
 // - user_monthly_stats: 직원별 월 집계
 // - analytics_snapshots: 조직 단위 집계 (조직 평균, 비율제 평균 등)
 
-import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from './lib/sales-recognition';
+import { analyticsSalesBucketSql, confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from './lib/sales-recognition';
 
 const KST_OFFSET = 9 * 60 * 60 * 1000;
 
@@ -55,22 +55,22 @@ export async function aggregateMonth(env: any, ym: string): Promise<{ users: num
   // 2) 매출 집계 (지정 기간 내, 본인 user_id 기준)
   const salesRes = await db.prepare(`
     SELECT user_id,
-      CASE WHEN ${confirmedSalesSql('sales_records')} THEN 'confirmed' ELSE status END as status,
+      ${analyticsSalesBucketSql('sales_records')} as effective_status,
       COUNT(*) as cnt, COALESCE(SUM(amount), 0) as total
     FROM sales_records
     WHERE ${salesPeriodSql('sales_records')}
       AND direction != 'expense'
       AND COALESCE(exclude_from_count, 0) = 0
-    GROUP BY user_id, status
+    GROUP BY 1, 2
   `).bind(start, end, start, end).all<any>();
   const salesMap: Record<string, { confirmed: number; pending: number; refunded: number; sales_count: number; refund_count: number }> = {};
   (salesRes.results || []).forEach((r: any) => {
     const uid = r.user_id;
     if (!salesMap[uid]) salesMap[uid] = { confirmed: 0, pending: 0, refunded: 0, sales_count: 0, refund_count: 0 };
     salesMap[uid].sales_count += r.cnt;
-    if (r.status === 'confirmed') salesMap[uid].confirmed += r.total || 0;
-    else if (r.status === 'pending') salesMap[uid].pending += r.total || 0;
-    else if (r.status === 'refunded') {
+    if (r.effective_status === 'confirmed') salesMap[uid].confirmed += r.total || 0;
+    else if (r.effective_status === 'pending') salesMap[uid].pending += r.total || 0;
+    else if (r.effective_status === 'refunded') {
       salesMap[uid].refunded += r.total || 0;
       salesMap[uid].refund_count += r.cnt;
     }

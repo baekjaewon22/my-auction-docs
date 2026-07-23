@@ -155,6 +155,9 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
     cors_origins: list[str] = [
+        "https://my-docs.kr",
+        "https://www.my-docs.kr",
+        "https://my-auction-docs.nic874.workers.dev",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:5174",
@@ -162,6 +165,7 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
+    authorization_profile_url: str = "https://my-docs.kr/api/report/local-profile"
 
     # 템플릿
     pptm_template: str = str(TEMPLATES_DIR / "sample2_configured.pptx")

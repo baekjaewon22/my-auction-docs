@@ -8,6 +8,7 @@ import { useDepartments } from '../hooks/useDepartments';
 import { useBranches } from '../hooks/useBranches';
 import { Trash2, Pencil } from 'lucide-react';
 import WebPushSettings from '../components/WebPushSettings';
+import { MIN_PASSWORD_LENGTH } from '../../shared/password-security';
 
 const SIG_KEY = 'myauction_saved_signature';
 
@@ -91,6 +92,10 @@ export default function Profile() {
   const handleSave = async () => {
     if (password && password !== passwordConfirm) {
       setMessage('비밀번호가 일치하지 않습니다.');
+      return;
+    }
+    if (password && password.length < MIN_PASSWORD_LENGTH) {
+      setMessage(`비밀번호는 ${MIN_PASSWORD_LENGTH}자 이상이어야 합니다.`);
       return;
     }
 

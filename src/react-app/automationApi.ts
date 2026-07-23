@@ -1,8 +1,10 @@
+import { assessAutomationAgentHealth } from '../shared/automation-agent-health';
+
 const AUTOMATION_API_BASE = (import.meta.env.VITE_AUTOMATION_API_BASE || '/api').replace(/\/$/, '');
 const LOCAL_AUTOMATION_API_BASE = (import.meta.env.VITE_LOCAL_AUTOMATION_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '');
 const AUTOMATION_WS_BASE = (import.meta.env.VITE_AUTOMATION_WS_BASE || '').replace(/\/$/, '');
 const AUTOMATION_AGENT_INSTALLER_URL = import.meta.env.VITE_AUTOMATION_AGENT_INSTALLER_URL || '/api/report/agent-installer';
-export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.21.1';
+export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.23.1';
 
 function getToken(): string | null {
   return localStorage.getItem('token');
@@ -13,6 +15,55 @@ function authHeaders(extra: HeadersInit = {}): Record<string, string> {
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
+}
+
+let localAgentSessionToken = '';
+let localAgentSessionPromise: Promise<string> | null = null;
+
+async function getLocalAgentSessionToken(forceRefresh = false): Promise<string> {
+  if (forceRefresh) {
+    localAgentSessionToken = '';
+    localAgentSessionPromise = null;
+  }
+  if (localAgentSessionToken) return localAgentSessionToken;
+  if (!localAgentSessionPromise) {
+    localAgentSessionPromise = fetch(`${LOCAL_AUTOMATION_API_BASE}/session`, {
+      method: 'GET',
+      mode: 'cors',
+      cache: 'no-store',
+    }).then(async (response) => {
+      const data = await response.json().catch(() => ({}));
+      const token = String(data?.token || '').trim();
+      if (!response.ok || !token) throw new Error(data?.detail || '자동화 실행기 인증에 실패했습니다.');
+      localAgentSessionToken = token;
+      return token;
+    }).finally(() => {
+      localAgentSessionPromise = null;
+    });
+  }
+  return localAgentSessionPromise;
+}
+
+async function localAgentFetch(
+  path: string,
+  options: RequestInit = {},
+  includeUserAuthorization = false,
+  retry = true,
+): Promise<Response> {
+  const token = await getLocalAgentSessionToken();
+  const headers = new Headers(options.headers || {});
+  headers.delete('Authorization');
+  headers.set('X-MyAuction-Agent-Token', token);
+  if (includeUserAuthorization) {
+    const userToken = getToken();
+    if (userToken) headers.set('Authorization', `Bearer ${userToken}`);
+  }
+  const response = await fetch(`${LOCAL_AUTOMATION_API_BASE}${path}`, { ...options, headers });
+  if (response.status === 401 && retry) {
+    await getLocalAgentSessionToken(true);
+    return localAgentFetch(path, options, includeUserAuthorization, false);
+  }
+  return response;
 }
 
 export type OutputType = 'auction_report' | 'rights_certificate';
@@ -108,18 +159,6 @@ async function getLoopbackPermissionState(): Promise<PermissionState | 'unsuppor
   }
 }
 
-function compareVersions(left: string, right: string) {
-  const leftParts = String(left || '').match(/\d+/g)?.map(Number) || [];
-  const rightParts = String(right || '').match(/\d+/g)?.map(Number) || [];
-  const length = Math.max(leftParts.length, rightParts.length);
-  for (let i = 0; i < length; i += 1) {
-    const a = leftParts[i] || 0;
-    const b = rightParts[i] || 0;
-    if (a !== b) return a > b ? 1 : -1;
-  }
-  return 0;
-}
-
 export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
   let requiredVersion = REQUIRED_AUTOMATION_AGENT_VERSION;
   let latestVersionVerified = false;
@@ -166,9 +205,11 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
     });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     const data = await res.json().catch(() => ({}));
-    const version = String(data?.version || '').trim();
-    const popplerReady = data?.dependencies?.poppler?.ready !== false;
-    const updateRequired = !version || compareVersions(version, requiredVersion) < 0 || !popplerReady;
+    const {
+      version,
+      updateRequired,
+      dependencyReady: popplerReady,
+    } = await assessAutomationAgentHealth(data, requiredVersion, getLocalAgentSessionToken);
     return {
       ok: true,
       updateRequired,
@@ -214,12 +255,12 @@ async function automationRequest<T>(path: string, options: RequestInit = {}): Pr
       res = await localStartRequest(path, options);
     } else {
       if (!canUseLocalFallback) throw err;
-      res = await fetch(`${LOCAL_AUTOMATION_API_BASE}${path}`, init);
+      res = await localAgentFetch(path, options);
     }
   }
 
   if (canUseLocalFallback && !res.ok) {
-    res = await fetch(`${LOCAL_AUTOMATION_API_BASE}${path}`, init);
+    res = await localAgentFetch(path, options);
   }
   if (canUseLocalStartFallback && !res.ok) {
     res = await localStartRequest(path, options);
@@ -256,11 +297,11 @@ async function localStartRequest(path: string, options: RequestInit = {}) {
     body = {};
   }
 
-  return fetch(`${LOCAL_AUTOMATION_API_BASE}${path}`, {
+  return localAgentFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...body, ...profile }),
-  });
+  }, true);
 }
 
 function defaultReportFilename(format: DownloadFormat): string {
@@ -281,11 +322,11 @@ async function downloadFile(path: string, fallbackFilename: string) {
   try {
     res = await fetch(`${AUTOMATION_API_BASE}${path}`, init);
   } catch {
-    res = await fetch(`${LOCAL_AUTOMATION_API_BASE}${path}`, init);
+    res = await localAgentFetch(path, {}, false);
   }
 
   if (!res.ok) {
-    res = await fetch(`${LOCAL_AUTOMATION_API_BASE}${path}`, init);
+    res = await localAgentFetch(path, {}, false);
   }
 
   if (!res.ok) {
@@ -388,7 +429,7 @@ export const automationApi = {
       return `${AUTOMATION_API_BASE.replace(/^http/i, 'ws')}/ws/progress/${taskId}`;
     }
     if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
-      return `ws://127.0.0.1:8001/api/ws/progress/${taskId}`;
+      return `ws://127.0.0.1:8001/api/ws/progress/${taskId}?token=${encodeURIComponent(localAgentSessionToken)}`;
     }
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
     return `${scheme}://${window.location.host}${AUTOMATION_API_BASE}/ws/progress/${taskId}`;

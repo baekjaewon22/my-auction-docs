@@ -6,7 +6,9 @@ import { reinitUserLeave } from './leave';
 import { normalizeBranchName } from '../lib/branchAliases';
 import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotForMonth, payTypeAtMonthSql, resolvePayTypeFromHistory } from '../lib/pay-type-history';
 import { calculateRefundRecoveryAmount } from '../../shared/refund-recovery';
-import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
+import { confirmedSalesSql, payrollRecognizedOrRefundedSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
+import { buildBranchSummaryQueryScope } from '../../shared/payroll-branch-summary';
+import { normalizeSalesRecognition } from '../../shared/sales-recognition';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -423,7 +425,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       amount, contract_date, deposit_date, status, confirmed_at, memo, exclude_from_count,
       payment_type, card_deposit_date, proxy_cost, direction, external_id
     FROM sales_records
-    WHERE user_id = ? AND status IN ('confirmed', 'refunded')
+    WHERE user_id = ? AND ${payrollRecognizedOrRefundedSql('sales_records')}
       AND (
         (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
         OR (payment_type != '카드' AND payment_type != '' AND deposit_date >= ? AND deposit_date <= ?)
@@ -435,6 +437,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     .bind(userId, monthStart, monthEnd, monthStart, monthEnd, monthStart, monthEnd).all();
 
   const records = (salesResult.results as any[])
+    .map((record: any) => normalizeSalesRecognition(record))
     .filter((r: any) => !excludeCaseAllowanceSalesRecordFromPayroll(r, month));
   // 계약건수: 급여제는 2개월 기준, 비율제는 1개월 기준
   let contractCount: number;
@@ -524,11 +527,13 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     // 2개월 매출 조회 (성과금 계산용)
     const bonusSalesResult = await db.prepare(salesQuery)
       .bind(userId, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd, bonusPeriodStart, bonusPeriodEnd).all();
-    const bonusConfirmed = (bonusSalesResult.results as any[]).filter((r: any) => {
+    const bonusConfirmed = (bonusSalesResult.results as any[])
+      .map((record: any) => normalizeSalesRecognition(record))
+      .filter((r: any) => {
       if (r.status !== 'confirmed') return false;
       const ym = String(r.card_deposit_date || r.deposit_date || r.contract_date || '').slice(0, 7);
       return ym && payTypeForMonth(ym) === 'salary';
-    });
+      });
     // sales_records의 안건 수당 자동 INSERT 건(type_detail '명도성과금' prefix — DB 레거시)은 일반매출 합산에서 제외
     // cases 직접 조회로 중복 방지. 매수신청대리는 대리비용 차감 후 effective amount로 합산.
     bonusRegularRaw = bonusConfirmed
@@ -710,17 +715,13 @@ payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
   const db = c.env.DB;
 
   // 조건
-  let branchWhere = '';
-  const [summaryYear, summaryMonth] = month.split('-').map(Number);
-  const summaryStart = `${month}-01`;
-  const summaryEnd = `${month}-${String(new Date(summaryYear, summaryMonth, 0).getDate()).padStart(2, '0')}`;
-  const baseParams: any[] = [summaryStart, summaryEnd, summaryStart, summaryEnd];
-  const contractParams: any[] = [summaryStart, summaryEnd];
-  if (filterBranch) {
-    branchWhere = ' AND sr.branch = ?';
-    baseParams.push(filterBranch);
-    contractParams.push(filterBranch);
+  let queryScope;
+  try {
+    queryScope = buildBranchSummaryQueryScope(month, filterBranch);
+  } catch {
+    return c.json({ error: '급여월은 YYYY-MM 형식으로 입력해주세요.' }, 400);
   }
+  const { branchWhere } = queryScope;
 
   // 매출 합산
   const salesResult = await db.prepare(`
@@ -735,7 +736,7 @@ payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
         COUNT(*) as total_count,
         SUM(CASE WHEN ${confirmedSalesSql('sr')} THEN sr.amount ELSE 0 END) as confirmed_total,
         SUM(CASE WHEN sr.status = 'refunded' THEN sr.amount ELSE 0 END) as refunded_total,
-        SUM(CASE WHEN sr.status = 'pending' THEN sr.amount ELSE 0 END) as pending_total
+        SUM(CASE WHEN NOT ${confirmedSalesSql('sr')} AND sr.status IN ('pending', 'card_pending') THEN sr.amount ELSE 0 END) as pending_total
       FROM sales_records sr
       WHERE ${salesPeriodSql('sr')}${branchWhere}
       GROUP BY sr.branch
@@ -758,7 +759,7 @@ payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
       )
       GROUP BY branch
     ) cnt ON cnt.branch = base.branch
-  `).bind(...baseParams, ...contractParams).all();
+  `).bind(...queryScope.bindings).all();
 
   // 인건비 합산 (급여 + 직급수당)
   const laborResult = await db.prepare(`

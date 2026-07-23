@@ -276,7 +276,7 @@ def start_registered_agent(runner: Path, startup_mode: str) -> None:
     ])
 
 
-def wait_for_agent_health(timeout_seconds: float = 15.0) -> bool:
+def wait_for_agent_health(timeout_seconds: float = 60.0) -> bool:
     deadline = time.time() + timeout_seconds
     url = f"http://127.0.0.1:{PORT}/api/health"
     while time.time() < deadline:
@@ -285,10 +285,24 @@ def wait_for_agent_health(timeout_seconds: float = 15.0) -> bool:
                 if response.status == 200:
                     log("Agent health check passed")
                     return True
+                time.sleep(0.5)
         except Exception:
             time.sleep(0.5)
     log("Agent health check did not pass before timeout")
     return False
+
+
+def installation_result_message(healthy: bool) -> str:
+    if healthy:
+        return (
+            "Installation/update completed.\n"
+            "A desktop launcher was created.\n"
+            "Return to the site and click Recheck."
+        )
+    return (
+        "Installation/update completed, but startup could not be verified.\n"
+        "Please click the desktop launcher, then return to the site and click Recheck."
+    )
 
 
 def show_message(title: str, message: str, error: bool = False) -> None:
@@ -345,12 +359,14 @@ def main() -> int:
     startup_mode = register_startup(runner)
 
     start_registered_agent(runner, startup_mode)
-    if not wait_for_agent_health():
-        raise RuntimeError("The agent was installed but did not start on port 8001")
-    log("Setup completed")
+    healthy = wait_for_agent_health()
+    if healthy:
+        log("Setup completed")
+    else:
+        log("Setup completed with a startup verification warning")
     show_message(
         "MyAuction Automation Agent",
-        "Installation/update completed.\nA desktop launcher was created.\nReturn to the site and click Recheck.",
+        installation_result_message(healthy),
     )
     return 0
 

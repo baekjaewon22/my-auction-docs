@@ -18,6 +18,7 @@ import SignaturePanel, { hasSavedSignature, quickSign } from '../components/Sign
 import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
 import { FileDown, Printer } from 'lucide-react';
+import { signatureDisplayName } from '../../shared/signature-display';
 
 const OUTDOOR_PLACEHOLDER_REGEX = /<p[^>]*class="outdoor-placeholder"[^>]*>[\s\S]*?<\/p>/;
 const MANUAL_OUTDOOR_FIELDS = '<p>일시:</p><p>장소:</p><p>내용:</p>';
@@ -510,7 +511,7 @@ export default function DocumentEdit() {
           td.appendChild(img);
           const name = document.createElement('div');
           name.style.cssText = 'font-size: 8px; color: #666; margin-top: 2px;';
-          name.textContent = sig.user_name || '';
+          name.textContent = signatureDisplayName(sig);
           td.appendChild(name);
         }
         dataRow.appendChild(td);
@@ -554,7 +555,7 @@ export default function DocumentEdit() {
       approvingRef.current = true;
       setApproving(true);
       try {
-        await api.signatures.sign(id, '/LNCstemp.png');
+        await api.signatures.sign(id, '/LNCstemp.png', type, stepId);
         if (type === 'approver') {
           const result = await api.documents.approve(id, stepId ? { step_id: stepId } : undefined) as any;
           alert(result.final ? '문서가 최종 승인되었습니다.' : '승인 완료. 다음 단계 결재자에게 전달됩니다.');
@@ -583,7 +584,7 @@ export default function DocumentEdit() {
             }
           }
           handleSignComplete(sig, t);
-        });
+        }, stepId);
       } catch (err: any) {
         alert(err.message || '서명 처리 중 오류가 발생했습니다.');
       } finally {
@@ -1017,7 +1018,7 @@ export default function DocumentEdit() {
                 <div className="log-list">
                   {signatures.map((sig) => (
                     <div key={sig.id} className="log-item">
-                      <div className="log-action">{sig.user_name || sig.user_email} 서명 완료</div>
+                      <div className="log-action">{signatureDisplayName(sig)} 서명 완료</div>
                       <div className="log-meta">
                         IP: {sig.ip_address} · {new Date(sig.signed_at + 'Z').toLocaleString('ko-KR')}
                       </div>
@@ -1034,6 +1035,7 @@ export default function DocumentEdit() {
           <SignaturePanel
             documentId={id}
             signatureType={signatureType}
+            stepId={signatureStepId}
             onClose={() => setShowSignature(false)}
             onSign={handleSignComplete}
           />

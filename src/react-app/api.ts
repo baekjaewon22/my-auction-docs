@@ -128,12 +128,12 @@ export const api = {
         body: JSON.stringify({ email, password, name, phone, branch, login_type }),
       }),
     forgotSend: (email: string, name: string, phone: string) =>
-      request<{ success: boolean; message: string }>('/auth/forgot-password/send', {
+      request<{ success: boolean; message: string; challenge_id: string }>('/auth/forgot-password/send', {
         method: 'POST', body: JSON.stringify({ email, name, phone }),
       }),
-    forgotVerify: (phone: string, code: string) =>
+    forgotVerify: (challenge_id: string, code: string) =>
       request<{ success: boolean; reset_token: string }>('/auth/forgot-password/verify', {
-        method: 'POST', body: JSON.stringify({ phone, code }),
+        method: 'POST', body: JSON.stringify({ challenge_id, code }),
       }),
     forgotReset: (reset_token: string, new_password: string) =>
       request<{ success: boolean; message: string }>('/auth/forgot-password/reset', {
@@ -315,10 +315,10 @@ export const api = {
   },
 
   signatures: {
-    sign: (documentId: string, signatureData: string) =>
+    sign: (documentId: string, signatureData: string, signatureType: 'author' | 'approver', stepId?: string) =>
       request<{ signature: import('./types').Signature }>('/signatures', {
         method: 'POST',
-        body: JSON.stringify({ document_id: documentId, signature_data: signatureData }),
+        body: JSON.stringify({ document_id: documentId, signature_data: signatureData, signature_type: signatureType, step_id: stepId }),
       }),
     getByDocument: (documentId: string) =>
       request<{ signatures: import('./types').Signature[] }>('/signatures/document/' + documentId),
@@ -613,7 +613,7 @@ export const api = {
       q.set('amount', String(params.amount || 0));
       return request<{ duplicates: Array<{ id: string; type: string; client_name: string; amount: number; contract_date: string; status: string; user_name?: string; branch?: string }> }>('/sales/duplicate-check?' + q.toString());
     },
-    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string }) =>
+    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string; user_id?: string }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; deposit_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),

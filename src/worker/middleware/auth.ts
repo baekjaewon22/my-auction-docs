@@ -1,6 +1,8 @@
 import type { Context, Next } from 'hono';
 import { jwtVerify, SignJWT } from 'jose';
 import type { AuthEnv, JwtPayload, Role } from '../types';
+import { ensurePasswordSecuritySchema } from '../lib/password-security-schema.ts';
+export { hashPassword, verifyPassword } from '../../shared/password-security.ts';
 
 const TOKEN_EXPIRY = '24h';
 
@@ -119,20 +121,29 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
   try {
     const payload = await verifyToken(token, c.env);
     const db = c.env.DB;
+    await ensurePasswordSecuritySchema(db);
     const freshUser = await db.prepare(
-      'SELECT id, role, team_id, branch, department, login_type FROM users WHERE id = ?'
-    ).bind(payload.sub).first<{ id: string; role: Role; team_id: string | null; branch: string; department: string; login_type?: string }>();
+      'SELECT id, role, team_id, branch, department, login_type, approved, auth_version FROM users WHERE id = ?'
+    ).bind(payload.sub).first<{ id: string; role: Role; team_id: string | null; branch: string; department: string; login_type?: string; approved: number; auth_version: number }>();
 
-    if (freshUser) {
-      if (freshUser.role === 'resigned') {
-        return c.json({ error: 'This account is resigned.' }, 403);
-      }
-      payload.role = freshUser.role;
-      payload.team_id = freshUser.team_id;
-      payload.branch = freshUser.branch;
-      payload.department = freshUser.department;
-      payload.login_type = freshUser.login_type || 'employee';
+    if (!freshUser) {
+      return c.json({ error: 'This account no longer exists.' }, 401);
     }
+    if (freshUser.approved !== 1) {
+      return c.json({ error: 'This account is not approved.' }, 403);
+    }
+    if (freshUser.role === 'resigned') {
+      return c.json({ error: 'This account is resigned.' }, 403);
+    }
+    if ((payload.auth_version || 0) !== (freshUser.auth_version || 0)) {
+      return c.json({ error: 'This session is no longer valid.' }, 401);
+    }
+    payload.role = freshUser.role;
+    payload.team_id = freshUser.team_id;
+    payload.branch = freshUser.branch;
+    payload.department = freshUser.department;
+    payload.login_type = freshUser.login_type || 'employee';
+    payload.auth_version = freshUser.auth_version || 0;
 
     payload.auth_type = 'user';
     c.set('user', payload);
@@ -167,7 +178,7 @@ export function requireHumanUser() {
     if (machineCredentialHeader || !user || user.auth_type !== 'user' || user.sub.startsWith('service-token:')) {
       return c.json({ error: '사용자 계정으로 로그인해야 합니다.' }, 403);
     }
-    const exists = await c.env.DB.prepare('SELECT id FROM users WHERE id = ? LIMIT 1').bind(user.sub).first();
+    const exists = await c.env.DB.prepare("SELECT id FROM users WHERE id = ? AND approved = 1 AND role != 'resigned' LIMIT 1").bind(user.sub).first();
     if (!exists) return c.json({ error: '사용자 계정을 확인할 수 없습니다.' }, 403);
     await next();
   };
@@ -180,21 +191,8 @@ export function requireHumanMaster() {
     if (machineCredentialHeader || !user || user.auth_type !== 'user' || user.role !== 'master' || user.sub.startsWith('service-token:')) {
       return c.json({ error: '마스터 사용자 계정만 접근할 수 있습니다.' }, 403);
     }
-    const exists = await c.env.DB.prepare("SELECT id FROM users WHERE id = ? AND role = 'master' LIMIT 1").bind(user.sub).first();
+    const exists = await c.env.DB.prepare("SELECT id FROM users WHERE id = ? AND approved = 1 AND role = 'master' LIMIT 1").bind(user.sub).first();
     if (!exists) return c.json({ error: '마스터 사용자 계정을 확인할 수 없습니다.' }, 403);
     await next();
   };
-}
-
-export async function hashPassword(password: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password + 'auction-docs-salt');
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-export async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  const computed = await hashPassword(password);
-  return computed === hash;
 }

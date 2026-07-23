@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .core.config import settings, ensure_dirs, FRONTEND_DIST_DIR
 from .core.logging import setup_logging
-from .api.routes import router as api_router
+from .api.routes import public_router, router as api_router
 
 
 @asynccontextmanager
@@ -38,10 +38,9 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_origin_regex=".*",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-MyAuction-Agent-Token"],
     expose_headers=["Content-Disposition", "Content-Length"],
 )
 
@@ -55,11 +54,16 @@ async def allow_private_network_preflight(request, call_next):
     but Starlette does not add this PNA-specific response header.
     """
     response = await call_next(request)
-    if request.headers.get("access-control-request-private-network", "").lower() == "true":
+    origin = request.headers.get("origin", "")
+    if (
+        origin in settings.cors_origins
+        and request.headers.get("access-control-request-private-network", "").lower() == "true"
+    ):
         response.headers["Access-Control-Allow-Private-Network"] = "true"
     return response
 
-# API 라우트
+# 공개 상태/세션 라우트와 인증 필수 기능 라우트를 분리한다.
+app.include_router(public_router, prefix="/api")
 app.include_router(api_router, prefix="/api")
 
 # 프론트엔드 정적 파일 서빙 (빌드된 React)

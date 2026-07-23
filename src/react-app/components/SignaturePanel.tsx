@@ -8,6 +8,7 @@ export type SignatureType = 'author' | 'approver';
 interface Props {
   documentId: string;
   signatureType: SignatureType;
+  stepId?: string;
   onClose: () => void;
   onSign: (signatureData: string, type: SignatureType) => void;
 }
@@ -20,10 +21,10 @@ export function hasSavedSignature(): boolean {
 }
 
 /** 저장된 서명으로 즉시 서명 처리 */
-export async function quickSign(documentId: string, signatureType: SignatureType, onSign: (data: string, type: SignatureType) => void) {
+export async function quickSign(documentId: string, signatureType: SignatureType, onSign: (data: string, type: SignatureType) => void, stepId?: string) {
   const saved = localStorage.getItem(SIG_CACHE_KEY);
   if (!saved) return false;
-  await api.signatures.sign(documentId, saved);
+  await api.signatures.sign(documentId, saved, signatureType, stepId);
   onSign(saved, signatureType);
   return true;
 }
@@ -45,7 +46,7 @@ export async function syncSignatureFromServer() {
   } catch { /* */ }
 }
 
-export default function SignaturePanel({ documentId, signatureType, onClose, onSign }: Props) {
+export default function SignaturePanel({ documentId, signatureType, stepId, onClose, onSign }: Props) {
   const { user } = useAuthStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -130,7 +131,7 @@ export default function SignaturePanel({ documentId, signatureType, onClose, onS
       // 새로 그린 서명이면 서버+로컬 저장
       if (!usingSaved) await saveToServer(signatureData);
 
-      await api.signatures.sign(documentId, signatureData);
+      await api.signatures.sign(documentId, signatureData, signatureType, stepId);
       onSign(signatureData, signatureType);
     } catch (err: any) { setError(err.message); }
     finally { setSubmitting(false); }

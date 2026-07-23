@@ -11,7 +11,7 @@ import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName 
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { countBusinessDates } from '../../shared/work-calendar';
 import { loadSystemHolidayDates } from '../lib/system-holidays';
-import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
+import { analyticsSalesBucketSql, confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 
 const comprehensive = new Hono<AuthEnv>();
 comprehensive.use('*', authMiddleware);
@@ -327,25 +327,25 @@ comprehensive.get('/', async (c) => {
   // 3. 매출 (기간 내)
   const salesRes = await db.prepare(`
     SELECT user_id,
-      CASE WHEN ${confirmedSalesSql('sales_records')} THEN 'confirmed' ELSE status END as status,
+      ${analyticsSalesBucketSql('sales_records')} as effective_status,
       COUNT(*) as cnt,
       SUM(amount) as total
     FROM sales_records
     WHERE ${salesPeriodSql('sales_records')}
       AND direction != 'expense'
       AND COALESCE(exclude_from_count, 0) = 0
-    GROUP BY user_id, status
+    GROUP BY 1, 2
   `).bind(periodStart, periodEnd, periodStart, periodEnd).all<any>();
   const salesMap: Record<string, { confirmed: number; pending: number; refunded: number; confirmed_count: number; refunded_count: number; sales_count: number }> = {};
   (salesRes.results || []).forEach((r: any) => {
     if (!salesMap[r.user_id]) salesMap[r.user_id] = { confirmed: 0, pending: 0, refunded: 0, confirmed_count: 0, refunded_count: 0, sales_count: 0 };
     salesMap[r.user_id].sales_count += r.cnt;
-    if (r.status === 'confirmed') {
+    if (r.effective_status === 'confirmed') {
       salesMap[r.user_id].confirmed += r.total || 0;
       salesMap[r.user_id].confirmed_count += r.cnt;
-    } else if (r.status === 'pending') {
+    } else if (r.effective_status === 'pending') {
       salesMap[r.user_id].pending += r.total || 0;
-    } else if (r.status === 'refunded') {
+    } else if (r.effective_status === 'refunded') {
       salesMap[r.user_id].refunded += r.total || 0;
       salesMap[r.user_id].refunded_count += r.cnt;
     }

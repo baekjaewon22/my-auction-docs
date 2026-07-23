@@ -10,7 +10,7 @@ type PushSubscriptionRow = {
 
 export type WebPushMessage = {
   userId: string;
-  eventType: 'community_direct' | 'community_reply' | 'cooperation_direct' | 'cooperation_reply' | 'push_setup_missing';
+  eventType: 'community_direct' | 'community_team' | 'community_reply' | 'cooperation_direct' | 'cooperation_reply' | 'push_setup_missing';
   title: string;
   body: string;
   url: string;

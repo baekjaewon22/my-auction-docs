@@ -3,6 +3,7 @@
 UPDATE sales_records
 SET status = 'card_pending', updated_at = datetime('now', '+9 hours')
 WHERE payment_type = '카드'
+  AND COALESCE(direction, 'income') != 'expense'
   AND status = 'confirmed'
   AND TRIM(COALESCE(card_deposit_date, '')) = '';
 
