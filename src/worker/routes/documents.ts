@@ -14,7 +14,7 @@ import { recheckAlertsAfterDocumentChange } from '../lib/journal-alerts';
 import { isHeadOfficeBranch } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { buildOrgApprovalChain } from '../lib/org-approval-chain';
-import { canReadDocument } from '../lib/document-access';
+import { canReadDocument, getDocumentAccessRecord } from '../lib/document-access';
 
 const LEAVE_REQUEST_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
 
@@ -774,8 +774,7 @@ documents.get('/:id/steps', async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
-  const doc = await db.prepare('SELECT author_id, branch, department, status FROM documents WHERE id = ?')
-    .bind(id).first<Document>();
+  const doc = await getDocumentAccessRecord(db, id);
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
   if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
   const result = await db.prepare(
@@ -831,8 +830,7 @@ documents.get('/:id/logs', async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
-  const doc = await db.prepare('SELECT author_id, branch, department, status FROM documents WHERE id = ?')
-    .bind(id).first<Document>();
+  const doc = await getDocumentAccessRecord(db, id);
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
   if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
   const result = await db.prepare(

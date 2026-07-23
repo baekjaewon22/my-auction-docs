@@ -7,6 +7,15 @@ type DocumentAccessRecord = Pick<Document, 'id' | 'author_id' | 'branch' | 'depa
 
 const FULL_ACCESS_ROLES = new Set(['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst']);
 
+export async function getDocumentAccessRecord(
+  db: D1Database,
+  documentId: string,
+): Promise<DocumentAccessRecord | null> {
+  return db.prepare(
+    'SELECT id, author_id, branch, department, status FROM documents WHERE id = ?'
+  ).bind(documentId).first<DocumentAccessRecord>();
+}
+
 /** 문서 목록과 상세/서명/결재 부속정보에 동일하게 적용하는 열람 기준. */
 export async function canReadDocument(
   db: D1Database,
