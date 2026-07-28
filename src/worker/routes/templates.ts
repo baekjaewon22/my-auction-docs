@@ -116,6 +116,8 @@ templates.put('/:id', requireTemplateAdmin, async (c) => {
       db.prepare('UPDATE documents SET is_myauction = 1 WHERE template_id = ?').bind(id),
     ]);
   } else {
+    // Intentional: documents keep the access classification captured when they
+    // were created. Unmarking a template affects future documents only.
     await updateTemplate.run();
   }
 

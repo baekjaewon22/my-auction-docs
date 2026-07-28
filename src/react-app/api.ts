@@ -218,6 +218,27 @@ export const api = {
         '/users/' + id + '/convert-to-employee',
         { method: 'PUT', body: JSON.stringify(data) },
       ),
+    freelancerConversionImpact: (id: string) =>
+      request<{
+        impact: import('../shared/employment-conversion').FreelancerConversionImpact;
+        blockers: string[];
+      }>('/users/' + id + '/freelancer-conversion-impact'),
+    convertToFreelancer: (id: string, data: {
+      commission_rate: number;
+      position_allowance?: number;
+      ssn?: string;
+      address?: string;
+      effective_month?: string;
+    }) =>
+      request<{
+        success: boolean;
+        user: import('./types').User;
+        account: import('./types').UserAccounting;
+        impact: import('../shared/employment-conversion').FreelancerConversionImpact;
+      }>(
+        '/users/' + id + '/convert-to-freelancer',
+        { method: 'PUT', body: JSON.stringify(data) },
+      ),
     saveSignature: (id: string, signature_data: string) =>
       request('/users/' + id + '/signature', { method: 'PUT', body: JSON.stringify({ signature_data }) }),
     deleteSignature: (id: string) =>

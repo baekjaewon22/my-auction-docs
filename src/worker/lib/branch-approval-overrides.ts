@@ -26,22 +26,26 @@ export async function applyBranchApprovalOverride(
   chain: string[],
   authorId: string,
   authorBranch: unknown,
+  options: { allowFreelancerApprover?: boolean } = {},
 ): Promise<{ chain: string[]; addedApproverId: string | null }> {
   const branch = normalizeBranchName(authorBranch);
   if (!branch) return { chain, addedApproverId: null };
 
   await ensureBranchApprovalOverridesTable(db);
   const override = await db.prepare(`
-    SELECT bao.approver_id
+    SELECT bao.approver_id, COALESCE(u.login_type, 'employee') AS login_type
     FROM branch_approval_overrides bao
     JOIN users u ON u.id = bao.approver_id
     WHERE bao.branch = ?
       AND u.approved = 1
       AND u.role != 'resigned'
     LIMIT 1
-  `).bind(branch).first<{ approver_id: string }>();
+  `).bind(branch).first<{ approver_id: string; login_type: string }>();
 
   const approverId = override?.approver_id || '';
+  if (override?.login_type === 'freelancer' && options.allowFreelancerApprover !== true) {
+    return { chain, addedApproverId: null };
+  }
   if (!approverId || approverId === authorId || chain.includes(approverId)) {
     return { chain, addedApproverId: null };
   }

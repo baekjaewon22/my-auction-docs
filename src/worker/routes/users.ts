@@ -5,9 +5,63 @@ import { sendAlimtalkByTemplate } from '../alimtalk';
 import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { currentKstMonth, ensurePayTypeHistoryTable, normalizeYearMonth, previousMonth } from '../lib/pay-type-history';
 import { MIN_PASSWORD_LENGTH } from '../../shared/password-security';
+import {
+  canConvertEmployeeRoleToFreelancer,
+  freelancerConversionBlockers,
+  normalizeCommissionRate,
+} from '../../shared/employment-conversion';
+import {
+  ensureEmploymentTypeHistoryTable,
+  getFreelancerConversionImpact,
+} from '../lib/employment-conversion';
 
 const users = new Hono<AuthEnv>();
 users.use('*', authMiddleware);
+
+type EmploymentConversionUser = {
+  id: string;
+  email: string;
+  name: string;
+  phone: string;
+  role: string;
+  team_id: string;
+  branch: string;
+  department: string;
+  position_title: string;
+  login_type: string;
+  approved: number;
+  created_at: string;
+  updated_at: string;
+};
+
+const EMPLOYMENT_CONVERSION_USER_SELECT = `
+  SELECT id, email, name, phone, role, team_id, branch, department,
+         position_title, login_type, approved, created_at, updated_at
+  FROM users
+  WHERE id = ? AND approved = 1
+`;
+
+function conversionUserResponse(
+  target: EmploymentConversionUser,
+  loginType: 'employee' | 'freelancer',
+  role = target.role,
+) {
+  return {
+    id: target.id,
+    email: target.email,
+    name: target.name,
+    phone: target.phone,
+    role,
+    team_id: target.team_id,
+    branch: target.branch,
+    department: target.department,
+    position_title: target.position_title,
+    login_type: loginType,
+    approved: target.approved,
+    created_at: target.created_at,
+    updated_at: target.updated_at,
+  };
+}
 
 async function ensureUsersResignedAtColumn(db: D1Database): Promise<void> {
   const columns = await db.prepare('PRAGMA table_info(users)').all<{ name: string }>();
@@ -181,6 +235,27 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin', 'accountant'), asyn
 // 관리자: 팀장/팀원 삭제 가능
 // 대표: 관리자 이하 삭제 가능
 // 마스터: 전부 삭제 가능 (본인 제외)
+users.get('/:id/freelancer-conversion-impact', requireRole('master', 'ceo', 'accountant'), async (c) => {
+  const id = c.req.param('id');
+  const db = c.env.DB;
+  const target = await db.prepare(
+    'SELECT id, name, role, login_type FROM users WHERE id = ? AND approved = 1'
+  ).bind(id).first<{ id: string; name: string; role: string; login_type: string }>();
+  if (!target) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
+  if ((target.login_type || 'employee') !== 'employee') {
+    return c.json({ error: '정규직 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
+  }
+  if (!canConvertEmployeeRoleToFreelancer(target.role)) {
+    return c.json({ error: '총괄이사·팀장·팀원 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
+  }
+
+  const impact = await getFreelancerConversionImpact(db, id);
+  return c.json({
+    impact,
+    blockers: freelancerConversionBlockers(impact),
+  });
+});
+
 // PUT /api/users/:id/convert-to-employee - freelancer login/accounting conversion
 users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant'), async (c) => {
   const id = c.req.param('id');
@@ -193,7 +268,9 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
     effective_month?: string;
   }>();
 
-  const target = await db.prepare('SELECT * FROM users WHERE id = ? AND approved = 1').bind(id).first<any>();
+  const target = await db.prepare(EMPLOYMENT_CONVERSION_USER_SELECT)
+    .bind(id)
+    .first<EmploymentConversionUser>();
   if (!target) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
   if ((target.login_type || 'employee') !== 'freelancer') {
     return c.json({ error: '프리랜서 계정만 정규직으로 전환할 수 있습니다.' }, 400);
@@ -223,11 +300,16 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
   const effectiveMonth = normalizeYearMonth(effective_month) || currentKstMonth();
   const beforeMonth = previousMonth(effectiveMonth) || '1900-01';
 
-  await ensurePayTypeHistoryTable(db);
+  await Promise.all([
+    ensurePayTypeHistoryTable(db),
+    ensureEmploymentTypeHistoryTable(db),
+  ]);
   const existingAccounting = await db.prepare('SELECT * FROM user_accounting WHERE user_id = ?').bind(id).first<any>();
   const standardSales = Math.round(nextSalary * 1.3 * 4);
   const statements = [
-    db.prepare("UPDATE users SET login_type = 'employee', updated_at = datetime('now') WHERE id = ?").bind(id),
+    db.prepare(
+      "UPDATE users SET login_type = 'employee', auth_version = COALESCE(auth_version, 0) + 1, updated_at = datetime('now') WHERE id = ?"
+    ).bind(id),
   ];
 
   if (existingAccounting) {
@@ -294,12 +376,22 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
     nextAllowance,
     currentUser.sub || '',
   ));
+  statements.push(db.prepare(`
+    INSERT INTO user_employment_type_history (
+      id, user_id, from_login_type, to_login_type, effective_month, changed_by, impact_snapshot
+    ) VALUES (?, ?, 'freelancer', 'employee', ?, ?, '{}')
+  `).bind(
+    crypto.randomUUID(),
+    id,
+    effectiveMonth,
+    currentUser.sub || '',
+  ));
 
   await db.batch(statements);
 
   return c.json({
     success: true,
-    user: { ...target, login_type: 'employee' },
+    user: conversionUserResponse(target, 'employee'),
     account: {
       user_id: id,
       salary: nextSalary,
@@ -312,6 +404,226 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
       address: '',
       effective_month: effectiveMonth,
     },
+  });
+});
+
+// PUT /api/users/:id/convert-to-freelancer - employee login/accounting conversion
+users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant'), async (c) => {
+  const id = c.req.param('id');
+  const currentUser = c.get('user');
+  const db = c.env.DB;
+  const {
+    commission_rate,
+    position_allowance,
+    ssn,
+    address,
+    effective_month,
+  } = await c.req.json<{
+    commission_rate?: number;
+    position_allowance?: number;
+    ssn?: string;
+    address?: string;
+    effective_month?: string;
+  }>();
+
+  const target = await db.prepare(EMPLOYMENT_CONVERSION_USER_SELECT)
+    .bind(id)
+    .first<EmploymentConversionUser>();
+  if (!target) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
+  if ((target.login_type || 'employee') !== 'employee') {
+    return c.json({ error: '정규직 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
+  }
+  if (!canConvertEmployeeRoleToFreelancer(target.role)) {
+    return c.json({ error: '총괄이사·팀장·팀원 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
+  }
+
+  const nextCommissionRate = normalizeCommissionRate(commission_rate);
+  if (nextCommissionRate === null) {
+    return c.json({ error: '비율은 0보다 크고 100 이하인 숫자로 입력해주세요.' }, 400);
+  }
+  const rawAllowance = position_allowance === undefined ? 0 : Number(position_allowance);
+  const nextAllowance = Math.trunc(rawAllowance);
+  if (!Number.isFinite(rawAllowance) || nextAllowance < 0) {
+    return c.json({ error: '직책수당은 0 이상 숫자로 입력해주세요.' }, 400);
+  }
+
+  const effectiveMonth = normalizeYearMonth(effective_month) || currentKstMonth();
+  if (effectiveMonth !== currentKstMonth()) {
+    return c.json({ error: '계정 전환 적용월은 현재 월만 선택할 수 있습니다.' }, 400);
+  }
+  const beforeMonth = previousMonth(effectiveMonth) || '1900-01';
+  const impact = await getFreelancerConversionImpact(db, id);
+  const blockers = freelancerConversionBlockers(impact);
+  if (blockers.length > 0) {
+    return c.json({
+      error: `전환 전에 다음 업무를 처리해주세요: ${blockers.join(', ')}`,
+      impact,
+      blockers,
+    }, 409);
+  }
+
+  await Promise.all([
+    ensurePayTypeHistoryTable(db),
+    ensureEmploymentTypeHistoryTable(db),
+  ]);
+  const existingAccounting = await db.prepare(
+    'SELECT * FROM user_accounting WHERE user_id = ?'
+  ).bind(id).first<any>();
+  const nextSsn = String(ssn ?? existingAccounting?.ssn ?? '').trim();
+  const nextAddress = String(address ?? existingAccounting?.address ?? '').trim();
+  const statements = [
+    db.prepare(
+      `UPDATE users
+       SET login_type = 'freelancer',
+           role = 'member',
+           auth_version = COALESCE(auth_version, 0) + 1,
+           updated_at = datetime('now')
+       WHERE id = ?
+         AND COALESCE(login_type, 'employee') = 'employee'
+         AND NOT EXISTS (
+           SELECT 1 FROM leave_requests
+           WHERE user_id = ? AND status IN ('pending', 'cancel_requested')
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM approval_steps aps
+           JOIN documents d ON d.id = aps.document_id
+           WHERE aps.approver_id = ?
+             AND aps.status = 'pending'
+             AND d.status = 'submitted'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM documents
+           WHERE author_id = ?
+             AND COALESCE(is_myauction, 0) = 0
+             AND status IN ('draft', 'submitted', 'rejected')
+         )`
+    ).bind(id, id, id, id),
+  ];
+
+  if (existingAccounting) {
+    statements.push(db.prepare(`
+      INSERT OR IGNORE INTO user_pay_type_history (
+        id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
+        grade, position_allowance, source, changed_by
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'before_freelancer_conversion', ?
+      WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+    `).bind(
+      crypto.randomUUID(),
+      id,
+      beforeMonth,
+      existingAccounting.pay_type || 'salary',
+      Number(existingAccounting.commission_rate || 0),
+      Number(existingAccounting.salary || 0),
+      Number(existingAccounting.standard_sales || 0),
+      String(existingAccounting.grade || ''),
+      Number(existingAccounting.position_allowance || 0),
+      currentUser.sub || '',
+      id,
+    ));
+    statements.push(db.prepare(`
+      UPDATE user_accounting
+      SET salary = 0,
+          standard_sales = 0,
+          grade = '',
+          position_allowance = ?,
+          pay_type = 'commission',
+          commission_rate = ?,
+          ssn = ?,
+          address = ?,
+          updated_at = datetime('now')
+      WHERE user_id = ?
+        AND EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+    `).bind(nextAllowance, nextCommissionRate, nextSsn, nextAddress, id, id));
+  } else {
+    statements.push(db.prepare(`
+      INSERT OR IGNORE INTO user_pay_type_history (
+        id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
+        grade, position_allowance, source, changed_by
+      )
+      SELECT ?, ?, ?, 'salary', 0, 0, 0, '', 0, 'before_freelancer_conversion', ?
+      WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+    `).bind(crypto.randomUUID(), id, beforeMonth, currentUser.sub || '', id));
+    statements.push(db.prepare(`
+      INSERT INTO user_accounting (
+        id, user_id, salary, standard_sales, grade, position_allowance,
+        pay_type, commission_rate, ssn, address
+      )
+      SELECT ?, ?, 0, 0, '', ?, 'commission', ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+    `).bind(
+      crypto.randomUUID(),
+      id,
+      nextAllowance,
+      nextCommissionRate,
+      nextSsn,
+      nextAddress,
+      id,
+    ));
+  }
+
+  statements.push(db.prepare(`
+    INSERT OR REPLACE INTO user_pay_type_history (
+      id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
+      grade, position_allowance, source, changed_by
+    )
+    SELECT
+      COALESCE((SELECT id FROM user_pay_type_history WHERE user_id = ? AND effective_month = ? AND source = 'freelancer_conversion'), ?),
+      ?, ?, 'commission', ?, 0, 0, '', ?, 'freelancer_conversion', ?
+    WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+  `).bind(
+    id,
+    effectiveMonth,
+    crypto.randomUUID(),
+    id,
+    effectiveMonth,
+    nextCommissionRate,
+    nextAllowance,
+    currentUser.sub || '',
+    id,
+  ));
+  statements.push(db.prepare(`
+    INSERT INTO user_employment_type_history (
+      id, user_id, from_login_type, to_login_type, effective_month, changed_by, impact_snapshot
+    )
+    SELECT ?, ?, 'employee', 'freelancer', ?, ?, ?
+    WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+  `).bind(
+    crypto.randomUUID(),
+    id,
+    effectiveMonth,
+    currentUser.sub || '',
+    JSON.stringify({ ...impact, previous_role: target.role, next_role: 'member' }),
+    id,
+  ));
+
+  const batchResults = await db.batch(statements);
+  if (Number(batchResults[0]?.meta?.changes || 0) !== 1) {
+    const latestImpact = await getFreelancerConversionImpact(db, id);
+    return c.json({
+      error: '전환 직전에 처리 중인 업무가 생겼거나 계정 상태가 변경되었습니다. 다시 확인해 주세요.',
+      impact: latestImpact,
+      blockers: freelancerConversionBlockers(latestImpact),
+    }, 409);
+  }
+
+  return c.json({
+    success: true,
+    user: conversionUserResponse(target, 'freelancer', 'member'),
+    account: {
+      user_id: id,
+      salary: 0,
+      standard_sales: 0,
+      grade: '',
+      position_allowance: nextAllowance,
+      pay_type: 'commission',
+      commission_rate: nextCommissionRate,
+      ssn: nextSsn,
+      address: nextAddress,
+      effective_month: effectiveMonth,
+    },
+    impact,
   });
 });
 

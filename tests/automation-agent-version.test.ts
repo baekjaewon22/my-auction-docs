@@ -44,6 +44,8 @@ test('실행기 버전은 프런트·Worker·Python·빌드가 공용 원본을 
   assert.match(frontend, /extendedMatch/);
   assert.match(worker, /automation-agent-version/);
   assert.match(backend, /automation-agent-version\.ts/);
+  assert.match(backend, /return "unknown"/);
+  assert.doesNotMatch(backend, /raise RuntimeError\("Automation agent version source was not found"\)/);
   assert.match(buildScript, /automation-agent-version\.ts/);
   assert.doesNotMatch(frontend, /2026\.07\.28\.1/);
   assert.doesNotMatch(worker, /2026\.07\.28\.1/);

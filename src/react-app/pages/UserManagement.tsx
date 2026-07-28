@@ -11,6 +11,11 @@ import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 
 import { useDepartments } from '../hooks/useDepartments';
 import { MIN_PASSWORD_LENGTH } from '../../shared/password-security';
+import {
+  canConvertEmployeeRoleToFreelancer,
+  freelancerConversionBlockers,
+  normalizeCommissionRate,
+} from '../../shared/employment-conversion';
 const ROLE_OPTS = [...VISIBLE_ROLES, 'resigned' as const].map((v) => ({ value: v, label: ROLE_LABELS[v] }));
 // BRANCH_OPTS는 컴포넌트 내부에서 동적 생성
 const POSITION_TITLES = ['대표이사', '부사장', '전무', '상무', '이사', '본부장', '지사장', '실장', '사무장', '부장', '차장', '과장', '팀장', '대리', '주임', '사원', '인턴', 'PD'];
@@ -78,7 +83,7 @@ export default function UserManagement() {
   const canViewAccounting = ['master', 'ceo', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   // 입사기준일 편집 가능한 역할
   const canSetHireDate = ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
-  const canConvertFreelancer = ['master', 'ceo', 'accountant'].includes(currentUser?.role || '');
+  const canConvertEmploymentType = ['master', 'ceo', 'accountant'].includes(currentUser?.role || '');
   const canGrantReportPermission = currentUser?.role === 'master';
 
   const load = () => {
@@ -299,7 +304,7 @@ export default function UserManagement() {
   };
 
   const handleConvertToEmployee = async () => {
-    if (!selectedUser || !canConvertFreelancer) return;
+    if (!selectedUser || !canConvertEmploymentType) return;
     if (selectedUser.login_type !== 'freelancer') {
       alert('이미 일반 계정입니다.');
       return;
@@ -345,6 +350,83 @@ export default function UserManagement() {
       alert('정규직 전환이 완료되었습니다.');
     } catch (err: any) { alert(err.message); }
     finally { setConverting(false); }
+  };
+
+  const handleConvertToFreelancer = async () => {
+    if (!selectedUser || !canConvertEmploymentType) return;
+    if ((selectedUser.login_type || 'employee') !== 'employee') {
+      alert('이미 프리랜서 계정입니다.');
+      return;
+    }
+    if (!canConvertEmployeeRoleToFreelancer(selectedUser.role)) {
+      alert('총괄이사·팀장·팀원 계정만 프리랜서로 전환할 수 있습니다.');
+      return;
+    }
+    if (payType !== 'commission') {
+      alert('비율제로 전환한 뒤 지급 비율을 입력해주세요.');
+      return;
+    }
+    const rate = normalizeCommissionRate(commissionRate);
+    if (rate === null) {
+      alert('비율은 0보다 크고 100 이하로 입력해주세요.');
+      return;
+    }
+    const positionAllowance = Number(posAllowanceInput) || 0;
+    if (positionAllowance < 0) {
+      alert('직책수당은 0 이상으로 입력해주세요.');
+      return;
+    }
+
+    setConverting(true);
+    try {
+      const preview = await api.users.freelancerConversionImpact(selectedUser.id);
+      const blockers = freelancerConversionBlockers(preview.impact);
+      if (blockers.length > 0) {
+        alert(`전환 전에 다음 업무를 처리해주세요.\n- ${blockers.join('\n- ')}`);
+        return;
+      }
+
+      const impact = preview.impact;
+      const confirmed = confirm(
+        `${selectedUser.name}님을 프리랜서 계정으로 전환하시겠습니까?\n\n`
+        + `전환 후 변경\n`
+        + `• 프리랜서 로그인과 비율제 ${rate}% 적용\n`
+        + `• 급여·기준매출·직급은 0/미지정으로 전환\n`
+        + `• 시스템 권한은 팀원으로 조정 (기존 관리자·팀장 권한 제거)\n`
+        + `• 현재 로그인 세션은 종료되어 프리랜서로 다시 로그인 필요\n\n`
+        + `삭제되지 않고 보존되는 기존 데이터\n`
+        + `• 문서 ${impact.documents}건 (사내 문서 ${impact.non_myauction_documents}건은 관리자만 열람)\n`
+        + `• 매출 ${impact.sales_records}건, 사건 ${impact.cases}건\n`
+        + `• 연차 사용 ${impact.annual_leave_used}/${impact.annual_leave_total}일 및 휴가 이력\n`
+        + `• 조직도 연결 ${impact.org_nodes}건\n\n`
+        + `전환 월 이전 급여제 내역은 이력으로 보존됩니다.`,
+      );
+      if (!confirmed) return;
+
+      const effectiveMonth = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 7);
+      const res = await api.users.convertToFreelancer(selectedUser.id, {
+        commission_rate: rate,
+        position_allowance: positionAllowance,
+        ssn: ssnInput,
+        address: addressInput,
+        effective_month: effectiveMonth,
+      });
+      const nextUser = { ...selectedUser, ...res.user, login_type: 'freelancer' as const };
+      setSelectedUser(nextUser);
+      setUsers(prev => prev.map(u => u.id === selectedUser.id ? nextUser : u));
+      setSalaryInput('0');
+      setGradeInput('');
+      setPosAllowanceInput(String(res.account.position_allowance || 0));
+      setPayType('commission');
+      setCommissionRate(String(res.account.commission_rate || rate));
+      setSsnInput(res.account.ssn || '');
+      setAddressInput(res.account.address || '');
+      alert('프리랜서 전환이 완료되었습니다. 시스템 권한은 팀원으로 조정되며 기존 데이터와 전환 전 급여 이력은 보존됩니다.');
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setConverting(false);
+    }
   };
 
   const handleGradeDemotion = async (userId: string, newGrade: string) => {
@@ -579,9 +661,28 @@ export default function UserManagement() {
                       급여제 정보 확인 후 정규직 전환을 실행하면 일반 로그인 계정으로 변경됩니다.
                     </div>
                   </div>
-                  {canConvertFreelancer && payType !== 'salary' && (
+                  {canConvertEmploymentType && payType !== 'salary' && (
                     <button type="button" className="btn btn-sm" onClick={() => setPayType('salary')}>
                       급여제 입력
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {(selectedUser.login_type || 'employee') === 'employee'
+              && canConvertEmployeeRoleToFreelancer(selectedUser.role) && (
+              <div style={{ marginBottom: 16, padding: 14, border: '1px solid #e1bee7', borderRadius: 8, background: '#fcf7ff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#5b217a' }}>정규직 계정</div>
+                    <div style={{ fontSize: '0.78rem', color: '#5f6368', marginTop: 4 }}>
+                      비율제 정보 확인 후 프리랜서 전환을 실행합니다. 시스템 권한은 팀원으로 조정되며 기존 매출·문서·사건·연차 이력은 삭제되지 않습니다.
+                    </div>
+                  </div>
+                  {canConvertEmploymentType && payType !== 'commission' && (
+                    <button type="button" className="btn btn-sm" onClick={() => setPayType('commission')}>
+                      비율제 입력
                     </button>
                   )}
                 </div>
@@ -712,9 +813,21 @@ export default function UserManagement() {
                 <button className="btn btn-primary" onClick={handleSaveAccounting} disabled={saving}>
                   {saving ? '저장중...' : '저장'}
                 </button>
-                {selectedUser.login_type === 'freelancer' && canConvertFreelancer && (
+                {selectedUser.login_type === 'freelancer' && canConvertEmploymentType && (
                   <button className="btn btn-success" onClick={handleConvertToEmployee} disabled={converting || saving || payType !== 'salary'}>
                     {converting ? '전환중...' : '정규직 전환 저장'}
+                  </button>
+                )}
+                {(selectedUser.login_type || 'employee') === 'employee'
+                  && canConvertEmploymentType
+                  && canConvertEmployeeRoleToFreelancer(selectedUser.role) && (
+                  <button
+                    className="btn"
+                    style={{ background: '#7b1fa2', color: '#fff' }}
+                    onClick={handleConvertToFreelancer}
+                    disabled={converting || saving || payType !== 'commission'}
+                  >
+                    {converting ? '전환중...' : '프리랜서 전환 저장'}
                   </button>
                 )}
               </div>

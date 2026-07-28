@@ -73,8 +73,16 @@ function countLeaveBusinessDays(startDate: string, endDate: string, holidays = n
   return Math.max(1, count);
 }
 
-async function buildApprovalChain(db: D1Database, authorId: string): Promise<string[]> {
-  return buildOrgApprovalChain(db, authorId);
+async function buildApprovalChain(
+  db: D1Database,
+  authorId: string,
+  allowFreelancerApprover: boolean,
+  allowMissingOrgNode: boolean,
+): Promise<string[]> {
+  return buildOrgApprovalChain(db, authorId, {
+    allowFreelancerApprover,
+    allowMissingOrgNode,
+  });
 }
 
 const documents = new Hono<AuthEnv>();
@@ -407,7 +415,13 @@ documents.post('/:id/submit', async (c) => {
   if (doc.status !== 'draft' && doc.status !== 'rejected') return c.json({ error: '작성중 또는 반려된 문서만 제출할 수 있습니다.' }, 400);
 
   // 결재선 자동 생성
-  let chain = await buildApprovalChain(db, user.sub);
+  const freelancerAuthor = isFreelancerViewer(user);
+  let chain = await buildApprovalChain(
+    db,
+    user.sub,
+    isMyAuctionDocument(doc),
+    freelancerAuthor,
+  );
   if (isFreelancerViewer(user) && chain.length === 0) {
     return c.json(
       { error: '결재선이 설정되지 않았습니다. 관리자에게 조직도 또는 지사 상위승인자 설정을 요청하세요.' },

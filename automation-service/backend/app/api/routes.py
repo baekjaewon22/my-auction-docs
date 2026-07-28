@@ -52,7 +52,11 @@ def _load_agent_version() -> str:
         if match:
             return match.group(1)
 
-    raise RuntimeError("Automation agent version source was not found")
+    logger.error(
+        "Automation agent version source was not found; "
+        "continuing with an unknown version marker"
+    )
+    return "unknown"
 
 
 AGENT_VERSION = _load_agent_version()

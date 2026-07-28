@@ -12,9 +12,13 @@ export function orgApprovalMaxSteps(role: string): number {
   return role === 'admin' ? 1 : role === 'manager' ? 2 : 3;
 }
 
-function canUseOrgApprover(user: OrgApproverUser | null | undefined): boolean {
+function canUseOrgApprover(
+  user: OrgApproverUser | null | undefined,
+  allowFreelancerApprover: boolean,
+): boolean {
   if (!user) return false;
   if (user.approved !== undefined && Number(user.approved) !== 1) return false;
+  if (user.login_type === 'freelancer' && !allowFreelancerApprover) return false;
   if (user.role === 'freelancer') return false;
   if (user.role === 'support') return false;
   if (user.role === 'resigned') return false;
@@ -28,11 +32,16 @@ export async function buildOrgApprovalChain(
     maxSteps?: number;
     applyBranchOverride?: boolean;
     includeCcFallbackForTopNode?: boolean;
+    allowFreelancerApprover?: boolean;
+    allowMissingOrgNode?: boolean;
   } = {},
 ): Promise<string[]> {
   const userNode = await db.prepare(
     'SELECT * FROM org_nodes WHERE user_id = ?'
   ).bind(authorId).first<OrgNode>();
+  // Employee workflows historically require an organization node. Only callers
+  // that explicitly support an external/freelancer author may opt into fallback.
+  if (!userNode && options.allowMissingOrgNode !== true) return [];
   const author = await db.prepare(
     'SELECT role, branch FROM users WHERE id = ?'
   ).bind(authorId).first<{ role: string; branch: string }>();
@@ -54,7 +63,7 @@ export async function buildOrgApprovalChain(
       const approver = await db.prepare(
         'SELECT id, login_type, role, approved FROM users WHERE id = ?'
       ).bind(parentNode.user_id).first<OrgApproverUser>();
-      if (canUseOrgApprover(approver)) {
+      if (canUseOrgApprover(approver, options.allowFreelancerApprover === true)) {
         chain.push(parentNode.user_id);
       }
     }
@@ -63,7 +72,13 @@ export async function buildOrgApprovalChain(
   }
 
   if (options.applyBranchOverride !== false) {
-    const overrideResult = await applyBranchApprovalOverride(db, chain, authorId, author.branch);
+    const overrideResult = await applyBranchApprovalOverride(
+      db,
+      chain,
+      authorId,
+      author.branch,
+      { allowFreelancerApprover: options.allowFreelancerApprover === true },
+    );
     chain.splice(0, chain.length, ...overrideResult.chain);
   }
 
