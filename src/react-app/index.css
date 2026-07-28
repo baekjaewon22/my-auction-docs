@@ -5534,7 +5534,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .template-card-body {
   flex: 1;
-  padding: 4px 0;
+  padding: 20px 0 4px;
 }
 
 .template-card-footer {
@@ -5572,6 +5572,104 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .template-fav-btn.active {
   color: #f9ab00;
+}
+
+.template-myauction-btn {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 4px 8px;
+  border: 1px solid #d9e2ec;
+  border-radius: 999px;
+  color: var(--gray-500);
+  background: rgba(255, 255, 255, 0.94);
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.template-myauction-btn:hover:not(:disabled) {
+  border-color: #1a73e8;
+  color: #1a73e8;
+  background: #eef5ff;
+  transform: translateY(-1px);
+}
+
+.template-myauction-btn.active {
+  border-color: #1a73e8;
+  color: #fff;
+  background: #1a73e8;
+}
+
+.template-myauction-btn.readonly {
+  cursor: default;
+}
+
+.template-myauction-btn.readonly:not(.active) {
+  display: none;
+}
+
+.myauction-filter.active {
+  border-color: #1a73e8 !important;
+  color: #fff !important;
+  background: #1a73e8 !important;
+}
+
+.template-myauction-section {
+  padding: 16px;
+  margin-bottom: 20px;
+  border: 1px solid #cfe0ff;
+  border-radius: var(--radius);
+  background: #f7faff;
+}
+
+.template-myauction-section .template-category-header {
+  border-bottom-color: #cfe0ff;
+}
+
+.template-myauction-section .template-category-lucide {
+  color: #1a73e8;
+}
+
+.template-myauction-form-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #cfe0ff;
+  border-radius: 10px;
+  background: #f7faff;
+  cursor: pointer;
+}
+
+.template-myauction-form-check input {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  accent-color: #1a73e8;
+}
+
+.template-myauction-form-check span {
+  display: grid;
+  gap: 3px;
+}
+
+.template-myauction-form-check strong {
+  color: #174ea6;
+  font-size: 0.86rem;
+}
+
+.template-myauction-form-check small {
+  color: var(--gray-600);
+  font-size: 0.74rem;
+  line-height: 1.45;
 }
 
 .fav-filter.active {

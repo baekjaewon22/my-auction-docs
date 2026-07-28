@@ -678,11 +678,7 @@ def build_special_summary_text(
         lines.append(f"- {price_note}")
 
     lines.append("")
-    lines.append("3) 입찰 전략")
-    lines.extend(_bid_strategy_lines(data, tenant_analysis_text, registered_takeover_texts))
-
-    lines.append("")
-    lines.append("4) 물건별 특이사항")
+    lines.append("3) 물건별 특이사항")
     lines.extend(_property_special_issue_lines(
         data,
         rights,
@@ -783,30 +779,6 @@ def _bid_check_lines(data: dict, tenants: list[dict], management_fee: dict) -> l
         )
     else:
         lines.append("- 관리비 체납: 관리사무소에서 미납 금액 및 개월수를 확인해 주시기 바랍니다.")
-    return lines
-
-
-def _bid_strategy_lines(data: dict, tenant_analysis_text: str, registered_takeover_texts: list[str]) -> list[str]:
-    lines = []
-    min_price = parse_money(data.get("min_price"))
-    appraised = parse_money(data.get("appraised_price"))
-    rate = _min_price_rate_text(data)
-    if min_price > 0 and appraised > 0:
-        conservative = int(min_price * 1.03)
-        competitive = int((min_price + appraised) / 2)
-        ceiling = int(appraised * 0.9)
-        if ceiling < competitive:
-            ceiling = competitive
-        lines.append(f"- 보수적 검토: {fmt_money(conservative)} 전후")
-        lines.append(f"- 일반 경쟁 검토: {fmt_money(competitive)} 전후")
-        lines.append(f"- 적극 입찰 상한: {fmt_money(ceiling)} 이내에서 관리")
-    else:
-        lines.append("- 입찰가: 감정가, 최저매각가, 최근 실거래가와 매물 호가를 기준으로 산정해 주시기 바랍니다.")
-    if registered_takeover_texts or _text_has_takeover_tenant(tenant_analysis_text):
-        lines.append("- 인수권리 가능성이 있으므로 인수금액을 입찰가에서 차감해 검토해 주시기 바랍니다.")
-    else:
-        lines.append(f"- 권리 리스크가 낮은 물건은 경쟁 가능성이 있으므로 {rate} 최저가율과 시세를 함께 비교해 주시기 바랍니다.")
-    lines.append("- 경락잔금대출 한도와 금리는 입찰 전 사전 확인이 필요합니다.")
     return lines
 
 
@@ -3254,17 +3226,25 @@ def _extract_management_fee_due_text(text: str) -> str:
 
 
 def _extract_management_fee_amount(text: str) -> int:
-    patterns = (
-        r"(?:미납|체납)\s*관리비[^\d]{0,40}(\d{1,3}(?:,\d{3})+|\d{4,})\s*원?",
-        r"관리비[^\d]{0,40}(?:미납|체납)?[^\d]{0,40}(\d{1,3}(?:,\d{3})+|\d{4,})\s*원?",
-        r"(\d{1,3}(?:,\d{3})+|\d{4,})\s*원[^\d]{0,50}(?:미납|체납)\s*관리비",
-    )
-    for pattern in patterns:
-        amounts = [parse_money(match.group(1)) for match in re.finditer(pattern, text or "")]
-        amounts = [amount for amount in amounts if amount > 0]
-        if amounts:
-            return max(amounts)
-    return parse_money(text)
+    normalized = re.sub(r"\s+", " ", text or "")
+    keyword_pattern = r"(?:미납|체납)\s*관리비|관리비\s*(?:미납|체납)(?:액|금액)?"
+    amount_pattern = re.compile(r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(억원|억|만원|만\s*원|원)")
+    unrelated_price_labels = re.compile(r"감정가|최저가|매각가|시세|보증금|채권")
+
+    for keyword in re.finditer(keyword_pattern, normalized):
+        nearby = normalized[keyword.end(): keyword.end() + 80]
+        for amount_match in amount_pattern.finditer(nearby):
+            prefix = nearby[:amount_match.start()]
+            if unrelated_price_labels.search(prefix):
+                break
+
+            number = float(amount_match.group(1).replace(",", ""))
+            unit = re.sub(r"\s+", "", amount_match.group(2))
+            multiplier = 100_000_000 if unit.startswith("억") else 10_000 if unit.startswith("만") else 1
+            amount = int(number * multiplier)
+            if amount > 0:
+                return amount
+    return 0
 
 
 def _extract_market_data(soup) -> dict:

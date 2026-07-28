@@ -1,5 +1,5 @@
 import type { OrgNode } from '../types';
-import { applyBranchApprovalOverride } from './branch-approval-overrides';
+import { applyBranchApprovalOverride } from './branch-approval-overrides.ts';
 
 type OrgApproverUser = {
   id: string;
@@ -15,7 +15,6 @@ export function orgApprovalMaxSteps(role: string): number {
 function canUseOrgApprover(user: OrgApproverUser | null | undefined): boolean {
   if (!user) return false;
   if (user.approved !== undefined && Number(user.approved) !== 1) return false;
-  if (user.login_type === 'freelancer') return false;
   if (user.role === 'freelancer') return false;
   if (user.role === 'support') return false;
   if (user.role === 'resigned') return false;
@@ -34,8 +33,6 @@ export async function buildOrgApprovalChain(
   const userNode = await db.prepare(
     'SELECT * FROM org_nodes WHERE user_id = ?'
   ).bind(authorId).first<OrgNode>();
-  if (!userNode) return [];
-
   const author = await db.prepare(
     'SELECT role, branch FROM users WHERE id = ?'
   ).bind(authorId).first<{ role: string; branch: string }>();
@@ -43,7 +40,7 @@ export async function buildOrgApprovalChain(
 
   const chain: string[] = [];
   const maxSteps = options.maxSteps ?? orgApprovalMaxSteps(author.role || '');
-  let currentParentId = userNode.parent_id;
+  let currentParentId = userNode?.parent_id || null;
   let guard = 0;
 
   while (currentParentId && chain.length < maxSteps && guard < 50) {
@@ -70,7 +67,7 @@ export async function buildOrgApprovalChain(
     chain.splice(0, chain.length, ...overrideResult.chain);
   }
 
-  if (options.includeCcFallbackForTopNode !== false && chain.length === 0 && userNode.tier <= 2) {
+  if (options.includeCcFallbackForTopNode !== false && chain.length === 0 && (!userNode || userNode.tier <= 2)) {
     const ccList = await db.prepare(
       'SELECT cc_user_id FROM approval_cc'
     ).all<{ cc_user_id: string }>();

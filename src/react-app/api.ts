@@ -251,7 +251,7 @@ export const api = {
   templates: {
     list: () => request<{ templates: import('./types').Template[] }>('/templates'),
     get: (id: string) => request<{ template: import('./types').Template }>('/templates/' + id),
-    create: (data: { title: string; description?: string; content: string; category?: string }) =>
+    create: (data: { title: string; description?: string; content: string; category?: string; is_myauction?: number }) =>
       request<{ template: import('./types').Template }>('/templates', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -262,7 +262,7 @@ export const api = {
   },
 
   documents: {
-    list: (statusOrOpts?: string | { status?: string; author_id?: string; since?: string; exclude_drafts?: boolean; fields?: string; limit?: number }) => {
+    list: (statusOrOpts?: string | { status?: string; author_id?: string; since?: string; exclude_drafts?: boolean; approval_only?: boolean; fields?: string; limit?: number }) => {
       // 하위 호환: 문자열로 status만 받던 이전 시그니처 유지
       let qs = '';
       if (typeof statusOrOpts === 'string') {
@@ -273,6 +273,7 @@ export const api = {
         if (statusOrOpts.author_id) params.set('author_id', statusOrOpts.author_id);
         if (statusOrOpts.since) params.set('since', statusOrOpts.since);
         if (statusOrOpts.exclude_drafts) params.set('exclude_drafts', 'true');
+        if (statusOrOpts.approval_only) params.set('approval_only', 'true');
         if (statusOrOpts.fields) params.set('fields', statusOrOpts.fields);
         if (statusOrOpts.limit) params.set('limit', String(statusOrOpts.limit));
         const s = params.toString();

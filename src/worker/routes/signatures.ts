@@ -3,9 +3,14 @@ import type { AuthEnv, Document, Signature } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { canReadDocument } from '../lib/document-access';
 import { canProxyApproval, evaluateSignaturePolicy, type PendingSignatureStep } from '../../shared/signature-policy';
+import { ensureTemplateAccessSchema, isFreelancerViewer } from '../lib/template-access';
 
 const signatures = new Hono<AuthEnv>();
 signatures.use('*', authMiddleware);
+signatures.use('*', async (c, next) => {
+  await ensureTemplateAccessSchema(c.env.DB);
+  await next();
+});
 
 // POST /api/signatures - sign a document
 signatures.post('/', async (c) => {
@@ -52,9 +57,10 @@ signatures.post('/', async (c) => {
     }
   }
 
+  const signatureRole = isFreelancerViewer(user) ? 'member' : user.role;
   const policy = evaluateSignaturePolicy({
     userId: user.sub,
-    userRole: user.role,
+    userRole: signatureRole,
     documentAuthorId: doc.author_id,
     documentStatus: doc.status,
     signatureType: signature_type,
@@ -70,7 +76,7 @@ signatures.post('/', async (c) => {
     'SELECT COUNT(*) as cnt FROM signatures WHERE document_id = ? AND user_id = ?'
   ).bind(document_id, user.sub).first<{ cnt: number }>();
 
-  const maxSigns = signature_type === 'approver' && canProxyApproval(user.role) ? 10 : 1;
+  const maxSigns = signature_type === 'approver' && canProxyApproval(signatureRole) ? 10 : 1;
   if (existingCount && existingCount.cnt >= maxSigns) {
     return c.json({ error: '이미 서명한 문서입니다.' }, 409);
   }
@@ -112,7 +118,9 @@ signatures.get('/document/:documentId', async (c) => {
 // POST /api/signatures/backfill - 승인 완료했지만 서명 없는 건에 서명 강제 삽입 (master only)
 signatures.post('/backfill', async (c) => {
   const user = c.get('user');
-  if (user.role !== 'master') return c.json({ error: '마스터만 가능합니다.' }, 403);
+  if (isFreelancerViewer(user) || user.role !== 'master') {
+    return c.json({ error: '마스터만 가능합니다.' }, 403);
+  }
 
   const db = c.env.DB;
 

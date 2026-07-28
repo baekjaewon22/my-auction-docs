@@ -8,6 +8,7 @@ starts the latest agent.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -20,9 +21,12 @@ from pathlib import Path
 
 
 AGENT_NAME = "MyAuctionAutomationAgent"
-SETUP_NAME = "MyAuctionAutomationAgentSetup"
+SETUP_NAME = "마이실행기"
+LEGACY_SETUP_NAME = "MyAuctionAutomationAgentSetup"
+BUILD_SETUP_NAME = "MyAuctionRunnerSetup"
 AGENT_EXE = f"{AGENT_NAME}.exe"
 AGENT_ZIP = f"{AGENT_NAME}.zip"
+VERSION_FILE = "agent-version.txt"
 PORT = "8001"
 LOG_PATH = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / f"{AGENT_NAME}Setup" / "setup.log"
 QUIET = "--quiet" in sys.argv
@@ -106,9 +110,14 @@ def stop_existing_agent() -> None:
     powershell(
         "$ErrorActionPreference='SilentlyContinue'; "
         f"Stop-ScheduledTask -TaskName '{AGENT_NAME}' -ErrorAction SilentlyContinue; "
-        f"Get-Process -Name '{SETUP_NAME}' | "
+        f"Get-Process -Name '{SETUP_NAME}','{LEGACY_SETUP_NAME}','{BUILD_SETUP_NAME}' | "
         f"Where-Object {{ $_.Id -ne {os.getpid()} }} | "
         "Stop-Process -Force; "
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { ($_.Name -eq 'powershell.exe' -or $_.Name -eq 'pwsh.exe') -and "
+        "($_.CommandLine -match 'Start-MyAuctionAutomationAgent\\.ps1' -or "
+        "$_.CommandLine -match 'Launch-MyAuctionAutomationAgent\\.ps1') } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; "
         f"Get-Process -Name '{AGENT_NAME}' | Stop-Process -Force; "
         f"$ownedProcessIds = Get-NetTCPConnection -LocalPort {PORT} | "
         "Select-Object -ExpandProperty OwningProcess -Unique; "
@@ -165,7 +174,7 @@ def write_manual_launcher(install_dir: Path) -> Path:
                 '  } catch { return $false }',
                 '}',
                 'if (Test-AgentHealth) {',
-                '  $null = $shell.Popup("업무자동화 실행기가 이미 정상 실행 중입니다.", 4, "마이옥션 업무자동화", 64)',
+                '  $null = $shell.Popup("업무자동화 실행기가 이미 정상 실행 중입니다.", 4, "마이실행기", 64)',
                 '  exit 0',
                 '}',
                 '$runKey = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"',
@@ -179,9 +188,9 @@ def write_manual_launcher(install_dir: Path) -> Path:
                 '}',
                 '1..12 | ForEach-Object { if (-not (Test-AgentHealth)) { Start-Sleep -Milliseconds 500 } }',
                 'if (Test-AgentHealth) {',
-                '  $null = $shell.Popup("업무자동화 실행기를 시작했습니다.", 4, "마이옥션 업무자동화", 64)',
+                '  $null = $shell.Popup("업무자동화 실행기를 시작했습니다.", 4, "마이실행기", 64)',
                 '} else {',
-                '  $null = $shell.Popup("실행기를 시작하지 못했습니다. 최신 설치관리자를 다시 실행해 주세요.", 8, "마이옥션 업무자동화", 16)',
+                '  $null = $shell.Popup("실행기를 시작하지 못했습니다. 최신 설치관리자를 다시 실행해 주세요.", 8, "마이실행기", 16)',
                 '  exit 1',
                 '}',
             ]
@@ -200,15 +209,19 @@ def create_shortcuts(install_dir: Path, launcher: Path, runner: Path) -> None:
         "$ErrorActionPreference='Stop'; "
         "$desktop=[Environment]::GetFolderPath('Desktop'); "
         "$startup=[Environment]::GetFolderPath('Startup'); "
+        "Remove-Item -LiteralPath (Join-Path $desktop '마이옥션 업무자동화 실행기.lnk') -Force -ErrorAction SilentlyContinue; "
+        "Remove-Item -LiteralPath (Join-Path $desktop '마이실행기.lnk') -Force -ErrorAction SilentlyContinue; "
+        "Remove-Item -LiteralPath (Join-Path $startup '마이옥션 업무자동화 자동시작.lnk') -Force -ErrorAction SilentlyContinue; "
+        "Remove-Item -LiteralPath (Join-Path $startup '마이실행기 자동시작.lnk') -Force -ErrorAction SilentlyContinue; "
         "$shell=New-Object -ComObject WScript.Shell; "
-        "$shortcut=$shell.CreateShortcut((Join-Path $desktop '마이옥션 업무자동화 실행기.lnk')); "
+        "$shortcut=$shell.CreateShortcut((Join-Path $desktop '마이실행기.lnk')); "
         "$shortcut.TargetPath='powershell.exe'; "
         f"$shortcut.Arguments='-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{escaped_launcher}\"'; "
         f"$shortcut.WorkingDirectory='{escaped_dir}'; "
         f"$shortcut.IconLocation='{escaped_icon},0'; "
         "$shortcut.Description='마이옥션 업무자동화 실행기를 시작하거나 상태를 확인합니다.'; "
         "$shortcut.WindowStyle=7; $shortcut.Save(); "
-        "$startupShortcut=$shell.CreateShortcut((Join-Path $startup '마이옥션 업무자동화 자동시작.lnk')); "
+        "$startupShortcut=$shell.CreateShortcut((Join-Path $startup '마이실행기 자동시작.lnk')); "
         "$startupShortcut.TargetPath='powershell.exe'; "
         f"$startupShortcut.Arguments='-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{escaped_runner}\"'; "
         f"$startupShortcut.WorkingDirectory='{escaped_dir}'; "
@@ -276,20 +289,90 @@ def start_registered_agent(runner: Path, startup_mode: str) -> None:
     ])
 
 
-def wait_for_agent_health(timeout_seconds: float = 60.0) -> bool:
+def wait_for_agent_health(expected_version: str, timeout_seconds: float = 60.0) -> bool:
     deadline = time.time() + timeout_seconds
     url = f"http://127.0.0.1:{PORT}/api/health"
+    last_mismatched_version: str | None = None
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
                 if response.status == 200:
-                    log("Agent health check passed")
-                    return True
+                    payload = json.loads(response.read().decode("utf-8"))
+                    actual_version = str(payload.get("version") or "").strip()
+                    if actual_version == expected_version:
+                        log(f"Agent health and version check passed ({actual_version})")
+                        return True
+                    if actual_version != last_mismatched_version:
+                        log(
+                            "Agent responded with an unexpected version "
+                            f"(expected={expected_version}, actual={actual_version or 'missing'})"
+                        )
+                        last_mismatched_version = actual_version
                 time.sleep(0.5)
         except Exception:
             time.sleep(0.5)
     log("Agent health check did not pass before timeout")
     return False
+
+
+def downloaded_installer_candidates(home: Path) -> list[Path]:
+    directories = [
+        home / "Downloads",
+        home / "Desktop",
+        home / "OneDrive" / "Downloads",
+        home / "OneDrive" / "Desktop",
+    ]
+    candidates: set[Path] = set()
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in directory.iterdir():
+            name = path.name
+            if (
+                name == "MyAuctionAutomationAgentSetup.exe"
+                or (name.startswith("MyAuctionAutomationAgentSetup (") and name.endswith(").exe"))
+                or name == "MyAuctionRunnerSetup.exe"
+                or (name.startswith("MyAuctionRunnerSetup (") and name.endswith(").exe"))
+                or name == "마이실행기.exe"
+                or (name.startswith("마이실행기 (") and name.endswith(").exe"))
+            ):
+                candidates.add(path)
+    return sorted(candidates)
+
+
+def cleanup_downloaded_installers() -> None:
+    home = Path(os.environ.get("USERPROFILE", str(Path.home())))
+    current = Path(sys.executable).resolve()
+    for candidate in downloaded_installer_candidates(home):
+        try:
+            resolved = candidate.resolve()
+            if resolved == current:
+                continue
+            resolved.unlink(missing_ok=True)
+            log(f"Removed obsolete installer copy {resolved}")
+        except Exception as exc:
+            log(f"Could not remove obsolete installer copy {candidate}: {exc}")
+
+    allowed_self_dirs = {
+        (home / "Downloads").resolve(),
+        (home / "Desktop").resolve(),
+        (home / "OneDrive" / "Downloads").resolve(),
+        (home / "OneDrive" / "Desktop").resolve(),
+    }
+    if current.parent.resolve() not in allowed_self_dirs:
+        return
+    escaped_current = str(current).replace("'", "''")
+    start_hidden([
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        f"Start-Sleep -Seconds 3; Remove-Item -LiteralPath '{escaped_current}' -Force -ErrorAction SilentlyContinue",
+    ])
+    log(f"Scheduled current installer cleanup {current}")
 
 
 def installation_result_message(healthy: bool) -> str:
@@ -337,13 +420,26 @@ def main() -> int:
         log(f"Extracting {bundled_zip} to {extract_dir}")
         with zipfile.ZipFile(bundled_zip, "r") as archive:
             archive.extractall(extract_dir)
+        version_path = extract_dir / VERSION_FILE
+        if not version_path.is_file():
+            raise FileNotFoundError(f"Bundled version marker was not found: {version_path}")
+        expected_version = version_path.read_text(encoding="ascii").strip()
+        if not expected_version:
+            raise RuntimeError("Bundled agent version is empty")
 
         if install_dir.exists():
             log(f"Removing old install directory {install_dir}")
-            shutil.rmtree(install_dir, ignore_errors=True)
-            if install_dir.exists():
-                stop_existing_agent()
+            for attempt in range(3):
                 shutil.rmtree(install_dir, ignore_errors=True)
+                if not install_dir.exists():
+                    break
+                stop_existing_agent()
+                time.sleep(attempt + 1)
+            if install_dir.exists():
+                log(
+                    "Old installation directory still contains locked files; "
+                    "continuing with an in-place update"
+                )
         install_dir.mkdir(parents=True, exist_ok=True)
 
         for item in extract_dir.iterdir():
@@ -359,15 +455,17 @@ def main() -> int:
     startup_mode = register_startup(runner)
 
     start_registered_agent(runner, startup_mode)
-    healthy = wait_for_agent_health()
+    healthy = wait_for_agent_health(expected_version)
     if healthy:
         log("Setup completed")
     else:
         log("Setup completed with a startup verification warning")
     show_message(
-        "MyAuction Automation Agent",
+        "마이실행기",
         installation_result_message(healthy),
     )
+    if healthy:
+        cleanup_downloaded_installers()
     return 0
 
 
@@ -375,5 +473,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        show_message("MyAuction Automation Agent", f"Setup failed.\n\n{exc}", error=True)
+        show_message("마이실행기", f"Setup failed.\n\n{exc}", error=True)
         raise

@@ -1,6 +1,6 @@
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import type { AuthEnv, Document } from '../types';
-import { authMiddleware, requireRole } from '../middleware/auth';
+import { authMiddleware } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { calculateLeaveEntitlement, reinitUserLeave } from './leave';
 import {
@@ -15,6 +15,11 @@ import { isHeadOfficeBranch } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { buildOrgApprovalChain } from '../lib/org-approval-chain';
 import { canReadDocument, getDocumentAccessRecord } from '../lib/document-access';
+import {
+  ensureTemplateAccessSchema,
+  isFreelancerViewer,
+  isMyAuctionDocument,
+} from '../lib/template-access';
 
 const LEAVE_REQUEST_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
 
@@ -74,7 +79,29 @@ async function buildApprovalChain(db: D1Database, authorId: string): Promise<str
 
 const documents = new Hono<AuthEnv>();
 documents.use('*', authMiddleware);
+documents.use('*', async (c, next) => {
+  await ensureTemplateAccessSchema(c.env.DB);
+  await next();
+});
 const ASSIGNED_APPROVER_EXISTS = 'EXISTS (SELECT 1 FROM approval_steps aps WHERE aps.document_id = d.id AND aps.approver_id = ?)';
+const DOCUMENT_APPROVER_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant']);
+const DOCUMENT_REJECT_PROXY_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant']);
+const DOCUMENT_ADMIN_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin']);
+
+const requireDocumentApprover: MiddlewareHandler<AuthEnv> = async (c, next) => {
+  const user = c.get('user');
+  if (!DOCUMENT_APPROVER_ROLES.has(user.role) && !isFreelancerViewer(user)) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
+  }
+  await next();
+};
+const requireEmployeeDocumentAdmin: MiddlewareHandler<AuthEnv> = async (c, next) => {
+  const user = c.get('user');
+  if (isFreelancerViewer(user) || !DOCUMENT_ADMIN_ROLES.has(user.role)) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
+  }
+  await next();
+};
 
 // Permission-based document visibility:
 // master/ceo: all documents
@@ -83,7 +110,7 @@ const ASSIGNED_APPROVER_EXISTS = 'EXISTS (SELECT 1 FROM approval_steps aps WHERE
 // member: own documents only
 
 // GET /api/documents/cancel-requests — 취소 신청 목록 (관리자용) — /:id 보다 먼저 정의
-documents.get('/cancel-requests', requireRole('master', 'ceo', 'cc_ref', 'admin'), async (c) => {
+documents.get('/cancel-requests', requireEmployeeDocumentAdmin, async (c) => {
   const db = c.env.DB;
   const result = await db.prepare(
     `SELECT d.*, u.name as author_name FROM documents d
@@ -109,9 +136,9 @@ documents.get('/', async (c) => {
   const authorIdParam = c.req.query('author_id');
   const since = c.req.query('since');
   const excludeDrafts = c.req.query('exclude_drafts') === 'true';
+  const approvalOnly = c.req.query('approval_only') === 'true';
   const fields = c.req.query('fields');
   const limitRaw = c.req.query('limit');
-
   // SELECT 절 — meta_only 모드는 content 제외
   const metaOnly = fields === 'meta_only';
   const selectCols = metaOnly
@@ -160,6 +187,10 @@ documents.get('/', async (c) => {
     params.push(user.sub, user.sub);
   }
 
+  if (isFreelancerViewer(user)) {
+    conditions.push('d.is_myauction = 1');
+  }
+
   // 추가 필터
   if (authorIdParam === 'me') {
     conditions.push('d.author_id = ?');
@@ -176,6 +207,11 @@ documents.get('/', async (c) => {
 
   if (excludeDrafts) {
     conditions.push("d.status != 'draft'");
+  }
+
+  if (approvalOnly) {
+    conditions.push(ASSIGNED_APPROVER_EXISTS);
+    params.push(user.sub);
   }
 
   if (status) {
@@ -232,10 +268,20 @@ documents.post('/', async (c) => {
   const db = c.env.DB;
   const id = crypto.randomUUID();
 
+  const template = template_id
+    ? await db.prepare(
+      'SELECT id, content, is_myauction FROM templates WHERE id = ? AND is_active = 1'
+    ).bind(template_id).first<{ id: string; content: string; is_myauction: number }>()
+    : null;
+  if (template_id && !template) {
+    return c.json({ error: '사용 가능한 템플릿을 찾을 수 없습니다.' }, 404);
+  }
+  if (isFreelancerViewer(user) && (!template || template.is_myauction !== 1)) {
+    return c.json({ error: '프리랜서는 마이옥션 템플릿으로만 문서를 작성할 수 있습니다.' }, 403);
+  }
+
   let initialContent = content || '{}';
-  if (template_id && !content) {
-    const template = await db.prepare('SELECT content FROM templates WHERE id = ?').bind(template_id).first<{ content: string }>();
-    if (template) {
+  if (template && !content) {
       const profile = await db.prepare(
         'SELECT name, department, position_title, branch, phone, email FROM users WHERE id = ?'
       ).bind(user.sub).first<{ name: string; department: string; position_title: string; branch: string; phone: string; email: string }>();
@@ -287,12 +333,22 @@ documents.post('/', async (c) => {
         );
       }
       initialContent = html;
-    }
   }
 
   await db.prepare(
-    'INSERT INTO documents (id, title, content, template_id, author_id, team_id, branch, department, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, title, initialContent, template_id || null, user.sub, user.team_id || null, user.branch, user.department, 'draft').run();
+    'INSERT INTO documents (id, title, content, template_id, is_myauction, author_id, team_id, branch, department, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(
+    id,
+    title,
+    initialContent,
+    template_id || null,
+    template?.is_myauction === 1 ? 1 : 0,
+    user.sub,
+    user.team_id || null,
+    user.branch,
+    user.department,
+    'draft',
+  ).run();
 
   await db.prepare(
     'INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)'
@@ -309,14 +365,24 @@ documents.put('/:id', async (c) => {
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (isFreelancerViewer(user) && !isMyAuctionDocument(doc)) {
+    return c.json({ error: '마이옥션 문서만 이용할 수 있습니다.' }, 403);
+  }
   // 승인된 문서는 절대 수정 불가
   if (doc.status === 'approved') return c.json({ error: '승인된 문서는 수정할 수 없습니다.' }, 400);
   // draft/rejected: 본인만 수정 가능 (master 예외)
-  if ((doc.status === 'draft' || doc.status === 'rejected') && doc.author_id !== user.sub && user.role !== 'master') {
+  if (
+    (doc.status === 'draft' || doc.status === 'rejected') &&
+    doc.author_id !== user.sub &&
+    (isFreelancerViewer(user) || user.role !== 'master')
+  ) {
     return c.json({ error: '작성중/반려 문서는 본인만 수정할 수 있습니다.' }, 403);
   }
   // submitted: 관리자 이상만 수정 가능 (본인도 불가)
-  if (doc.status === 'submitted' && !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
+  if (
+    doc.status === 'submitted' &&
+    (isFreelancerViewer(user) || !DOCUMENT_ADMIN_ROLES.has(user.role))
+  ) {
     return c.json({ error: '제출된 문서는 관리자만 수정할 수 있습니다.' }, 403);
   }
 
@@ -334,11 +400,20 @@ documents.post('/:id/submit', async (c) => {
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (isFreelancerViewer(user) && !isMyAuctionDocument(doc)) {
+    return c.json({ error: '마이옥션 문서만 제출할 수 있습니다.' }, 403);
+  }
   if (doc.author_id !== user.sub) return c.json({ error: '본인 문서만 제출할 수 있습니다.' }, 403);
   if (doc.status !== 'draft' && doc.status !== 'rejected') return c.json({ error: '작성중 또는 반려된 문서만 제출할 수 있습니다.' }, 400);
 
   // 결재선 자동 생성
   let chain = await buildApprovalChain(db, user.sub);
+  if (isFreelancerViewer(user) && chain.length === 0) {
+    return c.json(
+      { error: '결재선이 설정되지 않았습니다. 관리자에게 조직도 또는 지사 상위승인자 설정을 요청하세요.' },
+      400,
+    );
+  }
 
   // 외근 보고서는 대표(CEO) 결재 불필요 — 결재선에서 CEO 제외
   const NO_CEO_TEMPLATES = ['tpl-work-007'];
@@ -429,7 +504,7 @@ documents.post('/:id/submit', async (c) => {
 });
 
 // POST /api/documents/:id/approve (다단계 결재)
-documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 'accountant'), async (c) => {
+documents.post('/:id/approve', requireDocumentApprover, async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
@@ -438,6 +513,9 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (!(await canReadDocument(db, user, doc))) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
+  }
   if (doc.status !== 'submitted') return c.json({ error: '제출된 문서만 승인할 수 있습니다.' }, 400);
 
   // 결재선에서 현재 대기중인 내 단계 찾기
@@ -450,7 +528,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
     const isOwnStep = await db.prepare(
       "SELECT id FROM approval_steps WHERE id = ? AND approver_id = ?"
     ).bind(body.step_id, user.sub).first();
-    if (!isOwnStep && !['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role)) {
+    if (!isOwnStep && (isFreelancerViewer(user) || !['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role))) {
       return c.json({ error: '해당 결재 단계를 대리 승인할 권한이 없습니다.' }, 403);
     }
   } else {
@@ -463,7 +541,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
     // 대리 승인은 상위 권한(master/ceo/cc_ref/admin/accountant)만 가능 — manager 제외
     // 현재 진행중 단계 1개만 승인 (cascade 방지). 프론트 double-submit 가드와 단일 단계 진행 조합으로
     // 더블클릭 시에도 전체 일괄 승인은 발생하지 않음. 정당한 연쇄 프록시(관리자→CEO)는 허용.
-    if (['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role)) {
+    if (!isFreelancerViewer(user) && ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user.role)) {
       const headStep = await db.prepare(
         "SELECT id, approver_id FROM approval_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order ASC LIMIT 1"
       ).bind(id).first<{ id: string; approver_id: string }>();
@@ -688,7 +766,7 @@ documents.post('/:id/approve', requireRole('master', 'ceo', 'admin', 'manager', 
 });
 
 // POST /api/documents/:id/reject (결재선 기반 반려)
-documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager', 'accountant'), async (c) => {
+documents.post('/:id/reject', requireDocumentApprover, async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
   const { reason } = await c.req.json<{ reason?: string }>();
@@ -696,6 +774,9 @@ documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager', '
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (!(await canReadDocument(db, user, doc))) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
+  }
   if (doc.status !== 'submitted') return c.json({ error: '제출된 문서만 반려할 수 있습니다.' }, 400);
 
   // 결재선에 포함된 사용자이거나 master/ceo만 반려 가능
@@ -703,7 +784,7 @@ documents.post('/:id/reject', requireRole('master', 'ceo', 'admin', 'manager', '
     "SELECT * FROM approval_steps WHERE document_id = ? AND approver_id = ? AND status = 'pending'"
   ).bind(id, user.sub).first();
 
-  if (!myStep && !['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user.role)) {
+  if (!myStep && (isFreelancerViewer(user) || !DOCUMENT_REJECT_PROXY_ROLES.has(user.role))) {
     return c.json({ error: '결재선에 포함되지 않았습니다.' }, 403);
   }
 
@@ -745,17 +826,28 @@ documents.delete('/:id', async (c) => {
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (isFreelancerViewer(user) && !isMyAuctionDocument(doc)) {
+    return c.json({ error: '마이옥션 문서만 이용할 수 있습니다.' }, 403);
+  }
   // 승인된 문서는 삭제 불가 (master만 예외)
-  if (doc.status === 'approved' && user.role !== 'master') return c.json({ error: '승인된 문서는 삭제할 수 없습니다.' }, 400);
+  if (doc.status === 'approved' && (isFreelancerViewer(user) || user.role !== 'master')) {
+    return c.json({ error: '승인된 문서는 삭제할 수 없습니다.' }, 400);
+  }
 
   // 제출 중: 본인 또는 관리자 이상만 삭제 가능
   if (doc.status === 'submitted') {
-    if (doc.author_id !== user.sub && !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
+    if (
+      doc.author_id !== user.sub &&
+      (isFreelancerViewer(user) || !DOCUMENT_ADMIN_ROLES.has(user.role))
+    ) {
       return c.json({ error: '제출된 문서는 작성자 또는 관리자만 삭제할 수 있습니다.' }, 403);
     }
   } else {
     // draft/rejected: 본인 또는 관리자 이상
-    if (doc.author_id !== user.sub && !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
+    if (
+      doc.author_id !== user.sub &&
+      (isFreelancerViewer(user) || !DOCUMENT_ADMIN_ROLES.has(user.role))
+    ) {
       return c.json({ error: '권한이 없습니다.' }, 403);
     }
   }
@@ -793,14 +885,24 @@ documents.post('/steps-batch', async (c) => {
   const safeIds = ids.slice(0, 200);
   const requestedPlaceholders = safeIds.map(() => '?').join(',');
   const docs = await db.prepare(
-    `SELECT id, author_id, branch, department, status FROM documents WHERE id IN (${requestedPlaceholders})`
+    `SELECT id, template_id, is_myauction, author_id, branch, department, status FROM documents WHERE id IN (${requestedPlaceholders})`
   ).bind(...safeIds).all<Document>();
   const adminBranches = user.role === 'admin' && !isHeadOfficeBranch(user.branch)
     ? await getAdminVisibleBranches(db, user)
     : undefined;
+  const assignedRows = await db.prepare(
+    `SELECT DISTINCT document_id
+     FROM approval_steps
+     WHERE approver_id = ? AND document_id IN (${requestedPlaceholders})`
+  ).bind(user.sub, ...safeIds).all<{ document_id: string }>();
+  const assignedDocumentIds = new Set(
+    (assignedRows.results || []).map((row) => row.document_id),
+  );
   const readableIds: string[] = [];
   for (const doc of docs.results || []) {
-    if (await canReadDocument(db, user, doc, adminBranches)) readableIds.push(doc.id);
+    if (await canReadDocument(db, user, doc, adminBranches, assignedDocumentIds)) {
+      readableIds.push(doc.id);
+    }
   }
   if (readableIds.length === 0) return c.json({ steps: {} });
   const placeholders = readableIds.map(() => '?').join(',');
@@ -848,7 +950,10 @@ documents.post('/:id/cancel-request', async (c) => {
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (doc.author_id !== user.sub && user.role !== 'master') {
+  if (isFreelancerViewer(user) && !isMyAuctionDocument(doc)) {
+    return c.json({ error: '마이옥션 문서만 이용할 수 있습니다.' }, 403);
+  }
+  if (doc.author_id !== user.sub && (isFreelancerViewer(user) || user.role !== 'master')) {
     return c.json({ error: '본인 문서만 취소 신청할 수 있습니다.' }, 403);
   }
   if (doc.status !== 'approved' && doc.status !== 'submitted') {
@@ -866,7 +971,7 @@ documents.post('/:id/cancel-request', async (c) => {
 });
 
 // POST /api/documents/:id/cancel-approve — 취소 승인 (관리자)
-documents.post('/:id/cancel-approve', requireRole('master', 'ceo', 'cc_ref', 'admin'), async (c) => {
+documents.post('/:id/cancel-approve', requireEmployeeDocumentAdmin, async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;

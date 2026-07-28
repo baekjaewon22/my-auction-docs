@@ -14,6 +14,8 @@ const CREATE_PASSWORD_RESET_CHALLENGES_SQL = `
   )
 `;
 
+const passwordSchemaEnsureByDatabase = new WeakMap<object, Promise<void>>();
+
 export function passwordSecuritySchemaStatements(hasAuthVersion: boolean): string[] {
   return [
     ...(!hasAuthVersion
@@ -41,4 +43,22 @@ export async function ensurePasswordSecuritySchema(db: D1Database): Promise<void
       if (!hasAuthVersion) throw error;
     }
   }
+}
+
+/**
+ * 인증 미들웨어에서 호출하는 경량 진입점.
+ * 같은 Worker isolate와 D1 바인딩에서는 최초 한 번만 스키마를 확인하고,
+ * 실패한 Promise는 제거해 다음 요청에서 안전하게 재시도한다.
+ */
+export function ensurePasswordSecuritySchemaOnce(db: D1Database): Promise<void> {
+  const key = db as unknown as object;
+  const existing = passwordSchemaEnsureByDatabase.get(key);
+  if (existing) return existing;
+
+  const pending = ensurePasswordSecuritySchema(db).catch((error) => {
+    passwordSchemaEnsureByDatabase.delete(key);
+    throw error;
+  });
+  passwordSchemaEnsureByDatabase.set(key, pending);
+  return pending;
 }

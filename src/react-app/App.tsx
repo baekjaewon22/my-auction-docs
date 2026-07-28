@@ -198,7 +198,8 @@ function BidHistoryRoute({ children }: { children: React.ReactNode }) {
 function ApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  if (!user || (!isFreelancer && !allowed.includes(user.role))) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 

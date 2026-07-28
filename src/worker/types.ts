@@ -41,6 +41,7 @@ export interface Template {
   description: string;
   content: string;
   category: string;
+  is_myauction: number;
   created_by: string;
   is_active: number;
   created_at: string;
@@ -52,6 +53,7 @@ export interface Document {
   title: string;
   content: string;
   template_id: string | null;
+  is_myauction: number;
   author_id: string;
   team_id: string | null;
   branch: string;

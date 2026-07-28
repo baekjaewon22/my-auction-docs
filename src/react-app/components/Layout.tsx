@@ -50,12 +50,28 @@ export default function Layout() {
   const navTo = (path: string) => { navigate(path); setMobileOpen(false); };
 
   useEffect(() => {
-    if (
-      location.pathname.startsWith('/accounting-session1') ||
-      location.pathname.startsWith('/accounting-session2/reports')
-    ) {
-      setCollapsed(true);
+    const mobileViewport = window.matchMedia('(max-width: 768px)');
+    const syncSidebarForViewport = () => {
+      if (mobileViewport.matches) {
+        // 모바일 메뉴는 별도 오버레이로 열리므로 카테고리와 메뉴명을 항상 표시한다.
+        setCollapsed(false);
+        return;
+      }
+      if (
+        location.pathname.startsWith('/accounting-session1') ||
+        location.pathname.startsWith('/accounting-session2/reports')
+      ) {
+        setCollapsed(true);
+      }
+    };
+
+    syncSidebarForViewport();
+    if (mobileViewport.addEventListener) {
+      mobileViewport.addEventListener('change', syncSidebarForViewport);
+      return () => mobileViewport.removeEventListener('change', syncSidebarForViewport);
     }
+    mobileViewport.addListener(syncSidebarForViewport);
+    return () => mobileViewport.removeListener(syncSidebarForViewport);
   }, [location.pathname]);
 
   const role = (user?.role || 'member') as Role;
@@ -169,16 +185,17 @@ export default function Layout() {
           </Link>
         )}
 
-        {!isFreelancer && <div className="nav-divider" />}
-        {!isFreelancer && !collapsed && <span className="nav-label">문서</span>}
-        {!isFreelancer && (
-          <Link to="/documents" className={`nav-item ${isActive('/documents') ? 'active' : ''}`} title="내 문서" onClick={() => setMobileOpen(false)}>
-            <FileText size={18} /> {!collapsed && '내 문서'}
-          </Link>
-        )}
-        {!isFreelancer && (
-          <Link to="/templates" className={`nav-item ${isActive('/templates') ? 'active' : ''}`} title="템플릿" onClick={() => setMobileOpen(false)}>
-            <ClipboardList size={18} /> {!collapsed && '템플릿'}
+        <div className="nav-divider" />
+        {!collapsed && <span className="nav-label">문서</span>}
+        <Link to="/documents" className={`nav-item ${isActive('/documents') ? 'active' : ''}`} title="내 문서" onClick={() => setMobileOpen(false)}>
+          <FileText size={18} /> {!collapsed && '내 문서'}
+        </Link>
+        <Link to="/templates" className={`nav-item ${isActive('/templates') ? 'active' : ''}`} title="템플릿" onClick={() => setMobileOpen(false)}>
+          <ClipboardList size={18} /> {!collapsed && '템플릿'}
+        </Link>
+        {isFreelancer && (
+          <Link to="/review" className={`nav-item ${isActive('/review') ? 'active' : ''}`} title="문서 승인" onClick={() => setMobileOpen(false)}>
+            <CheckCircle size={18} /> {!collapsed && '문서 승인'}
           </Link>
         )}
         {!isFreelancer && (
@@ -317,7 +334,14 @@ export default function Layout() {
       <WebPushConsentPrompt />
       {/* Mobile header */}
       <div className="mobile-header">
-        <button className="mobile-menu-btn" onClick={() => setMobileOpen(true)}>
+        <button
+          className="mobile-menu-btn"
+          onClick={() => {
+            setCollapsed(false);
+            setMobileOpen(true);
+          }}
+          aria-label="전체 메뉴 열기"
+        >
           <Menu size={22} />
         </button>
         <span className="mobile-title">마이옥션 오피스</span>

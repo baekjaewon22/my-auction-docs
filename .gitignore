@@ -228,6 +228,8 @@ automation-service/releases/*.zip
 automation-service/releases/*.exe
 automation-service/**/__pycache__/
 automation-service/**/*.pyc
+__pycache__/
+*.pyc
 
 ### Local test and inspection artifacts ###
 .tmp/

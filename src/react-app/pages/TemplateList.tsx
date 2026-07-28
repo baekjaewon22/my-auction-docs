@@ -5,7 +5,7 @@ import { useAuthStore } from '../store';
 import type { Template } from '../types';
 import {
   CalendarDays, UserRound, Wallet, NotebookPen, FileSpreadsheet,
-  Plus, Pencil, Trash2, Star
+  Plus, Pencil, Trash2, Star, BadgeCheck
 } from 'lucide-react';
 
 const CATEGORY_ICONS: Record<string, typeof CalendarDays> = {
@@ -21,6 +21,7 @@ const FAV_VER_KEY = 'myauction_fav_ver';
 const FAV_VERSION = '3'; // 버전 올리면 기존 사용자에게도 새 즐겨찾기 추가
 const DEFAULT_FAVS = ['tpl-work-008', 'tpl-att-003', 'tpl-work-002', 'tpl-work-007'];
 const HIDDEN_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
+const MYAUCTION_CATEGORY = '마이옥션';
 
 function getFavorites(): string[] {
   try {
@@ -56,7 +57,8 @@ export default function TemplateList() {
   const [searchParams, setSearchParams] = useSearchParams();
   const highlightId = searchParams.get('highlight');
   const highlightRef = useRef<HTMLDivElement>(null);
-  const isAdmin = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
+  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isAdmin = !!user && !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   const load = () => {
     setLoading(true);
@@ -65,12 +67,16 @@ export default function TemplateList() {
       // highlight 파라미터가 있으면 해당 템플릿의 카테고리로 자동 필터
       if (highlightId) {
         const t = res.templates.find(tp => tp.id === highlightId);
-        if (t?.category) setActiveCategory(t.category);
+        if (isFreelancer) setActiveCategory(MYAUCTION_CATEGORY);
+        else if (t?.category) setActiveCategory(t.category);
       }
     }).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (isFreelancer) setActiveCategory(MYAUCTION_CATEGORY);
+  }, [isFreelancer]);
 
   // highlight된 템플릿으로 스크롤
   useEffect(() => {
@@ -90,6 +96,23 @@ export default function TemplateList() {
     setFavorites(toggleFavorite(id));
   };
 
+  const handleMyAuction = async (template: Template, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!isAdmin) return;
+    const nextValue = template.is_myauction === 1 ? 0 : 1;
+    setTemplates((current) => current.map((item) => (
+      item.id === template.id ? { ...item, is_myauction: nextValue } : item
+    )));
+    try {
+      await api.templates.update(template.id, { is_myauction: nextValue });
+    } catch (error: any) {
+      setTemplates((current) => current.map((item) => (
+        item.id === template.id ? { ...item, is_myauction: template.is_myauction } : item
+      )));
+      alert(error?.message || '마이옥션 분류 변경에 실패했습니다.');
+    }
+  };
+
   const grouped = templates.reduce<Record<string, Template[]>>((acc, t) => {
     const cat = t.category || '기타';
     if (!acc[cat]) acc[cat] = [];
@@ -107,6 +130,7 @@ export default function TemplateList() {
   });
 
   const favTemplates = templates.filter((t) => favorites.includes(t.id));
+  const myAuctionTemplates = templates.filter((t) => t.is_myauction === 1);
 
   const handleNewDoc = async (templateId: string) => {
     // 물건분석보고서는 전용 페이지로 이동
@@ -131,7 +155,7 @@ export default function TemplateList() {
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
-  const filteredCategories = activeCategory === '즐겨찾기'
+  const filteredCategories = activeCategory === '즐겨찾기' || activeCategory === MYAUCTION_CATEGORY
     ? []
     : activeCategory
       ? categories.filter((c) => c === activeCategory)
@@ -139,6 +163,7 @@ export default function TemplateList() {
 
   const renderCard = (t: Template) => {
     const isFav = favorites.includes(t.id);
+    const isMyAuction = t.is_myauction === 1;
     const isHighlighted = t.id === highlightId;
     return (
       <div key={t.id} ref={isHighlighted ? highlightRef : undefined}
@@ -146,6 +171,19 @@ export default function TemplateList() {
         style={isHighlighted ? { boxShadow: '0 0 0 2px #1a73e8', background: '#e8f0fe' } : undefined}>
         <button className={`template-fav-btn ${isFav ? 'active' : ''}`} onClick={(e) => handleFav(t.id, e)} title={isFav ? '즐겨찾기 해제' : '즐겨찾기 추가'}>
           <Star size={14} fill={isFav ? '#f9ab00' : 'none'} />
+        </button>
+        <button
+          type="button"
+          className={`template-myauction-btn ${isMyAuction ? 'active' : ''} ${isAdmin ? '' : 'readonly'}`}
+          onClick={(e) => handleMyAuction(t, e)}
+          title={isAdmin
+            ? (isMyAuction ? '마이옥션에서 제외' : '마이옥션에 추가')
+            : (isMyAuction ? '마이옥션 공개 템플릿' : '마이옥션 미공개 템플릿')}
+          aria-pressed={isMyAuction}
+          disabled={!isAdmin}
+        >
+          <BadgeCheck size={15} />
+          <span>마이옥션</span>
         </button>
         <div className="template-card-body">
           <div className="template-name">{t.title}</div>
@@ -176,20 +214,33 @@ export default function TemplateList() {
       </div>
 
       <div className="filter-bar">
+        {!isFreelancer && (
+          <button
+            className={`filter-btn ${activeCategory === null ? 'active' : ''}`}
+            onClick={() => setActiveCategory(null)}
+          >
+            전체 ({templates.length})
+          </button>
+        )}
+        {!isFreelancer && (
+          <button
+            className={`filter-btn fav-filter ${activeCategory === '즐겨찾기' ? 'active' : ''}`}
+            onClick={() => setActiveCategory(activeCategory === '즐겨찾기' ? null : '즐겨찾기')}
+          >
+            <Star size={14} fill={activeCategory === '즐겨찾기' ? '#fff' : '#f9ab00'} style={{ marginRight: 4 }} />
+            즐겨찾기 ({favTemplates.length})
+          </button>
+        )}
         <button
-          className={`filter-btn ${activeCategory === null ? 'active' : ''}`}
-          onClick={() => setActiveCategory(null)}
+          className={`filter-btn myauction-filter ${activeCategory === MYAUCTION_CATEGORY ? 'active' : ''}`}
+          onClick={() => setActiveCategory(
+            isFreelancer || activeCategory !== MYAUCTION_CATEGORY ? MYAUCTION_CATEGORY : null
+          )}
         >
-          전체 ({templates.length})
+          <BadgeCheck size={14} style={{ marginRight: 4 }} />
+          마이옥션 ({myAuctionTemplates.length})
         </button>
-        <button
-          className={`filter-btn fav-filter ${activeCategory === '즐겨찾기' ? 'active' : ''}`}
-          onClick={() => setActiveCategory(activeCategory === '즐겨찾기' ? null : '즐겨찾기')}
-        >
-          <Star size={14} fill={activeCategory === '즐겨찾기' ? '#fff' : '#f9ab00'} style={{ marginRight: 4 }} />
-          즐겨찾기 ({favTemplates.length})
-        </button>
-        {categories.map((cat) => {
+        {!isFreelancer && categories.map((cat) => {
           const Icon = CATEGORY_ICONS[cat] || FileSpreadsheet;
           return (
             <button
@@ -204,7 +255,7 @@ export default function TemplateList() {
       </div>
 
       {/* 즐겨찾기 섹션 - 전체보기 또는 즐겨찾기 탭 선택 시 */}
-      {(activeCategory === null || activeCategory === '즐겨찾기') && favTemplates.length > 0 && (
+      {!isFreelancer && (activeCategory === null || activeCategory === '즐겨찾기') && favTemplates.length > 0 && (
         <section className="template-category-section template-fav-section">
           <div className="template-category-header">
             <Star size={20} className="template-category-lucide" fill="#f9ab00" color="#f9ab00" />
@@ -219,6 +270,27 @@ export default function TemplateList() {
 
       {activeCategory === '즐겨찾기' && favTemplates.length === 0 && (
         <div className="empty-state">즐겨찾기한 템플릿이 없습니다. ⭐ 별 버튼으로 추가해보세요.</div>
+      )}
+
+      {(activeCategory === null || activeCategory === MYAUCTION_CATEGORY) && myAuctionTemplates.length > 0 && (
+        <section className="template-category-section template-myauction-section">
+          <div className="template-category-header">
+            <BadgeCheck size={20} className="template-category-lucide" />
+            <h3 className="template-category-title">마이옥션</h3>
+            <span className="template-category-count">{myAuctionTemplates.length}개</span>
+          </div>
+          <div className="template-grid">
+            {myAuctionTemplates.map(renderCard)}
+          </div>
+        </section>
+      )}
+
+      {activeCategory === MYAUCTION_CATEGORY && myAuctionTemplates.length === 0 && (
+        <div className="empty-state">
+          {isAdmin
+            ? '마이옥션 템플릿이 없습니다. 각 템플릿의 마이옥션 버튼을 눌러 추가해 주세요.'
+            : '현재 공개된 마이옥션 템플릿이 없습니다.'}
+        </div>
       )}
 
       {/* 카테고리 섹션 */}

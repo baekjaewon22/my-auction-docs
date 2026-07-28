@@ -4,6 +4,7 @@ import { api } from '../api';
 import { automationApi, REQUIRED_AUTOMATION_AGENT_VERSION, type AutomationAgentStatus, type AutomationDiagnostic, type DownloadFormat, type DownloadHistoryItem, type OutputType, type ProgressUpdate } from '../automationApi';
 import { DEFAULT_AUCTION_REFERENCES, type AuctionReferenceItem, type AuctionReferenceType } from '../data/auctionReference';
 import { clearPlannerDraft, loadPlannerDraft, savePlannerDraft } from '../plannerDraftStorage';
+import { resolveAutomationAgentState } from '../../shared/automation-agent-health';
 import { useAuthStore } from '../store';
 
 type View = 'select' | 'input' | 'progress' | 'result' | 'history';
@@ -107,9 +108,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     if (showChecking) setAgentState('checking');
     const status = await automationApi.checkAgent();
     setAgentStatus(status);
-    const nextState: AgentState = status.ok
-      ? (!status.latestVersionVerified ? 'unverified' : status.updateRequired ? 'outdated' : 'connected')
-      : 'missing';
+    const nextState: AgentState = resolveAutomationAgentState(status);
     setAgentState(nextState);
     if (showDetails || (nextState !== 'connected' && showWhenMissing)) setAgentModalOpen(true);
     else if (nextState === 'connected') setAgentModalOpen(false);
@@ -161,24 +160,29 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
       });
     };
 
-    try {
-      socket = new WebSocket(automationApi.progressWsUrl(taskId));
-      socket.onopen = () => setWsConnected(true);
-      socket.onclose = () => setWsConnected(false);
-      socket.onerror = () => setWsConnected(false);
-      socket.onmessage = (event) => {
-        try {
-          const update = JSON.parse(event.data);
-          if (update?.type === 'ping') return;
-          mergeUpdates([update]);
-          finishFrom(update);
-        } catch {
-          // Ignore malformed progress frames; polling below remains the fallback.
-        }
-      };
-    } catch {
-      setWsConnected(false);
-    }
+    const connectProgressSocket = async () => {
+      try {
+        const progressUrl = await automationApi.progressWsUrl(taskId);
+        if (stopped) return;
+        socket = new WebSocket(progressUrl);
+        socket.onopen = () => setWsConnected(true);
+        socket.onclose = () => setWsConnected(false);
+        socket.onerror = () => setWsConnected(false);
+        socket.onmessage = (event) => {
+          try {
+            const update = JSON.parse(event.data);
+            if (update?.type === 'ping') return;
+            mergeUpdates([update]);
+            finishFrom(update);
+          } catch {
+            // Ignore malformed progress frames; polling below remains the fallback.
+          }
+        };
+      } catch {
+        if (!stopped) setWsConnected(false);
+      }
+    };
+    void connectProgressSocket();
 
     const poll = async () => {
       try {
@@ -1672,11 +1676,13 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
       : isOutdated
         ? '이 PC에 설치된 자동화 실행기가 구버전입니다. 최신 설치관리자를 다시 받아 실행하면 기존 실행기를 종료하고 새 버전으로 업데이트합니다.'
         : isUnverified
-          ? '캐시된 기준값만으로 최신이라고 표시하지 않습니다. 네트워크 연결을 확인한 뒤 지금 다시 확인해 주세요.'
+          ? status?.versionCheckIssue === 'authentication_required'
+            ? '로그인이 만료되어 서버 버전을 확인하지 못했습니다. 다시 로그인하거나 설치관리자를 내려받아 덮어 설치해 주세요.'
+            : '서버 버전 조회가 일시적으로 실패했습니다. 다시 확인하거나 설치관리자를 내려받아 덮어 설치해 주세요.'
         : isPermissionDenied
           ? '주소창 왼쪽의 사이트 설정을 열어 “로컬 네트워크 액세스”를 허용한 뒤 페이지를 새로고침하고 다시 확인해 주세요. 실행기를 다시 설치할 필요는 없습니다.'
           : isBrowserBlocked
-            ? '먼저 바탕화면의 “마이옥션 업무자동화 실행기”를 실행해 주세요. 계속 연결되지 않으면 주소창 왼쪽의 사이트 설정에서 로컬 네트워크 액세스를 허용한 뒤 다시 확인해 주세요.'
+            ? '먼저 바탕화면의 “마이실행기”를 실행해 주세요. 계속 연결되지 않으면 주소창 왼쪽의 사이트 설정에서 로컬 네트워크 액세스를 허용한 뒤 다시 확인해 주세요.'
             : '브리핑자료와 권리분석 보증서 자동 생성을 사용하려면 이 PC에 자동화 실행기가 설치되어 있어야 합니다. 설치관리자 실행 후 다시 확인을 눌러 주세요.';
   const checkedAt = status?.checkedAt
     ? new Date(status.checkedAt).toLocaleString('ko-KR', { hour12: false })
@@ -1712,16 +1718,16 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
               <strong>{checkedAt}</strong>
             </div>
           </div>
-          {(isOutdated || (state === 'missing' && !isPermissionDenied && !isBrowserBlocked)) && (
+          {(isOutdated || isUnverified || (state === 'missing' && !isPermissionDenied && !isBrowserBlocked)) && (
             <div className="automation-agent-steps">
               <span>1. 최신 설치관리자 다운로드</span>
-              <span>2. MyAuctionAutomationAgentSetup.exe 실행</span>
+              <span>2. 마이실행기.exe 실행</span>
               <span>3. 지금 다시 확인</span>
             </div>
           )}
         </div>
         <div className="automation-agent-modal-actions">
-          {(isOutdated || (state === 'missing' && !isPermissionDenied && !isBrowserBlocked)) && (
+          {(isOutdated || isUnverified || (state === 'missing' && !isPermissionDenied && !isBrowserBlocked)) && (
             <button
               className="btn btn-primary"
               onClick={() => automationApi.downloadAgentInstaller().catch((err) => alert(err.message))}

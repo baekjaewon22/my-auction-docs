@@ -7,6 +7,8 @@ import os
 import asyncio
 import json
 import logging
+import re
+import sys
 import threading
 import time
 import zipfile
@@ -26,7 +28,34 @@ from ..core.security import AGENT_SESSION_TOKEN, fetch_trusted_profile, is_allow
 from ..core.utils import normalize_myauction_detail_url
 
 logger = logging.getLogger(__name__)
-AGENT_VERSION = "2026.07.23.1"
+
+
+def _load_agent_version() -> str:
+    if getattr(sys, "frozen", False):
+        version_file = Path(sys.executable).resolve().parent / "agent-version.txt"
+        if version_file.is_file():
+            version = version_file.read_text(encoding="ascii").strip()
+            if version:
+                return version
+
+    shared_source = (
+        Path(__file__).resolve().parents[4]
+        / "src"
+        / "shared"
+        / "automation-agent-version.ts"
+    )
+    if shared_source.is_file():
+        match = re.search(
+            r"AUTOMATION_AGENT_VERSION\s*=\s*['\"]([^'\"]+)['\"]",
+            shared_source.read_text(encoding="utf-8"),
+        )
+        if match:
+            return match.group(1)
+
+    raise RuntimeError("Automation agent version source was not found")
+
+
+AGENT_VERSION = _load_agent_version()
 
 
 async def _require_agent_token(connection: HTTPConnection) -> None:

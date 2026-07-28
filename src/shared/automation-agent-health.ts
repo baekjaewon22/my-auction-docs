@@ -4,6 +4,19 @@ export interface AutomationAgentHealthAssessment {
   dependencyReady: boolean;
 }
 
+export type AutomationAgentResolvedState = 'connected' | 'missing' | 'outdated' | 'unverified';
+
+export function resolveAutomationAgentState(status: {
+  ok: boolean;
+  updateRequired?: boolean;
+  latestVersionVerified?: boolean;
+}): AutomationAgentResolvedState {
+  if (!status.ok) return 'missing';
+  if (status.updateRequired) return 'outdated';
+  if (!status.latestVersionVerified) return 'unverified';
+  return 'connected';
+}
+
 function compareVersions(left: string, right: string) {
   const leftParts = String(left || '').match(/\d+/g)?.map(Number) || [];
   const rightParts = String(right || '').match(/\d+/g)?.map(Number) || [];

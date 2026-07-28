@@ -2,10 +2,26 @@ import { Hono } from 'hono';
 import { authMiddleware } from '../middleware/auth';
 import type { AuthEnv } from '../types';
 import { canUseBusinessAutomation } from '../../shared/automation-access';
+import { AUTOMATION_AGENT_VERSION } from '../../shared/automation-agent-version';
 
 const report = new Hono<AuthEnv>();
-const AGENT_INSTALLER_KEY = 'downloads/MyAuctionAutomationAgentSetup.exe';
-const AUTOMATION_AGENT_VERSION = '2026.07.23.1';
+const AGENT_INSTALLER_KEYS = [
+  'downloads/마이실행기.exe',
+  'downloads/MyAuctionAutomationAgentSetup.exe',
+];
+
+// 버전 문자열은 민감정보가 아니며 로그인 만료 상태에서도 업데이트 여부를 판정해야 한다.
+report.get('/agent-version', (c) => {
+  return c.json(
+    { version: AUTOMATION_AGENT_VERSION },
+    200,
+    {
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      Pragma: 'no-cache',
+      Expires: '0',
+    },
+  );
+});
 
 report.use('*', authMiddleware);
 
@@ -269,27 +285,22 @@ report.get('/agent-installer', async (c) => {
   const bucket = (c.env as any).ARTICLE_BUCKET;
   if (!bucket) return c.json({ error: '설치 파일 저장소가 설정되지 않았습니다.' }, 500);
 
-  const object = await bucket.get(AGENT_INSTALLER_KEY);
+  let object = null;
+  for (const key of AGENT_INSTALLER_KEYS) {
+    object = await bucket.get(key);
+    if (object) break;
+  }
   if (!object) return c.json({ error: '자동화 실행기 설치 파일이 아직 업로드되지 않았습니다.' }, 404);
 
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   headers.set('Content-Type', 'application/vnd.microsoft.portable-executable');
-  headers.set('Content-Disposition', 'attachment; filename="MyAuctionAutomationAgentSetup.exe"');
+  headers.set(
+    'Content-Disposition',
+    `attachment; filename="MyAuctionRunnerSetup.exe"; filename*=UTF-8''${encodeURIComponent('마이실행기.exe')}`,
+  );
   headers.set('Cache-Control', 'private, max-age=300');
   return new Response(object.body, { headers });
-});
-
-report.get('/agent-version', (c) => {
-  return c.json(
-    { version: AUTOMATION_AGENT_VERSION },
-    200,
-    {
-      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-      Pragma: 'no-cache',
-      Expires: '0',
-    },
-  );
 });
 
 report.post('/start-batch', async (c) => {

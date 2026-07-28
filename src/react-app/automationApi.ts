@@ -1,10 +1,11 @@
 import { assessAutomationAgentHealth } from '../shared/automation-agent-health';
+import { AUTOMATION_AGENT_VERSION } from '../shared/automation-agent-version';
 
 const AUTOMATION_API_BASE = (import.meta.env.VITE_AUTOMATION_API_BASE || '/api').replace(/\/$/, '');
 const LOCAL_AUTOMATION_API_BASE = (import.meta.env.VITE_LOCAL_AUTOMATION_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '');
 const AUTOMATION_WS_BASE = (import.meta.env.VITE_AUTOMATION_WS_BASE || '').replace(/\/$/, '');
 const AUTOMATION_AGENT_INSTALLER_URL = import.meta.env.VITE_AUTOMATION_AGENT_INSTALLER_URL || '/api/report/agent-installer';
-export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || '2026.07.23.1';
+export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || AUTOMATION_AGENT_VERSION;
 
 function getToken(): string | null {
   return localStorage.getItem('token');
@@ -139,6 +140,7 @@ export interface AutomationAgentStatus {
   version?: string;
   requiredVersion?: string;
   latestVersionVerified?: boolean;
+  versionCheckIssue?: 'authentication_required' | 'server_unavailable' | 'invalid_response';
   checkedAt?: string;
   title?: string;
   dependencyReady?: boolean;
@@ -162,6 +164,7 @@ async function getLoopbackPermissionState(): Promise<PermissionState | 'unsuppor
 export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
   let requiredVersion = REQUIRED_AUTOMATION_AGENT_VERSION;
   let latestVersionVerified = false;
+  let versionCheckIssue: AutomationAgentStatus['versionCheckIssue'];
   const checkedAt = new Date().toISOString();
 
   try {
@@ -179,10 +182,17 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
       if (serverVersion) {
         requiredVersion = serverVersion;
         latestVersionVerified = true;
+      } else {
+        versionCheckIssue = 'invalid_response';
       }
+    } else if (latestRes.status === 401 || latestRes.status === 403) {
+      versionCheckIssue = 'authentication_required';
+    } else {
+      versionCheckIssue = 'server_unavailable';
     }
   } catch {
     // 서버 조회 실패 시 현재 웹에 포함된 기준 버전으로 계속 확인한다.
+    versionCheckIssue = 'server_unavailable';
   }
 
   const loopbackPermission = await getLoopbackPermissionState();
@@ -191,6 +201,7 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
       ok: false,
       requiredVersion,
       latestVersionVerified,
+      versionCheckIssue,
       checkedAt,
       connectionIssue: 'permission_denied',
       error: 'local_network_access_denied',
@@ -216,6 +227,7 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
       version,
       requiredVersion,
       latestVersionVerified,
+      versionCheckIssue,
       checkedAt,
       title: data?.title || 'MyAuction Automation',
       dependencyReady: popplerReady,
@@ -226,6 +238,7 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
       ok: false,
       requiredVersion,
       latestVersionVerified,
+      versionCheckIssue,
       checkedAt,
       connectionIssue: loopbackPermission === 'unsupported' ? 'not_connected' : 'browser_blocked',
       error: err?.message || 'not_connected',
@@ -339,12 +352,13 @@ async function downloadFile(path: string, fallbackFilename: string) {
   }
   const blob = await res.blob();
   const disposition = res.headers.get('Content-Disposition') || '';
-  const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i);
+  const extendedMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const fallbackMatch = disposition.match(/filename="?([^";]+)"?/i);
   let filename = fallbackFilename;
   try {
-    filename = decodeURIComponent(match?.[1] || match?.[2] || fallbackFilename);
+    filename = decodeURIComponent(extendedMatch?.[1] || fallbackMatch?.[1] || fallbackFilename);
   } catch {
-    filename = match?.[1] || match?.[2] || fallbackFilename;
+    filename = extendedMatch?.[1] || fallbackMatch?.[1] || fallbackFilename;
   }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -362,7 +376,7 @@ async function downloadAgentInstaller() {
   if (typeof showSaveFilePicker === 'function') {
     try {
       fileHandle = await showSaveFilePicker({
-        suggestedName: 'MyAuctionAutomationAgentSetup.exe',
+        suggestedName: '마이실행기.exe',
         types: [{
           description: 'Windows 설치 프로그램',
           accept: { 'application/vnd.microsoft.portable-executable': ['.exe'] },
@@ -380,6 +394,9 @@ async function downloadAgentInstaller() {
   });
 
   if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new Error('로그인이 만료되었습니다. 다시 로그인한 뒤 설치관리자를 다운로드해 주세요.');
+    }
     let message = '자동화 실행기 설치 파일 다운로드에 실패했습니다.';
     try {
       const data = await res.json();
@@ -401,12 +418,13 @@ async function downloadAgentInstaller() {
 
   const blob = await res.blob();
   const disposition = res.headers.get('Content-Disposition') || '';
-  const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i);
-  const filename = decodeURIComponent(match?.[1] || match?.[2] || 'MyAuctionAutomationAgentSetup.exe');
+  const extendedMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const fallbackMatch = disposition.match(/filename="?([^";]+)"?/i);
+  const filename = decodeURIComponent(extendedMatch?.[1] || fallbackMatch?.[1] || '마이실행기.exe');
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename.endsWith('.exe') ? filename : 'MyAuctionAutomationAgentSetup.exe';
+  a.download = filename.endsWith('.exe') ? filename : '마이실행기.exe';
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -423,13 +441,14 @@ export const automationApi = {
     automationRequest<{ task_id: string }>('/report/start-batch', { method: 'POST', body: JSON.stringify(body) }),
   progress: (taskId: string) =>
     automationRequest<{ task_id: string; updates: ProgressUpdate[]; diagnostics?: AutomationDiagnostic[] }>(`/report/progress/${taskId}`),
-  progressWsUrl: (taskId: string) => {
+  progressWsUrl: async (taskId: string) => {
     if (AUTOMATION_WS_BASE) return `${AUTOMATION_WS_BASE}/ws/progress/${taskId}`;
     if (AUTOMATION_API_BASE.startsWith('http')) {
       return `${AUTOMATION_API_BASE.replace(/^http/i, 'ws')}/ws/progress/${taskId}`;
     }
     if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
-      return `ws://127.0.0.1:8001/api/ws/progress/${taskId}?token=${encodeURIComponent(localAgentSessionToken)}`;
+      const sessionToken = await getLocalAgentSessionToken();
+      return `ws://127.0.0.1:8001/api/ws/progress/${taskId}?token=${encodeURIComponent(sessionToken)}`;
     }
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
     return `${scheme}://${window.location.host}${AUTOMATION_API_BASE}/ws/progress/${taskId}`;

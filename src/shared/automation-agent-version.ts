@@ -1,0 +1,1 @@
+export const AUTOMATION_AGENT_VERSION = '2026.07.28.1';

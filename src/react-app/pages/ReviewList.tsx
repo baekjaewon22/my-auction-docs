@@ -9,11 +9,14 @@ export default function ReviewList() {
   const { user } = useAuthStore();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
-  const isCeoPlus = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
+  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isCeoPlus = !!user && !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   const load = () => {
     setLoading(true);
-    api.documents.list('submitted')
+    api.documents.list(isFreelancer
+      ? { status: 'submitted', approval_only: true }
+      : 'submitted')
       .then((res) => setDocuments(res.documents))
       .finally(() => setLoading(false));
   };

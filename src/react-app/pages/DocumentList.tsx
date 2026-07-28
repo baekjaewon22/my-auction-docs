@@ -18,6 +18,7 @@ export default function DocumentList() {
   const [loading, setLoading] = useState(true);
   const { user } = useAuthStore();
   const navigate = useNavigate();
+  const isFreelancer = (user as any)?.login_type === 'freelancer';
   // const isTopRole = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   const load = () => {
@@ -30,6 +31,10 @@ export default function DocumentList() {
   useEffect(() => { load(); }, [filter]);
 
   const handleNew = async () => {
+    if (isFreelancer) {
+      navigate('/templates');
+      return;
+    }
     const { document } = await api.documents.create({ title: '새 문서' });
     navigate('/documents/' + document.id);
   };
@@ -46,7 +51,9 @@ export default function DocumentList() {
     <div className="page">
       <div className="page-header">
         <h2>내 문서</h2>
-        <button className="btn btn-primary" onClick={handleNew}><Plus size={16} /> 새 문서</button>
+        <button className="btn btn-primary" onClick={handleNew}>
+          <Plus size={16} /> {isFreelancer ? '마이옥션 템플릿 선택' : '새 문서'}
+        </button>
       </div>
 
       <div className="filter-bar">

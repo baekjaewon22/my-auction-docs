@@ -1,7 +1,7 @@
 import type { Context, Next } from 'hono';
 import { jwtVerify, SignJWT } from 'jose';
 import type { AuthEnv, JwtPayload, Role } from '../types';
-import { ensurePasswordSecuritySchema } from '../lib/password-security-schema.ts';
+import { ensurePasswordSecuritySchemaOnce } from '../lib/password-security-schema.ts';
 export { hashPassword, verifyPassword } from '../../shared/password-security.ts';
 
 const TOKEN_EXPIRY = '24h';
@@ -121,7 +121,7 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
   try {
     const payload = await verifyToken(token, c.env);
     const db = c.env.DB;
-    await ensurePasswordSecuritySchema(db);
+    await ensurePasswordSecuritySchemaOnce(db);
     const freshUser = await db.prepare(
       'SELECT id, role, team_id, branch, department, login_type, approved, auth_version FROM users WHERE id = ?'
     ).bind(payload.sub).first<{ id: string; role: Role; team_id: string | null; branch: string; department: string; login_type?: string; approved: number; auth_version: number }>();

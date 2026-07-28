@@ -183,12 +183,13 @@ export default function DocumentEdit() {
 
   // 결재선에 내가 포함되어 있고 pending인 단계가 있으면 승인 가능, 또는 master/ceo/admin
   const myPendingStep = approvalSteps.find(s => s.approver_id === user?.id && s.status === 'pending');
+  const isFreelancer = (user as any)?.login_type === 'freelancer';
   const prevAllApproved = myPendingStep
     ? approvalSteps.filter(s => s.step_order < myPendingStep.step_order).every(s => s.status === 'approved')
     : false;
   const canApprove = doc && doc.status === 'submitted' && (
     (myPendingStep && prevAllApproved) ||
-    ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '')
+    (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || ''))
   );
 
   const mySigned = signatures.some((s) => s.user_id === user?.id);

@@ -27,13 +27,15 @@ export default function TemplateEdit() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
   const isNew = id === 'new';
-  const canEdit = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
+  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const canEdit = !!user && !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   // 권한 없으면 목록으로
   if (!canEdit) { navigate('/templates'); return null; }
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');
+  const [isMyAuction, setIsMyAuction] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const editor = useEditor({
@@ -57,6 +59,7 @@ export default function TemplateEdit() {
         setTitle(template.title);
         setDescription(template.description);
         setCategory(template.category || '');
+        setIsMyAuction(template.is_myauction === 1);
         if (editor) {
           editor.commands.setContent(template.content === '{}' ? '' : template.content);
         }
@@ -75,9 +78,9 @@ export default function TemplateEdit() {
 
     try {
       if (isNew) {
-        await api.templates.create({ title, description, content, category });
+        await api.templates.create({ title, description, content, category, is_myauction: isMyAuction ? 1 : 0 });
       } else if (id) {
-        await api.templates.update(id, { title, description, content, category });
+        await api.templates.update(id, { title, description, content, category, is_myauction: isMyAuction ? 1 : 0 });
       }
       navigate('/templates');
     } catch (err: any) {
@@ -142,6 +145,17 @@ export default function TemplateEdit() {
             placeholder="템플릿에 대한 간단한 설명"
           />
         </div>
+        <label className="template-myauction-form-check">
+          <input
+            type="checkbox"
+            checked={isMyAuction}
+            onChange={(event) => setIsMyAuction(event.target.checked)}
+          />
+          <span>
+            <strong>마이옥션 공개</strong>
+            <small>체크하면 마이옥션 카테고리에 표시되며 프리랜서도 이 템플릿을 사용할 수 있습니다.</small>
+          </span>
+        </label>
       </div>
 
       <div className="editor-body">
