@@ -696,10 +696,6 @@ export const api = {
           user_id: string; name: string; branch: string; department: string; position_title: string;
           monthly_target: number; total_amount: number; average_amount: number; met_count: number; miss_count: number;
           months: Array<{ month: string; amount: number; target: number; met: boolean }>;
-          sales?: Array<{
-            id: string; recognized_date: string; client_name: string; type: string;
-            type_detail: string; payment_method: string; amount: number;
-          }>;
         }>;
       }>('/sales/manager-performance' + (qs ? '?' + qs : ''));
     },

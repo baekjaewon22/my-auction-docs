@@ -1329,76 +1329,6 @@ sales.get('/manager-performance', async (c) => {
 
   const ids = members.map((m: any) => m.id);
   const placeholders = ids.map(() => '?').join(',');
-  if (employmentType === 'freelancer') {
-    const salesResult = await db.prepare(`
-      SELECT
-        sr.id,
-        sr.user_id,
-        ${recognizedSalesDateSql('sr')} AS recognized_date,
-        sr.client_name,
-        sr.type,
-        sr.type_detail,
-        sr.payment_method,
-        CASE
-          WHEN sr.type = '매수신청대리'
-            THEN MAX(ROUND(sr.amount / 1.1) - COALESCE(sr.proxy_cost, 0), 0)
-          ELSE sr.amount
-        END AS amount
-      FROM sales_records sr
-      WHERE ${confirmedSalesSql('sr')}
-        AND ${excludeCaseAllowanceSalesSql('sr')}
-        AND sr.direction != 'expense'
-        AND COALESCE(sr.exclude_from_count, 0) = 0
-        AND ${recognizedSalesDateSql('sr')} >= ?
-        AND ${recognizedSalesDateSql('sr')} <= ?
-        AND sr.user_id IN (${placeholders})
-      ORDER BY ${recognizedSalesDateSql('sr')} DESC, sr.created_at DESC
-    `).bind(startDate, endDate, ...ids).all<any>();
-
-    const salesByUser = new Map<string, any[]>();
-    for (const sale of salesResult.results || []) {
-      const list = salesByUser.get(sale.user_id) || [];
-      list.push({
-        id: sale.id,
-        recognized_date: sale.recognized_date,
-        client_name: sale.client_name || '',
-        type: sale.type || '',
-        type_detail: sale.type_detail || '',
-        payment_method: sale.payment_method || '',
-        amount: Number(sale.amount || 0),
-      });
-      salesByUser.set(sale.user_id, list);
-    }
-
-    const rows = members.map((m: any) => {
-      const individualSales = salesByUser.get(m.id) || [];
-      return {
-        user_id: m.id,
-        name: m.name,
-        branch: m.branch,
-        department: m.department,
-        position_title: m.position_title,
-        login_type: m.login_type || 'freelancer',
-        monthly_target: 0,
-        total_amount: individualSales.reduce((sum, sale) => sum + sale.amount, 0),
-        average_amount: 0,
-        met_count: 0,
-        miss_count: 0,
-        months: [],
-        sales: individualSales,
-      };
-    }).sort((a: any, b: any) =>
-      b.total_amount - a.total_amount || String(a.name).localeCompare(String(b.name))
-    );
-
-    return c.json({
-      months,
-      rows,
-      scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team',
-      employment_type: employmentType,
-    });
-  }
-
   const salesResult = await db.prepare(`
     SELECT sr.user_id, substr(${recognizedSalesDateSql('sr')}, 1, 7) as month,
       SUM(
@@ -1425,7 +1355,9 @@ sales.get('/manager-performance', async (c) => {
   }
 
   const rows = members.map((m: any) => {
-    const target = Math.round(Number(m.standard_sales || 0) / 2);
+    const target = employmentType === 'freelancer'
+      ? 0
+      : Math.round(Number(m.standard_sales || 0) / 2);
     const monthly = months.map((month) => {
       const amount = amountMap.get(`${m.id}|${month}`) || 0;
       return { month, amount, target, met: target > 0 ? amount >= target : amount > 0 };

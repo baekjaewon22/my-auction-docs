@@ -75,15 +75,6 @@ type ManagerPerformanceRow = {
   met_count: number;
   miss_count: number;
   months: { month: string; amount: number; target: number; met: boolean }[];
-  sales?: {
-    id: string;
-    recognized_date: string;
-    client_name: string;
-    type: string;
-    type_detail: string;
-    payment_method: string;
-    amount: number;
-  }[];
 };
 
 function monthLabel(ym: string): string {
@@ -135,7 +126,7 @@ function ManagerPerformancePanel() {
     people: rows.length,
     total: rows.reduce((sum, row) => sum + row.total_amount, 0),
     missed: rows.filter(row => row.miss_count > 0).length,
-    sales: rows.reduce((sum, row) => sum + (row.sales?.length || 0), 0),
+    activeMonths: rows.reduce((sum, row) => sum + row.met_count, 0),
   }), [rows]);
 
   const scopeLabel = scope === 'all' ? '전체 공개' : scope === 'branch' ? '본인 지사' : '본인 팀';
@@ -150,7 +141,7 @@ function ManagerPerformancePanel() {
           <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: '#5f6368' }}>
             {employmentType === 'employee'
               ? '월 기준매출 대비 달성 여부를 사람별 실선 그래프로 확인합니다. 정렬은 매출 낮은 순입니다.'
-              : '프리랜서별 실제 확정 매출을 월 합산 없이 건별로 확인합니다.'}
+              : '프리랜서별 확정 매출을 사람별·월별 실선 그래프로 확인합니다.'}
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -186,7 +177,7 @@ function ManagerPerformancePanel() {
         {employmentType === 'employee' ? (
           <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>미달 월 보유</div><div style={{ fontSize: 20, fontWeight: 800, color: '#d93025' }}>{totals.missed}명</div></div>
         ) : (
-          <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>개별 매출 건수</div><div style={{ fontSize: 20, fontWeight: 800, color: '#7b1fa2' }}>{totals.sales}건</div></div>
+          <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>매출 발생 월</div><div style={{ fontSize: 20, fontWeight: 800, color: '#7b1fa2' }}>{totals.activeMonths}개월</div></div>
         )}
       </div>
 
@@ -196,50 +187,13 @@ function ManagerPerformancePanel() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 360px), 1fr))', gap: 12 }}>
         {rows.map(row => {
-          if (employmentType === 'freelancer') {
-            return (
-              <div key={row.user_id} className="card" style={{ padding: 14, borderRadius: 10, border: '1px solid #e0e0e0' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ fontSize: 16, fontWeight: 800, color: '#202124' }}>{row.name}</span>
-                      <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 10, background: '#f3e5f5', color: '#7b1fa2', fontWeight: 700 }}>프리랜서</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: '#5f6368', marginTop: 3 }}>
-                      {row.position_title || '담당자'} · {row.branch}{row.department ? ` · ${row.department}` : ''}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 11, color: '#5f6368' }}>기간 총매출</div>
-                    <div style={{ fontSize: 15, fontWeight: 800, color: '#7b1fa2' }}>{formatCurrency(row.total_amount)}</div>
-                    <div style={{ fontSize: 11, color: '#5f6368' }}>{row.sales?.length || 0}건</div>
-                  </div>
-                </div>
-                {(row.sales?.length || 0) === 0 ? (
-                  <div className="empty-state" style={{ padding: 18 }}>해당 기간 확정 매출이 없습니다.</div>
-                ) : (
-                  <div style={{ display: 'grid', gap: 7 }}>
-                    {row.sales!.map((sale) => (
-                      <div key={sale.id} style={{ display: 'grid', gridTemplateColumns: '88px minmax(0, 1fr) auto', gap: 8, alignItems: 'center', padding: '8px 9px', borderRadius: 7, background: '#faf8fc', border: '1px solid #eee7f2' }}>
-                        <span style={{ fontSize: 11, color: '#5f6368' }}>{sale.recognized_date || '-'}</span>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sale.client_name || '고객명 미기재'}</div>
-                          <div style={{ fontSize: 10, color: '#777' }}>{sale.type}{sale.type_detail ? ` · ${sale.type_detail}` : ''}{sale.payment_method ? ` · ${sale.payment_method}` : ''}</div>
-                        </div>
-                        <span style={{ fontSize: 12, fontWeight: 800, color: '#202124', whiteSpace: 'nowrap' }}>{formatCurrency(sale.amount)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          }
-
           const chartData = row.months.map(item => ({
             month: monthLabel(item.month),
             amount: item.amount,
             target: item.target,
-            result: item.met ? '달성' : '미달성',
+            result: employmentType === 'freelancer'
+              ? (item.amount > 0 ? '매출 발생' : '매출 없음')
+              : (item.met ? '달성' : '미달성'),
           }));
           const target = row.monthly_target || 0;
           const average = row.average_amount || 0;
@@ -251,18 +205,31 @@ function ManagerPerformancePanel() {
             <div key={row.user_id} className="card" style={{ padding: 14, borderRadius: 10, border: '1px solid #e0e0e0' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
                 <div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: '#202124' }}>{row.name}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 16, fontWeight: 800, color: '#202124' }}>
+                    {row.name}
+                    {employmentType === 'freelancer' && (
+                      <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 10, background: '#f3e5f5', color: '#7b1fa2', fontWeight: 700 }}>프리랜서</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 11, color: '#5f6368' }}>{row.position_title || '담당자'} · {row.branch}{row.department ? ` · ${row.department}` : ''}</div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 11, color: '#5f6368' }}>월 기준</div>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: '#1a73e8' }}>{formatCurrency(target)}</div>
+                  {employmentType === 'employee' && (
+                    <>
+                      <div style={{ fontSize: 11, color: '#5f6368' }}>월 기준</div>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: '#1a73e8' }}>{formatCurrency(target)}</div>
+                    </>
+                  )}
                   <div style={{ fontSize: 11, color: '#f57c00', fontWeight: 700 }}>평균 {formatCurrency(average)}</div>
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, marginBottom: 8, fontSize: 11 }}>
-                <span style={{ color: '#188038', fontWeight: 700 }}>달성 {row.met_count}개월</span>
-                <span style={{ color: '#d93025', fontWeight: 700 }}>미달성 {row.miss_count}개월</span>
+                <span style={{ color: '#188038', fontWeight: 700 }}>
+                  {employmentType === 'freelancer' ? '매출 발생' : '달성'} {row.met_count}개월
+                </span>
+                <span style={{ color: '#d93025', fontWeight: 700 }}>
+                  {employmentType === 'freelancer' ? '매출 없음' : '미달성'} {row.miss_count}개월
+                </span>
                 <span style={{ color: '#5f6368' }}>총 {formatCurrency(row.total_amount)}</span>
               </div>
               <div style={{ width: '100%', height: 190 }}>
@@ -272,21 +239,30 @@ function ManagerPerformancePanel() {
                     <XAxis dataKey="month" fontSize={11} tickLine={false} axisLine={{ stroke: '#dfe3eb' }} />
                     <YAxis width={54} fontSize={10} domain={yDomain} allowDataOverflow tickFormatter={(v) => `${Math.round(Number(v) / 10000)}만`} tickLine={false} axisLine={{ stroke: '#dfe3eb' }} />
                     <Tooltip
-                      formatter={(value: any, name: any) => [formatCurrency(Number(value || 0)), name === 'amount' ? '달성금액' : '월 기준매출']}
+                      formatter={(value: any, name: any) => [
+                        formatCurrency(Number(value || 0)),
+                        name === 'amount'
+                          ? (employmentType === 'freelancer' ? '월 매출' : '달성금액')
+                          : '월 기준매출',
+                      ]}
                       labelFormatter={(label) => `${label}`}
                       contentStyle={{ borderRadius: 8, border: '1px solid #dfe3eb', fontSize: 12 }}
                     />
-                    <ReferenceLine y={target} stroke="#1a73e8" strokeDasharray="3 3" label={{ value: '월 기준매출', fill: '#1a73e8', fontSize: 11, position: 'insideTopRight' }} />
+                    {employmentType === 'employee' && (
+                      <ReferenceLine y={target} stroke="#1a73e8" strokeDasharray="3 3" label={{ value: '월 기준매출', fill: '#1a73e8', fontSize: 11, position: 'insideTopRight' }} />
+                    )}
                     <ReferenceLine y={average} stroke="#f57c00" strokeDasharray="3 3" label={{ value: '평균 매출', fill: '#f57c00', fontSize: 11, position: labelsAreClose ? 'insideBottomLeft' : 'insideBottomRight' }} />
-                    <Line type="linear" dataKey="amount" name="달성금액" stroke="#e53935" strokeWidth={2.4} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
+                    <Line type="linear" dataKey="amount" name={employmentType === 'freelancer' ? '월 매출' : '달성금액'} stroke={employmentType === 'freelancer' ? '#7b1fa2' : '#e53935'} strokeWidth={2.4} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(1, row.months.length)}, 1fr)`, gap: 4, marginTop: 8 }}>
                 {row.months.map(item => (
-                  <div key={item.month} title={`${item.month}: ${formatCurrency(item.amount)} / 기준 ${formatCurrency(item.target)}`}
+                  <div key={item.month} title={employmentType === 'freelancer'
+                    ? `${item.month}: ${formatCurrency(item.amount)}`
+                    : `${item.month}: ${formatCurrency(item.amount)} / 기준 ${formatCurrency(item.target)}`}
                     style={{ textAlign: 'center', borderRadius: 6, padding: '4px 2px', fontSize: 10, fontWeight: 700, background: item.met ? '#e6f4ea' : '#fce8e6', color: item.met ? '#188038' : '#d93025' }}>
-                    {monthLabel(item.month)} {item.met ? '달성' : '미달'}
+                    {monthLabel(item.month)} {employmentType === 'freelancer' ? (item.amount > 0 ? '매출' : '없음') : (item.met ? '달성' : '미달')}
                   </div>
                 ))}
               </div>
