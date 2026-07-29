@@ -75,6 +75,15 @@ type ManagerPerformanceRow = {
   met_count: number;
   miss_count: number;
   months: { month: string; amount: number; target: number; met: boolean }[];
+  sales?: {
+    id: string;
+    recognized_date: string;
+    client_name: string;
+    type: string;
+    type_detail: string;
+    payment_method: string;
+    amount: number;
+  }[];
 };
 
 function monthLabel(ym: string): string {
@@ -95,6 +104,7 @@ function ManagerPerformancePanel() {
   const [monthEnd, setMonthEnd] = useState(() => new Date().toISOString().slice(0, 7));
   const [branch, setBranch] = useState('');
   const [rows, setRows] = useState<ManagerPerformanceRow[]>([]);
+  const [employmentType, setEmploymentType] = useState<'employee' | 'freelancer'>('employee');
   const [scope, setScope] = useState<'all' | 'branch' | 'team'>('team');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -103,7 +113,12 @@ function ManagerPerformancePanel() {
     setLoading(true);
     setError('');
     try {
-      const res = await api.sales.managerPerformance({ month_start: marchStartForMonth(monthEnd), month_end: monthEnd, branch: branch || undefined });
+      const res = await api.sales.managerPerformance({
+        month_start: marchStartForMonth(monthEnd),
+        month_end: monthEnd,
+        branch: branch || undefined,
+        employment_type: employmentType,
+      });
       setRows(res.rows || []);
       setScope(res.scope);
     } catch (err: any) {
@@ -114,12 +129,13 @@ function ManagerPerformancePanel() {
     }
   };
 
-  useEffect(() => { load(); }, [monthEnd, branch]);
+  useEffect(() => { load(); }, [monthEnd, branch, employmentType]);
 
   const totals = useMemo(() => ({
     people: rows.length,
     total: rows.reduce((sum, row) => sum + row.total_amount, 0),
     missed: rows.filter(row => row.miss_count > 0).length,
+    sales: rows.reduce((sum, row) => sum + (row.sales?.length || 0), 0),
   }), [rows]);
 
   const scopeLabel = scope === 'all' ? '전체 공개' : scope === 'branch' ? '본인 지사' : '본인 팀';
@@ -132,11 +148,29 @@ function ManagerPerformancePanel() {
         <div>
           <h3 style={{ margin: 0, fontSize: '1rem', color: '#1a2744' }}>담당자 매출성과</h3>
           <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: '#5f6368' }}>
-            월 기준매출 대비 달성 여부를 사람별 실선 그래프로 확인합니다. 정렬은 매출 낮은 순입니다.
+            {employmentType === 'employee'
+              ? '월 기준매출 대비 달성 여부를 사람별 실선 그래프로 확인합니다. 정렬은 매출 낮은 순입니다.'
+              : '프리랜서별 실제 확정 매출을 월 합산 없이 건별로 확인합니다.'}
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.75rem', color: '#5f6368' }}>{scopeLabel}</span>
+          <div className="premium-filter-bar" style={{ marginBottom: 0 }}>
+            <button
+              type="button"
+              className={`premium-filter-btn ${employmentType === 'employee' ? 'active' : ''}`}
+              onClick={() => setEmploymentType('employee')}
+            >
+              정규직
+            </button>
+            <button
+              type="button"
+              className={`premium-filter-btn ${employmentType === 'freelancer' ? 'active' : ''}`}
+              onClick={() => setEmploymentType('freelancer')}
+            >
+              프리랜서
+            </button>
+          </div>
           {canFilterBranch && (
             <div style={{ width: 150 }}>
               <Select size="sm" options={branchOptions} value={branchOptions.find((opt) => opt.value === branch) || branchOptions[0]} onChange={(opt: any) => setBranch(opt?.value || '')} />
@@ -149,15 +183,58 @@ function ManagerPerformancePanel() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 14 }}>
         <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>대상 인원</div><div style={{ fontSize: 20, fontWeight: 800 }}>{totals.people}명</div></div>
         <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>기간 총매출</div><div style={{ fontSize: 20, fontWeight: 800, color: '#1a73e8' }}>{formatCurrency(totals.total)}</div></div>
-        <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>미달 월 보유</div><div style={{ fontSize: 20, fontWeight: 800, color: '#d93025' }}>{totals.missed}명</div></div>
+        {employmentType === 'employee' ? (
+          <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>미달 월 보유</div><div style={{ fontSize: 20, fontWeight: 800, color: '#d93025' }}>{totals.missed}명</div></div>
+        ) : (
+          <div className="card" style={{ padding: 12 }}><div style={{ fontSize: 11, color: '#5f6368' }}>개별 매출 건수</div><div style={{ fontSize: 20, fontWeight: 800, color: '#7b1fa2' }}>{totals.sales}건</div></div>
+        )}
       </div>
 
       {loading && <div className="page-loading">불러오는 중...</div>}
       {error && <div className="empty-state">{error}</div>}
       {!loading && !error && rows.length === 0 && <div className="empty-state">표시할 담당자 매출성과가 없습니다.</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 360px), 1fr))', gap: 12 }}>
         {rows.map(row => {
+          if (employmentType === 'freelancer') {
+            return (
+              <div key={row.user_id} className="card" style={{ padding: 14, borderRadius: 10, border: '1px solid #e0e0e0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 16, fontWeight: 800, color: '#202124' }}>{row.name}</span>
+                      <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 10, background: '#f3e5f5', color: '#7b1fa2', fontWeight: 700 }}>프리랜서</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#5f6368', marginTop: 3 }}>
+                      {row.position_title || '담당자'} · {row.branch}{row.department ? ` · ${row.department}` : ''}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 11, color: '#5f6368' }}>기간 총매출</div>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: '#7b1fa2' }}>{formatCurrency(row.total_amount)}</div>
+                    <div style={{ fontSize: 11, color: '#5f6368' }}>{row.sales?.length || 0}건</div>
+                  </div>
+                </div>
+                {(row.sales?.length || 0) === 0 ? (
+                  <div className="empty-state" style={{ padding: 18 }}>해당 기간 확정 매출이 없습니다.</div>
+                ) : (
+                  <div style={{ display: 'grid', gap: 7 }}>
+                    {row.sales!.map((sale) => (
+                      <div key={sale.id} style={{ display: 'grid', gridTemplateColumns: '88px minmax(0, 1fr) auto', gap: 8, alignItems: 'center', padding: '8px 9px', borderRadius: 7, background: '#faf8fc', border: '1px solid #eee7f2' }}>
+                        <span style={{ fontSize: 11, color: '#5f6368' }}>{sale.recognized_date || '-'}</span>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sale.client_name || '고객명 미기재'}</div>
+                          <div style={{ fontSize: 10, color: '#777' }}>{sale.type}{sale.type_detail ? ` · ${sale.type_detail}` : ''}{sale.payment_method ? ` · ${sale.payment_method}` : ''}</div>
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 800, color: '#202124', whiteSpace: 'nowrap' }}>{formatCurrency(sale.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           const chartData = row.months.map(item => ({
             month: monthLabel(item.month),
             amount: item.amount,

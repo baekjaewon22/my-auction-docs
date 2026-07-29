@@ -680,20 +680,26 @@ export const api = {
       const qs = q.toString();
       return request<{ records: import('./types').SalesRecord[] }>('/sales/stats' + (qs ? '?' + qs : ''));
     },
-    managerPerformance: (params?: { month_start?: string; month_end?: string; months?: number; branch?: string }) => {
+    managerPerformance: (params?: { month_start?: string; month_end?: string; months?: number; branch?: string; employment_type?: 'employee' | 'freelancer' }) => {
       const q = new URLSearchParams();
       if (params?.month_start) q.set('month_start', params.month_start);
       if (params?.month_end) q.set('month_end', params.month_end);
       if (params?.months) q.set('months', String(params.months));
       if (params?.branch) q.set('branch', params.branch);
+      if (params?.employment_type) q.set('employment_type', params.employment_type);
       const qs = q.toString();
       return request<{
         months: string[];
         scope: 'all' | 'branch' | 'team';
+        employment_type: 'employee' | 'freelancer';
         rows: Array<{
           user_id: string; name: string; branch: string; department: string; position_title: string;
           monthly_target: number; total_amount: number; average_amount: number; met_count: number; miss_count: number;
           months: Array<{ month: string; amount: number; target: number; met: boolean }>;
+          sales?: Array<{
+            id: string; recognized_date: string; client_name: string; type: string;
+            type_detail: string; payment_method: string; amount: number;
+          }>;
         }>;
       }>('/sales/manager-performance' + (qs ? '?' + qs : ''));
     },

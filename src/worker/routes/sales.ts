@@ -1242,16 +1242,37 @@ sales.get('/manager-performance', async (c) => {
     ? requestedMonths
     : monthRange(monthEnd, Math.min(12, Math.max(3, Number(c.req.query('months') || 6) || 6)));
   const requestedBranch = (c.req.query('branch') || '').trim();
-  if (months.length === 0) return c.json({ months, rows: [], scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team' });
+  const employmentType = c.req.query('employment_type') === 'freelancer'
+    ? 'freelancer'
+    : 'employee';
+  if (months.length === 0) {
+    return c.json({
+      months,
+      rows: [],
+      scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team',
+      employment_type: employmentType,
+    });
+  }
   const startDate = `${months[0]}-01`;
   const [endYear, endMonth] = months[months.length - 1].split('-').map(Number);
   const endDate = `${months[months.length - 1]}-${new Date(endYear, endMonth, 0).getDate()}`;
 
   const memberConditions = [
     "u.approved = 1",
-    "u.role IN ('member', 'manager')",
-    "COALESCE(u.login_type, 'employee') != 'freelancer'",
+    "u.role != 'resigned'",
   ];
+  if (employmentType === 'freelancer') {
+    memberConditions.push(
+      "(COALESCE(u.login_type, 'employee') = 'freelancer' OR u.role = 'freelancer' OR COALESCE(ua.pay_type, '') = 'commission')",
+    );
+  } else {
+    memberConditions.push(
+      "u.role IN ('member', 'manager')",
+      "COALESCE(u.login_type, 'employee') != 'freelancer'",
+      "u.role != 'freelancer'",
+      "COALESCE(ua.pay_type, '') != 'commission'",
+    );
+  }
   const memberParams: any[] = [];
   memberConditions.push(`NOT (${TEST_ACCOUNT_KEYWORDS.map(() =>
     "(LOWER(COALESCE(u.name, '')) LIKE ? OR LOWER(COALESCE(u.email, '')) LIKE ? OR LOWER(COALESCE(u.branch, '')) LIKE ? OR LOWER(COALESCE(u.department, '')) LIKE ?)"
@@ -1289,7 +1310,7 @@ sales.get('/manager-performance', async (c) => {
   }
 
   const membersResult = await db.prepare(`
-    SELECT u.id, u.name, u.branch, u.department, u.position_title,
+    SELECT u.id, u.name, u.branch, u.department, u.position_title, u.login_type,
            COALESCE(ua.standard_sales, 0) as standard_sales
     FROM users u
     LEFT JOIN user_accounting ua ON ua.user_id = u.id
@@ -1297,10 +1318,87 @@ sales.get('/manager-performance', async (c) => {
     ORDER BY u.branch, u.department, u.name
   `).bind(...memberParams).all<any>();
   const members = membersResult.results || [];
-  if (members.length === 0) return c.json({ months, rows: [], scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team' });
+  if (members.length === 0) {
+    return c.json({
+      months,
+      rows: [],
+      scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team',
+      employment_type: employmentType,
+    });
+  }
 
   const ids = members.map((m: any) => m.id);
   const placeholders = ids.map(() => '?').join(',');
+  if (employmentType === 'freelancer') {
+    const salesResult = await db.prepare(`
+      SELECT
+        sr.id,
+        sr.user_id,
+        ${recognizedSalesDateSql('sr')} AS recognized_date,
+        sr.client_name,
+        sr.type,
+        sr.type_detail,
+        sr.payment_method,
+        CASE
+          WHEN sr.type = '매수신청대리'
+            THEN MAX(ROUND(sr.amount / 1.1) - COALESCE(sr.proxy_cost, 0), 0)
+          ELSE sr.amount
+        END AS amount
+      FROM sales_records sr
+      WHERE ${confirmedSalesSql('sr')}
+        AND ${excludeCaseAllowanceSalesSql('sr')}
+        AND sr.direction != 'expense'
+        AND COALESCE(sr.exclude_from_count, 0) = 0
+        AND ${recognizedSalesDateSql('sr')} >= ?
+        AND ${recognizedSalesDateSql('sr')} <= ?
+        AND sr.user_id IN (${placeholders})
+      ORDER BY ${recognizedSalesDateSql('sr')} DESC, sr.created_at DESC
+    `).bind(startDate, endDate, ...ids).all<any>();
+
+    const salesByUser = new Map<string, any[]>();
+    for (const sale of salesResult.results || []) {
+      const list = salesByUser.get(sale.user_id) || [];
+      list.push({
+        id: sale.id,
+        recognized_date: sale.recognized_date,
+        client_name: sale.client_name || '',
+        type: sale.type || '',
+        type_detail: sale.type_detail || '',
+        payment_method: sale.payment_method || '',
+        amount: Number(sale.amount || 0),
+      });
+      salesByUser.set(sale.user_id, list);
+    }
+
+    const rows = members.map((m: any) => {
+      const individualSales = salesByUser.get(m.id) || [];
+      return {
+        user_id: m.id,
+        name: m.name,
+        branch: m.branch,
+        department: m.department,
+        position_title: m.position_title,
+        login_type: m.login_type || 'freelancer',
+        monthly_target: 0,
+        total_amount: individualSales.reduce((sum, sale) => sum + sale.amount, 0),
+        average_amount: 0,
+        met_count: 0,
+        miss_count: 0,
+        months: [],
+        sales: individualSales,
+      };
+    }).sort((a: any, b: any) =>
+      b.total_amount - a.total_amount || String(a.name).localeCompare(String(b.name))
+    );
+
+    return c.json({
+      months,
+      rows,
+      scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team',
+      employment_type: employmentType,
+    });
+  }
+
   const salesResult = await db.prepare(`
     SELECT sr.user_id, substr(${recognizedSalesDateSql('sr')}, 1, 7) as month,
       SUM(
@@ -1349,7 +1447,12 @@ sales.get('/manager-performance', async (c) => {
     };
   }).sort((a: any, b: any) => a.total_amount - b.total_amount || a.average_amount - b.average_amount || String(a.name).localeCompare(String(b.name)));
 
-  return c.json({ months, rows, scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team' });
+  return c.json({
+    months,
+    rows,
+    scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team',
+    employment_type: employmentType,
+  });
 });
 
 sales.get('/deposits', async (c) => {
