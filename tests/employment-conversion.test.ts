@@ -5,6 +5,7 @@ import {
   canConvertEmployeeRoleToFreelancer,
   freelancerConversionBlockers,
   normalizeCommissionRate,
+  restoreEmployeeRoleFromSnapshot,
 } from '../src/shared/employment-conversion.ts';
 
 test('업무형 정규직 역할만 프리랜서 전환 대상이다', () => {
@@ -24,6 +25,15 @@ test('프리랜서 지급 비율은 0 초과 100 이하만 허용한다', () => 
   assert.equal(normalizeCommissionRate(0), null);
   assert.equal(normalizeCommissionRate(101), null);
   assert.equal(normalizeCommissionRate('invalid'), null);
+});
+
+test('정규직 재전환은 전환 전 업무 역할을 안전하게 복원한다', () => {
+  assert.equal(restoreEmployeeRoleFromSnapshot('{"previous_role":"director"}'), 'director');
+  assert.equal(restoreEmployeeRoleFromSnapshot('{"previous_role":"manager"}'), 'manager');
+  assert.equal(restoreEmployeeRoleFromSnapshot('{"previous_role":"member"}'), 'member');
+  assert.equal(restoreEmployeeRoleFromSnapshot('{"previous_role":"master"}'), 'member');
+  assert.equal(restoreEmployeeRoleFromSnapshot('invalid-json'), 'member');
+  assert.equal(restoreEmployeeRoleFromSnapshot(null), 'member');
 });
 
 test('처리 중 휴가와 결재는 전환 차단 사유가 된다', () => {
@@ -65,6 +75,22 @@ test('전환 API는 기존 업무 데이터를 삭제하지 않고 이력과 계
   assert.doesNotMatch(routeSource, /user: \{ \.\.\.target/);
   assert.match(routeSource, /conversionUserResponse\(target, 'freelancer', 'member'\)/);
   assert.doesNotMatch(routeSource, /DELETE FROM (documents|sales_records|cases|annual_leave|leave_requests)/);
+});
+
+test('정규직 재전환 API는 같은 사용자 계정과 전환 전 역할을 이어서 사용한다', () => {
+  const source = readFileSync(
+    new URL('../src/worker/routes/users.ts', import.meta.url),
+    'utf8',
+  );
+  const routeStart = source.indexOf("users.put('/:id/convert-to-employee'");
+  const routeEnd = source.indexOf("users.put('/:id/convert-to-freelancer'", routeStart);
+  const routeSource = source.slice(routeStart, routeEnd);
+
+  assert.match(routeSource, /restoreEmployeeRoleFromSnapshot/);
+  assert.match(routeSource, /SET login_type = 'employee', role = \?/);
+  assert.match(routeSource, /conversionUserResponse\(target, 'employee', restoredRole\)/);
+  assert.doesNotMatch(routeSource, /INSERT INTO users/);
+  assert.doesNotMatch(routeSource, /DELETE FROM/);
 });
 
 test('사용자 관리 화면에는 역방향 전환 버튼과 데이터 보존 안내가 있다', () => {

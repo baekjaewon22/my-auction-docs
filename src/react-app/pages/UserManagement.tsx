@@ -327,7 +327,7 @@ export default function UserManagement() {
       alert('직급 값이 올바르지 않습니다.');
       return;
     }
-    if (!confirm(`${selectedUser.name}님을 정규직 계정으로 전환하시겠습니까?\n전환 후 일반 로그인 계정으로 변경되고 급여제로 정산됩니다.`)) return;
+    if (!confirm(`${selectedUser.name}님을 정규직 계정으로 전환하시겠습니까?\n전환 후 일반 로그인 계정으로 변경되고, 기존 개인 데이터와 전환 전 업무 역할을 이어서 사용합니다.`)) return;
 
     setConverting(true);
     try {
@@ -347,7 +347,7 @@ export default function UserManagement() {
       setCommissionRate('0');
       setSsnInput('');
       setAddressInput('');
-      alert('정규직 전환이 완료되었습니다.');
+      alert('정규직 전환이 완료되었습니다. 기존 개인 데이터와 전환 전 업무 역할·급여 이력은 이어서 사용됩니다.');
     } catch (err: any) { alert(err.message); }
     finally { setConverting(false); }
   };

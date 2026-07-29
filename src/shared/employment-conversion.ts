@@ -21,6 +21,21 @@ export function canConvertEmployeeRoleToFreelancer(role: string): boolean {
   return FREELANCER_CONVERTIBLE_ROLES.has(role);
 }
 
+export function restoreEmployeeRoleFromSnapshot(
+  impactSnapshot: string | null | undefined,
+): 'director' | 'manager' | 'member' {
+  if (!impactSnapshot) return 'member';
+  try {
+    const parsed = JSON.parse(impactSnapshot) as { previous_role?: unknown };
+    const previousRole = String(parsed.previous_role || '');
+    return canConvertEmployeeRoleToFreelancer(previousRole)
+      ? previousRole as 'director' | 'manager' | 'member'
+      : 'member';
+  } catch {
+    return 'member';
+  }
+}
+
 export function normalizeCommissionRate(value: unknown): number | null {
   const rate = Number(value);
   if (!Number.isFinite(rate) || rate <= 0 || rate > 100) return null;

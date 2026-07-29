@@ -9,6 +9,7 @@ import {
   canConvertEmployeeRoleToFreelancer,
   freelancerConversionBlockers,
   normalizeCommissionRate,
+  restoreEmployeeRoleFromSnapshot,
 } from '../../shared/employment-conversion';
 import {
   ensureEmploymentTypeHistoryTable,
@@ -304,12 +305,22 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
     ensurePayTypeHistoryTable(db),
     ensureEmploymentTypeHistoryTable(db),
   ]);
+  const previousConversion = await db.prepare(`
+    SELECT impact_snapshot
+    FROM user_employment_type_history
+    WHERE user_id = ?
+      AND from_login_type = 'employee'
+      AND to_login_type = 'freelancer'
+    ORDER BY created_at DESC, rowid DESC
+    LIMIT 1
+  `).bind(id).first<{ impact_snapshot: string }>();
+  const restoredRole = restoreEmployeeRoleFromSnapshot(previousConversion?.impact_snapshot);
   const existingAccounting = await db.prepare('SELECT * FROM user_accounting WHERE user_id = ?').bind(id).first<any>();
   const standardSales = Math.round(nextSalary * 1.3 * 4);
   const statements = [
     db.prepare(
-      "UPDATE users SET login_type = 'employee', auth_version = COALESCE(auth_version, 0) + 1, updated_at = datetime('now') WHERE id = ?"
-    ).bind(id),
+      "UPDATE users SET login_type = 'employee', role = ?, auth_version = COALESCE(auth_version, 0) + 1, updated_at = datetime('now') WHERE id = ?"
+    ).bind(restoredRole, id),
   ];
 
   if (existingAccounting) {
@@ -379,19 +390,20 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
   statements.push(db.prepare(`
     INSERT INTO user_employment_type_history (
       id, user_id, from_login_type, to_login_type, effective_month, changed_by, impact_snapshot
-    ) VALUES (?, ?, 'freelancer', 'employee', ?, ?, '{}')
+    ) VALUES (?, ?, 'freelancer', 'employee', ?, ?, ?)
   `).bind(
     crypto.randomUUID(),
     id,
     effectiveMonth,
     currentUser.sub || '',
+    JSON.stringify({ previous_role: target.role, restored_role: restoredRole }),
   ));
 
   await db.batch(statements);
 
   return c.json({
     success: true,
-    user: conversionUserResponse(target, 'employee'),
+    user: conversionUserResponse(target, 'employee', restoredRole),
     account: {
       user_id: id,
       salary: nextSalary,
