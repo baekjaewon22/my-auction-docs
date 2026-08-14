@@ -156,6 +156,7 @@ export type SalesStatus = 'pending' | 'card_pending' | 'confirmed' | 'refund_req
 
 export interface SalesRecord {
   id: string;
+  customer_id?: string | null;
   user_id: string;
   user_name?: string;
   position_title?: string;

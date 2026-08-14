@@ -77,7 +77,7 @@ test('조직도에 없는 작성자도 지사 상위승인자 설정을 적용�
     override: { approver_id: 'branch-approver' },
   });
 
-  assert.deepEqual(await buildOrgApprovalChain(db, 'author'), []);
+  assert.deepEqual(await buildOrgApprovalChain(db, 'author'), ['branch-approver']);
   assert.deepEqual(
     await buildOrgApprovalChain(db, 'author', { allowMissingOrgNode: true }),
     ['branch-approver'],
@@ -101,7 +101,7 @@ test('프리랜서 지사 상위승인자는 마이옥션 문서에만 적용한
   );
 });
 
-test('조직도에 없는 일반 직원에게는 CC 결재선도 자동 생성하지 않는다', async () => {
+test('조직도에 없는 일반 직원은 기존 CC 대체 결재선을 유지한다', async () => {
   const db = approvalDb({
     authorNode: null,
     author: { role: 'member', branch: '서울지사' },
@@ -109,7 +109,7 @@ test('조직도에 없는 일반 직원에게는 CC 결재선도 자동 생성�
     ccList: [{ cc_user_id: 'cc-user' }],
   });
 
-  assert.deepEqual(await buildOrgApprovalChain(db, 'author'), []);
+  assert.deepEqual(await buildOrgApprovalChain(db, 'author'), ['cc-user']);
   assert.deepEqual(
     await buildOrgApprovalChain(db, 'author', { allowMissingOrgNode: true }),
     ['cc-user'],

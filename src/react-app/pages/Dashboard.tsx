@@ -5,12 +5,13 @@ import { api } from '../api';
 import type { WebPushSetupStatus } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, BellOff, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, BellOff, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale, Phone } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 import { sameBranchName } from '../lib/branchAliases';
 import { refundApprovalMonth, refundRecoveryPayrollUrl } from '../../shared/refund-recovery';
 import { isNonWorkingDate } from '../../shared/work-calendar';
+import type { AuctionBidResultEntry } from '../components/AuctionBidResultEditor';
 
 const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
 
@@ -40,10 +41,15 @@ interface ScheduleGapAlert {
 const dashboardNewsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 const dashboardNewsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
 
-function dashboardSalesFocusUrl(record: { id: string; contract_date?: string }, focus: 'sales' | 'deposit' = 'sales') {
+function dashboardSalesFocusUrl(record: { id: string; contract_date?: string }, focus: 'sales' | 'deposit' | 'phone' = 'sales') {
   const params = new URLSearchParams({ focus, id: record.id });
-  if (focus === 'sales' && record.contract_date) params.set('month', record.contract_date.slice(0, 7));
+  if ((focus === 'sales' || focus === 'phone') && record.contract_date) params.set('month', record.contract_date.slice(0, 7));
   return `/sales?${params.toString()}`;
+}
+
+function isMissingWinningCustomerPhone(record: SalesRecord): boolean {
+  const digits = String(record.client_phone || '').replace(/\D/g, '');
+  return record.type === '낙찰' && record.status !== 'refunded' && (digits.length < 10 || digits.length > 11);
 }
 
 function pickTodayLegalFact(legalFacts: any[]) {
@@ -57,18 +63,25 @@ function pickTodayLegalFact(legalFacts: any[]) {
 
 function FreelancerDashboard() {
   const { user } = useAuthStore();
+  const isSupervisor = user?.role === 'manager';
   const [mySales, setMySales] = useState<SalesRecord[]>([]);
   const [todayNews, setTodayNews] = useState<any[]>([]);
   const [legalFacts, setLegalFacts] = useState<any[]>([]);
+  const [bidResultRequirements, setBidResultRequirements] = useState<AuctionBidResultEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
+      api.auctionSchedule.myBidResultRequirements().catch(() => null),
       api.sales.list({}).catch(() => null),
       api.adminNotes.list({ category: 'article_news' }).catch(() => null),
       api.adminNotes.list({ category: 'legal_support', legal_subcategory: 'legal_terms' }).catch(() => null),
-    ]).then(([salesRes, newsRes, legalFactsRes]) => {
-      if (salesRes) setMySales((salesRes.records || []).filter((r: SalesRecord) => r.user_id === user?.id));
+    ]).then(([bidResultRes, salesRes, newsRes, legalFactsRes]) => {
+      if (bidResultRes) setBidResultRequirements(bidResultRes.entries || []);
+      if (salesRes) {
+        const visibleSales = salesRes.records || [];
+        setMySales(isSupervisor ? visibleSales : visibleSales.filter((r: SalesRecord) => r.user_id === user?.id));
+      }
       if (newsRes) {
         const latestNews = (newsRes.notes || [])
           .slice()
@@ -77,7 +90,7 @@ function FreelancerDashboard() {
       }
       if (legalFactsRes) setLegalFacts(legalFactsRes.notes || []);
     }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+  }, [user?.id, user?.role]);
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -85,6 +98,13 @@ function FreelancerDashboard() {
   const pendingCount = mySales.filter(r => r.status === 'pending').length;
   const cardPendingCount = mySales.filter(r => r.status === 'card_pending').length;
   const confirmedCount = mySales.filter(r => r.status === 'confirmed').length;
+  const myMissingDocs = mySales.filter(r =>
+    r.status !== 'refunded'
+    && (r.type === '계약' || r.type === '낙찰')
+    && !r.contract_submitted
+    && !r.contract_not_submitted
+  );
+  const missingPhoneSales = mySales.filter(r => r.user_id === user?.id && isMissingWinningCustomerPhone(r));
   const todayLegalFact = pickTodayLegalFact(legalFacts);
   const legalPreview = todayLegalFact ? dashboardNewsPreview(todayLegalFact.content || '') : '';
 
@@ -101,12 +121,44 @@ function FreelancerDashboard() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card"><DollarSign size={28} className="stat-icon" /><div className="stat-number">{mySales.length}</div><div className="stat-label">전체 매출</div></div>
+        <div className="stat-card"><DollarSign size={28} className="stat-icon" /><div className="stat-number">{mySales.length}</div><div className="stat-label">{isSupervisor ? '팀 전체 매출' : '전체 매출'}</div></div>
         <div className="stat-card stat-submitted"><Clock size={28} className="stat-icon" /><div className="stat-number">{pendingCount}</div><div className="stat-label">입금신청</div></div>
         {cardPendingCount > 0 && <div className="stat-card" style={{ borderTop: '3px solid #7b1fa2' }}><Clock size={28} className="stat-icon" style={{ color: '#7b1fa2' }} /><div className="stat-number" style={{ color: '#7b1fa2' }}>{cardPendingCount}</div><div className="stat-label">카드대기</div></div>}
         <div className="stat-card stat-approved"><FileCheck size={28} className="stat-icon" /><div className="stat-number">{confirmedCount}</div><div className="stat-label">확정</div></div>
         <div className="stat-card" style={{ borderTop: '3px solid #7b1fa2' }}><TrendingDown size={28} className="stat-icon" style={{ color: '#7b1fa2' }} /><div className="stat-number" style={{ color: '#7b1fa2' }}>{totalAmount.toLocaleString()}</div><div className="stat-label">확정 매출액</div></div>
       </div>
+
+      {bidResultRequirements.length > 0 && (
+        <section className="section auction-bid-result-dashboard-alert">
+          <h3 className="section-title"><AlertTriangle size={18} /> 입찰 결과 필수 입력 <span className="missing-alert-count">{bidResultRequirements.length}건</span></h3>
+          <p>오후 3시 입력 기한이 지난 일정입니다. 제안입찰가·작성입찰가·최종 낙찰가와 낙찰 여부를 입력해 주세요.</p>
+          {bidResultRequirements.map((entry) => (
+            <Link key={entry.id} to="/auction-schedule?requiredBidResult=1" className="missing-alert-item">
+              <div>
+                <strong>{entry.target_date} · {entry.activity_subtype || '입찰 일정'}</strong>
+                <div className="missing-alert-detail">미입력: {(entry.missing_fields || []).join(', ')}</div>
+              </div>
+            </Link>
+          ))}
+        </section>
+      )}
+
+      {missingPhoneSales.length > 0 && (
+        <section className="section auction-bid-result-dashboard-alert">
+          <h3 className="section-title"><Phone size={18} /> 고객 전화번호 등록 <span className="missing-alert-count">{missingPhoneSales.length}건</span></h3>
+          <p>낙찰 업무성과는 등록되었지만 고객 전화번호가 비어 있습니다. 항목을 눌러 전화번호를 입력해 주세요.</p>
+          <div className="missing-alert-list">
+            {missingPhoneSales.map(record => (
+              <Link key={record.id} to={dashboardSalesFocusUrl(record, 'phone')} className="missing-alert-item">
+                <div>
+                  <strong>{record.client_name || '고객명 미입력'} · {record.contract_date}</strong>
+                  <div className="missing-alert-detail">업무성과로 이동하여 고객 전화번호 등록</div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="section dashboard-news-row">
         <div className="dashboard-today-news-panel">
@@ -151,9 +203,43 @@ function FreelancerDashboard() {
         </div>
       </section>
 
+      {myMissingDocs.length > 0 && (
+        <section className="section">
+          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={18} color="#d93025" /> {isSupervisor ? '팀 미작성 알림' : '본인 미작성 알림'}
+            <span className="missing-alert-count" style={{ background: '#fce4ec', color: '#d93025' }}>{myMissingDocs.length}건</span>
+          </h3>
+          <div className="missing-alert-list">
+            {myMissingDocs.slice(0, 10).map((record) => {
+              const docLabel = record.type === '낙찰' ? '물건분석보고서' : '컨설팅계약서';
+              return (
+                <Link
+                  key={record.id}
+                  to={dashboardSalesFocusUrl(record)}
+                  className="missing-alert-item"
+                  style={{ borderLeft: '3px solid #d93025', textDecoration: 'none' }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <div className="missing-alert-main">
+                      <span className="missing-alert-doc" style={{ color: '#d93025' }}>{docLabel} 미작성</span>
+                      {isSupervisor && record.user_name && <span style={{ marginLeft: 8, fontWeight: 700 }}>{record.user_name}</span>}
+                      <span style={{ marginLeft: 8, fontSize: '0.78rem', color: '#5f6368' }}>{record.client_name}</span>
+                    </div>
+                    <div className="missing-alert-detail">
+                      {record.contract_date} · {record.type} · {record.amount?.toLocaleString()}원
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+            {myMissingDocs.length > 10 && <div className="missing-alert-more">외 {myMissingDocs.length - 10}건 더 있음</div>}
+          </div>
+        </section>
+      )}
+
       {mySales.length > 0 && (
         <section className="section">
-          <h3 className="section-title"><DollarSign size={18} /> 최근 매출</h3>
+          <h3 className="section-title"><DollarSign size={18} /> {isSupervisor ? '팀 최근 매출' : '최근 매출'}</h3>
           <div className="doc-list">
             {mySales.slice(0, 10).map(r => (
               <Link key={r.id} to={dashboardSalesFocusUrl(r)} className="doc-item">
@@ -163,7 +249,7 @@ function FreelancerDashboard() {
                   </span>
                   <span className="doc-date">{r.contract_date}</span>
                 </div>
-                <div className="doc-title">{r.type} · {r.client_name} · {r.amount.toLocaleString()}원</div>
+                <div className="doc-title">{isSupervisor && r.user_name ? `${r.user_name} · ` : ''}{r.type} · {r.client_name} · {r.amount.toLocaleString()}원</div>
               </Link>
             ))}
           </div>
@@ -193,6 +279,7 @@ export default function Dashboard() {
   const [exemptionSubmitting, setExemptionSubmitting] = useState(false);
   const [contractAlerts, setContractAlerts] = useState<SalesRecord[]>([]);
   const [myMissingDocs, setMyMissingDocs] = useState<SalesRecord[]>([]);
+  const [missingPhoneSales, setMissingPhoneSales] = useState<SalesRecord[]>([]);
   const [dupInspections, setDupInspections] = useState<{ case_no: string; court: string; user_names: string; user_count: number; first_date: string; last_date: string; branch?: string }[]>([]);
   const dupAllBranches = true;
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
@@ -466,6 +553,12 @@ export default function Dashboard() {
             return r.user_id === user?.id;
           });
           setMyMissingDocs(myMissing);
+
+          const canCorrectAllPhones = ['master', 'accountant', 'accountant_asst'].includes(role);
+          setMissingPhoneSales(records.filter(r =>
+            isMissingWinningCustomerPhone(r)
+            && (canCorrectAllPhones || r.user_id === user?.id)
+          ));
         }
 
         // 2. 승인 대기 문서
@@ -876,6 +969,30 @@ export default function Dashboard() {
           </section>
         );
       })()}
+
+      {missingPhoneSales.length > 0 && (
+        <section className="section auction-bid-result-dashboard-alert">
+          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Phone size={18} /> 고객 전화번호 등록
+            <span className="missing-alert-count">{missingPhoneSales.length}건</span>
+          </h3>
+          <p>낙찰 업무성과는 정상 등록되었지만 고객 전화번호가 비어 있습니다. 항목을 누르면 전화번호 입력란으로 이동합니다.</p>
+          <div className="missing-alert-list">
+            {missingPhoneSales.slice(0, 10).map(record => (
+              <Link key={record.id} to={dashboardSalesFocusUrl(record, 'phone')} className="missing-alert-item" style={{ textDecoration: 'none' }}>
+                <div style={{ flex: 1 }}>
+                  <div className="missing-alert-main">
+                    <span className="missing-alert-doc">전화번호 미입력</span>
+                    {record.user_name && <span style={{ marginLeft: 8 }}>{record.user_name}</span>}
+                    <span style={{ marginLeft: 8 }}>{record.client_name}</span>
+                  </div>
+                  <div className="missing-alert-detail">{record.contract_date} · 낙찰 · {record.amount?.toLocaleString()}원</div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* 계약서/보고서 미작성 경고 (역할별 범위) */}
       {myMissingDocs.length > 0 && (() => {

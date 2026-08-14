@@ -637,8 +637,8 @@ export default function PropertyReport() {
                   <td style={{ border: '1px solid #c5cdd8', padding: '3px 5px', background: 'linear-gradient(180deg, #eef1f5 0%, #e4e8ee 100%)', textAlign: 'center', fontWeight: 800, width: 36, fontSize: '7.5pt', color: '#1a2744' }} rowSpan={3}>(甲)<br />의뢰인</td>
                   <th style={{ border: '1px solid #c5cdd8', padding: '3px 5px', background: 'linear-gradient(180deg, #f8f9fb 0%, #edf0f4 100%)', textAlign: 'center', width: 56, fontWeight: 700, color: '#1a2744', fontSize: '7.5pt' }}>성 명</th>
                   <td style={{ border: '1px solid #c5cdd8', padding: '3px 5px' }}><F k="clientName" w="90px" ph="성명" /></td>
-                  <th style={{ border: '1px solid #c5cdd8', padding: '3px 5px', background: 'linear-gradient(180deg, #f8f9fb 0%, #edf0f4 100%)', textAlign: 'center', width: 56, fontWeight: 700, color: '#1a2744', fontSize: '7.5pt' }}>주민번호</th>
-                  <td style={{ border: '1px solid #c5cdd8', padding: '3px 5px' }}><F k="clientSsn" w="90px" ph="" /></td>
+                  <th style={{ border: '1px solid #c5cdd8', padding: '3px 5px', background: 'linear-gradient(180deg, #f8f9fb 0%, #edf0f4 100%)', textAlign: 'center', width: 56, fontWeight: 700, color: '#1a2744', fontSize: '7.5pt' }}>생년월일</th>
+                  <td style={{ border: '1px solid #c5cdd8', padding: '3px 5px' }}><F k="clientSsn" w="90px" ph="YYYY.MM.DD" /></td>
                   <td style={{ border: '1px solid #c5cdd8', padding: '2px', width: 44, textAlign: 'center', verticalAlign: 'middle', fontSize: '7pt', color: '#bbb', background: '#fcfcfd' }} rowSpan={3}>(인)</td>
                 </tr>
                 <tr>
@@ -676,22 +676,22 @@ export default function PropertyReport() {
               </tbody>
             </table>
 
-            <div style={{ marginTop: 5, fontSize: '8pt', color: '#333', padding: '4px 0', borderTop: '1.5px solid #c5cdd8' }}>☐ 본인은 개인정보 수집·이용에 동의합니다. (뒷면 개인정보 수집·이용 동의 내용 참조)</div>
+            <div style={{ marginTop: 5, fontSize: '8pt', color: '#333', padding: '4px 0', borderTop: '1.5px solid #c5cdd8' }}>뒷면의 개인정보 수집·이용 및 제3자 제공 안내를 확인한 후 각 항목에 동의 여부를 표시해 주세요.</div>
           </div>
 
           {/* ===== 2페이지 ===== */}
-          <div className="pr-page" style={{ width: '210mm', height: '297mm', padding: '12mm 15mm 12mm', position: 'relative', overflow: 'hidden', boxSizing: 'border-box', fontFamily: "'맑은 고딕','Malgun Gothic',sans-serif", fontSize: '10pt', color: '#1a1a1a', lineHeight: 1.55, display: 'flex', flexDirection: 'column' }}>
+          <div className="pr-page" style={{ width: '210mm', height: '297mm', padding: '10mm 14mm 9mm', position: 'relative', overflow: 'hidden', boxSizing: 'border-box', fontFamily: "'맑은 고딕','Malgun Gothic',sans-serif", fontSize: '10pt', color: '#1a1a1a', lineHeight: 1.5, display: 'flex', flexDirection: 'column' }}>
             {/* 워터마크 - 로고 이미지 */}
             <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 0, opacity: 0.04 }}>
               <img src="/logo.png" style={{ width: '160mm', objectFit: 'contain' }} />
             </div>
 
-            <div style={{ textAlign: 'center', marginBottom: 10, borderBottom: '3px solid #1a2744', paddingBottom: 8, position: 'relative', zIndex: 1 }}>
+            <div style={{ textAlign: 'center', marginBottom: 7, borderBottom: '3px solid #1a2744', paddingBottom: 6, position: 'relative', zIndex: 1 }}>
               <div style={{ fontSize: '7pt', color: '#8a9ab5', letterSpacing: 2, marginBottom: 2 }}>CONSULTING CONTRACT TERMS</div>
               <h2 style={{ fontSize: '15pt', fontWeight: 800, color: '#1a2744', letterSpacing: 5, margin: 0 }}>컨설팅 계약약관</h2>
             </div>
 
-            <div style={{ display: 'flex', gap: 16, fontSize: '7.5pt', lineHeight: 1.48, color: '#2a2a2a', position: 'relative', zIndex: 1, flex: 1 }}>
+            <div style={{ display: 'flex', gap: 14, fontSize: '7.2pt', lineHeight: 1.42, color: '#2a2a2a', position: 'relative', zIndex: 1, flex: 1, minHeight: 0 }}>
               {/* 좌 */}
               <div style={{ flex: 1 }}>
                 {[
@@ -704,7 +704,7 @@ export default function PropertyReport() {
                   { t: '제 7조 [컨설팅 의무]', c: '(1) 갑과 을은 신뢰를 바탕으로 부동산 컨설팅 계약에 대하여 선의 성실과 정의로 컨설팅 의무를 이행하여 계약내용을 이행해야 한다.\n(2) 갑과 을은 부동산 컨설팅 의무의 수행에 따른 진행사항을 상호 알림할 수 있다.' },
                 ].map((a, i) => (
                   <div key={i}>
-                    <div style={{ fontSize: '8pt', fontWeight: 800, color: '#1a2744', margin: '5px 0 1px', borderLeft: '2.5px solid #1a2744', paddingLeft: 5, letterSpacing: 0.3 }}>{a.t}</div>
+                    <div style={{ fontSize: '7.7pt', fontWeight: 800, color: '#1a2744', margin: '3px 0 1px', borderLeft: '2.5px solid #1a2744', paddingLeft: 5, letterSpacing: 0.3 }}>{a.t}</div>
                     {a.c.split('\n').map((l, j) => <p key={j} style={{ marginBottom: 1, textIndent: l.startsWith('  ') ? 0 : '0.7em', paddingLeft: l.startsWith('  ') ? '1.2em' : 0 }}>{l.trim()}</p>)}
                   </div>
                 ))}
@@ -720,36 +720,53 @@ export default function PropertyReport() {
                   { t: '제 13조 [관할 법원]', c: '본 계약에 관하여 갑과 을 상호간 소송의 필요가 있을 경우 을의 영업점 소재지의 지방법원을 관할 법원으로 하기로 한다.' },
                 ].map((a, i) => (
                   <div key={i}>
-                    <div style={{ fontSize: '8pt', fontWeight: 800, color: '#1a2744', margin: '5px 0 1px', borderLeft: '2.5px solid #1a2744', paddingLeft: 5, letterSpacing: 0.3 }}>{a.t}</div>
+                    <div style={{ fontSize: '7.7pt', fontWeight: 800, color: '#1a2744', margin: '3px 0 1px', borderLeft: '2.5px solid #1a2744', paddingLeft: 5, letterSpacing: 0.3 }}>{a.t}</div>
                     {a.c.split('\n').map((l, j) => <p key={j} style={{ marginBottom: 1, textIndent: l.startsWith('  ') ? 0 : '0.7em', paddingLeft: l.startsWith('  ') ? '1.2em' : 0 }}>{l.trim()}</p>)}
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* 개인정보 동의 */}
-            <div style={{ border: '1.5px solid #1a2744', borderRadius: 4, padding: '8px 12px', marginTop: 8, fontSize: '7.5pt', lineHeight: 1.42, position: 'relative', zIndex: 1 }}>
-              <h4 style={{ fontSize: '9pt', fontWeight: 700, color: '#1a2744', marginBottom: 3, textAlign: 'center', letterSpacing: 2 }}>개인정보 수집·이용 동의</h4>
-              <p>㈜엘앤씨부동산중개법인(이하 "회사")은 컨설팅 계약 체결 및 이행을 위하여 아래와 같이 개인정보를 수집·이용합니다.</p>
-              <table style={{ width: '100%', borderCollapse: 'collapse', margin: '3px 0', fontSize: '7.5pt' }}>
+            {/* 개인정보 수집·이용 및 제3자 제공 동의 */}
+            <div style={{ border: '1.5px solid #1a2744', borderRadius: 4, padding: '6px 9px', marginTop: 5, fontSize: '6.6pt', lineHeight: 1.3, position: 'relative', zIndex: 1 }}>
+              <h4 style={{ fontSize: '8.5pt', fontWeight: 700, color: '#1a2744', margin: '0 0 2px', textAlign: 'center', letterSpacing: 1.2 }}>개인정보 수집·이용 및 제3자 제공 동의</h4>
+              <p style={{ margin: '0 0 3px' }}>원활하고 정확한 컨설팅과 권리분석 자문을 위해 필요한 최소한의 개인정보를 아래와 같이 처리합니다.</p>
+              <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', margin: '2px 0 3px', fontSize: '6.2pt', lineHeight: 1.25 }}>
                 <thead><tr>
-                  <th style={{ border: '1px solid #bcc5d0', padding: '2px 5px', textAlign: 'center', background: '#f0f3f7', fontWeight: 600, color: '#3a4a5c' }}>수집 항목</th>
-                  <th style={{ border: '1px solid #bcc5d0', padding: '2px 5px', textAlign: 'center', background: '#f0f3f7', fontWeight: 600, color: '#3a4a5c' }}>수집·이용 목적</th>
-                  <th style={{ border: '1px solid #bcc5d0', padding: '2px 5px', textAlign: 'center', background: '#f0f3f7', fontWeight: 600, color: '#3a4a5c' }}>보유·이용 기간</th>
+                  <th style={{ width: '10%', border: '1px solid #bcc5d0', padding: '2px 3px', textAlign: 'center', background: '#f0f3f7', fontWeight: 700, color: '#3a4a5c' }}>구분</th>
+                  <th style={{ width: '18%', border: '1px solid #bcc5d0', padding: '2px 3px', textAlign: 'center', background: '#f0f3f7', fontWeight: 700, color: '#3a4a5c' }}>처리자·제공받는 자</th>
+                  <th style={{ width: '27%', border: '1px solid #bcc5d0', padding: '2px 3px', textAlign: 'center', background: '#f0f3f7', fontWeight: 700, color: '#3a4a5c' }}>이용·제공 목적</th>
+                  <th style={{ width: '27%', border: '1px solid #bcc5d0', padding: '2px 3px', textAlign: 'center', background: '#f0f3f7', fontWeight: 700, color: '#3a4a5c' }}>개인정보 항목</th>
+                  <th style={{ width: '18%', border: '1px solid #bcc5d0', padding: '2px 3px', textAlign: 'center', background: '#f0f3f7', fontWeight: 700, color: '#3a4a5c' }}>보유·이용 기간</th>
                 </tr></thead>
-                <tbody><tr>
-                  <td style={{ border: '1px solid #bcc5d0', padding: '2px 5px', textAlign: 'center' }}>성명, 주민등록번호, 전화번호, 이메일, 주소</td>
-                  <td style={{ border: '1px solid #bcc5d0', padding: '2px 5px', textAlign: 'center' }}>컨설팅 계약 체결·이행, 낙찰 대리, 명도 절차 진행, 수수료 청구</td>
-                  <td style={{ border: '1px solid #bcc5d0', padding: '2px 5px', textAlign: 'center' }}>계약 종료 후 5년</td>
-                </tr></tbody>
+                <tbody>
+                  <tr>
+                    <th style={{ border: '1px solid #bcc5d0', padding: '2px 3px', textAlign: 'center', background: '#fafbfc', fontWeight: 700 }}>수집·이용</th>
+                    <td style={{ border: '1px solid #bcc5d0', padding: '2px 3px', textAlign: 'center' }}>㈜엘앤씨부동산중개법인</td>
+                    <td style={{ border: '1px solid #bcc5d0', padding: '2px 3px' }}>컨설팅 계약 체결·이행, 입찰·낙찰 지원, 명도 절차 안내 및 수수료 정산</td>
+                    <td style={{ border: '1px solid #bcc5d0', padding: '2px 3px' }}>성명, 생년월일, 전화번호, 이메일, 주소, 사건번호 및 대상 물건 정보</td>
+                    <td style={{ border: '1px solid #bcc5d0', padding: '2px 3px' }}>계약 종료 후 5년. 다만 관계 법령상 보존의무가 있는 경우 해당 기간</td>
+                  </tr>
+                  <tr>
+                    <th style={{ border: '1px solid #bcc5d0', padding: '2px 3px', textAlign: 'center', background: '#fafbfc', fontWeight: 700 }}>제3자 제공</th>
+                    <td style={{ border: '1px solid #bcc5d0', padding: '2px 3px', textAlign: 'center', fontWeight: 700 }}>법무법인 명승</td>
+                    <td style={{ border: '1px solid #bcc5d0', padding: '2px 3px' }}>의뢰하신 경매 물건의 권리관계와 법률상 쟁점을 검토하고 자문의견을 제공하기 위함</td>
+                    <td style={{ border: '1px solid #bcc5d0', padding: '2px 3px' }}>성명, 생년월일, 전화번호, 사건번호 및 권리분석 대상 물건 정보</td>
+                    <td style={{ border: '1px solid #bcc5d0', padding: '2px 3px' }}>자문 목적 달성 후 즉시 파기. 다만 관계 법령상 보존의무가 있는 경우 해당 기간</td>
+                  </tr>
+                </tbody>
               </table>
-              <p>※ 개인정보 수집·이용에 대한 동의를 거부할 권리가 있으며, 동의 거부 시 컨설팅 계약 체결이 제한될 수 있습니다.</p>
-              <div style={{ marginTop: 4, fontSize: '8pt', fontWeight: 600 }}>☐ 위 개인정보 수집·이용에 동의합니다.</div>
-              <div style={{ marginTop: 3, textAlign: 'right', fontSize: '8pt' }}>{fields.writeDate} &nbsp;&nbsp; 의뢰인(갑): __________________ &nbsp; (서명) _______________</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 10px' }}>
+                <p style={{ margin: 0 }}>※ 수집·이용 동의를 거부할 수 있으나, 계약 체결·이행에 필요한 최소정보의 동의를 거부하면 관련 서비스 제공이 제한될 수 있습니다.</p>
+                <p style={{ margin: 0 }}>※ 제3자 제공 동의를 거부할 수 있으며, 거부 시 법무법인 명승의 권리분석 자문 범위가 제한되거나 일정이 지연될 수 있습니다.</p>
+                <div style={{ marginTop: 1, fontSize: '7pt', fontWeight: 700 }}>개인정보 수집·이용: ☐ 동의함 &nbsp; ☐ 동의하지 않음</div>
+                <div style={{ marginTop: 1, fontSize: '7pt', fontWeight: 700 }}>법무법인 명승 제3자 제공: ☐ 동의함 &nbsp; ☐ 동의하지 않음</div>
+              </div>
+              <div style={{ marginTop: 2, textAlign: 'right', fontSize: '7pt' }}>{fields.writeDate} &nbsp;&nbsp; 의뢰인(갑): __________________ &nbsp; (서명) _______________</div>
             </div>
 
             {/* 푸터 */}
-            <div style={{ marginTop: 'auto', paddingTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '7pt', color: '#8a9ab5', borderTop: '1.5px solid #c5cdd8', position: 'relative', zIndex: 1 }}>
+            <div style={{ marginTop: 'auto', paddingTop: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '6.8pt', color: '#8a9ab5', borderTop: '1.5px solid #c5cdd8', position: 'relative', zIndex: 1 }}>
               <img src="/logo.png" alt="MY-AUCTION" style={{ height: 42, objectFit: 'contain' }} />
               <div style={{ textAlign: 'right', lineHeight: 1.35 }}>
                 ㈜엘앤씨부동산중개법인 127-86-29704 &nbsp;|&nbsp; 경기도 의정부시 녹양로 41 풍전빌딩 2층<br />

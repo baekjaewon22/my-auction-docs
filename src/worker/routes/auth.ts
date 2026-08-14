@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { resolveLoginSessionType } from '../../shared/login-session.ts';
 import type { AuthEnv, User } from '../types.ts';
 import { createToken, hashPassword, verifyPassword, authMiddleware } from '../middleware/auth.ts';
 import { sendAlimtalkByTemplate, normalizePhone } from '../alimtalk.ts';
@@ -93,12 +94,13 @@ auth.post('/login', async (c) => {
   if (user.role !== 'master' && userLoginType !== requestType) {
     return c.json({ error: requestType === 'freelancer' ? '프리랜서 계정이 아닙니다. 일반 로그인을 이용해주세요.' : '일반 계정이 아닙니다. 프리랜서 로그인을 이용해주세요.' }, 403);
   }
+  const sessionLoginType = resolveLoginSessionType(user.role, userLoginType, requestType);
 
   const token = await createToken({
     sub: user.id, email: user.email, name: user.name, phone: user.phone,
     role: user.role, team_id: user.team_id, branch: user.branch, department: user.department,
     position_title: user.position_title,
-    login_type: userLoginType,
+    login_type: sessionLoginType,
     auth_version: user.auth_version || 0,
   }, c.env);
 
@@ -107,7 +109,7 @@ auth.post('/login', async (c) => {
     user: { id: user.id, email: user.email, name: user.name, phone: user.phone,
       role: user.role, team_id: user.team_id, branch: user.branch, department: user.department,
       position_title: user.position_title,
-      login_type: userLoginType,
+      login_type: sessionLoginType,
       myauction_id: (user as any).myauction_id || '',
       has_myauction_credentials: (user as any).myauction_id && (user as any).myauction_pw ? 1 : 0,
       report_permission: (user as any).report_permission || 'basic' },
@@ -145,7 +147,12 @@ auth.get('/me', authMiddleware, async (c) => {
     FROM users WHERE id = ?
   `).bind(payload.sub).first();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
-  return c.json({ user });
+  return c.json({
+    user: {
+      ...user,
+      login_type: payload.login_type || (user as any).login_type || 'employee',
+    },
+  });
 });
 
 // ━━━ 비밀번호 찾기 ━━━

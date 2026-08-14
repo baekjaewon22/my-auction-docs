@@ -21,6 +21,7 @@ export interface User {
   myauction_pw?: string;
   has_myauction_credentials?: number;
   report_permission?: 'basic' | 'special';
+  login_type?: 'employee' | 'freelancer';
   approved: number;
   auth_version?: number;
   created_at: string;

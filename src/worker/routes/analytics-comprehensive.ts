@@ -12,9 +12,24 @@ import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { countBusinessDates } from '../../shared/work-calendar';
 import { loadSystemHolidayDates } from '../lib/system-holidays';
 import { analyticsSalesBucketSql, confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
+import { ensureEmploymentTypeHistoryTable, employmentTypeAtMonthSql } from '../lib/employment-conversion';
+import { ensurePayTypeHistoryTable, payTypeAtMonthSql, payTypeValueAtMonthSql } from '../lib/pay-type-history';
+import { ensureAuctionScheduleTable } from '../lib/auction-schedule-schema';
+import {
+  archivedPerformanceMemberPredicateSql,
+  isSupplementalBidAnalysisSource,
+  matchingAuctionScheduleExistsSql,
+  performanceActivityCountsSql,
+} from '../lib/performance-activity';
 
 const comprehensive = new Hono<AuthEnv>();
 comprehensive.use('*', authMiddleware);
+comprehensive.use('*', async (c, next) => {
+  if (c.get('user').login_type === 'freelancer') {
+    return c.json({ error: '프리랜서는 근태·일지가 포함된 종합성과 분석을 열람할 수 없습니다.' }, 403);
+  }
+  await next();
+});
 
 // 백필/수동 갱신 엔드포인트 (master·ceo·accountant만)
 comprehensive.post('/backfill', requireRole('master', 'ceo', 'accountant'), async (c) => {
@@ -223,26 +238,70 @@ comprehensive.get('/', async (c) => {
   const [sy, sm] = (month || curMonth).split('-').map(Number);
   const periodMonths = (py - sy) * 12 + (pm - sm) + 1;
   const standardProrationFactor = periodMonths / 2;
+  await ensureEmploymentTypeHistoryTable(db);
+  await ensurePayTypeHistoryTable(db);
+  await ensureAuctionScheduleTable(db);
 
   // 1. 멤버 + accounting + org branch 조회
   // 컨설턴트만: 본사관리/명도팀/지원팀/대표/총무/정민호 제외
   const JEONG_MINHO_ID = '2b6b3606-e425-4361-a115-9283cfef842f';
+  const effectiveLoginTypeSql = employmentTypeAtMonthSql(
+    'u.id',
+    '?',
+    "COALESCE(u.login_type, 'employee')",
+  );
+  const effectiveSalarySql = payTypeValueAtMonthSql(
+    'u.id',
+    '?',
+    'salary',
+    'COALESCE(ua.salary, 0)',
+  );
+  const effectiveStandardSalesSql = payTypeValueAtMonthSql(
+    'u.id',
+    '?',
+    'standard_sales',
+    'COALESCE(ua.standard_sales, 0)',
+  );
+  const effectiveGradeSql = payTypeValueAtMonthSql(
+    'u.id',
+    '?',
+    'grade',
+    "COALESCE(ua.grade, '')",
+  );
+  const effectivePayTypeSql = payTypeAtMonthSql(
+    'u.id',
+    '?',
+    "COALESCE(ua.pay_type, 'salary')",
+  );
   let memberQuery = `
     SELECT u.id, u.name, u.role, u.branch, u.department, u.position_title,
-      u.hire_date, u.created_at, u.login_type,
-      COALESCE(ua.salary, 0) as salary,
-      COALESCE(ua.standard_sales, 0) as standard_sales,
-      COALESCE(ua.grade, '') as grade,
-      COALESCE(ua.pay_type, 'salary') as pay_type
+      u.hire_date, u.created_at,
+      ${effectiveLoginTypeSql} as login_type,
+      ${effectiveSalarySql} as salary,
+      ${effectiveStandardSalesSql} as standard_sales,
+      ${effectiveGradeSql} as grade,
+      ${effectivePayTypeSql} as pay_type
     FROM users u
     LEFT JOIN user_accounting ua ON ua.user_id = u.id
-    WHERE u.role NOT IN ('master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst', 'support', 'resigned')
+    WHERE u.role NOT IN ('master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst', 'support')
+      AND ${archivedPerformanceMemberPredicateSql('u')}
       AND REPLACE(u.branch, ' ', '') != '본사관리'
       AND (u.department IS NULL OR u.department NOT IN ('명도팀', '지원팀'))
       AND u.id != ?
       AND u.login_type != 'freelancer-old'
   `;
-  const params: any[] = [JEONG_MINHO_ID];
+  const params: any[] = [
+    periodEndMonth,
+    periodEndMonth,
+    periodEndMonth,
+    periodEndMonth,
+    periodEndMonth,
+    periodStart,
+    periodEnd,
+    periodStart,
+    periodEnd,
+    JEONG_MINHO_ID,
+  ];
   if (scopedUserId) {
     memberQuery += ' AND u.id = ?';
     params.push(scopedUserId);
@@ -277,13 +336,8 @@ comprehensive.get('/', async (c) => {
   }
 
   // 2. 활동 카운트 (기간 내)
-  const activityRes = await db.prepare(`
-    SELECT user_id, activity_type, COUNT(*) as cnt
-    FROM journal_entries
-    WHERE target_date BETWEEN ? AND ?
-      AND COALESCE(json_extract(data, '$.companion'), 0) != 1
-    GROUP BY user_id, activity_type
-  `).bind(periodStart, periodEnd).all<any>();
+  const activityRes = await db.prepare(performanceActivityCountsSql())
+    .bind(periodStart, periodEnd).all<any>();
   const activityMap: Record<string, Record<string, number>> = {};
   (activityRes.results || []).forEach((r: any) => {
     if (!activityMap[r.user_id]) activityMap[r.user_id] = {};
@@ -293,26 +347,38 @@ comprehensive.get('/', async (c) => {
   // 입찰은 일지뿐 아니라 엑셀/프리랜서/수기 보정까지 포함된 입찰분석 테이블을 평가 원천으로 사용한다.
   await ensureBidAnalysisTable(db);
   const bidRows = await db.prepare(`
-    SELECT bid_datetime, assignee_name, branch_name, suggested_bid_price, actual_bid_price, bid_result
-    FROM bid_analysis_entries
+    SELECT bid_datetime, assignee_user_id, assignee_name, branch_name,
+      suggested_bid_price, actual_bid_price, bid_result, source_type, source_id
+    FROM bid_analysis_entries b
     WHERE substr(bid_datetime, 1, 10) BETWEEN ? AND ?
+      AND NOT (
+        b.source_type = 'freelancer'
+        AND b.source_id NOT LIKE 'auction-schedule:%'
+        AND ${matchingAuctionScheduleExistsSql('b.assignee_user_id', 'b.bid_datetime', 'b.case_number')}
+      )
   `).bind(periodStart, periodEnd).all<any>();
   const memberByBranchName = new Map<string, any>();
   const memberByName = new Map<string, any>();
+  const memberById = new Map<string, any>();
   members.forEach((m: any) => {
+    memberById.set(m.id, m);
     if (!m.name) return;
     memberByName.set(String(m.name).trim(), m);
     memberByBranchName.set(`${m.branch || ''}|${String(m.name).trim()}`, m);
     if (!activityMap[m.id]) activityMap[m.id] = {};
-    activityMap[m.id]['입찰'] = 0;
+    if (activityMap[m.id]['입찰'] === undefined) activityMap[m.id]['입찰'] = 0;
   });
   const winMap: Record<string, number> = {};
   const processedBidMap: Record<string, number> = {};
   const deviationMap: Record<string, number> = {};
   (bidRows.results || []).forEach((row: any) => {
-    const member = memberByBranchName.get(`${row.branch_name || ''}|${row.assignee_name || ''}`) || memberByName.get(row.assignee_name || '');
+    const member = memberById.get(row.assignee_user_id)
+      || memberByBranchName.get(`${row.branch_name || ''}|${row.assignee_name || ''}`)
+      || memberByName.get(row.assignee_name || '');
     if (!member) return;
-    activityMap[member.id]['입찰'] = (activityMap[member.id]['입찰'] || 0) + 1;
+    if (isSupplementalBidAnalysisSource(row.source_type, row.source_id)) {
+      activityMap[member.id]['입찰'] = (activityMap[member.id]['입찰'] || 0) + 1;
+    }
     if (Number(row.actual_bid_price || 0) > 0 || row.bid_result === '낙찰') {
       processedBidMap[member.id] = (processedBidMap[member.id] || 0) + 1;
     }
@@ -417,7 +483,7 @@ comprehensive.get('/', async (c) => {
   // 6. 5% 편차 입찰 수 + 낙찰 수는 위 입찰분석 테이블 기준으로 계산한다.
 
   // 7. 전 지사 비율제(commission) 평균 매출 — analytics_snapshots 캐시 lookup, 없으면 실시간 fallback
-  const queryYM = month || curYM;
+  const queryYM = periodEndMonth;
   const snapshotRes = await db.prepare(`
     SELECT value FROM analytics_snapshots
     WHERE scope = 'paytype' AND scope_value = 'commission' AND ym = ? AND metric = 'avg_sales'

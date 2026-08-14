@@ -39,9 +39,9 @@ export async function buildOrgApprovalChain(
   const userNode = await db.prepare(
     'SELECT * FROM org_nodes WHERE user_id = ?'
   ).bind(authorId).first<OrgNode>();
-  // Employee workflows historically require an organization node. Only callers
-  // that explicitly support an external/freelancer author may opt into fallback.
-  if (!userNode && options.allowMissingOrgNode !== true) return [];
+  // Keep the historical branch-override/CC fallback for employees who have not
+  // yet been placed in the organization chart. Callers may explicitly opt out.
+  if (!userNode && options.allowMissingOrgNode === false) return [];
   const author = await db.prepare(
     'SELECT role, branch FROM users WHERE id = ?'
   ).bind(authorId).first<{ role: string; branch: string }>();

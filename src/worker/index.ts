@@ -26,21 +26,26 @@ import adminNotesRoute from './routes/admin-notes';
 import cooperationRoute from './routes/cooperation';
 import roomsRoute from './routes/rooms';
 import driveRoute from './routes/drive';
+import briefingMaterialsRoute from './routes/briefing-materials';
 import linksRoute from './routes/links';
 import approvalAlertsRoute from './routes/approval-alerts';
 import journalAlertsRoute from './routes/journal-alerts';
 import serviceTokensRoute from './routes/service-tokens';
 import freelancerBidsRoute from './routes/freelancer-bids';
+import auctionScheduleRoute from './routes/auction-schedule';
 import systemSettingsRoute from './routes/system-settings';
 import reportRoute from './routes/report';
+import automationAgentQueueRoute from './routes/automation-agent-queue';
 import auctionReferenceRoute from './routes/auction-reference';
 import announcementPopupsRoute from './routes/announcement-popups';
 import webPushRoute from './routes/web-push';
+import lawitgoProgressRoute from './routes/lawitgo-progress';
 import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
 import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
 import { cleanupExpiredArticlePdfs } from './lib/article-pdfs';
 import { cleanupOldDocuments } from './lib/document-retention';
+import { cleanupBackedUpBriefingMaterials } from './lib/briefing-material-retention';
 import { consumeDriveOAuthState, DRIVE_OAUTH_ADMIN_ROLES, verifyDriveOAuthState } from './lib/drive-oauth-state';
 import { escapeHtml } from '../shared/html';
 
@@ -107,13 +112,18 @@ app.route('/api/admin-notes', adminNotesRoute);
 app.route('/api/cooperation', cooperationRoute);
 app.route('/api/rooms', roomsRoute);
 app.route('/api/drive', driveRoute);
+app.route('/api/briefing-materials', briefingMaterialsRoute);
 app.route('/api/links', linksRoute);
 app.route('/api/approval-alerts', approvalAlertsRoute);
 app.route('/api/journal-alerts', journalAlertsRoute);
 app.route('/api/service-tokens', serviceTokensRoute);
 app.route('/api/freelancer-bids', freelancerBidsRoute);
+app.route('/api/auction-schedule', auctionScheduleRoute);
+app.route('/api/lawitgo-progress', lawitgoProgressRoute);
+app.route('/api/lawitgo/progress', lawitgoProgressRoute);
 app.route('/api/system', systemSettingsRoute);
 app.route('/api/report', reportRoute);
+app.route('/api/automation-agent', automationAgentQueueRoute);
 app.route('/api/auction-reference', auctionReferenceRoute);
 app.route('/api/announcement-popups', announcementPopupsRoute);
 app.route('/api/web-push', webPushRoute);
@@ -415,6 +425,21 @@ app.post('/api/_test-alimtalk-all', async (c) => {
 async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext) {
   const cron = event.cron;
   if (cron === '*/30 * * * *') {
+    const scheduledAt = new Date((event as any).scheduledTime || Date.now());
+    if (scheduledAt.getUTCMinutes() === 0 && [0, 3, 6, 9].includes(scheduledAt.getUTCHours())) {
+      ctx.waitUntil(import('./lib/lawitgo-progress-cache').then(({ pullLawitgoProgressCache }) =>
+        pullLawitgoProgressCache(env).then(
+          (r) => console.log('[cron lawitgo-progress-cache] done', r),
+          (err) => console.error('[cron lawitgo-progress-cache] error', err),
+        ),
+      ));
+      ctx.waitUntil(import('./lib/lawitgo-winning-delivery').then(({ runLawitgoWinningDelivery }) =>
+        runLawitgoWinningDelivery(env, scheduledAt).then(
+          (r) => console.log('[cron lawitgo-winning-delivery] done', r),
+          (err) => console.error('[cron lawitgo-winning-delivery] error', err),
+        ),
+      ));
+    }
     ctx.waitUntil(runBackupBatch(env, { triggered_by: 'cron', limit: 5 }).then(
       (r) => console.log('[cron drive] done', r),
       (err) => console.error('[cron drive] error', err),
@@ -450,6 +475,12 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
         console.error('[cron approval-alerts] error', err);
       }
     })());
+    ctx.waitUntil(import('./lib/auction-bid-result-reminders').then(({ runAuctionBidResultReminders }) =>
+      runAuctionBidResultReminders(env, new Date((event as any).scheduledTime || Date.now())).then(
+        (r) => { if (r.reminders > 0) console.log('[cron auction-bid-result-reminders] done', r); },
+        (err) => console.error('[cron auction-bid-result-reminders] error', err),
+      ),
+    ));
   } else if (cron === '30 0 * * 1-5') {
     ctx.waitUntil(import('./lib/web-push-setup-reminders').then(({ runWebPushSetupReminders }) =>
       runWebPushSetupReminders(env, new Date((event as any).scheduledTime || Date.now())).then(
@@ -487,6 +518,10 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
     ctx.waitUntil(cleanupOldDocuments(env.DB, { dryRun: false }).then(
       (r) => { if (r.documents > 0 || r.orphan_drive_backup_logs > 0) console.log('[cron document-retention] done', r); },
       (err) => console.error('[cron document-retention] error', err),
+    ));
+    ctx.waitUntil(cleanupBackedUpBriefingMaterials(env, 100).then(
+      (r) => { if (r.archived > 0) console.log('[cron briefing-material-retention] done', r); },
+      (err) => console.error('[cron briefing-material-retention] error', err),
     ));
   } else if (cron === '30 15 1 * *') {
     ctx.waitUntil(import('./analytics-cron').then(({ runMonthlyAggregation }) =>

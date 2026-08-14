@@ -55,6 +55,10 @@ export default function UserManagement() {
   // 상세페이지 관련
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [salaryInput, setSalaryInput] = useState('');
+  const [accountingEffectiveMonth, setAccountingEffectiveMonth] = useState(() => {
+    const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    return kst.toISOString().slice(0, 7);
+  });
   const [gradeInput, setGradeInput] = useState('');
   const [posAllowanceInput, setPosAllowanceInput] = useState('');
   const [cardNumbers, setCardNumbers] = useState<string[]>(['']);
@@ -63,6 +67,13 @@ export default function UserManagement() {
   const [commissionRate, setCommissionRate] = useState('');
   const [ssnInput, setSsnInput] = useState('');
   const [addressInput, setAddressInput] = useState('');
+  const [previousEmployeeAccount, setPreviousEmployeeAccount] = useState<{
+    salary: number;
+    standard_sales: number;
+    grade: '' | 'M1' | 'M2' | 'M3' | 'M4';
+    position_allowance: number;
+    effective_month?: string;
+  } | null>(null);
   const [evaluations, setEvaluations] = useState<SalesEvaluation[]>([]);
   const [saving, setSaving] = useState(false);
   const [converting, setConverting] = useState(false);
@@ -110,7 +121,7 @@ export default function UserManagement() {
   const availableRoles = getAvailableRoles();
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`"${name}" 계정을 삭제하시겠습니까?\n관련된 문서, 일지, 서명이 모두 삭제됩니다.`)) return;
+    if (!confirm(`"${name}" 계정을 퇴사 보관 처리하시겠습니까?\n로그인은 차단되지만 지난 일정, 급여, 성과, 문서 기록은 모두 유지됩니다.`)) return;
     try { await api.users.delete(id); load(); }
     catch (err: any) { alert(err.message); }
   };
@@ -229,11 +240,14 @@ export default function UserManagement() {
   // ── 상세 페이지: 사용자 클릭 시 ──
   const handleSelectUser = async (u: User) => {
     setSelectedUser(u);
+    setPreviousEmployeeAccount(null);
     setResetPasswordInput('');
     setMyauctionIdInput(u.myauction_id || '');
     setMyauctionPwInput('');
     setReportPermissionInput(u.report_permission || 'basic');
     setHireDateInput(u.hire_date || '');
+    const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    setAccountingEffectiveMonth(kst.toISOString().slice(0, 7));
     // 알림톡 설정 로드
     try {
       const alimRes = await api.users.getAlimtalkSettings(u.id);
@@ -248,6 +262,7 @@ export default function UserManagement() {
       setCardNumbers(['']);
       setPayType('salary');
       setCommissionRate('');
+      setPreviousEmployeeAccount(null);
       setEvaluations([]);
       return;
     }
@@ -257,6 +272,7 @@ export default function UserManagement() {
         api.accounting.evaluations(u.id),
       ]);
       const acc = accRes.account;
+      setPreviousEmployeeAccount(accRes.previous_employee_account);
       setSalaryInput(acc?.salary?.toString() || '');
       setGradeInput(acc?.grade || '');
       setPosAllowanceInput(acc?.position_allowance?.toString() || '0');
@@ -275,6 +291,7 @@ export default function UserManagement() {
       setCommissionRate('');
       setSsnInput('');
       setAddressInput('');
+      setPreviousEmployeeAccount(null);
       setEvaluations([]);
     }
   };
@@ -287,20 +304,31 @@ export default function UserManagement() {
     }
     setSaving(true);
     try {
-      await api.accounting.update(selectedUser.id, {
+      const result = await api.accounting.update(selectedUser.id, {
         salary: payType === 'commission' ? 0 : (Number(salaryInput) || 0),
         grade: payType === 'commission' ? '' : gradeInput,
         position_allowance: Number(posAllowanceInput) || 0,
         pay_type: payType,
         commission_rate: Number(commissionRate) || 0,
-        ssn: payType === 'commission' ? ssnInput : '',
-        address: payType === 'commission' ? addressInput : '',
+        ssn: ssnInput,
+        address: addressInput,
+        effective_month: accountingEffectiveMonth,
       });
       // 카드번호도 저장
       await api.card.updateUserCard(selectedUser.id, cardNumbers.filter(c => c.trim()).join(','));
-      alert('저장되었습니다.');
+      const recalculationNotice = result.recalculation_required_periods?.length
+        ? `\n다시 계산·저장해야 하는 미확정 정산: ${result.recalculation_required_periods.join(', ')}`
+        : '';
+      alert(`${result.effective_month}부터 적용되도록 저장했습니다.${recalculationNotice}`);
     } catch (err: any) { alert(err.message); }
     finally { setSaving(false); }
+  };
+
+  const selectCommissionPayType = () => {
+    setPayType('commission');
+    if (normalizeCommissionRate(commissionRate) === null) {
+      setCommissionRate('50');
+    }
   };
 
   const handleConvertToEmployee = async () => {
@@ -345,8 +373,9 @@ export default function UserManagement() {
       setPosAllowanceInput(String(res.account.position_allowance || positionAllowance || 0));
       setPayType('salary');
       setCommissionRate('0');
-      setSsnInput('');
-      setAddressInput('');
+      setSsnInput(res.account.ssn || ssnInput);
+      setAddressInput(res.account.address || addressInput);
+      setPreviousEmployeeAccount(null);
       alert('정규직 전환이 완료되었습니다. 기존 개인 데이터와 전환 전 업무 역할·급여 이력은 이어서 사용됩니다.');
     } catch (err: any) { alert(err.message); }
     finally { setConverting(false); }
@@ -359,7 +388,7 @@ export default function UserManagement() {
       return;
     }
     if (!canConvertEmployeeRoleToFreelancer(selectedUser.role)) {
-      alert('총괄이사·팀장·팀원 계정만 프리랜서로 전환할 수 있습니다.');
+      alert('팀장·팀원 계정만 프리랜서로 전환할 수 있습니다. 명도팀·PD·사무장과 관리자 이상 계정은 일반 로그인을 유지합니다.');
       return;
     }
     if (payType !== 'commission') {
@@ -381,19 +410,23 @@ export default function UserManagement() {
     try {
       const preview = await api.users.freelancerConversionImpact(selectedUser.id);
       const blockers = freelancerConversionBlockers(preview.impact);
-      if (blockers.length > 0) {
-        alert(`전환 전에 다음 업무를 처리해주세요.\n- ${blockers.join('\n- ')}`);
-        return;
-      }
 
       const impact = preview.impact;
+      const pendingWorkNotice = blockers.length > 0
+        ? `\n전환과 함께 자동 처리\n`
+          + `• 휴가 신청·취소 대기 ${impact.pending_leave_requests}건: 취소 처리\n`
+          + `• 작성 중·제출 중인 일반 사내 문서 ${impact.active_non_myauction_documents}건: 취소/반려 처리\n`
+          + `• 다른 직원 문서의 담당 결재 ${impact.pending_approval_steps}건: 일반 로그인 관리자에게 재배정\n`
+          + `• 마이옥션 문서와 매출 미작성 알림은 그대로 유지\n`
+        : '';
       const confirmed = confirm(
         `${selectedUser.name}님을 프리랜서 계정으로 전환하시겠습니까?\n\n`
         + `전환 후 변경\n`
         + `• 프리랜서 로그인과 비율제 ${rate}% 적용\n`
         + `• 급여·기준매출·직급은 0/미지정으로 전환\n`
-        + `• 시스템 권한은 팀원으로 조정 (기존 관리자·팀장 권한 제거)\n`
+        + `• 기존 업무 역할은 유지 (팀장은 프리랜서 팀 감독 범위 유지)\n`
         + `• 현재 로그인 세션은 종료되어 프리랜서로 다시 로그인 필요\n\n`
+        + pendingWorkNotice
         + `삭제되지 않고 보존되는 기존 데이터\n`
         + `• 문서 ${impact.documents}건 (사내 문서 ${impact.non_myauction_documents}건은 관리자만 열람)\n`
         + `• 매출 ${impact.sales_records}건, 사건 ${impact.cases}건\n`
@@ -410,6 +443,7 @@ export default function UserManagement() {
         ssn: ssnInput,
         address: addressInput,
         effective_month: effectiveMonth,
+        resolve_pending_work: blockers.length > 0,
       });
       const nextUser = { ...selectedUser, ...res.user, login_type: 'freelancer' as const };
       setSelectedUser(nextUser);
@@ -421,7 +455,22 @@ export default function UserManagement() {
       setCommissionRate(String(res.account.commission_rate || rate));
       setSsnInput(res.account.ssn || '');
       setAddressInput(res.account.address || '');
-      alert('프리랜서 전환이 완료되었습니다. 시스템 권한은 팀원으로 조정되며 기존 데이터와 전환 전 급여 이력은 보존됩니다.');
+      try {
+        const refreshedAccounting = await api.accounting.get(nextUser.id);
+        setPreviousEmployeeAccount(refreshedAccounting.previous_employee_account);
+      } catch {
+        const previousSalary = Number(salaryInput) || 0;
+        setPreviousEmployeeAccount({
+          salary: previousSalary,
+          standard_sales: Math.round(previousSalary * 1.3 * 4),
+          grade: (GRADE_OPTIONS.includes(gradeInput as any) ? gradeInput : '') as '' | 'M1' | 'M2' | 'M3' | 'M4',
+          position_allowance: positionAllowance,
+        });
+      }
+      const cleanupMessage = res.cleanup
+        ? `\n자동 처리: 휴가 ${res.cleanup.cancelled_leave_requests}건 취소, 일반 문서 ${res.cleanup.cancelled_non_myauction_documents}건 취소, 결재 ${res.cleanup.reassigned_approval_steps}건 재배정${res.cleanup.reassigned_to ? ` (${res.cleanup.reassigned_to})` : ''}`
+        : '';
+      alert(`프리랜서 전환이 완료되었습니다. 기존 업무 역할과 데이터·전환 전 급여 이력은 보존됩니다.${cleanupMessage}`);
     } catch (err: any) {
       alert(err.message);
     } finally {
@@ -643,7 +692,7 @@ export default function UserManagement() {
               {canEditAccounting && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontSize: '0.78rem', color: payType === 'salary' ? '#1a73e8' : '#9aa0a6', fontWeight: payType === 'salary' ? 700 : 400 }}>급여제</span>
-                  <div onClick={() => setPayType(payType === 'salary' ? 'commission' : 'salary')}
+                  <div onClick={() => payType === 'salary' ? selectCommissionPayType() : setPayType('salary')}
                     style={{ width: 44, height: 24, borderRadius: 12, background: payType === 'commission' ? '#7b1fa2' : '#dadce0', cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}>
                     <div style={{ width: 20, height: 20, borderRadius: 10, background: '#fff', position: 'absolute', top: 2, left: payType === 'commission' ? 22 : 2, transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }} />
                   </div>
@@ -651,6 +700,30 @@ export default function UserManagement() {
                 </div>
               )}
             </div>
+
+            {canEditAccounting && (
+              <div style={{ marginBottom: 16, padding: 14, border: '1px solid #d2e3fc', borderRadius: 8, background: '#f8fbff' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, marginBottom: 6, color: '#174ea6' }}>
+                  적용 시작월
+                </label>
+                <select
+                  className="form-input"
+                  value={accountingEffectiveMonth}
+                  onChange={(e) => setAccountingEffectiveMonth(e.target.value)}
+                  style={{ width: '100%', maxWidth: 260 }}
+                >
+                  {Array.from({ length: 24 }, (_, index) => {
+                    const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+                    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - index, 1));
+                    const value = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+                    return <option key={value} value={value}>{date.getUTCFullYear()}년 {date.getUTCMonth() + 1}월</option>;
+                  })}
+                </select>
+                <div style={{ fontSize: '0.75rem', color: '#5f6368', marginTop: 6 }}>
+                  선택한 월부터 급여·기준매출·직급·정산유형이 적용됩니다. 미확정 정산은 다시 계산 후 저장해야 하며, 확정된 정산은 먼저 확정취소해야 합니다.
+                </div>
+              </div>
+            )}
 
             {selectedUser.login_type === 'freelancer' && (
               <div style={{ marginBottom: 16, padding: 14, border: '1px solid #e8eaed', borderRadius: 8, background: '#f8fbff' }}>
@@ -662,8 +735,15 @@ export default function UserManagement() {
                     </div>
                   </div>
                   {canConvertEmploymentType && payType !== 'salary' && (
-                    <button type="button" className="btn btn-sm" onClick={() => setPayType('salary')}>
-                      급여제 입력
+                    <button type="button" className="btn btn-sm" onClick={() => {
+                      setPayType('salary');
+                      if (previousEmployeeAccount) {
+                        setSalaryInput(String(previousEmployeeAccount.salary || ''));
+                        setGradeInput(previousEmployeeAccount.grade || '');
+                        setPosAllowanceInput(String(previousEmployeeAccount.position_allowance || 0));
+                      }
+                    }}>
+                      이전 급여정보 불러오기
                     </button>
                   )}
                 </div>
@@ -681,7 +761,7 @@ export default function UserManagement() {
                     </div>
                   </div>
                   {canConvertEmploymentType && payType !== 'commission' && (
-                    <button type="button" className="btn btn-sm" onClick={() => setPayType('commission')}>
+                    <button type="button" className="btn btn-sm" onClick={selectCommissionPayType}>
                       비율제 입력
                     </button>
                   )}
@@ -752,9 +832,9 @@ export default function UserManagement() {
                 <div>
                   <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#7b1fa2' }}>비율 (%)</label>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <input className="form-input" type="number" step="0.1" min="0" max="100"
+                    <input className="form-input" type="number" step="0.1" min="0.1" max="100"
                       value={commissionRate} onChange={(e) => setCommissionRate(e.target.value)}
-                      disabled={!canEditAccounting} style={{ flex: 1 }} placeholder="예: 30" />
+                      disabled={!canEditAccounting} style={{ flex: 1 }} placeholder="기본 50" />
                     <span style={{ fontSize: '0.85rem', color: '#9aa0a6' }}>%</span>
                   </div>
                   <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 4 }}>매출 대비 지급 비율</div>
@@ -810,7 +890,16 @@ export default function UserManagement() {
 
             {canEditAccounting && (
               <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn btn-primary" onClick={handleSaveAccounting} disabled={saving}>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleSaveAccounting}
+                  disabled={saving || (selectedUser.login_type === 'freelancer' ? payType !== 'commission' : payType !== 'salary')}
+                  title={selectedUser.login_type === 'freelancer' && payType !== 'commission'
+                    ? '정규직 전환 버튼으로 변경해 주세요.'
+                    : selectedUser.login_type !== 'freelancer' && payType !== 'salary'
+                      ? '프리랜서 전환 버튼으로 변경해 주세요.'
+                      : ''}
+                >
                   {saving ? '저장중...' : '저장'}
                 </button>
                 {selectedUser.login_type === 'freelancer' && canConvertEmploymentType && (

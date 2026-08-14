@@ -1,6 +1,7 @@
 import { APP_URL, sendAlimtalkByTemplate } from '../alimtalk';
 import type { AlimtalkTemplateKey } from '../alimtalk';
 import { communityCreatedNotificationMode } from '../../shared/community-notifications';
+import { JEONG_MINHO_USER_ID } from '../../shared/eviction-quote-access';
 
 type CommunityCategory = 'eviction_quote' | 'legal_support';
 
@@ -64,18 +65,13 @@ async function configuredRecipients(
 }
 
 async function evictionQuoteRecipients(db: D1Database): Promise<CommunityRecipient[]> {
-  return configuredRecipients(db, RECIPIENT_CATEGORIES.eviction_quote, async () => {
-    const rows = await db.prepare(`
-      SELECT DISTINCT u.id, u.phone
-      FROM users u LEFT JOIN teams t ON t.id = u.team_id
-      WHERE u.approved = 1 AND u.phone IS NOT NULL AND u.phone != ''
-        AND (
-          u.department = '명도팀' OR t.name = '명도팀'
-          OR (REPLACE(u.branch, ' ', '') IN ('의정부', '의정부본사') AND u.position_title = '지사장')
-        )
-    `).bind().all<CommunityRecipient>();
-    return rows.results || [];
-  });
+  const rows = await db.prepare(`
+    SELECT DISTINCT u.id, u.phone
+    FROM users u LEFT JOIN teams t ON t.id = u.team_id
+    WHERE u.approved = 1 AND u.phone IS NOT NULL AND u.phone != ''
+      AND (u.department = '명도팀' OR t.name = '명도팀' OR u.id = ?)
+  `).bind(JEONG_MINHO_USER_ID).all<CommunityRecipient>();
+  return rows.results || [];
 }
 
 async function legalSupportRecipients(db: D1Database): Promise<CommunityRecipient[]> {
@@ -91,6 +87,13 @@ async function legalSupportRecipients(db: D1Database): Promise<CommunityRecipien
 }
 
 export async function communityBroadcastRecipientIds(db: D1Database, category: string): Promise<string[]> {
+  if (category === 'eviction_quote') {
+    const rows = await db.prepare(`
+      SELECT DISTINCT u.id FROM users u LEFT JOIN teams t ON t.id = u.team_id
+      WHERE u.approved = 1 AND (u.department = '명도팀' OR t.name = '명도팀' OR u.id = ?)
+    `).bind(JEONG_MINHO_USER_ID).all<{ id: string }>();
+    return (rows.results || []).map((row) => row.id);
+  }
   const configuredCategory = RECIPIENT_CATEGORIES[category as CommunityCategory];
   if (!configuredCategory) return [];
   try {
@@ -102,16 +105,6 @@ export async function communityBroadcastRecipientIds(db: D1Database, category: s
     if ((configured.results || []).length > 0) return configured.results.map((row) => row.id);
   } catch {
     // 이전 스키마는 아래 조직 기준으로 대체한다.
-  }
-  if (category === 'eviction_quote') {
-    const rows = await db.prepare(`
-      SELECT DISTINCT u.id FROM users u LEFT JOIN teams t ON t.id = u.team_id
-      WHERE u.approved = 1 AND (
-        u.department = '명도팀' OR t.name = '명도팀'
-        OR (REPLACE(u.branch, ' ', '') IN ('의정부', '의정부본사') AND u.position_title = '지사장')
-      )
-    `).bind().all<{ id: string }>();
-    return (rows.results || []).map((row) => row.id);
   }
   if (category === 'legal_support') {
     const rows = await db.prepare(`

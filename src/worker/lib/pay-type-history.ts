@@ -69,18 +69,26 @@ export async function getPayTypeSnapshotForMonth(
     SELECT pay_type, commission_rate, salary, standard_sales, grade, position_allowance, effective_month
     FROM user_pay_type_history
     WHERE user_id = ? AND effective_month <= ?
-    ORDER BY effective_month DESC, created_at DESC
+    ORDER BY effective_month DESC, created_at DESC, rowid DESC
     LIMIT 1
   `).bind(userId, month).first<any>();
+  const earliestRow = row ? null : await db.prepare(`
+    SELECT pay_type, commission_rate, salary, standard_sales, grade, position_allowance, effective_month
+    FROM user_pay_type_history
+    WHERE user_id = ?
+    ORDER BY effective_month ASC, created_at ASC, rowid ASC
+    LIMIT 1
+  `).bind(userId).first<any>();
+  const resolved = row || earliestRow;
 
   return {
-    pay_type: (row?.pay_type || fallback.pay_type || 'salary') as PayType,
-    commission_rate: Number(row?.commission_rate ?? fallback.commission_rate ?? 0),
-    salary: Number(row?.salary ?? fallback.salary ?? 0),
-    standard_sales: Number(row?.standard_sales ?? fallback.standard_sales ?? 0),
-    grade: String(row?.grade ?? fallback.grade ?? ''),
-    position_allowance: Number(row?.position_allowance ?? fallback.position_allowance ?? 0),
-    effective_month: row?.effective_month,
+    pay_type: (resolved?.pay_type || fallback.pay_type || 'salary') as PayType,
+    commission_rate: Number(resolved?.commission_rate ?? fallback.commission_rate ?? 0),
+    salary: Number(resolved?.salary ?? fallback.salary ?? 0),
+    standard_sales: Number(resolved?.standard_sales ?? fallback.standard_sales ?? 0),
+    grade: String(resolved?.grade ?? fallback.grade ?? ''),
+    position_allowance: Number(resolved?.position_allowance ?? fallback.position_allowance ?? 0),
+    effective_month: resolved?.effective_month,
   };
 }
 
@@ -90,7 +98,7 @@ export async function getPayTypeHistoryRows(db: D1Database, userId: string): Pro
     SELECT pay_type, commission_rate, salary, standard_sales, grade, position_allowance, effective_month
     FROM user_pay_type_history
     WHERE user_id = ?
-    ORDER BY effective_month ASC, created_at ASC
+    ORDER BY effective_month ASC, created_at ASC, rowid ASC
   `).bind(userId).all<any>();
   return (result.results || []).map((row: any) => ({
     pay_type: (row.pay_type || 'salary') as PayType,
@@ -108,21 +116,64 @@ export function resolvePayTypeFromHistory(
   month: string,
   fallback: PayType,
 ): PayType {
-  let resolved = fallback;
+  return resolvePayTypeSnapshotFromHistory(rows, month, { pay_type: fallback }).pay_type;
+}
+
+export function resolvePayTypeSnapshotFromHistory(
+  rows: PayTypeHistorySnapshot[],
+  month: string,
+  fallback: Partial<PayTypeHistorySnapshot> = {},
+): PayTypeHistorySnapshot {
+  let resolved: Partial<PayTypeHistorySnapshot> = rows[0] || fallback;
   for (const row of rows) {
-    if ((row.effective_month || '') <= month) resolved = row.pay_type;
+    if ((row.effective_month || '') <= month) resolved = row;
     else break;
   }
-  return resolved;
+  return {
+    pay_type: (resolved.pay_type || fallback.pay_type || 'salary') as PayType,
+    commission_rate: Number(resolved.commission_rate ?? fallback.commission_rate ?? 0),
+    salary: Number(resolved.salary ?? fallback.salary ?? 0),
+    standard_sales: Number(resolved.standard_sales ?? fallback.standard_sales ?? 0),
+    grade: String(resolved.grade ?? fallback.grade ?? ''),
+    position_allowance: Number(resolved.position_allowance ?? fallback.position_allowance ?? 0),
+    effective_month: resolved.effective_month,
+  };
 }
 
 export function payTypeAtMonthSql(userIdExpr: string, monthExpr: string, fallbackExpr: string): string {
-  return `COALESCE((
-    SELECT h.pay_type
-    FROM user_pay_type_history h
-    WHERE h.user_id = ${userIdExpr}
-      AND h.effective_month <= ${monthExpr}
-    ORDER BY h.effective_month DESC, h.created_at DESC
-    LIMIT 1
-  ), ${fallbackExpr}, 'salary')`;
+  return payTypeValueAtMonthSql(userIdExpr, monthExpr, 'pay_type', `COALESCE(${fallbackExpr}, 'salary')`);
+}
+
+type PayTypeHistoryValueField =
+  | 'pay_type'
+  | 'commission_rate'
+  | 'salary'
+  | 'standard_sales'
+  | 'grade'
+  | 'position_allowance';
+
+export function payTypeValueAtMonthSql(
+  userIdExpr: string,
+  monthExpr: string,
+  field: PayTypeHistoryValueField,
+  fallbackExpr: string,
+): string {
+  return `COALESCE(
+    (
+      SELECT h.${field}
+      FROM user_pay_type_history h
+      WHERE h.user_id = ${userIdExpr}
+        AND h.effective_month <= ${monthExpr}
+      ORDER BY h.effective_month DESC, h.created_at DESC, h.rowid DESC
+      LIMIT 1
+    ),
+    (
+      SELECT h.${field}
+      FROM user_pay_type_history h
+      WHERE h.user_id = ${userIdExpr}
+      ORDER BY h.effective_month ASC, h.created_at ASC, h.rowid ASC
+      LIMIT 1
+    ),
+    ${fallbackExpr}
+  )`;
 }

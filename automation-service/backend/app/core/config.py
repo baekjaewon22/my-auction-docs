@@ -33,6 +33,19 @@ def get_app_root() -> Path:
 APP_ROOT = get_app_root()
 
 
+def get_work_root() -> Path:
+    """Return the mutable workspace for this runner slot.
+
+    Templates and bundled binaries stay under APP_ROOT, while every concurrent
+    process receives its own output/capture/profile root from the watchdog.
+    """
+    configured = os.environ.get("AUCTION_REPORT_WORK_ROOT", "").strip()
+    return Path(configured).resolve() if configured else APP_ROOT
+
+
+WORK_ROOT = get_work_root()
+
+
 # ============================================================
 # 디렉토리 경로
 # ============================================================
@@ -41,10 +54,10 @@ RIGHTS_CERTIFICATE_TEMPLATE_DIR = TEMPLATES_DIR / "rights_certificate"
 RIGHTS_CERTIFICATE_TEMPLATE_PATH = RIGHTS_CERTIFICATE_TEMPLATE_DIR / "certificate.html"
 RIGHTS_CERTIFICATE_PPTX_TEMPLATE_PATH = RIGHTS_CERTIFICATE_TEMPLATE_DIR / "certificate.pptx"
 BIN_DIR = APP_ROOT / "bin"
-OUTPUT_DIR = APP_ROOT / "output"
-CAPTURE_DIR = APP_ROOT / "capture"
-PDF_DOWNLOAD_DIR = APP_ROOT / "download_pdf"
-LOGS_DIR = APP_ROOT / "logs"
+OUTPUT_DIR = WORK_ROOT / "output"
+CAPTURE_DIR = WORK_ROOT / "capture"
+PDF_DOWNLOAD_DIR = WORK_ROOT / "download_pdf"
+LOGS_DIR = WORK_ROOT / "logs"
 # 프론트엔드 빌드 파일 (여러 경로 시도)
 _frontend_candidates = [
     APP_ROOT.parent / "frontend" / "dist",     # 개발 모드
@@ -87,7 +100,7 @@ POPPLER_PATH = find_poppler_path()
 TESSERACT_PATH = find_tesseract_path()
 
 # Selenium 프로필
-SELENIUM_PROFILE_DIR = str(APP_ROOT / "selenium_profile")
+SELENIUM_PROFILE_DIR = str(WORK_ROOT / "selenium_profile")
 
 
 def ensure_dirs() -> None:
@@ -166,6 +179,12 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
     ]
     authorization_profile_url: str = "https://my-docs.kr/api/report/local-profile"
+    queue_base_url: str = "https://my-docs.kr/api/automation-agent"
+    queue_agent_key: str = ""
+    queue_agent_id: str = "office-automation-01"
+    queue_agent_name: str = "회사 자동화 서버"
+    queue_poll_seconds: int = 3
+    agent_version: str = "2026.08.13.3"
 
     # 템플릿
     pptm_template: str = str(TEMPLATES_DIR / "sample2_configured.pptx")

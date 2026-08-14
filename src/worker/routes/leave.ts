@@ -23,6 +23,12 @@ import { sumApprovedLeave, type LeaveCycle } from '../../shared/leave-balance';
 
 const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
+leave.use('*', async (c, next) => {
+  if (c.get('user').login_type === 'freelancer') {
+    return c.json({ error: '프리랜서는 연차·휴가 기능을 사용할 수 없습니다.' }, 403);
+  }
+  await next();
+});
 
 // ───── 헬퍼 ─────
 const HOURS_PER_DAY = 8;

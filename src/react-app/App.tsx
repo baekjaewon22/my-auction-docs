@@ -20,6 +20,7 @@ import Statistics from './pages/Statistics';
 import Cases from './pages/Cases';
 import OrgChart from './pages/OrgChart';
 import MeetingMinutes from './pages/MeetingMinutes';
+import LawitgoProgress from './pages/LawitgoProgress';
 // import Commissions from './pages/Commissions'; // 매출확인으로 통합됨
 import Accounting from './pages/Accounting';
 import Sales from './pages/Sales';
@@ -53,7 +54,9 @@ import RoomReservation from './pages/RoomReservation';
 import ContractTracker from './pages/ContractTracker';
 import LinkReview from './pages/LinkReview';
 import Print from './pages/Print';
-import FreelancerBidHistory from './pages/FreelancerBidHistory';
+import UnifiedBidHistory from './pages/UnifiedBidHistory';
+import AuctionSchedule from './pages/AuctionSchedule';
+import AuctionBidResultGate from './components/AuctionBidResultGate';
 import BriefingMaterials from './pages/BriefingMaterials';
 import RightsAnalysisGuarantee from './pages/RightsAnalysisGuarantee';
 import AutomationDiagnosticsAdmin from './pages/AutomationDiagnosticsAdmin';
@@ -203,10 +206,11 @@ function ApproverRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function FreelancerRoute({ children }: { children: React.ReactNode }) {
+function BidListAdminRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
-  if (!user || ((user as any).login_type !== 'freelancer' && !allowed.includes(user.role))) {
+  const isMaster = user?.role === 'master';
+  if (!user || (!isMaster && ((user as any).login_type === 'freelancer' || !allowed.includes(user.role)))) {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -215,7 +219,7 @@ function FreelancerRoute({ children }: { children: React.ReactNode }) {
 function AccountingOrApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || (user as any).login_type === 'freelancer' || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -336,6 +340,24 @@ function FinanceAnalyticsRoute({ children }: { children: React.ReactNode }) {
   // 회계분석은 cc_ref·총무보조 제외
   const allowed = ['master', 'ceo', 'admin', 'accountant'];
   if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function AuctionScheduleRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const employeeViewerRoles = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'];
+  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  if (!user || (!isFreelancer && !employeeViewerRoles.includes(user.role))) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
+function EmployeeOnlyRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  if (!user || (user as any).login_type === 'freelancer') {
+    return <Navigate to="/dashboard" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -472,6 +494,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AnnouncementPopupGate />
+      <AuctionBidResultGate />
       <Routes>
         <Route path="/login" element={<Login />} />
         {/* 인쇄 전용 (서버 Puppeteer가 접근) — 인증 불필요, printToken으로 데이터 조회 */}
@@ -491,8 +514,9 @@ export default function App() {
           <Route path="property-report" element={<PropertyReport />} />
           <Route path="property-report/:id" element={<PropertyReport />} />
           <Route path="templates" element={<TemplateList />} />
-          <Route path="journal" element={<NonAccountingRoute><Journal /></NonAccountingRoute>} />
-          <Route path="archive" element={<ArchivePage />} />
+          <Route path="journal" element={<EmployeeOnlyRoute><NonAccountingRoute><Journal /></NonAccountingRoute></EmployeeOnlyRoute>} />
+          <Route path="case-progress" element={<LawitgoProgress />} />
+          <Route path="archive" element={<EmployeeOnlyRoute><ArchivePage /></EmployeeOnlyRoute>} />
           <Route
             path="statistics"
             element={
@@ -506,9 +530,9 @@ export default function App() {
           <Route
             path="freelancer-bids"
             element={
-              <FreelancerRoute>
-                <FreelancerBidHistory />
-              </FreelancerRoute>
+              <BidListAdminRoute>
+                <UnifiedBidHistory />
+              </BidListAdminRoute>
             }
           />
           <Route
@@ -577,7 +601,7 @@ export default function App() {
               </MissingDocumentsRoute>
             }
           />
-          <Route path="leave" element={<PrivateRoute><LeavePage /></PrivateRoute>} />
+          <Route path="leave" element={<EmployeeOnlyRoute><LeavePage /></EmployeeOnlyRoute>} />
           <Route
             path="payroll"
             element={
@@ -825,6 +849,14 @@ export default function App() {
               <BusinessAutomationRoute>
                 <BriefingMaterials />
               </BusinessAutomationRoute>
+            }
+          />
+          <Route
+            path="auction-schedule"
+            element={
+              <AuctionScheduleRoute>
+                <AuctionSchedule />
+              </AuctionScheduleRoute>
             }
           />
           <Route

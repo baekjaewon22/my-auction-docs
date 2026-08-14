@@ -15,6 +15,12 @@ import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { canAssignSalesToAnotherUser } from '../../shared/sales-assignment';
 import { dashboardFocusKey, shouldPrepareDashboardFocus } from '../../shared/dashboard-focus';
+import {
+  findContractByCustomerIdentity,
+  isValidCustomerPhone,
+  normalizeCustomerPhone,
+  uniqueContractPhones,
+} from '../../shared/sales-customer-identity';
 
 const TYPE_OPTIONS = [
   { value: '계약', label: '계약' },
@@ -75,6 +81,16 @@ type ManagerPerformanceRow = {
   met_count: number;
   miss_count: number;
   months: { month: string; amount: number; target: number; met: boolean }[];
+};
+
+type SalesCustomerSuggestion = {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  primary_phone: string;
+  phones: string[];
+  addresses: string[];
+  cases: Array<{ court: string; case_number: string; item_number: string; status: string }>;
 };
 
 function monthLabel(ym: string): string {
@@ -312,6 +328,7 @@ export default function Sales() {
   const dashboardFocusType = searchParams.get('focus') || '';
   const dashboardFocusId = searchParams.get('id') || '';
   const [records, setRecords] = useState<SalesRecord[]>([]);
+  const [loadError, setLoadError] = useState('');
   const [deposits, setDeposits] = useState<DepositNotice[]>([]);
   const [members, setMembers] = useState<{ id: string; name: string; role: string; branch: string; department: string }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -372,6 +389,7 @@ export default function Sales() {
   const closingDetailRef = useRef(false);
   const preparedDashboardFocusRef = useRef('');
   const scrolledDashboardFocusRef = useRef('');
+  const openedPhoneFocusRef = useRef('');
 
   const closeDetail = () => {
     if (closingDetailRef.current) return;
@@ -431,6 +449,11 @@ export default function Sales() {
   const [formReceiptType, setFormReceiptType] = useState<'' | '현금영수증' | '세금계산서'>('');
   const [formReceiptPhone, setFormReceiptPhone] = useState('');
   const [formAssigneeId, setFormAssigneeId] = useState(() => currentUser?.id || '');
+  const [customerContractMatches, setCustomerContractMatches] = useState<Array<SalesRecord>>([]);
+  const [customerSuggestions, setCustomerSuggestions] = useState<SalesCustomerSuggestion[]>([]);
+  const [customerSuggestionsOpen, setCustomerSuggestionsOpen] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [selectedCustomerPhones, setSelectedCustomerPhones] = useState<string[]>([]);
 
   // 입금등록 폼
   const [depDepositor, setDepDepositor] = useState('');
@@ -456,7 +479,7 @@ export default function Sales() {
 
   // 랭킹 모드: 2달 단위(기본) vs 연간
   const [rankingYearly, setRankingYearly] = useState(false);
-  const [rankingData, setRankingData] = useState<Array<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>>([]);
+  const [rankingData, setRankingData] = useState<Array<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>>([]);
   const [settleDate, setSettleDate] = useState('');
   const [invoiceDrafts, setInvoiceDrafts] = useState<Record<string, string>>({});
   // 2개월 기간 선택 (1-2, 3-4, 5-6, 7-8, 9-10, 11-12)
@@ -516,10 +539,67 @@ export default function Sales() {
   const isManager = role === 'manager';
   const canViewManagerPerformance = role === 'master' || role === 'admin' || role === 'manager';
   const showUserFilter = isAdminPlus || isAccountant || isManager || isDirector;
-  const canAssignSalesOwner = canAssignSalesToAnotherUser(role);
+  const canAssignSalesOwner = canAssignSalesToAnotherUser(role, currentUser?.id);
+  const effectiveFormOwnerId = canAssignSalesOwner
+    ? (formAssigneeId || currentUser?.id || '')
+    : (currentUser?.id || '');
+  const contractPhoneOptions = useMemo(
+    () => uniqueContractPhones(customerContractMatches, effectiveFormOwnerId, formClientName),
+    [customerContractMatches, effectiveFormOwnerId, formClientName],
+  );
+  const matchedPriorContract = useMemo(
+    () => findContractByCustomerIdentity(customerContractMatches, effectiveFormOwnerId, formClientName, formPhone),
+    [customerContractMatches, effectiveFormOwnerId, formClientName, formPhone],
+  );
+
+  useEffect(() => {
+    if (formType !== '낙찰' || !effectiveFormOwnerId || !formClientName.trim()) {
+      setCustomerContractMatches([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      api.sales.customerContracts({ client_name: formClientName, user_id: effectiveFormOwnerId })
+        .then(({ contracts }) => {
+          if (cancelled) return;
+          const matches = contracts as SalesRecord[];
+          setCustomerContractMatches(matches);
+          const phones = uniqueContractPhones(matches, effectiveFormOwnerId, formClientName);
+          if (phones.length === 1) setFormPhone(formatPhone(phones[0]));
+        })
+        .catch(() => { if (!cancelled) setCustomerContractMatches([]); });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [formType, effectiveFormOwnerId, formClientName]);
+
+  useEffect(() => {
+    if (!['계약', '낙찰'].includes(formType) || !effectiveFormOwnerId || !formClientName.trim()) {
+      setCustomerSuggestions([]);
+      setCustomerSuggestionsOpen(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      api.sales.customerSearch({ q: formClientName, user_id: effectiveFormOwnerId })
+        .then(({ customers }) => {
+          if (cancelled) return;
+          setCustomerSuggestions(customers);
+          setCustomerSuggestionsOpen(customers.length > 0 && !selectedCustomerId);
+        })
+        .catch(() => { if (!cancelled) setCustomerSuggestions([]); });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [formType, effectiveFormOwnerId, formClientName, selectedCustomerId]);
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
+    setLoadError('');
     try {
       const salesRes = await api.sales.list({ month: filterMonth, month_end: filterMonthEnd || undefined, user_id: filterUser || undefined });
       setRecords(salesRes.records.map(normalizeSalesRecognition) as SalesRecord[]);
@@ -553,19 +633,23 @@ export default function Sales() {
         const rk = await api.sales.ranking(startMonth, endMonth);
         setRankingData(rk.ranking || []);
       } catch { setRankingData([]); }
-    } catch (err: any) { console.error(err); }
+    } catch (err: any) {
+      console.error(err);
+      setLoadError(err?.message || '업무성과 데이터를 불러오지 못했습니다.');
+    }
     finally { if (!silent) setLoading(false); }
   };
 
   useEffect(() => { load(); }, [filterMonth, filterMonthEnd, filterUser, rankingYearly, rankingPeriodIdx]);
 
   useEffect(() => {
-    if (loading || !dashboardFocusId || !['sales', 'deposit'].includes(dashboardFocusType)) return;
+    if (loading || !dashboardFocusId || !['sales', 'deposit', 'phone'].includes(dashboardFocusType)) return;
     const focusKey = dashboardFocusKey(dashboardFocusType, dashboardFocusId);
     if (scrolledDashboardFocusRef.current === focusKey) return;
 
-    if (dashboardFocusType === 'sales') {
-      if (!records.some(record => record.id === dashboardFocusId)) return;
+    if (dashboardFocusType === 'sales' || dashboardFocusType === 'phone') {
+      const focusedRecord = records.find(record => record.id === dashboardFocusId);
+      if (!focusedRecord) return;
       if (shouldPrepareDashboardFocus(preparedDashboardFocusRef.current, focusKey)) {
         preparedDashboardFocusRef.current = focusKey;
         setSalesTab('list');
@@ -575,6 +659,13 @@ export default function Sales() {
         setFilterStatus('');
         setSearchQuery('');
         setExpandedIds(prev => new Set(prev).add(dashboardFocusId));
+      }
+      if (dashboardFocusType === 'phone') {
+        if (openedPhoneFocusRef.current !== focusKey) {
+          openedPhoneFocusRef.current = focusKey;
+          void openDetail(focusedRecord);
+        }
+        return;
       }
     } else if (!deposits.some(deposit => deposit.id === dashboardFocusId)) {
       return;
@@ -598,6 +689,10 @@ export default function Sales() {
     setFormAmount(''); setFormContractDate(new Date().toISOString().slice(0, 10));
     setFormAppraisalRate(''); setFormWinningRate('');
     setFormPhone('');
+    setSelectedCustomerId('');
+    setSelectedCustomerPhones([]);
+    setCustomerSuggestions([]);
+    setCustomerSuggestionsOpen(false);
     setFormProxyCost('');
     setFormPaymentType('이체'); setFormReceiptType(''); setFormReceiptPhone('');
     setFormAssigneeId(currentUser?.id || '');
@@ -632,13 +727,18 @@ export default function Sales() {
         if (!confirm(`동일한 계약자명과 금액의 기존 매출이 있습니다.\n\n계약자명: ${formClientName}\n금액: ${rawAmount.toLocaleString()}원\n기존: ${localDup.contract_date || '-'} / ${localDup.type || '-'}\n\n그래도 중복으로 등록하시겠습니까?`)) return;
       }
     }
-    // [6-1] 계약 타입이면 감정가%/낙찰가% 및 전화번호 필수
+    // 계약·낙찰은 담당자 ID + 고객명 + 전화번호로 고객을 식별한다.
+    if (formType === '계약' || formType === '낙찰') {
+      if (!isValidCustomerPhone(formPhone)) {
+        alert(`${formType} 고객 전화번호를 입력하세요. (동명이인 방지용 필수)`);
+        return;
+      }
+    }
     if (formType === '계약') {
       if (!formAppraisalRate || !formWinningRate) { alert('감정가 %와 낙찰가 %를 모두 입력하세요.'); return; }
-      const phoneDigits = (formPhone || '').replace(/\D/g, '');
-      if (phoneDigits.length < 10) { alert('계약자 전화번호를 입력하세요. (중복 확인용 필수)'); return; }
-      // 중복 계약 경고 (같은 이름 + 같은 전화번호)
-      const dup = records.find(r => r.type === '계약' && r.client_name === formClientName && (r.client_phone || '').replace(/\D/g, '') === phoneDigits);
+      const phoneDigits = normalizeCustomerPhone(formPhone);
+      // 중복 계약 경고 (같은 담당자 ID + 같은 고객명 + 같은 전화번호)
+      const dup = findContractByCustomerIdentity(records, effectiveFormOwnerId, formClientName, phoneDigits);
       if (dup) {
         if (!confirm(`동일한 고객(${formClientName}, ${formPhone})의 기존 계약이 있습니다.\n\n■ 기존 계약일: ${dup.contract_date}\n■ 기존 금액: ${dup.amount.toLocaleString()}원\n\n중복 계약으로 등록하시겠습니까?\n(필요 시 등록 후 상세에서 '계약 미포함' 체크)`)) return;
       }
@@ -647,10 +747,9 @@ export default function Sales() {
     // [6-2] 낙찰 타입: 동일 고객의 기존 계약 찾기 → 계약시 설정한 수수료율과 비교
     let rateDeviationReason = '';
     if (formType === '낙찰' && formClientName) {
-      const priorContract = records.find(r =>
-        r.type === '계약' && r.client_name === formClientName &&
-        (r.appraisal_rate > 0 || r.winning_rate > 0)
-      );
+      const priorContract = matchedPriorContract && (matchedPriorContract.appraisal_rate > 0 || matchedPriorContract.winning_rate > 0)
+        ? matchedPriorContract
+        : undefined;
       if (priorContract) {
         const confirmMatch = confirm(
           `해당 고객(${formClientName})의 계약 조건이 있습니다.\n\n` +
@@ -682,10 +781,11 @@ export default function Sales() {
         receipt_type: formPaymentType === '이체' ? formReceiptType : '',
         receipt_phone: formReceiptType === '현금영수증' ? formReceiptPhone : '',
         proxy_cost: proxyCost,
+        ...((formType === '계약' || formType === '낙찰') ? { client_phone: formPhone } : {}),
+        ...((formType === '계약' || formType === '낙찰') && selectedCustomerId ? { customer_id: selectedCustomerId } : {}),
         ...(formType === '계약' ? {
           appraisal_rate: Number(formAppraisalRate),
           winning_rate: Number(formWinningRate),
-          client_phone: formPhone,
         } : {}),
       });
       resetForm(); load();
@@ -837,6 +937,13 @@ export default function Sales() {
         </div>
       </div>
 
+      {loadError && (
+        <div className="form-error" role="alert" style={{ marginBottom: 16 }}>
+          <span>{loadError}</span>{' '}
+          <button type="button" className="btn btn-sm" onClick={() => load()}>다시 불러오기</button>
+        </div>
+      )}
+
       {/* 요약 카드 */}
       <div className="sales-summary-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #1a73e8' }}>
@@ -905,6 +1012,7 @@ export default function Sales() {
       {(() => {
         // 서버 집계 결과 사용 — 개인 매출 레코드는 노출하지 않음
         const sorted = rankingData.map(r => ({
+          userId: r.user_id,
           name: r.user_name || '미확인',
           branch: r.eff_branch || '',
           position: r.position || '',
@@ -959,11 +1067,11 @@ export default function Sales() {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {ranking.filter(u => u.rank <= 3).map((u, idx) => {
+              {ranking.filter(u => u.rank <= 3).map((u) => {
                 const ri = u.rank - 1; // 메달 색상용 (0-based)
                 const isMedal = true;
                 return (
-                <div key={idx} style={{
+                <div key={u.userId} style={{
                   padding: '10px 16px', borderRadius: 10, minWidth: 160,
                   background: isMedal ? medalBg[ri] || medalBg[2] : '#fff',
                   border: `1.5px solid ${isMedal ? medalBorder[ri] || medalBorder[2] : '#e8eaed'}`,
@@ -1686,7 +1794,12 @@ export default function Sales() {
                 <Select
                   options={assignmentOpts}
                   value={findUserOption(assignmentOpts, formAssigneeId || currentUser?.id || '')}
-                  onChange={(option: any) => setFormAssigneeId(option?.value || '')}
+                  onChange={(option: any) => {
+                    setFormAssigneeId(option?.value || '');
+                    setFormPhone('');
+                    setSelectedCustomerId('');
+                    setSelectedCustomerPhones([]);
+                  }}
                   placeholder="담당자 선택"
                   isSearchable
                 />
@@ -1697,7 +1810,7 @@ export default function Sales() {
             )}
             <div>
               <label className="form-label">유형</label>
-              <select className="form-input" value={formType} onChange={(e) => setFormType(e.target.value)} style={{ width: '100%' }}>
+              <select className="form-input" value={formType} onChange={(e) => { setFormType(e.target.value); setFormPhone(''); setSelectedCustomerId(''); setSelectedCustomerPhones([]); }} style={{ width: '100%' }}>
                 {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
@@ -1705,22 +1818,77 @@ export default function Sales() {
               <div><label className="form-label">상세내용</label>
                 <input className="form-input" value={formTypeDetail} onChange={(e) => setFormTypeDetail(e.target.value)} style={{ width: '100%' }} placeholder="기타 상세" /></div>
             )}
-            <div><label className="form-label">계약자명</label>
-              <input className="form-input" value={formClientName} onChange={(e) => setFormClientName(e.target.value)} style={{ width: '100%' }} placeholder="계약자명" />
+            <div style={{ position: 'relative' }}><label className="form-label">계약자명</label>
+              <input className="form-input" value={formClientName}
+                onFocus={() => { if (customerSuggestions.length > 0 && !selectedCustomerId) setCustomerSuggestionsOpen(true); }}
+                onBlur={() => window.setTimeout(() => setCustomerSuggestionsOpen(false), 150)}
+                onChange={(e) => {
+                  setFormClientName(e.target.value);
+                  setFormPhone('');
+                  setSelectedCustomerId('');
+                  setSelectedCustomerPhones([]);
+                }}
+                autoComplete="off" style={{ width: '100%' }} placeholder="계약자명" />
+              {selectedCustomerId && <div style={{ marginTop: 4, fontSize: '0.7rem', color: '#188038' }}>✓ 고객 마스터와 연결됨</div>}
+              {customerSuggestionsOpen && (
+                <div className="sales-customer-suggestions" role="listbox" aria-label="기존 고객 선택">
+                  {customerSuggestions.map(customer => {
+                    const latestCase = customer.cases[0];
+                    return (
+                      <button key={customer.id} type="button" role="option"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          setSelectedCustomerId(customer.id);
+                          setSelectedCustomerPhones(customer.phones);
+                          setFormClientName(customer.name);
+                          setFormPhone(formatPhone(customer.primary_phone || customer.phones[0] || ''));
+                          setCustomerSuggestionsOpen(false);
+                        }}>
+                        <strong>{customer.name}</strong><span>{formatPhone(customer.primary_phone || customer.phones[0] || '')}</span>
+                        {(latestCase || customer.addresses[0]) && <small>{latestCase ? `${latestCase.court} ${latestCase.case_number}`.trim() : customer.addresses[0]}</small>}
+                      </button>
+                    );
+                  })}
+                  <div className="sales-customer-suggestions-hint">해당 고객이 아니면 선택하지 않고 계속 작성하세요.</div>
+                </div>
+              )}
               {formType === '낙찰' && formClientName && (() => {
-                const prior = records.find(r => r.type === '계약' && r.client_name === formClientName && (r.appraisal_rate > 0 || r.winning_rate > 0));
+                const prior = matchedPriorContract && (matchedPriorContract.appraisal_rate > 0 || matchedPriorContract.winning_rate > 0)
+                  ? matchedPriorContract
+                  : undefined;
                 return prior ? (
                   <div style={{ marginTop: 4, padding: '4px 8px', background: '#fff8e1', borderRadius: 4, fontSize: '0.72rem', color: '#7b5e00' }}>
                     📋 계약 조건: 감정가 {prior.appraisal_rate}% / 낙찰가 {prior.winning_rate}%
                   </div>
+                ) : contractPhoneOptions.length > 1 && !normalizeCustomerPhone(formPhone) ? (
+                  <div style={{ marginTop: 4, fontSize: '0.72rem', color: '#d93025' }}>
+                    같은 이름의 계약 고객이 여러 명입니다. 전화번호를 선택해 주세요.
+                  </div>
                 ) : null;
               })()}
             </div>
-            {formType === '계약' && (
+            {(formType === '계약' || formType === '낙찰') && (
               <div><label className="form-label">전화번호 <span style={{ color: '#d93025' }}>*</span> <span style={{ fontSize: '0.7rem', color: '#9aa0a6', fontWeight: 400 }}>(동명이인/중복 방지, 필수)</span></label>
                 <input className="form-input" value={formPhone} inputMode="tel"
-                  onChange={(e) => setFormPhone(formatPhone(e.target.value))}
-                  style={{ width: '100%' }} placeholder="010-0000-0000" maxLength={13} /></div>
+                  onChange={(e) => {
+                    const next = formatPhone(e.target.value);
+                    setFormPhone(next);
+                    const digits = normalizeCustomerPhone(next);
+                    if (selectedCustomerId && isValidCustomerPhone(digits) && !selectedCustomerPhones.some(value => normalizeCustomerPhone(value) === digits)) {
+                      setSelectedCustomerId('');
+                    }
+                  }}
+                  list={(selectedCustomerPhones.length > 1 || (formType === '낙찰' && contractPhoneOptions.length > 1)) ? 'sales-contract-phone-options' : undefined}
+                  style={{ width: '100%' }} placeholder="010-0000-0000" maxLength={13} />
+                {(selectedCustomerPhones.length > 1 || (formType === '낙찰' && contractPhoneOptions.length > 1)) && (
+                  <datalist id="sales-contract-phone-options">
+                    {[...new Set([...selectedCustomerPhones, ...contractPhoneOptions])].map(phone => <option key={normalizeCustomerPhone(phone)} value={formatPhone(phone)} />)}
+                  </datalist>
+                )}
+                {formType === '낙찰' && contractPhoneOptions.length === 1 && (
+                  <div style={{ marginTop: 4, fontSize: '0.7rem', color: '#188038' }}>기존 계약의 전화번호를 자동 입력했습니다.</div>
+                )}
+              </div>
             )}
             <div>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -2560,6 +2728,7 @@ export default function Sales() {
                     전화번호 <span style={{ fontSize: '0.7rem', color: '#9aa0a6', fontWeight: 400 }}>(언제든 수정 가능)</span>
                   </div>
                   <input className="form-input" defaultValue={detailRecord.client_phone || ''}
+                    autoFocus={dashboardFocusType === 'phone' && dashboardFocusId === detailRecord.id}
                     style={{ width: '100%', fontSize: '0.82rem' }} placeholder="010-XXXX-XXXX"
                     onBlur={async (e) => {
                       const val = e.target.value.trim();

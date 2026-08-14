@@ -15,6 +15,12 @@ declare namespace Cloudflare {
 		ALL_FOR_ONE_FRAME_ANCESTORS?: string;
 		/** JWT signing secret (Wrangler secret, at least 32 characters) */
 		JWT_SIGNING_SECRET: string;
+		/** Server-only API key for the lawitgo consultant progress integration */
+		LAWITGO_API_KEY?: string;
+		/** Server-only API key for outbound winning-case batches */
+		LAWITGO_WINNING_API_KEY?: string;
+		/** Server-only credential used by the office automation runner pull queue */
+		AUTOMATION_AGENT_API_KEY?: string;
 		/** Web Push VAPID configuration (Wrangler secrets) */
 		VAPID_PUBLIC_KEY?: string;
 		VAPID_PRIVATE_KEY?: string;

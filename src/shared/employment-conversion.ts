@@ -1,8 +1,11 @@
 export const FREELANCER_CONVERTIBLE_ROLES = new Set([
-  'director',
   'manager',
   'member',
 ]);
+
+// 과거 정책에서 이미 프리랜서로 전환된 director 계정은 일반 로그인으로
+// 되돌릴 때 원래 역할을 잃지 않아야 한다. 신규 전환 허용 목록과는 분리한다.
+const RESTORABLE_EMPLOYEE_ROLES = new Set(['director', 'manager', 'member']);
 
 export type FreelancerConversionImpact = {
   pending_leave_requests: number;
@@ -23,16 +26,20 @@ export function canConvertEmployeeRoleToFreelancer(role: string): boolean {
 
 export function restoreEmployeeRoleFromSnapshot(
   impactSnapshot: string | null | undefined,
+  fallbackRole: string = 'member',
 ): 'director' | 'manager' | 'member' {
-  if (!impactSnapshot) return 'member';
+  const fallback = RESTORABLE_EMPLOYEE_ROLES.has(fallbackRole)
+    ? fallbackRole as 'director' | 'manager' | 'member'
+    : 'member';
+  if (!impactSnapshot) return fallback;
   try {
     const parsed = JSON.parse(impactSnapshot) as { previous_role?: unknown };
     const previousRole = String(parsed.previous_role || '');
-    return canConvertEmployeeRoleToFreelancer(previousRole)
+    return RESTORABLE_EMPLOYEE_ROLES.has(previousRole)
       ? previousRole as 'director' | 'manager' | 'member'
-      : 'member';
+      : fallback;
   } catch {
-    return 'member';
+    return fallback;
   }
 }
 
@@ -56,7 +63,7 @@ export function freelancerConversionBlockers(
     blockers.push(`승인 대기 결재 ${impact.pending_approval_steps}건`);
   }
   if (impact.active_non_myauction_documents > 0) {
-    blockers.push(`처리 중인 사내 문서 ${impact.active_non_myauction_documents}건`);
+    blockers.push(`처리 중인 일반 사내 문서 ${impact.active_non_myauction_documents}건`);
   }
   return blockers;
 }

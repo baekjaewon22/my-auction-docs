@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from .core.config import settings, ensure_dirs, FRONTEND_DIST_DIR
 from .core.logging import setup_logging
 from .api.routes import public_router, router as api_router
+from .services.central_queue_worker import start_central_queue_worker, stop_central_queue_worker
 
 
 @asynccontextmanager
@@ -25,7 +26,9 @@ async def lifespan(app: FastAPI):
     setup_logging()
     ensure_dirs()
     logging.info(f"[BOOT] {settings.app_title} 시작")
+    start_central_queue_worker()
     yield
+    stop_central_queue_worker()
     logging.info("[SHUTDOWN] 서버 종료")
 
 

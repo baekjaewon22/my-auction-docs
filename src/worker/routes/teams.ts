@@ -68,6 +68,10 @@ teams.get('/:id/members', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
 
+  if (user.login_type === 'freelancer') {
+    return c.json({ error: '프리랜서 계정은 직원 팀 명단을 조회할 수 없습니다.' }, 403);
+  }
+
   if (user.role === 'member' && user.team_id !== id) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
@@ -81,6 +85,8 @@ teams.get('/:id/members', async (c) => {
 
 // POST /api/teams/:id/members - add member to team
 teams.post('/:id/members', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+  const user = c.get('user');
+  if (user.login_type === 'freelancer') return c.json({ error: '프리랜서 계정은 직원 팀 구성을 변경할 수 없습니다.' }, 403);
   const teamId = c.req.param('id');
   const { user_id } = await c.req.json<{ user_id: string }>();
   const db = c.env.DB;
@@ -94,6 +100,8 @@ teams.post('/:id/members', requireRole('master', 'ceo', 'admin', 'manager'), asy
 
 // DELETE /api/teams/:id/members/:userId - remove member from team
 teams.delete('/:id/members/:userId', requireRole('master', 'ceo', 'admin', 'manager'), async (c) => {
+  const user = c.get('user');
+  if (user.login_type === 'freelancer') return c.json({ error: '프리랜서 계정은 직원 팀 구성을 변경할 수 없습니다.' }, 403);
   const userId = c.req.param('userId');
   const db = c.env.DB;
 

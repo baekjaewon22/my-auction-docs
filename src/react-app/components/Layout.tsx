@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
-const DIAGNOSIS_BOX_PATHS = ['/journal', '/sales', '/leave', '/rooms', '/contract-tracker'];
+const DIAGNOSIS_BOX_PATHS = ['/journal', '/sales', '/leave', '/rooms', '/minutes', '/contract-tracker'];
 function shouldShowDiagnosisBox(pathname: string): boolean {
   if (pathname === '/' || pathname === '/dashboard' || pathname.startsWith('/dashboard/')) return true;
   return DIAGNOSIS_BOX_PATHS.some(base => pathname === base || pathname.startsWith(base + '/'));
@@ -82,7 +82,9 @@ export default function Layout() {
   const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canViewBidHistory = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-  const canViewFreelancerBids = isFreelancer || (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role));
+  const canViewFreelancerBids = role === 'master'
+    || (!isFreelancer && ['ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role));
+  const canViewAuctionSchedule = isFreelancer || (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'].includes(role));
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
   const canPayroll = canAccounting || PAYROLL_EXTRA_IDS.includes(user?.id || '');
   const canManagementSupport = canAccounting || canPayroll || (!isFreelancer && !isSupport && role === 'admin');
@@ -130,11 +132,17 @@ export default function Layout() {
         <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="사내 커뮤니티" onClick={() => setMobileOpen(false)}>
           <StickyNote size={18} /> {!collapsed && '사내 커뮤니티'}
         </Link>
+        <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
+          <BookOpen size={18} /> {!collapsed && '회의록'}
+        </Link>
         {!isAccountingOnly && !isFreelancer && !isDirector && !isSupport && (
           <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
             <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
           </Link>
         )}
+        <Link to="/case-progress" className={`nav-item ${isActive('/case-progress') ? 'active' : ''}`} title="명도 진행사항" onClick={() => setMobileOpen(false)}>
+          <Briefcase size={18} /> {!collapsed && '명도 진행사항'}
+        </Link>
         {!isSupport && (
           <Link to="/sales" className={`nav-item ${isActive('/sales') ? 'active' : ''}`} title="업무성과" onClick={() => setMobileOpen(false)}>
             <DollarSign size={18} /> {!collapsed && '업무성과'}
@@ -143,6 +151,11 @@ export default function Layout() {
         {canViewMissingDocuments && (
           <Link to="/missing-documents" className={`nav-item ${isActive('/missing-documents') ? 'active' : ''}`} title="미제출 문서 현황" onClick={() => setMobileOpen(false)}>
             <FileText size={18} /> {!collapsed && '미제출 문서 현황'}
+          </Link>
+        )}
+        {canViewAuctionSchedule && (
+          <Link to="/auction-schedule" className={`nav-item ${isActive('/auction-schedule') ? 'active' : ''}`} title="경매 스케줄" onClick={() => setMobileOpen(false)}>
+            <CalendarDays size={18} /> {!collapsed && '경매 스케줄'}
           </Link>
         )}
         {canViewFreelancerBids && (
@@ -162,11 +175,9 @@ export default function Layout() {
           <>
         <div className="nav-divider" />
         {!collapsed && <span className="nav-label">자료 생성</span>}
-        {!isFreelancer && (
-          <Link to="/briefing-materials" className={`nav-item ${isActive('/briefing-materials') ? 'active' : ''}`} title="업무 자동화" onClick={() => setMobileOpen(false)}>
-            <FileText size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>업무 자동화</span>}
-          </Link>
-        )}
+        <Link to="/briefing-materials" className={`nav-item ${isActive('/briefing-materials') ? 'active' : ''}`} title="업무 자동화" onClick={() => setMobileOpen(false)}>
+          <FileText size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>업무 자동화</span>}
+        </Link>
         {!isFreelancer && canUseMasterAutomationTools && (
           <Link to="/rights-analysis-guarantee" className={`nav-item ${isActive('/rights-analysis-guarantee') ? 'active' : ''}`} title="권리분석 보증서" onClick={() => setMobileOpen(false)}>
             <FileSignature size={18} /> {!collapsed && <span style={{ paddingLeft: 10 }}>권리분석 보증서</span>}
@@ -220,14 +231,14 @@ export default function Layout() {
         )}
 
         {/* 통계: master/ceo/admin/director */}
-        {['master', 'ceo', 'admin', 'director'].includes(role) && (
+        {!isFreelancer && ['master', 'ceo', 'admin', 'director'].includes(role) && (
           <Link to="/statistics" className={`nav-item ${isActive('/statistics') ? 'active' : ''}`} title="통계" onClick={() => setMobileOpen(false)}>
             <BarChart3 size={18} /> {!collapsed && '통계'}
           </Link>
         )}
 
         {/* 명도 사건 (외부 수신): 관리자급 + 팀장 (본인 사건 조회) */}
-        {['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'director'].includes(role) && (
+        {!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'director'].includes(role) && (
           <Link to="/cases" className={`nav-item ${isActive('/cases') ? 'active' : ''}`} title="명도 사건" onClick={() => setMobileOpen(false)}>
             <Briefcase size={18} /> {!collapsed && '명도 사건'}
           </Link>
@@ -250,10 +261,6 @@ export default function Layout() {
             <UserCog size={18} /> {!collapsed && '사용자 관리'}
           </Link>
         )}
-
-        <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
-          <BookOpen size={18} /> {!collapsed && '회의록'}
-        </Link>
 
         {['master', 'accountant', 'admin'].includes(role) && (
           <Link to="/link-review" className={`nav-item ${isActive('/link-review') ? 'active' : ''}`} title="외근 link 검수" onClick={() => setMobileOpen(false)}>

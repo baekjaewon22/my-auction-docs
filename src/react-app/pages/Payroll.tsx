@@ -12,6 +12,13 @@ import { Receipt, Camera } from 'lucide-react';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import { refundApprovalMonth } from '../../shared/refund-recovery';
+import {
+  actualTransferAmount,
+  normalizeWithholdingSettlements,
+  withholdingSettlementAdjustment,
+  type WithholdingSettlementCategory,
+  type WithholdingSettlementItem,
+} from '../../shared/withholding-settlement';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
 function truncMoney(n: number): number { return Math.trunc((Number(n) || 0) / 10) * 10; }
@@ -31,6 +38,59 @@ function toMoneyDisplay(val: string): string {
 }
 function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
+}
+
+type WithholdingSettlementDraft = {
+  type: string;
+  category: WithholdingSettlementCategory;
+  direction: 'refund' | 'collection';
+  amount: string;
+  memo: string;
+};
+
+function signedWon(amount: number): string {
+  const value = Math.trunc(Number(amount) || 0);
+  return `${value >= 0 ? '+' : '-'}${Math.abs(value).toLocaleString('ko-KR')}원`;
+}
+
+function WithholdingSettlementBlock({ items, payrollNetPay }: {
+  items: WithholdingSettlementItem[];
+  payrollNetPay: number;
+}) {
+  if (items.length === 0) return null;
+  const adjustment = withholdingSettlementAdjustment(items);
+  const actualTransfer = actualTransferAmount(payrollNetPay, items);
+
+  return (
+    <section className="withholding-settlement-output" aria-label="원천세 정산" data-audience="employee-output">
+      <div className="withholding-settlement-heading">
+        <strong>원천세 정산</strong>
+        <span>이미 납부한 소득세·지방소득세의 정산 환급분입니다.</span>
+      </div>
+      <div className="withholding-settlement-rows">
+        {items.map((item, index) => {
+          const paymentAdjustment = -item.amount;
+          return (
+            <div className="withholding-settlement-row" key={`${item.category}-${item.type}-${index}`}>
+              <span>
+                {item.category} {item.type} {item.amount < 0 ? '환급' : '추징'}
+                {item.memo && <small>{item.memo}</small>}
+              </span>
+              <strong className={paymentAdjustment >= 0 ? 'positive' : 'negative'}>{signedWon(paymentAdjustment)}</strong>
+            </div>
+          );
+        })}
+        <div className="withholding-settlement-row subtotal">
+          <span>정산 합계 (B)</span>
+          <strong className={adjustment >= 0 ? 'positive' : 'negative'}>{signedWon(adjustment)}</strong>
+        </div>
+        <div className="withholding-settlement-transfer">
+          <span>▶ 실제 이체액 (A + B)</span>
+          <strong>{actualTransfer.toLocaleString('ko-KR')}원</strong>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function defaultPayrollMonth(): string {
@@ -83,6 +143,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   // 비율제: skipTax=원천세면제, skipRate=비율면제
   const [commExtras, setCommExtras] = useState<{ label: string; amount: string; skipTax?: boolean; skipRate?: boolean }[]>([]);
   const [commDeductions, setCommDeductions] = useState<{ label: string; amount: string; isFood?: boolean; skipTax?: boolean; sourceId?: string }[]>([]);
+  const [withholdingSettlementDrafts, setWithholdingSettlementDrafts] = useState<WithholdingSettlementDraft[]>([]);
   const [isLocked, setIsLocked] = useState(false);
   const [saving, setSaving] = useState(false);
   const [refundRecoveryResolved, setRefundRecoveryResolved] = useState(false);
@@ -145,6 +206,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       setExtraDeductionLabel('');
       setCommExtras([]);
       setCommDeductions([]);
+      setWithholdingSettlementDrafts([]);
       setIsLocked(!!res.payroll_save?.locked);
       // 저장 데이터 로드
       const period = res.period_label || selectedMonth;
@@ -161,6 +223,16 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           setExtraDeductionLabel(sd.extraDeductionLabel ?? '');
           setCommExtras(Array.isArray(sd.commExtras) ? sd.commExtras : []);
           setCommDeductions(Array.isArray(sd.commDeductions) ? sd.commDeductions : []);
+          const savedSettlements = normalizeWithholdingSettlements(
+            sd.withholdingSettlements ?? sd.payroll_snapshot?.manual?.withholdingSettlements,
+          );
+          setWithholdingSettlementDrafts(savedSettlements.map(item => ({
+            type: item.type,
+            category: item.category,
+            direction: item.amount < 0 ? 'refund' : 'collection',
+            amount: String(Math.abs(item.amount)),
+            memo: item.memo || '',
+          })));
           setIsLocked(!!saveRes.save.locked);
         }
       } catch { /* 저장 없음 */ }
@@ -211,7 +283,17 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
     setSaving(true);
     try {
       const period = data.period_label || selectedMonth;
-      const manualData = { deduction, extraPay, extraLabel, extraDeduction, extraDeductionLabel, commExtras, commDeductions, caseAllowance };
+      const withholdingSettlements = withholdingSettlementDrafts.flatMap((item): WithholdingSettlementItem[] => {
+        const amount = Math.trunc(Number(item.amount.replace(/[^0-9]/g, '')) || 0);
+        if (amount <= 0) return [];
+        return [{
+          type: item.type.trim() || '소득세',
+          category: item.category,
+          amount: item.direction === 'refund' ? -amount : amount,
+          ...(item.memo.trim() ? { memo: item.memo.trim() } : {}),
+        }];
+      });
+      const manualData = { deduction, extraPay, extraLabel, extraDeduction, extraDeductionLabel, commExtras, commDeductions, withholdingSettlements, caseAllowance };
       await api.payroll.save({
         user_id: selectedUserId,
         period,
@@ -352,6 +434,19 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const caseAllowanceValue = caseAllowance?.bonus || 0;
   const contractAwardAmount = (data?.is_payout_month && data?.contract_award?.rank) ? (data.contract_award.award || 0) : 0;
   const totalPay = s ? payrollMoney(afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount, selectedMonth) : 0;
+  const commExtraTotal = commExtras.reduce((sum, item) => sum + (Number(item.amount.replace(/[^0-9]/g, '')) || 0), 0);
+  const commDeductionTotal = commDeductions.reduce((sum, item) => sum + (Number(item.amount.replace(/[^0-9]/g, '')) || 0), 0);
+  const salaryNetPay = payrollMoney(totalPay + commExtraTotal - commDeductionTotal, selectedMonth);
+  const withholdingSettlementItems = withholdingSettlementDrafts.flatMap((item): WithholdingSettlementItem[] => {
+    const amount = Math.trunc(Number(item.amount.replace(/[^0-9]/g, '')) || 0);
+    if (amount <= 0) return [];
+    return [{
+      type: item.type.trim() || '소득세',
+      category: item.category,
+      amount: item.direction === 'refund' ? -amount : amount,
+      ...(item.memo.trim() ? { memo: item.memo.trim() } : {}),
+    }];
+  });
 
   if (requireBranchSelection && searchParams.get('branch') === null) {
     return (
@@ -1125,10 +1220,11 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 </div>
               ))}
               <div className="payroll-bonus-row grand-total">
-                <span>총 지급액</span>
-                <span className="num">{fmtWon(payrollMoney(totalPay + commExtras.reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0) - commDeductions.reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0), selectedMonth))}</span>
+                <span>당월 급여 실지급 (A)</span>
+                <span className="num">{fmtWon(salaryNetPay)}</span>
               </div>
             </div>
+            <WithholdingSettlementBlock items={withholdingSettlementItems} payrollNetPay={salaryNetPay} />
 
             {/* 법인카드 사용금액 */}
             {cardUsage > 0 && (
@@ -1320,6 +1416,91 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                       ※ <b>세후 공제</b>: 원천세 다 뗀 후 실지급에서 차감 (가불금·미지급정산·환급금 등)
                     </div>
                   </div>
+                )}
+
+                {data.accounting.pay_type !== 'commission' && (
+                <div className="withholding-settlement-editor" data-audience="admin-editor">
+                  <div className="withholding-settlement-editor-head">
+                    <div>
+                      <strong>원천세 정산</strong>
+                      <span
+                        className="withholding-admin-tooltip"
+                        title="회사 비용 아님 · 근로소득 아님 · 국세청 정산분"
+                        aria-label="회계 분류 안내: 회사 비용 아님, 근로소득 아님, 국세청 정산분"
+                        tabIndex={0}
+                      >회계 분류 안내 ⓘ</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setWithholdingSettlementDrafts(previous => [...previous, {
+                        type: '소득세',
+                        category: '중도정산',
+                        direction: 'refund',
+                        amount: '0',
+                        memo: '',
+                      }])}
+                    >+  원천세 정산 항목 추가</button>
+                  </div>
+
+                  {withholdingSettlementDrafts.length === 0 ? (
+                    <p className="withholding-settlement-empty">환급·추징 내역이 있는 월에만 항목을 추가하세요.</p>
+                  ) : withholdingSettlementDrafts.map((item, index) => (
+                    <div className="withholding-settlement-edit-row" key={`withholding-edit-${index}`}>
+                      <div className="withholding-direction-toggle" aria-label="환급 또는 추징">
+                        <button
+                          type="button"
+                          className={item.direction === 'refund' ? 'active refund' : ''}
+                          onClick={() => setWithholdingSettlementDrafts(previous => previous.map((value, itemIndex) => itemIndex === index ? { ...value, direction: 'refund' } : value))}
+                        >환급 (+)</button>
+                        <button
+                          type="button"
+                          className={item.direction === 'collection' ? 'active collection' : ''}
+                          onClick={() => setWithholdingSettlementDrafts(previous => previous.map((value, itemIndex) => itemIndex === index ? { ...value, direction: 'collection' } : value))}
+                        >추징 (-)</button>
+                      </div>
+                      <select
+                        className="form-input"
+                        value={item.category}
+                        onChange={(event) => setWithholdingSettlementDrafts(previous => previous.map((value, itemIndex) => itemIndex === index ? { ...value, category: event.target.value as WithholdingSettlementCategory } : value))}
+                        aria-label="정산 구분"
+                      >
+                        <option value="중도정산">중도정산</option>
+                        <option value="연말정산">연말정산</option>
+                      </select>
+                      <select
+                        className="form-input"
+                        value={item.type}
+                        onChange={(event) => setWithholdingSettlementDrafts(previous => previous.map((value, itemIndex) => itemIndex === index ? { ...value, type: event.target.value } : value))}
+                        aria-label="세목"
+                      >
+                        <option value="소득세">소득세</option>
+                        <option value="지방소득세">지방소득세</option>
+                      </select>
+                      <input
+                        className="form-input withholding-settlement-amount"
+                        value={toMoneyDisplay(item.amount)}
+                        onChange={(event) => setWithholdingSettlementDrafts(previous => previous.map((value, itemIndex) => itemIndex === index ? { ...value, amount: fromMoneyDisplay(event.target.value) } : value))}
+                        inputMode="numeric"
+                        placeholder="금액"
+                        aria-label="원천세 정산 금액"
+                      />
+                      <input
+                        className="form-input withholding-settlement-memo"
+                        value={item.memo}
+                        onChange={(event) => setWithholdingSettlementDrafts(previous => previous.map((value, itemIndex) => itemIndex === index ? { ...value, memo: event.target.value } : value))}
+                        placeholder="메모(선택)"
+                        aria-label="원천세 정산 메모"
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-danger"
+                        onClick={() => setWithholdingSettlementDrafts(previous => previous.filter((_, itemIndex) => itemIndex !== index))}
+                      >삭제</button>
+                    </div>
+                  ))}
+                  <p className="withholding-settlement-help">금액은 양수로 입력하세요. 저장할 때 환급은 음수(-), 추징은 양수(+)로 자동 변환됩니다.</p>
+                </div>
                 )}
 
                 {/* 추가 버튼 */}

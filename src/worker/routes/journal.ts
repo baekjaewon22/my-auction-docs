@@ -7,6 +7,7 @@ import { isHeadOfficeBranch, sameBranchName } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { isNonWorkingDate, previousWorkDate } from '../../shared/work-calendar';
 import { loadSystemHolidayDates } from '../lib/system-holidays';
+import { canViewSuggestedBidPrice, redactSuggestedBidPrice } from '../../shared/auction-schedule';
 
 function fmtDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
@@ -44,9 +45,18 @@ interface JournalAssignee {
 
 const journal = new Hono<AuthEnv>();
 journal.use('*', authMiddleware);
+journal.use('*', async (c, next) => {
+  const user = c.get('user');
+  if (user.login_type === 'freelancer') {
+    const supervisorMemberLookup = user.role === 'manager' && c.req.path.endsWith('/members');
+    if (!supervisorMemberLookup) {
+      return c.json({ error: '프리랜서는 컨설턴트 일지·근태 기능을 사용할 수 없습니다.' }, 403);
+    }
+  }
+  await next();
+});
 
 const canManageJournalAssignees = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-const canViewSuggestedPrice = (role: string) => ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
 const FIELD_ACTIVITY_TYPES = new Set(['입찰', '미팅', '임장']);
 
 journal.get('/holidays', async (c) => {
@@ -91,11 +101,10 @@ function parseJournalData(data: string): Record<string, unknown> {
 }
 
 function redactSuggestedPrice<T extends { activity_type?: string; data?: string }>(entry: T, canView: boolean): T {
-  if (canView || entry.activity_type !== '입찰' || !entry.data) return entry;
+  if (!entry.data) return entry;
   const data = parseJournalData(entry.data);
-  if (!Object.prototype.hasOwnProperty.call(data, 'suggestedPrice')) return entry;
-  const { suggestedPrice: _suggestedPrice, ...rest } = data;
-  return { ...entry, data: JSON.stringify(rest) };
+  const redacted = redactSuggestedBidPrice(String(entry.activity_type || ''), data, canView);
+  return redacted === data ? entry : { ...entry, data: JSON.stringify(redacted) };
 }
 
 function preserveSuggestedPriceForRestrictedUpdate(entry: JournalEntry, nextData: Record<string, unknown>, canView: boolean): Record<string, unknown> {
@@ -161,7 +170,7 @@ journal.get('/', async (c) => {
 
   const stmt = db.prepare(query);
   const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all();
-  const entries = (result.results || []).map((entry: any) => redactSuggestedPrice(entry, canViewSuggestedPrice(user.role)));
+  const entries = (result.results || []).map((entry: any) => redactSuggestedPrice(entry, canViewSuggestedBidPrice(user.role)));
   return c.json({ entries });
 });
 
@@ -325,7 +334,7 @@ journal.put('/:id', async (c) => {
       ? mergeBidFieldOnlyData(entry, body.data)
       : body.data || parseJournalData(entry.data),
   );
-  const nextData = preserveSuggestedPriceForRestrictedUpdate(entry, normalizedData, canViewSuggestedPrice(user.role));
+  const nextData = preserveSuggestedPriceForRestrictedUpdate(entry, normalizedData, canViewSuggestedBidPrice(user.role));
 
   await db.prepare(
     "UPDATE journal_entries SET user_id = ?, activity_subtype = ?, data = ?, completed = ?, fail_reason = ?, branch = ?, department = ?, updated_at = datetime('now') WHERE id = ?"

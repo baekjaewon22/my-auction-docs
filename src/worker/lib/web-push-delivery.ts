@@ -1,4 +1,3 @@
-import webpush from 'web-push';
 import { isExpiredPushStatus } from '../../shared/web-push.ts';
 
 type PushSubscriptionRow = {
@@ -10,7 +9,7 @@ type PushSubscriptionRow = {
 
 export type WebPushMessage = {
   userId: string;
-  eventType: 'community_direct' | 'community_team' | 'community_reply' | 'cooperation_direct' | 'cooperation_reply' | 'push_setup_missing';
+  eventType: 'community_direct' | 'community_team' | 'community_reply' | 'cooperation_direct' | 'cooperation_reply' | 'push_setup_missing' | 'auction_bid_result_missing';
   title: string;
   body: string;
   url: string;
@@ -45,6 +44,7 @@ export async function sendWebPushToUser(db: D1Database, env: Env, message: WebPu
   const subscriptions = result.results || [];
   if (!subscriptions.length) return { sent: 0, failed: 0 };
 
+  const { default: webpush } = await import('web-push');
   webpush.setVapidDetails(String(env.VAPID_SUBJECT), String(env.VAPID_PUBLIC_KEY), String(env.VAPID_PRIVATE_KEY));
   const payload = JSON.stringify({
     title: message.title.slice(0, 100),

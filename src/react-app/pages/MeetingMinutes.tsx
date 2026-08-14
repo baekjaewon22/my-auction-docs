@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { lazy, Suspense, useEffect, useState, useRef } from 'react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 import { Upload, FileText, Trash2, Eye, Download, Plus, X, ArrowLeft, Share2, FileUp, StickyNote } from 'lucide-react';
@@ -6,6 +6,8 @@ import { useNavigate } from 'react-router-dom';
 import Select from '../components/Select';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { flattenUserOptions, groupUserOptions } from '../lib/userSelectOptions';
+
+const PdfCanvasViewer = lazy(() => import('../components/PdfCanvasViewer'));
 
 interface MinuteItem {
   id: string;
@@ -98,8 +100,8 @@ export default function MeetingMinutes() {
 
     setUploading(true);
     try {
-      await api.minutes.upload(title.trim(), description.trim(), file);
-      setTitle(''); setDescription(''); setFile(null); setShowForm(false);
+      await api.minutes.upload(title.trim(), description.trim(), file, shareTargets);
+      setTitle(''); setDescription(''); setFile(null); setShareTargets([]); setShowForm(false);
       if (fileRef.current) fileRef.current.value = '';
       await load();
     } catch (err: any) {
@@ -304,11 +306,9 @@ export default function MeetingMinutes() {
           {pdfLoading ? (
             <div className="minutes-pdf-loading">PDF 로딩중...</div>
           ) : pdfUrl ? (
-            <iframe
-              src={pdfUrl}
-              className="minutes-pdf-frame"
-              title={viewItem.title}
-            />
+            <Suspense fallback={<div className="minutes-pdf-loading">PDF 뷰어 준비 중...</div>}>
+              <PdfCanvasViewer key={pdfUrl} url={pdfUrl} title={viewItem.title} />
+            </Suspense>
           ) : (
             <div className="minutes-pdf-loading">PDF를 불러올 수 없습니다.</div>
           )}
@@ -323,10 +323,10 @@ export default function MeetingMinutes() {
       <div className="page-header">
         <h2><FileText size={20} style={{ marginRight: 6, verticalAlign: 'middle' }} />회의록</h2>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-primary" onClick={() => { setShowTxtForm(!showTxtForm); setShowForm(false); }}>
+          <button className="btn btn-primary" onClick={() => { setShowTxtForm(!showTxtForm); setShowForm(false); setShareTargets([]); }}>
             {showTxtForm ? <><X size={14} /> 취소</> : <><FileUp size={14} /> TXT 변환</>}
           </button>
-          <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); setShowTxtForm(false); }}>
+          <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); setShowTxtForm(false); setShareTargets([]); }}>
             {showForm ? <><X size={14} /> 취소</> : <><Plus size={14} /> PDF 업로드</>}
           </button>
         </div>
@@ -351,8 +351,16 @@ export default function MeetingMinutes() {
               선택된 파일: <b>{file.name}</b> ({formatSize(file.size)})
             </div>
           )}
+          <div className="form-group">
+            <label>공유 대상 <span style={{ fontSize: '0.72rem', color: '#9aa0a6' }}>선택사항</span></label>
+            <Select isMulti options={shareOptions}
+              value={selectedShareOptions}
+              onChange={(opts: any) => setShareTargets((opts || []).map((o: any) => o.value))}
+              placeholder="업로드와 동시에 공유할 인원 선택..." />
+            {shareQuickTools}
+          </div>
           <button className="btn btn-primary" onClick={handleUpload} disabled={uploading}>
-            <Upload size={14} /> {uploading ? '업로드 중...' : '업로드'}
+            <Upload size={14} /> {uploading ? '업로드 중...' : `업로드${shareTargets.length > 0 ? ` 및 ${shareTargets.length}명 공유` : ''}`}
           </button>
         </div>
       )}

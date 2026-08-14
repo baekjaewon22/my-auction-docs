@@ -158,6 +158,14 @@ minutes.post('/', async (c) => {
   const title = formData.get('title') as string;
   const description = (formData.get('description') as string) || '';
   const file = formData.get('file') as File | null;
+  let requestedShareIds: string[] = [];
+  try {
+    const parsed = JSON.parse(String(formData.get('share_with') || '[]'));
+    if (!Array.isArray(parsed)) throw new Error('invalid share list');
+    requestedShareIds = [...new Set(parsed.map(String).filter(id => id && id !== user.sub))].slice(0, 1000);
+  } catch {
+    return c.json({ error: '공유 대상 정보가 올바르지 않습니다.' }, 400);
+  }
 
   if (!title || !file) {
     return c.json({ error: '제목과 파일은 필수입니다.' }, 400);
@@ -184,11 +192,34 @@ minutes.post('/', async (c) => {
   const id = crypto.randomUUID();
   const db = c.env.DB;
 
-  await db.prepare(
-    'INSERT INTO meeting_minutes (id, title, description, file_name, file_data, file_size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, title, description, file.name, base64, file.size, user.sub).run();
+  const shareMembers = requestedShareIds.length > 0
+    ? await db.prepare(
+      `SELECT id, phone FROM users WHERE approved = 1 AND role != 'master'`
+    ).all<{ id: string; phone: string | null }>()
+    : { results: [] as { id: string; phone: string | null }[] };
+  const requestedShareSet = new Set(requestedShareIds);
+  const validShareMembers = (shareMembers.results || []).filter(member => requestedShareSet.has(member.id));
+  const statements = [
+    db.prepare(
+      'INSERT INTO meeting_minutes (id, title, description, file_name, file_data, file_size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(id, title, description, file.name, base64, file.size, user.sub),
+    ...validShareMembers.map(member => db.prepare(
+      'INSERT INTO minutes_shares (id, minutes_id, shared_with, shared_by) VALUES (?, ?, ?, ?)'
+    ).bind(crypto.randomUUID(), id, member.id, user.sub)),
+  ];
+  await db.batch(statements);
 
-  return c.json({ success: true, id }, 201);
+  const sharedPhones = validShareMembers.map(member => member.phone).filter((phone): phone is string => Boolean(phone));
+  if (sharedPhones.length > 0) {
+    const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    c.executionCtx.waitUntil(sendAlimtalkByTemplate(
+      c.env as unknown as Record<string, unknown>, 'MINUTES_SHARED',
+      { author_name: user.name, title, date: today, link: `${APP_URL}/minutes` },
+      sharedPhones,
+    ).catch(() => {}));
+  }
+
+  return c.json({ success: true, id, shared_count: validShareMembers.length }, 201);
 });
 
 // DELETE /api/minutes/:id

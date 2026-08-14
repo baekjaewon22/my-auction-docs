@@ -9,6 +9,7 @@ import { calculateRefundRecoveryAmount } from '../../shared/refund-recovery';
 import { confirmedSalesSql, payrollRecognizedOrRefundedSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 import { buildBranchSummaryQueryScope } from '../../shared/payroll-branch-summary';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
+import { normalizeWithholdingSettlements } from '../../shared/withholding-settlement';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -220,6 +221,7 @@ function buildPayrollSnapshot(response: Record<string, any>, saveData: Record<st
       extraDeductionLabel: saveData.extraDeductionLabel ?? '',
       commExtras: Array.isArray(saveData.commExtras) ? saveData.commExtras : [],
       commDeductions: Array.isArray(saveData.commDeductions) ? saveData.commDeductions : [],
+      withholdingSettlements: normalizeWithholdingSettlements(saveData.withholdingSettlements),
     },
   };
 }
@@ -361,7 +363,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const savedPayroll = await db.prepare('SELECT * FROM payroll_saves WHERE user_id = ? AND period = ?').bind(userId, periodLabel).first<any>();
   const savedPayrollData = parsePayrollSaveData(savedPayroll?.data);
   const excludeCaseAllowanceFromBonusBasis = excludesCaseAllowanceFromBonusBasis(month);
-  const shouldUseSavedSnapshot = !!savedPayroll && !!savedPayroll.locked && !excludeCaseAllowanceFromBonusBasis;
+  const shouldUseSavedSnapshot = !!savedPayroll && !!savedPayroll.locked;
   const savedSnapshot = savedPayrollData.payroll_snapshot;
   if (shouldUseSavedSnapshot && savedSnapshot?.response) {
     return c.json({
@@ -831,9 +833,18 @@ payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
   if (existing?.locked) return c.json({ error: '해당 기간 정산은 잠금 상태입니다. (익달 5일 이후 수정 불가)' }, 400);
 
   const id = crypto.randomUUID();
+  const withholdingSettlements = normalizeWithholdingSettlements((saveData as any).withholdingSettlements);
+  const submittedSnapshot = (saveData as any).payroll_snapshot;
   const normalizedData = {
     ...saveData,
-    payroll_snapshot: (saveData as any).payroll_snapshot || null,
+    withholdingSettlements,
+    payroll_snapshot: submittedSnapshot ? {
+      ...submittedSnapshot,
+      manual: {
+        ...(submittedSnapshot.manual || {}),
+        withholdingSettlements,
+      },
+    } : null,
   };
   await db.prepare(`
     INSERT INTO payroll_saves (id, user_id, period, pay_type, data, created_by)
@@ -854,9 +865,14 @@ payroll.post('/lock', requireRole(...ACCOUNTING_ROLES), async (c) => {
     if (!(await canAccessUserPayroll(db, user, body.user_id))) {
       return c.json({ error: '해당 직원의 급여정산 확정 권한이 없습니다.' }, 403);
     }
-    const existing = await db.prepare('SELECT id FROM payroll_saves WHERE user_id = ? AND period = ?').bind(body.user_id, body.period).first<any>();
+    const existing = await db.prepare('SELECT id, data, locked FROM payroll_saves WHERE user_id = ? AND period = ?').bind(body.user_id, body.period).first<any>();
     if (!existing) return c.json({ error: '저장된 급여정산이 없습니다. 먼저 정산 저장 후 확정해주세요.' }, 400);
-    await db.prepare("UPDATE payroll_saves SET locked = 1, updated_at = datetime('now') WHERE user_id = ? AND period = ?")
+    if (existing.locked) return c.json({ success: true, locked: 1 });
+    const existingData = parsePayrollSaveData(existing.data);
+    if (!existingData.payroll_snapshot?.response) {
+      return c.json({ error: '확정 시점 스냅샷이 없습니다. 정산을 다시 저장한 뒤 확정해주세요.' }, 400);
+    }
+    await db.prepare("UPDATE payroll_saves SET locked = 1, updated_at = datetime('now') WHERE user_id = ? AND period = ? AND locked = 0")
       .bind(body.user_id, body.period).run();
     return c.json({ success: true, locked: 1 });
   }

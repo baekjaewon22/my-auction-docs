@@ -5,8 +5,9 @@
 import puppeteer from '@cloudflare/puppeteer';
 import {
   decryptToken, refreshAccessToken,
-  findOrCreateFolder, resolveFolderPath, uploadPdfBuffer,
+  findOrCreateFolder, resolveFolderPath, uploadPdfBuffer, uploadFileBuffer,
 } from './drive-oauth';
+import { ensureBriefingMaterialSchema, safeBriefingFileName } from './lib/briefing-materials';
 
 const KST_OFFSET = 9 * 60 * 60 * 1000;
 
@@ -167,7 +168,7 @@ function formatError(err: any, ctx: string): string {
 export async function runBackupBatch(
   env: any,
   opts: { triggered_by?: string; limit?: number; document_ids?: string[] } = {},
-): Promise<{ processed: number; success: number; failed: number; skipped: number; error?: string; details?: Array<{ id: string; title: string; status: 'success' | 'failed'; folder?: string; file_id?: string; error?: string }> }> {
+): Promise<{ processed: number; success: number; failed: number; skipped: number; briefing_processed?: number; briefing_success?: number; briefing_failed?: number; error?: string; details?: Array<{ id: string; title: string; status: 'success' | 'failed'; folder?: string; file_id?: string; error?: string }> }> {
   const db = env.DB as D1Database;
   const clientSecret = env.GOOGLE_CLIENT_SECRET as string | undefined;
   const baseUrl = env.ENVIRONMENT === 'development'
@@ -211,6 +212,12 @@ export async function runBackupBatch(
   // Cloudflare Workers Subrequest 한도(1000) + Browser Rendering Rate limit(429) 회피를 위해
   // 한 번에 5건씩만 처리. 빈도를 높여 cron이 자주 돌도록 함 (스케줄: 30분마다)
   const limit = Math.min(10, Math.max(1, opts.limit || 5));
+
+  await ensureBriefingMaterialSchema(db);
+  // A single-document test send must not unexpectedly drain the shared briefing queue.
+  const briefingResult = opts.document_ids
+    ? { processed: 0, success: 0, failed: 0 }
+    : await backupBriefingMaterials(env, db, accessToken, rootId, limit, opts.triggered_by || 'cron');
 
   // 특정 문서 ID 지정 시: 해당 문서만 처리 (중복 체크 무시하여 재백업 허용)
   let docs: any[] = [];
@@ -331,7 +338,7 @@ export async function runBackupBatch(
     if (browser) await browser.close().catch(() => {});
   }
 
-  const summary = `성공 ${success} / 실패 ${failed} / 대기 ${docs.length === limit ? '50+' : 0}`;
+  const summary = `문서 성공 ${success} / 실패 ${failed} · 브리핑 성공 ${briefingResult.success} / 실패 ${briefingResult.failed}`;
   // 단일 문서 테스트는 cron 상태 기록 생략 (설정 흔들림 방지)
   if (!opts.document_ids) {
     await db.prepare(`
@@ -344,5 +351,61 @@ export async function runBackupBatch(
     `).bind(failed === 0 ? 'success' : 'partial', summary).run();
   }
 
-  return { processed: docs.length, success, failed, skipped, details };
+  return { processed: docs.length, success, failed, skipped,
+    briefing_processed: briefingResult.processed, briefing_success: briefingResult.success,
+    briefing_failed: briefingResult.failed, details };
+}
+
+async function backupBriefingMaterials(
+  env: any,
+  db: D1Database,
+  accessToken: string,
+  rootId: string,
+  limit: number,
+  triggeredBy: string,
+): Promise<{ processed: number; success: number; failed: number }> {
+  if (!env.ARTICLE_BUCKET) return { processed: 0, success: 0, failed: 0 };
+  const pending = await db.prepare(`SELECT * FROM briefing_materials
+    WHERE archived_at IS NULL AND object_key != '' AND drive_status != 'success' AND drive_attempt_count < 5
+    ORDER BY created_at ASC LIMIT ?`).bind(limit).all<any>();
+  const materials = pending.results || [];
+  let success = 0;
+  let failed = 0;
+  for (const material of materials) {
+    const folderSegments = [
+      '브리핑자료',
+      `${material.material_month || '미지정'} 브리핑자료 모음`,
+      sanitizeName(material.branch || '미지정'),
+      sanitizeName(material.assignee_name || material.uploader_name || '미지정'),
+    ];
+    try {
+      const object = await env.ARTICLE_BUCKET.get(material.object_key);
+      if (!object) throw new Error('R2 원본 파일을 찾을 수 없습니다.');
+      const buffer = await object.arrayBuffer();
+      const folderId = await resolveFolderPath(accessToken, rootId, folderSegments);
+      const uploaded = await uploadFileBuffer(accessToken, folderId, safeBriefingFileName(material.file_name),
+        material.file_type || object.httpMetadata?.contentType || 'application/octet-stream', buffer);
+      await db.batch([
+        db.prepare(`UPDATE briefing_materials SET drive_status='success', drive_file_id=?, drive_folder_path=?,
+          drive_backed_up_at=datetime('now'), drive_attempt_count=drive_attempt_count+1, drive_error='', updated_at=datetime('now') WHERE id=?`)
+          .bind(uploaded.id, folderSegments.join('/'), material.id),
+        db.prepare(`INSERT INTO briefing_material_drive_logs
+          (id, material_id, status, drive_file_id, drive_folder_path, file_size, triggered_by)
+          VALUES (?, ?, 'success', ?, ?, ?, ?)`)
+          .bind(crypto.randomUUID(), material.id, uploaded.id, folderSegments.join('/'), uploaded.size, triggeredBy),
+      ]);
+      success += 1;
+    } catch (error: any) {
+      const message = formatError(error, '[briefing-material]').slice(0, 800);
+      await db.batch([
+        db.prepare(`UPDATE briefing_materials SET drive_status='failed', drive_attempt_count=drive_attempt_count+1,
+          drive_error=?, updated_at=datetime('now') WHERE id=?`).bind(message, material.id),
+        db.prepare(`INSERT INTO briefing_material_drive_logs
+          (id, material_id, status, error_message, triggered_by) VALUES (?, ?, 'failed', ?, ?)`)
+          .bind(crypto.randomUUID(), material.id, message, triggeredBy),
+      ]);
+      failed += 1;
+    }
+  }
+  return { processed: materials.length, success, failed };
 }

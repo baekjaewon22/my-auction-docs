@@ -14,6 +14,10 @@ import { recheckAlertsAfterDocumentChange } from '../lib/journal-alerts';
 import { isHeadOfficeBranch } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { buildOrgApprovalChain } from '../lib/org-approval-chain';
+import {
+  buildPropertyReportApprovalChain,
+  PROPERTY_REPORT_TEMPLATE_ID,
+} from '../lib/property-report-approval';
 import { canReadDocument, getDocumentAccessRecord } from '../lib/document-access';
 import {
   ensureTemplateAccessSchema,
@@ -415,13 +419,21 @@ documents.post('/:id/submit', async (c) => {
   if (doc.status !== 'draft' && doc.status !== 'rejected') return c.json({ error: '작성중 또는 반려된 문서만 제출할 수 있습니다.' }, 400);
 
   // 결재선 자동 생성
-  const freelancerAuthor = isFreelancerViewer(user);
   let chain = await buildApprovalChain(
     db,
     user.sub,
     isMyAuctionDocument(doc),
-    freelancerAuthor,
+    true,
   );
+  if (doc.template_id === PROPERTY_REPORT_TEMPLATE_ID) {
+    chain = await buildPropertyReportApprovalChain(db, user.sub, chain);
+    if (chain.length === 0) {
+      return c.json(
+        { error: '물건분석보고서의 대표이사 결재자를 찾을 수 없습니다. 대표이사 계정 또는 조직도를 확인해 주세요.' },
+        400,
+      );
+    }
+  }
   if (isFreelancerViewer(user) && chain.length === 0) {
     return c.json(
       { error: '결재선이 설정되지 않았습니다. 관리자에게 조직도 또는 지사 상위승인자 설정을 요청하세요.' },

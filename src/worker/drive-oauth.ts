@@ -184,3 +184,33 @@ export async function uploadPdfBuffer(
   const data = await res.json<any>();
   return { id: data.id, size: Number(data.size) || buffer.byteLength };
 }
+
+/** 원본 파일 Buffer 업로드 (브리핑자료 등 바이너리 보존용) */
+export async function uploadFileBuffer(
+  token: string,
+  folderId: string,
+  filename: string,
+  mimeType: string,
+  buffer: ArrayBuffer,
+): Promise<{ id: string; size: number }> {
+  const safeMime = mimeType || 'application/octet-stream';
+  const metadata = { name: filename, mimeType: safeMime, parents: [folderId] };
+  const boundary = 'maFileBoundary' + Math.random().toString(36).slice(2);
+  const preamble = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}
+\r\n--${boundary}\r\nContent-Type: ${safeMime}\r\n\r\n`;
+  const epilogue = `\r\n--${boundary}--`;
+  const preBytes = new TextEncoder().encode(preamble);
+  const endBytes = new TextEncoder().encode(epilogue);
+  const body = new Uint8Array(preBytes.length + buffer.byteLength + endBytes.length);
+  body.set(preBytes, 0);
+  body.set(new Uint8Array(buffer), preBytes.length);
+  body.set(endBytes, preBytes.length + buffer.byteLength);
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,size', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+    body,
+  });
+  if (!res.ok) throw new Error(`Drive upload ${res.status}: ${(await res.text()).slice(0, 500)}`);
+  const data = await res.json<any>();
+  return { id: data.id, size: Number(data.size) || buffer.byteLength };
+}

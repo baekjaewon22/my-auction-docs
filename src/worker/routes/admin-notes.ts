@@ -1,12 +1,15 @@
 import { Hono } from 'hono';
 import type { AuthEnv, Role } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { canShareCommunityWithAll } from '../../shared/community-visibility';
 import { communityBroadcastRecipientIds, sendCommunityCommentAlimtalk, sendCommunityNoteCreatedAlimtalk } from '../lib/community-alimtalk';
 import { recheckAlertsAfterEntryDelete, recheckAlertsForJournalEntry } from '../lib/journal-alerts';
 import { articleObjectKey, ensureArticlePdfTable, safePdfFileName, sha256Hex } from '../lib/article-pdfs';
 import { ensureBidAnalysisTable, makeBidDedupeKey, normalizeAmount, normalizeBidResult } from '../lib/bid-analysis';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { sendWebPushToUser } from '../lib/web-push-delivery';
+import { canAccessEvictionQuote, EVICTION_QUOTE_VISIBILITY } from '../../shared/eviction-quote-access';
+import { sendEvictionQuoteSlackNotification } from '../lib/eviction-quote-slack';
 import {
   communityCategoryLabel,
   communityCreatedNotificationMode,
@@ -237,7 +240,16 @@ const LEGAL_SUBCATEGORY_SQL = `CASE COALESCE(n.legal_subcategory, 'lawsuit')
   ELSE COALESCE(n.legal_subcategory, 'lawsuit')
 END`;
 
-function canReadNote(note: any, viewer: any, viewerInfo: { branch?: string | null; department?: string | null } | null, role: string): boolean {
+function canReadNote(note: any, viewer: any, viewerInfo: { branch?: string | null; department?: string | null; team_name?: string | null } | null, role: string): boolean {
+  if (note.category === 'eviction_quote') {
+    return canAccessEvictionQuote({
+      userId: viewer.sub,
+      role,
+      department: viewerInfo?.department,
+      teamName: viewerInfo?.team_name,
+      authorId: note.author_id,
+    });
+  }
   if (role === 'master' || note.author_id === viewer.sub) return true;
   const v = note.visibility || 'all';
   return v === 'all' ||
@@ -606,8 +618,8 @@ adminNotes.get('/', async (c) => {
 
   // 사용자 정보 조회 (branch, department)
   const viewerInfo = await db.prepare(
-    'SELECT branch, department, role FROM users WHERE id = ?'
-  ).bind(viewer.sub).first<{ branch: string; department: string; role: string }>();
+    'SELECT u.branch, u.department, u.role, t.name as team_name FROM users u LEFT JOIN teams t ON t.id = u.team_id WHERE u.id = ?'
+  ).bind(viewer.sub).first<{ branch: string; department: string; role: string; team_name: string | null }>();
   if (!viewerInfo) return c.json({ error: '사용자 정보 오류' }, 400);
 
   const role = viewerInfo.role;
@@ -678,6 +690,12 @@ adminNotes.get('/', async (c) => {
        ORDER BY n.pinned DESC, n.created_at DESC`
     ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`).all();
   } else {
+    const canViewEvictionTeam = canAccessEvictionQuote({
+      userId: viewer.sub,
+      role,
+      department: viewerInfo.department,
+      teamName: viewerInfo.team_name,
+    });
     // 관리자급 포함 전체: visibility 조건 적용
     notes = await db.prepare(
       `SELECT n.*, u.position_title as author_position,
@@ -689,15 +707,18 @@ adminNotes.get('/', async (c) => {
          AND (? != 'legal_support' OR ${LEGAL_SUBCATEGORY_SQL} = ?)
          AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ? OR COALESCE(n.client_name, '') LIKE ? OR COALESCE(n.target_date, '') LIKE ?)
          AND (
-           n.visibility = 'all'
-           OR (n.visibility = 'branch' AND n.author_branch = ?)
-           OR (n.visibility = 'department' AND n.author_branch = ? AND n.author_department = ?)
-           OR (n.visibility LIKE 'team:%' AND n.visibility = ?)
-           OR (n.visibility LIKE 'user:%' AND n.visibility = ?)
-           OR n.author_id = ?
+           (COALESCE(n.category, 'community') = 'eviction_quote' AND (? = 1 OR n.author_id = ?))
+           OR (COALESCE(n.category, 'community') != 'eviction_quote' AND (
+             n.visibility = 'all'
+             OR (n.visibility = 'branch' AND n.author_branch = ?)
+             OR (n.visibility = 'department' AND n.author_branch = ? AND n.author_department = ?)
+             OR (n.visibility LIKE 'team:%' AND n.visibility = ?)
+             OR (n.visibility LIKE 'user:%' AND n.visibility = ?)
+             OR n.author_id = ?
+           ))
          )
        ORDER BY n.pinned DESC, n.created_at DESC`
-    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, 'user:' + viewer.sub, viewer.sub).all();
+    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, canViewEvictionTeam ? 1 : 0, viewer.sub, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, 'user:' + viewer.sub, viewer.sub).all();
   }
 
   const masked = (notes.results || []).map((n: any) => maskNote(n, role, viewerInfo.department));
@@ -1280,7 +1301,7 @@ adminNotes.get('/:id', async (c) => {
   const id = c.req.param('id');
   const shouldTrackView = c.req.query('view') === '1';
 
-  const viewerInfo = await db.prepare('SELECT role, branch, department FROM users WHERE id = ?').bind(viewer.sub).first<{ role: string; branch: string; department: string }>();
+  const viewerInfo = await db.prepare('SELECT u.role, u.branch, u.department, t.name as team_name FROM users u LEFT JOIN teams t ON t.id = u.team_id WHERE u.id = ?').bind(viewer.sub).first<{ role: string; branch: string; department: string; team_name: string | null }>();
   const role = viewerInfo?.role || viewer.role;
 
   let note = await db.prepare(
@@ -1420,8 +1441,8 @@ adminNotes.post('/', async (c) => {
 
   // 사용자 정보
   const profile = await db.prepare(
-    'SELECT branch, department, position_title, role FROM users WHERE id = ?'
-  ).bind(user.sub).first<{ branch: string; department: string; position_title: string; role: string }>();
+    'SELECT branch, department, position_title, role, login_type FROM users WHERE id = ?'
+  ).bind(user.sub).first<{ branch: string; department: string; position_title: string; role: string; login_type: string }>();
   const role = profile?.role || user.role;
   if (category === 'notice' && !canCreateNotice(role)) {
     return c.json({ error: '공지사항 등록 권한이 없습니다.' }, 403);
@@ -1431,7 +1452,15 @@ adminNotes.post('/', async (c) => {
   }
 
   const requestedVisibility = String(visibility || 'all').trim() || 'all';
-  const finalVisibility = category === 'briefing_schedule' || category === 'notice' ? 'all' : requestedVisibility;
+  const normalizedRequestedVisibility = requestedVisibility === 'all' && !canShareCommunityWithAll(
+    { role, loginType: profile?.login_type },
+    category,
+  ) ? 'branch' : requestedVisibility;
+  const finalVisibility = category === 'eviction_quote'
+    ? EVICTION_QUOTE_VISIBILITY
+    : category === 'briefing_schedule' || category === 'notice'
+      ? 'all'
+      : normalizedRequestedVisibility;
   const directTargetId = directRecipientId(finalVisibility);
   if (directTargetId) {
     if (directTargetId === user.sub) return c.json({ error: '본인이 아닌 수신자를 선택하세요.' }, 400);
@@ -1625,6 +1654,19 @@ adminNotes.post('/', async (c) => {
     },
   ).catch((err) => console.error('[community alimtalk] create notification failed', err)));
 
+  if (category === 'eviction_quote') {
+    c.executionCtx.waitUntil(sendEvictionQuoteSlackNotification(
+      c.env as unknown as Record<string, unknown> & { DB: D1Database },
+      {
+        noteId: id,
+        authorName: is_anonymous ? '익명' : user.name,
+        court: String(court || '').trim(),
+        caseNumber: String(case_number || '').trim(),
+        title: finalTitle,
+      },
+    ).catch((err) => console.error('[eviction quote slack] create notification failed', err)));
+  }
+
   if (directTargetId && TARGETED_COMMUNITY_CATEGORIES.includes(category as typeof TARGETED_COMMUNITY_CATEGORIES[number])) {
     c.executionCtx.waitUntil(sendWebPushToUser(db, c.env, {
       userId: directTargetId,
@@ -1786,8 +1828,8 @@ adminNotes.post('/:id/comments', async (c) => {
   }>();
   if (!note) return c.json({ error: '게시글을 찾을 수 없습니다.' }, 404);
   const viewerInfo = await db.prepare(
-    'SELECT branch, department, role FROM users WHERE id = ? LIMIT 1'
-  ).bind(user.sub).first<{ branch: string | null; department: string | null; role: string | null }>();
+    'SELECT u.branch, u.department, u.role, t.name as team_name FROM users u LEFT JOIN teams t ON t.id = u.team_id WHERE u.id = ? LIMIT 1'
+  ).bind(user.sub).first<{ branch: string | null; department: string | null; role: string | null; team_name: string | null }>();
   if (!canReadNote(note, user, viewerInfo, viewerInfo?.role || user.role)) {
     return c.json({ error: '접근 권한이 없습니다.' }, 403);
   }

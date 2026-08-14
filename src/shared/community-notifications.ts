@@ -1,3 +1,5 @@
+import { EVICTION_QUOTE_VISIBILITY } from './eviction-quote-access.ts';
+
 export const TARGETED_COMMUNITY_CATEGORIES = ['community', 'eviction_quote', 'legal_support'] as const;
 
 export function directRecipientId(visibility: unknown): string | null {
@@ -13,8 +15,9 @@ export function communityCreatedNotificationMode(input: {
   legalSubcategory?: string | null;
 }): 'direct' | 'broadcast' | 'none' {
   if (directRecipientId(input.visibility)) return 'direct';
-  if (String(input.visibility || 'all') !== 'all') return 'none';
-  if (input.category === 'eviction_quote') return 'broadcast';
+  const visibility = String(input.visibility || 'all');
+  if (input.category === 'eviction_quote' && (visibility === 'all' || visibility === EVICTION_QUOTE_VISIBILITY)) return 'broadcast';
+  if (visibility !== 'all') return 'none';
   if (input.category === 'legal_support' && !['legal_terms', 'law_reference'].includes(input.legalSubcategory || 'lawsuit')) {
     return 'broadcast';
   }

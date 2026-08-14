@@ -33,7 +33,6 @@ function isDirectoryVisibleUser(user: User) {
 
   return (
     user.role !== 'resigned' &&
-    (user.login_type || 'employee') !== 'freelancer' &&
     !isSystemAccount &&
     !isTestAccount
   );

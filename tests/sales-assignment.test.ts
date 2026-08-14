@@ -5,9 +5,10 @@ import {
   canUseRequestedSalesOwner,
 } from '../src/shared/sales-assignment.ts';
 
-test('마스터와 총무담당만 다른 담당자의 매출을 등록할 수 있다', () => {
+test('마스터·총무담당·정민호 지사장은 다른 담당자의 매출을 등록할 수 있다', () => {
   assert.equal(canAssignSalesToAnotherUser('master'), true);
   assert.equal(canAssignSalesToAnotherUser('accountant'), true);
+  assert.equal(canAssignSalesToAnotherUser('admin', '2b6b3606-e425-4361-a115-9283cfef842f'), true);
   assert.equal(canAssignSalesToAnotherUser('accountant_asst'), false);
   assert.equal(canAssignSalesToAnotherUser('admin'), false);
   assert.equal(canAssignSalesToAnotherUser('member'), false);
@@ -24,7 +25,8 @@ test('일반 사용자와 총무보조의 타인 담당자 지정은 거부된�
   assert.equal(canUseRequestedSalesOwner('accountant_asst', 'user-1', 'user-2'), false);
 });
 
-test('마스터와 총무담당은 타인 담당자를 지정할 수 있다', () => {
+test('마스터·총무담당·정민호 지사장은 타인 담당자를 지정할 수 있다', () => {
   assert.equal(canUseRequestedSalesOwner('master', 'user-1', 'user-2'), true);
   assert.equal(canUseRequestedSalesOwner('accountant', 'user-1', 'user-2'), true);
+  assert.equal(canUseRequestedSalesOwner('admin', '2b6b3606-e425-4361-a115-9283cfef842f', 'user-2'), true);
 });

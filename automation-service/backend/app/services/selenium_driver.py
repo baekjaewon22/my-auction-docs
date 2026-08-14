@@ -37,7 +37,8 @@ logger = logging.getLogger(__name__)
 
 WINDOW_WIDTH = 1500
 WINDOW_HEIGHT = 900
-SELENIUM_PROFILE_DIR = str(APP_ROOT / "selenium_profile")
+SELENIUM_PROFILE_DIR = str(Path(os.environ.get("AUCTION_REPORT_WORK_ROOT", "")).resolve() / "selenium_profile") \
+    if os.environ.get("AUCTION_REPORT_WORK_ROOT", "").strip() else str(APP_ROOT / "selenium_profile")
 
 
 def _chrome_binary_candidates() -> list[str]:

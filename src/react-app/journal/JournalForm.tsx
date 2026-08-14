@@ -36,9 +36,18 @@ interface Props {
   assignableMembers?: { id: string; name: string; role: string; branch: string; department: string; position_title?: string }[];
   defaultAssigneeId?: string;
   canChooseAssignee?: boolean;
+  mode?: 'journal' | 'auction-schedule';
+  createEntry?: (data: {
+    target_date: string;
+    activity_type: ActivityType;
+    activity_subtype: string;
+    data: Record<string, unknown>;
+    user_id?: string;
+  }) => Promise<unknown>;
+  checkInspectionDuplicate?: (caseNo: string, court?: string) => Promise<{ exists: boolean; entries: { id: string; user_id: string; user_name: string; target_date: string; court: string }[] }>;
 }
 
-export default function JournalForm({ targetDate, onCreated, onClose, assignableMembers = [], defaultAssigneeId, canChooseAssignee = false }: Props) {
+export default function JournalForm({ targetDate, onCreated, onClose, assignableMembers = [], defaultAssigneeId, canChooseAssignee = false, mode = 'journal', createEntry, checkInspectionDuplicate }: Props) {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [assigneeId, setAssigneeId] = useState(defaultAssigneeId || assignableMembers[0]?.id || '');
@@ -169,14 +178,14 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     }
     const fullCase = `${inspYear}타경${inspCaseNo}`;
     const timer = setTimeout(() => {
-      api.journal.checkCaseNo(fullCase, inspCourt)
+      (checkInspectionDuplicate || api.journal.checkCaseNo)(fullCase, inspCourt)
         .then(res => {
           setInspDupWarning(res.exists ? res.entries : null);
         })
         .catch(() => setInspDupWarning(null));
     }, 500);
     return () => clearTimeout(timer);
-  }, [inspYear, inspCaseNo, inspCourt, activityType, companion]);
+  }, [inspYear, inspCaseNo, inspCourt, activityType, companion, checkInspectionDuplicate]);
 
   // 사무
   const [officeType, setOfficeType] = useState('고객관리');
@@ -213,7 +222,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     const isFieldExcluded = (activityType === '입찰' && bidProxy) || companion || meetingInternal;
     const normalizedFieldCheckIn = isFieldType && !isFieldExcluded && timeFrom === '09:00';
     const normalizedFieldCheckOut = isFieldType && !isFieldExcluded && timeTo === '18:00';
-    let data: Record<string, unknown> = {
+    let data: Record<string, unknown> = mode === 'auction-schedule' ? {} : {
       timeFrom: activityType === '입찰' && bidProxy ? '' : timeFrom,
       timeTo: activityType === '입찰' && bidProxy ? '' : timeTo,
       fieldCheckIn: normalizedFieldCheckIn,
@@ -312,7 +321,8 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
         return;
       }
       for (const task of finalTasks) {
-        await api.journal.create({
+        const submitEntry = createEntry || api.journal.create;
+        await submitEntry({
           target_date: targetDate,
           activity_type: task.activityType,
           activity_subtype: task.subtype,
@@ -341,7 +351,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
               <div key={i} className="task-queue-item">
                 <span className="task-queue-text">
                   {task.label}
-                  {task.timeFrom && <span className="task-queue-time"> {task.timeFrom}~{task.timeTo}</span>}
+                  {mode === 'journal' && task.timeFrom && <span className="task-queue-time"> {task.timeFrom}~{task.timeTo}</span>}
                 </span>
                 <button type="button" className="task-queue-remove" onClick={() => removeTask(i)}>
                   <Trash2 size={13} />
@@ -369,7 +379,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
           <div className="form-group">
             <label>업무 유형</label>
             <div className="activity-type-tabs">
-              {ACTIVITY_TYPES.map((t) => (
+              {(mode === 'auction-schedule' ? ACTIVITY_TYPES.filter((t) => ['입찰', '임장', '미팅'].includes(t)) : ACTIVITY_TYPES).map((t) => (
                 <button key={t} type="button" className={`activity-tab ${activityType === t ? 'active' : ''}`} onClick={() => setActivityType(t)}>{t}</button>
               ))}
             </div>
@@ -389,7 +399,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
           )}
 
           {/* 현장출근/퇴근 */}
-          {supportsFieldCheck && !isProxyBid && !companion && !meetingInternal && (
+          {mode === 'journal' && supportsFieldCheck && !isProxyBid && !companion && !meetingInternal && (
             <div className="form-group">
               <div className="field-check-group">
                 <label className={`field-check-label ${fieldCheckIn ? 'checked' : ''}`}>
@@ -403,7 +413,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
           )}
 
           {/* 시간 (개인은 불필요) */}
-          {activityType !== '개인' && !isProxyBid && (
+          {mode === 'journal' && activityType !== '개인' && !isProxyBid && (
             <div className="form-group">
               <label>시간</label>
               <div className="inline-row">

@@ -65,6 +65,16 @@ test('the CEO stamp is accepted only for the CEO step when it becomes current', 
     userId: 'master', userRole: 'master', documentStatus: 'submitted', signatureType: 'approver',
     isCeoStamp: true, stepId: 'step-ceo', pendingSteps: [steps[2]], totalStepCount: steps.length,
   }).allowed, true);
+  assert.equal(evaluateSignaturePolicy({
+    ...base,
+    userId: 'branch-admin', userRole: 'admin', documentStatus: 'submitted', signatureType: 'approver',
+    isCeoStamp: true, stepId: 'step-ceo', pendingSteps: [steps[2]], totalStepCount: 1,
+  }).allowed, true);
+  assert.equal(evaluateSignaturePolicy({
+    ...base,
+    userId: 'branch-manager', userRole: 'manager', documentStatus: 'submitted', signatureType: 'approver',
+    isCeoStamp: true, stepId: 'step-ceo', pendingSteps: [steps[2]], totalStepCount: 1,
+  }).allowed, false);
 });
 
 test('a submitted workflow with no pending steps cannot receive another signature', () => {

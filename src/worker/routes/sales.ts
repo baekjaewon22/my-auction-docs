@@ -9,6 +9,18 @@ import { resolveRefundRecovery } from '../lib/refund-recovery';
 import { accountingEntryInitialStatus, effectiveSalesStatus, normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 import { canUseRequestedSalesOwner } from '../../shared/sales-assignment';
+import { isValidCustomerPhone, normalizeCustomerName, normalizeCustomerPhone } from '../../shared/sales-customer-identity';
+import { resolveSalesCustomer, searchSalesCustomers } from '../lib/sales-customer-master';
+import {
+  ensureEmploymentTypeHistoryTable,
+  resolveEmploymentTypeFromHistory,
+  type EmploymentTypeHistoryRow,
+} from '../lib/employment-conversion';
+import {
+  ensurePayTypeHistoryTable,
+  resolvePayTypeSnapshotFromHistory,
+  type PayTypeHistorySnapshot,
+} from '../lib/pay-type-history';
 
 const sales = new Hono<AuthEnv>();
 sales.use('*', authMiddleware);
@@ -485,11 +497,12 @@ sales.get('/ranking', async (c) => {
   void sy; void sm;
 
   const result = await db.prepare(`
-    SELECT user_name, eff_branch, position,
+    SELECT user_id, user_name, eff_branch, position,
       SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as count,
       SUM(customer_amount) as total_amount
     FROM (
-      SELECT u.name as user_name,
+      SELECT sr.user_id,
+        u.name as user_name,
         COALESCE(NULLIF(sr.attribution_branch, ''), sr.branch) as eff_branch,
         u.position_title as position,
         CASE
@@ -508,11 +521,58 @@ sales.get('/ranking', async (c) => {
         )
       GROUP BY sr.user_id, eff_branch, customer_key
     )
-    GROUP BY user_name, eff_branch, position
+    GROUP BY user_id, user_name, eff_branch, position
     ORDER BY count DESC, total_amount DESC
-  `).bind(mStart, mEnd, mStart, mEnd, mStart, mEnd).all<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>();
+  `).bind(mStart, mEnd, mStart, mEnd, mStart, mEnd).all<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>();
 
   return c.json({ ranking: result.results || [] });
+});
+
+// GET /api/sales/customer-contracts — 낙찰 등록 시 동일 담당자의 계약 고객만 조회
+sales.get('/customer-contracts', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const clientName = String(c.req.query('client_name') || '').trim();
+  const requestedOwnerId = String(c.req.query('user_id') || '').trim();
+  if (!clientName) return c.json({ contracts: [] });
+  if (!canUseRequestedSalesOwner(user.role, user.sub, requestedOwnerId)) {
+    return c.json({ error: '다른 담당자의 계약 고객을 조회할 권한이 없습니다.' }, 403);
+  }
+  const ownerId = requestedOwnerId || user.sub;
+  const result = await db.prepare(`
+    SELECT id, user_id, type, client_name, client_phone, status, contract_date,
+      appraisal_rate, winning_rate
+    FROM sales_records
+    WHERE user_id = ?
+      AND type = '계약'
+      AND status != 'refunded'
+      AND REPLACE(LOWER(TRIM(client_name)), ' ', '') = ?
+      AND COALESCE(client_phone, '') != ''
+    ORDER BY contract_date DESC, created_at DESC
+  `).bind(ownerId, normalizeCustomerName(clientName)).all<{
+    id: string; user_id: string; type: '계약'; client_name: string; client_phone: string;
+    status: string; contract_date: string; appraisal_rate: number; winning_rate: number;
+  }>();
+  const contracts = new Map<string, NonNullable<typeof result.results>[number]>();
+  for (const contract of result.results || []) {
+    const phone = normalizeCustomerPhone(contract.client_phone);
+    if (isValidCustomerPhone(phone) && !contracts.has(phone)) contracts.set(phone, contract);
+  }
+  return c.json({ contracts: [...contracts.values()] });
+});
+
+// GET /api/sales/customer-search — 이름 입력 자동완성용 담당자별 고객 마스터 검색
+sales.get('/customer-search', async (c) => {
+  const user = c.get('user');
+  const query = String(c.req.query('q') || '').trim();
+  const requestedOwnerId = String(c.req.query('user_id') || '').trim();
+  if (!canUseRequestedSalesOwner(user.role, user.sub, requestedOwnerId)) {
+    return c.json({ error: '다른 담당자의 고객을 조회할 권한이 없습니다.' }, 403);
+  }
+  if (!query) return c.json({ customers: [] });
+  const ownerId = requestedOwnerId || user.sub;
+  const customers = await searchSalesCustomers(c.env.DB, ownerId, query);
+  return c.json({ customers });
 });
 
 // POST /api/sales — 매출 내역 추가
@@ -529,6 +589,7 @@ sales.post('/', async (c) => {
     payment_type?: string; receipt_type?: string; receipt_phone?: string;
     proxy_cost?: number;
     user_id?: string;
+    customer_id?: string;
   }>();
 
   if (!['계약', '낙찰', '중개', '권리분석보증서', '매수신청대리', '기타'].includes(body.type)) {
@@ -600,23 +661,66 @@ sales.post('/', async (c) => {
     ownerDepartment = linkedEntry.department || ownerDepartment;
   }
 
+  let clientPhone = String(body.client_phone || '').trim();
+  if (body.type === '낙찰' && !isValidCustomerPhone(clientPhone)) {
+    const contracts = await db.prepare(`
+      SELECT client_phone
+      FROM sales_records
+      WHERE user_id = ?
+        AND type = '계약'
+        AND status != 'refunded'
+        AND REPLACE(LOWER(TRIM(client_name)), ' ', '') = ?
+        AND COALESCE(client_phone, '') != ''
+      ORDER BY contract_date DESC, created_at DESC
+    `).bind(ownerId, normalizeCustomerName(body.client_name)).all<{ client_phone: string }>();
+    const phones = new Map<string, string>();
+    for (const contract of contracts.results || []) {
+      const digits = normalizeCustomerPhone(contract.client_phone);
+      if (isValidCustomerPhone(digits) && !phones.has(digits)) phones.set(digits, contract.client_phone);
+    }
+    if (phones.size === 1) clientPhone = [...phones.values()][0];
+  }
+
+  if ((body.type === '계약' || body.type === '낙찰') && !isValidCustomerPhone(clientPhone)) {
+    return c.json({
+      error: body.type === '낙찰'
+        ? '낙찰 고객 전화번호를 입력해 주세요. 같은 이름의 계약 고객이 여러 명이면 정확한 전화번호를 선택해야 합니다.'
+        : '계약 고객 전화번호를 입력해 주세요.',
+    }, 400);
+  }
+
+  let customerId: string | null = null;
+  if (body.type === '계약' || body.type === '낙찰') {
+    try {
+      const customer = await resolveSalesCustomer(db, {
+        ownerId,
+        name: body.client_name,
+        phone: clientPhone,
+        customerId: body.customer_id,
+      });
+      customerId = customer.id;
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : '고객 정보를 확인해 주세요.' }, 400);
+    }
+  }
+
   const id = crypto.randomUUID();
   await db.prepare(`
-    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, payment_type, receipt_type, receipt_phone, proxy_cost)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, payment_type, receipt_type, receipt_phone, proxy_cost, customer_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     id, ownerId, body.type, body.type_detail || '', body.client_name,
     body.depositor_name || '', body.depositor_different ? 1 : 0,
     body.amount || 0, body.contract_date || new Date().toISOString().slice(0, 10),
     body.journal_entry_id || null, direction, ownerBranch, ownerDepartment,
     body.payment_type || '', body.receipt_type || '', body.receipt_phone || '',
-    body.proxy_cost || 0
+    body.proxy_cost || 0, customerId
   ).run();
 
   // 계약조건 기록 (별도 UPDATE — 컬럼 호환성)
-  if (body.appraisal_rate || body.winning_rate || body.client_phone) {
+  if (body.appraisal_rate || body.winning_rate || clientPhone) {
     await db.prepare("UPDATE sales_records SET appraisal_rate = ?, winning_rate = ?, client_phone = ? WHERE id = ?")
-      .bind(body.appraisal_rate || 0, body.winning_rate || 0, body.client_phone || '', id).run();
+      .bind(body.appraisal_rate || 0, body.winning_rate || 0, clientPhone, id).run();
   }
 
   // 알림톡: 매출 등록(입금대기) → 해당 지사 알림톡 ON한 총무에게 DEPOSIT_CLAIM
@@ -1256,23 +1360,16 @@ sales.get('/manager-performance', async (c) => {
   const startDate = `${months[0]}-01`;
   const [endYear, endMonth] = months[months.length - 1].split('-').map(Number);
   const endDate = `${months[months.length - 1]}-${new Date(endYear, endMonth, 0).getDate()}`;
+  await Promise.all([
+    ensureEmploymentTypeHistoryTable(db),
+    ensurePayTypeHistoryTable(db),
+  ]);
 
   const memberConditions = [
     "u.approved = 1",
     "u.role != 'resigned'",
+    "(u.role IN ('member', 'manager', 'director') OR COALESCE(u.login_type, 'employee') = 'freelancer' OR COALESCE(ua.pay_type, 'salary') = 'commission')",
   ];
-  if (employmentType === 'freelancer') {
-    memberConditions.push(
-      "(COALESCE(u.login_type, 'employee') = 'freelancer' OR u.role = 'freelancer' OR COALESCE(ua.pay_type, '') = 'commission')",
-    );
-  } else {
-    memberConditions.push(
-      "u.role IN ('member', 'manager')",
-      "COALESCE(u.login_type, 'employee') != 'freelancer'",
-      "u.role != 'freelancer'",
-      "COALESCE(ua.pay_type, '') != 'commission'",
-    );
-  }
   const memberParams: any[] = [];
   memberConditions.push(`NOT (${TEST_ACCOUNT_KEYWORDS.map(() =>
     "(LOWER(COALESCE(u.name, '')) LIKE ? OR LOWER(COALESCE(u.email, '')) LIKE ? OR LOWER(COALESCE(u.branch, '')) LIKE ? OR LOWER(COALESCE(u.department, '')) LIKE ?)"
@@ -1310,14 +1407,92 @@ sales.get('/manager-performance', async (c) => {
   }
 
   const membersResult = await db.prepare(`
-    SELECT u.id, u.name, u.branch, u.department, u.position_title, u.login_type,
-           COALESCE(ua.standard_sales, 0) as standard_sales
+    SELECT u.id, u.name, u.role, u.branch, u.department, u.position_title,
+           COALESCE(u.login_type, 'employee') as current_login_type,
+           COALESCE(ua.pay_type, 'salary') as current_pay_type,
+           COALESCE(ua.standard_sales, 0) as current_standard_sales
     FROM users u
     LEFT JOIN user_accounting ua ON ua.user_id = u.id
     WHERE ${memberConditions.join(' AND ')}
     ORDER BY u.branch, u.department, u.name
   `).bind(...memberParams).all<any>();
-  const members = membersResult.results || [];
+  const candidateMembers = membersResult.results || [];
+  if (candidateMembers.length === 0) {
+    return c.json({
+      months,
+      rows: [],
+      scope: canViewAll ? 'all' : canViewBranch ? 'branch' : 'team',
+      employment_type: employmentType,
+    });
+  }
+
+  const candidateIds = candidateMembers.map((member: any) => member.id);
+  const employmentHistoryRows: Array<EmploymentTypeHistoryRow & { user_id: string }> = [];
+  const payTypeHistoryRows: Array<PayTypeHistorySnapshot & { user_id: string; created_at?: string }> = [];
+  const historyChunkSize = 80;
+  for (let offset = 0; offset < candidateIds.length; offset += historyChunkSize) {
+    const chunkIds = candidateIds.slice(offset, offset + historyChunkSize);
+    const candidatePlaceholders = chunkIds.map(() => '?').join(',');
+    const [employmentHistoryResult, payTypeHistoryResult] = await Promise.all([
+      db.prepare(`
+        SELECT user_id, from_login_type, to_login_type, effective_month, created_at
+        FROM user_employment_type_history
+        WHERE user_id IN (${candidatePlaceholders})
+        ORDER BY user_id, effective_month, created_at, rowid
+      `).bind(...chunkIds).all<EmploymentTypeHistoryRow & { user_id: string }>(),
+      db.prepare(`
+        SELECT user_id, pay_type, commission_rate, salary, standard_sales,
+               grade, position_allowance, effective_month, created_at
+        FROM user_pay_type_history
+        WHERE user_id IN (${candidatePlaceholders})
+        ORDER BY user_id, effective_month, created_at, rowid
+      `).bind(...chunkIds).all<PayTypeHistorySnapshot & { user_id: string; created_at?: string }>(),
+    ]);
+    employmentHistoryRows.push(...(employmentHistoryResult.results || []));
+    payTypeHistoryRows.push(...(payTypeHistoryResult.results || []));
+  }
+  const employmentHistoryByUser = new Map<string, EmploymentTypeHistoryRow[]>();
+  for (const row of employmentHistoryRows) {
+    const list = employmentHistoryByUser.get(row.user_id) || [];
+    list.push(row);
+    employmentHistoryByUser.set(row.user_id, list);
+  }
+  const payTypeHistoryByUser = new Map<string, PayTypeHistorySnapshot[]>();
+  for (const row of payTypeHistoryRows) {
+    const list = payTypeHistoryByUser.get(row.user_id) || [];
+    list.push(row);
+    payTypeHistoryByUser.set(row.user_id, list);
+  }
+  const applicableMonthsByUser = new Map<string, string[]>();
+  const paySnapshotByUserMonth = new Map<string, PayTypeHistorySnapshot>();
+  const members = candidateMembers.filter((member: any) => {
+    const applicableMonths = months.filter((targetMonth) => {
+      const loginType = resolveEmploymentTypeFromHistory(
+        employmentHistoryByUser.get(member.id) || [],
+        targetMonth,
+        member.current_login_type === 'freelancer' ? 'freelancer' : 'employee',
+      );
+      const paySnapshot = resolvePayTypeSnapshotFromHistory(
+        payTypeHistoryByUser.get(member.id) || [],
+        targetMonth,
+        {
+          pay_type: member.current_pay_type,
+          standard_sales: member.current_standard_sales,
+        },
+      );
+      paySnapshotByUserMonth.set(`${member.id}|${targetMonth}`, paySnapshot);
+      const isFreelancerAtMonth = loginType === 'freelancer'
+        || member.role === 'freelancer'
+        || paySnapshot.pay_type === 'commission';
+      if (employmentType === 'freelancer') return isFreelancerAtMonth;
+      return ['member', 'manager'].includes(member.role)
+        && member.role !== 'freelancer'
+        && !isFreelancerAtMonth;
+    });
+    if (applicableMonths.length === 0) return false;
+    applicableMonthsByUser.set(member.id, applicableMonths);
+    return true;
+  });
   if (members.length === 0) {
     return c.json({
       months,
@@ -1328,40 +1503,45 @@ sales.get('/manager-performance', async (c) => {
   }
 
   const ids = members.map((m: any) => m.id);
-  const placeholders = ids.map(() => '?').join(',');
-  const salesResult = await db.prepare(`
-    SELECT sr.user_id, substr(${recognizedSalesDateSql('sr')}, 1, 7) as month,
-      SUM(
-        CASE
-          WHEN sr.type = '매수신청대리'
-            THEN MAX(ROUND(sr.amount / 1.1) - COALESCE(sr.proxy_cost, 0), 0)
-          ELSE sr.amount
-        END
-      ) as amount
-    FROM sales_records sr
-    WHERE ${confirmedSalesSql('sr')}
-      AND ${excludeCaseAllowanceSalesSql('sr')}
-      AND sr.direction != 'expense'
-      AND COALESCE(sr.exclude_from_count, 0) = 0
-      AND ${recognizedSalesDateSql('sr')} >= ?
-      AND ${recognizedSalesDateSql('sr')} <= ?
-      AND sr.user_id IN (${placeholders})
-    GROUP BY sr.user_id, substr(${recognizedSalesDateSql('sr')}, 1, 7)
-  `).bind(startDate, endDate, ...ids).all<any>();
-
   const amountMap = new Map<string, number>();
-  for (const row of salesResult.results || []) {
-    amountMap.set(`${row.user_id}|${row.month}`, Number(row.amount || 0));
+  for (let offset = 0; offset < ids.length; offset += historyChunkSize) {
+    const chunkIds = ids.slice(offset, offset + historyChunkSize);
+    const placeholders = chunkIds.map(() => '?').join(',');
+    const salesResult = await db.prepare(`
+      SELECT sr.user_id, substr(${recognizedSalesDateSql('sr')}, 1, 7) as month,
+        SUM(
+          CASE
+            WHEN sr.type = '매수신청대리'
+              THEN MAX(ROUND(sr.amount / 1.1) - COALESCE(sr.proxy_cost, 0), 0)
+            ELSE sr.amount
+          END
+        ) as amount
+      FROM sales_records sr
+      WHERE ${confirmedSalesSql('sr')}
+        AND ${excludeCaseAllowanceSalesSql('sr')}
+        AND sr.direction != 'expense'
+        AND COALESCE(sr.exclude_from_count, 0) = 0
+        AND ${recognizedSalesDateSql('sr')} >= ?
+        AND ${recognizedSalesDateSql('sr')} <= ?
+        AND sr.user_id IN (${placeholders})
+      GROUP BY sr.user_id, substr(${recognizedSalesDateSql('sr')}, 1, 7)
+    `).bind(startDate, endDate, ...chunkIds).all<any>();
+    for (const row of salesResult.results || []) {
+      amountMap.set(`${row.user_id}|${row.month}`, Number(row.amount || 0));
+    }
   }
 
   const rows = members.map((m: any) => {
-    const target = employmentType === 'freelancer'
-      ? 0
-      : Math.round(Number(m.standard_sales || 0) / 2);
-    const monthly = months.map((month) => {
+    const applicableMonths = applicableMonthsByUser.get(m.id) || [];
+    const monthly = applicableMonths.map((month) => {
       const amount = amountMap.get(`${m.id}|${month}`) || 0;
+      const snapshot = paySnapshotByUserMonth.get(`${m.id}|${month}`);
+      const target = employmentType === 'freelancer'
+        ? 0
+        : Math.round(Number(snapshot?.standard_sales || 0) / 2);
       return { month, amount, target, met: target > 0 ? amount >= target : amount > 0 };
     });
+    const target = monthly[monthly.length - 1]?.target || 0;
     const totalAmount = monthly.reduce((sum, item) => sum + item.amount, 0);
     const metCount = monthly.filter((item) => item.met).length;
     return {
@@ -1372,9 +1552,9 @@ sales.get('/manager-performance', async (c) => {
       position_title: m.position_title,
       monthly_target: target,
       total_amount: totalAmount,
-      average_amount: Math.round(totalAmount / months.length),
+      average_amount: Math.round(totalAmount / monthly.length),
       met_count: metCount,
-      miss_count: months.length - metCount,
+      miss_count: monthly.length - metCount,
       months: monthly,
     };
   }).sort((a: any, b: any) => a.total_amount - b.total_amount || a.average_amount - b.average_amount || String(a.name).localeCompare(String(b.name)));
@@ -1594,15 +1774,31 @@ sales.put('/:id/phone', async (c) => {
   if (!allowed) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const newPhone = (client_phone || '').trim();
-  await db.prepare("UPDATE sales_records SET client_phone = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?")
-    .bind(newPhone, id).run();
+  let customerId = record.customer_id || null;
+  if (record.type === '계약' || record.type === '낙찰') {
+    if (!isValidCustomerPhone(newPhone)) {
+      return c.json({ error: '고객 전화번호는 숫자 기준 10~11자리로 입력해 주세요.' }, 400);
+    }
+    try {
+      const customer = await resolveSalesCustomer(db, {
+        ownerId: record.user_id,
+        name: record.client_name,
+        phone: newPhone,
+      });
+      customerId = customer.id;
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : '고객 정보를 확인해 주세요.' }, 400);
+    }
+  }
+  await db.prepare("UPDATE sales_records SET client_phone = ?, customer_id = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?")
+    .bind(newPhone, customerId, id).run();
 
   if ((record.client_phone || '') !== newPhone) {
     await logActivity(db, user as LogUser, {
       action: 'update', target_id: id, target_label: recordLabel(record),
       diff_summary: `전화번호: ${record.client_phone || '(없음)'} → ${newPhone || '(없음)'}`,
       before: { client_phone: record.client_phone || '' },
-      after: { client_phone: newPhone },
+      after: { client_phone: newPhone, customer_id: customerId },
     }, getSourcePage(c));
   }
   return c.json({ success: true });

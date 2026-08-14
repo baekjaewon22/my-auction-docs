@@ -3,6 +3,7 @@ import { authMiddleware } from '../middleware/auth';
 import type { AuthEnv } from '../types';
 import { canUseBusinessAutomation } from '../../shared/automation-access';
 import { AUTOMATION_AGENT_VERSION } from '../../shared/automation-agent-version';
+import { ensureAutomationJobQueueSchema } from '../lib/automation-job-queue';
 
 const report = new Hono<AuthEnv>();
 const AGENT_INSTALLER_KEYS = [
@@ -63,10 +64,6 @@ async function ensureAutomationDiagnosticTable(db: D1Database) {
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_logs_review_created ON automation_generation_logs(review_status, created_at DESC)').run();
 }
 
-function automationBase(env: Env): string {
-  return String((env as any).AUCTION_AUTOMATION_BASE_URL || 'http://127.0.0.1:8001/api').replace(/\/$/, '');
-}
-
 async function currentReportUser(c: any) {
   const authUser = c.get('user');
   await ensureReportColumns(c.env.DB);
@@ -87,21 +84,6 @@ function requireMyAuction(user: any) {
   return '';
 }
 
-function withSavedProfile(body: any, authUser: any, user: any) {
-  const role = String(authUser.role || user.role || 'user');
-  const permission = role === 'master' ? 'special' : String(user.report_permission || 'basic');
-  return {
-    ...body,
-    myauction_id: String(user.myauction_id || '').trim(),
-    myauction_pw: String(user.myauction_pw || ''),
-    author_name: String(user.name || '').trim(),
-    author_title: String(user.position_title || '').trim(),
-    author_phone: String(user.phone || '').trim(),
-    requester_role: role,
-    requester_permission: permission,
-  };
-}
-
 function canUseRightsCertificate(authUser: any, user: any) {
   return String(authUser.role || user.role || '').toLowerCase() === 'master'
     || String(user.report_permission || '').toLowerCase() === 'special';
@@ -113,14 +95,6 @@ function requireMaster(c: any) {
     return c.json({ error: '자료 생성 기능은 마스터 권한만 사용할 수 있습니다.' }, 403);
   }
   return null;
-}
-
-function automationUnavailable(c: any, err: unknown) {
-  const base = automationBase(c.env);
-  console.error('[report automation proxy failed]', base, err);
-  return c.json({
-    error: `Python 자동화 서비스에 연결할 수 없습니다. 자동화 서비스를 실행한 뒤 다시 시도해 주세요. (${base})`,
-  }, 502);
 }
 
 function requireBusinessAutomationUser(c: any) {
@@ -209,76 +183,88 @@ report.patch('/diagnostics/:id', async (c) => {
   return c.json({ success: true });
 });
 
-async function proxyJson(c: any, path: string, init?: RequestInit) {
-  let res: Response;
-  try {
-    res = await fetch(`${automationBase(c.env)}${path}`, init);
-  } catch (err) {
-    return automationUnavailable(c, err);
+async function enqueueAutomationJob(c: any, body: any, isBatch: boolean) {
+  if (!c.env.ARTICLE_BUCKET) return c.json({ error: '자동화 작업 저장소가 설정되지 않았습니다.' }, 503);
+  const { authUser, user } = await currentReportUser(c);
+  const credentialError = requireMyAuction(user);
+  if (credentialError) return c.json({ error: credentialError }, 400);
+  const outputType = String(body.output_type || 'auction_report');
+  if (!['auction_report', 'rights_certificate'].includes(outputType)) return c.json({ error: '지원하지 않는 자료 유형입니다.' }, 400);
+  if (outputType === 'rights_certificate' && !canUseRightsCertificate(authUser, user)) {
+    return c.json({ error: '권리분석 보증서는 master 또는 special 권한만 생성할 수 있습니다.' }, 403);
   }
-  const text = await res.text();
-  return new Response(text, {
-    status: res.status,
-    headers: {
-      'Content-Type': res.headers.get('Content-Type') || 'application/json; charset=utf-8',
-    },
-  });
+  const urls = isBatch ? (Array.isArray(body.urls) ? body.urls.map((value: unknown) => String(value || '').trim()).filter(Boolean) : []) : [];
+  if (isBatch && urls.length === 0) return c.json({ error: '처리할 경매 물건 URL이 없습니다.' }, 400);
+  if (isBatch && urls.length > 50) return c.json({ error: '다건 작업은 한 번에 최대 50건까지 등록할 수 있습니다.' }, 400);
+  if (!isBatch && !String(body.url || '').trim()) return c.json({ error: '마이옥션 사건 URL을 입력해 주세요.' }, 400);
+
+  await ensureAutomationJobQueueSchema(c.env.DB);
+  const idempotencyKey = String(c.req.header('idempotency-key') || body.idempotency_key || crypto.randomUUID()).trim().slice(0, 100);
+  const prior = await c.env.DB.prepare('SELECT id FROM automation_jobs WHERE owner_user_id = ? AND idempotency_key = ?')
+    .bind(authUser.sub, idempotencyKey).first() as { id: string } | null;
+  if (prior) return c.json({ task_id: prior.id, idempotent: true });
+
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  let availableAt = createdAt;
+  if (isBatch && String(body.start_at || '').trim()) {
+    const scheduled = new Date(String(body.start_at));
+    if (Number.isNaN(scheduled.getTime())) return c.json({ error: '예약 실행 시각이 올바르지 않습니다.' }, 400);
+    availableAt = scheduled.toISOString();
+  }
+  const objectKey = `automation/jobs/${id}/request.json`;
+  const safePayload = {
+    ...body,
+    idempotency_key: undefined,
+    myauction_id: undefined,
+    myauction_pw: undefined,
+    requester_role: undefined,
+    requester_permission: undefined,
+    ...(isBatch ? { urls } : { url: String(body.url || '').trim() }),
+  };
+  await c.env.ARTICLE_BUCKET.put(objectKey, JSON.stringify(safePayload), { httpMetadata: { contentType: 'application/json' } });
+  try {
+    await c.env.DB.prepare(`INSERT OR IGNORE INTO automation_jobs
+      (id, owner_user_id, output_type, is_batch, request_object_key, idempotency_key, available_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, authUser.sub, outputType, isBatch ? 1 : 0, objectKey, idempotencyKey, availableAt, createdAt, createdAt).run();
+    const saved = await c.env.DB.prepare('SELECT id FROM automation_jobs WHERE owner_user_id = ? AND idempotency_key = ?')
+      .bind(authUser.sub, idempotencyKey).first() as { id: string } | null;
+    if (!saved) throw new Error('자동화 작업을 저장하지 못했습니다.');
+    if (saved.id !== id) await c.env.ARTICLE_BUCKET.delete(objectKey);
+    const ahead = await c.env.DB.prepare(`SELECT COUNT(*) AS count FROM automation_jobs
+      WHERE status='queued' AND available_at <= (SELECT available_at FROM automation_jobs WHERE id = ?)
+        AND (priority < 100 OR (priority = 100 AND (
+          created_at < (SELECT created_at FROM automation_jobs WHERE id = ?)
+          OR (created_at = (SELECT created_at FROM automation_jobs WHERE id = ?) AND id < ?)
+        )))`)
+      .bind(saved.id, saved.id, saved.id, saved.id).first() as { count: number } | null;
+    return c.json({ task_id: saved.id, queue_position: Number(ahead?.count || 0) + 1, idempotent: saved.id !== id });
+  } catch (error) {
+    await c.env.ARTICLE_BUCKET.delete(objectKey);
+    throw error;
+  }
 }
 
-async function proxyFile(c: any, path: string) {
-  let res: Response;
-  try {
-    res = await fetch(`${automationBase(c.env)}${path}`);
-  } catch (err) {
-    return automationUnavailable(c, err);
-  }
-  const headers = new Headers();
-  const contentType = res.headers.get('Content-Type');
-  const disposition = res.headers.get('Content-Disposition');
-  if (contentType) headers.set('Content-Type', contentType);
-  if (disposition) headers.set('Content-Disposition', disposition);
-  return new Response(res.body, { status: res.status, headers });
+async function accessibleJob(c: any, jobId: string) {
+  const authUser = c.get('user');
+  await ensureAutomationJobQueueSchema(c.env.DB);
+  const job = await c.env.DB.prepare('SELECT * FROM automation_jobs WHERE id = ?').bind(jobId).first() as any;
+  if (!job || (job.owner_user_id !== authUser.sub && authUser.role !== 'master')) return null;
+  return job;
 }
 
 report.post('/start', async (c) => {
   const permissionError = requireBusinessAutomationUser(c);
   if (permissionError) return permissionError;
 
-  const body = await c.req.json<any>();
-  const { authUser, user } = await currentReportUser(c);
-  const credentialError = requireMyAuction(user);
-  if (credentialError) return c.json({ error: credentialError }, 400);
-
-  if (body.output_type === 'rights_certificate' && !canUseRightsCertificate(authUser, user)) {
-    return c.json({ error: '권리분석 보증서는 master 또는 special 권한만 생성할 수 있습니다.' }, 403);
-  }
-
-  const payload = withSavedProfile(body, authUser, user);
-  return proxyJson(c, '/report/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  return enqueueAutomationJob(c, await c.req.json<any>(), false);
 });
 
 report.get('/local-profile', async (c) => {
   const permissionError = requireBusinessAutomationUser(c);
   if (permissionError) return permissionError;
-
-  const { authUser, user } = await currentReportUser(c);
-  const credentialError = requireMyAuction(user);
-  if (credentialError) return c.json({ error: credentialError }, 400);
-
-  const profile = withSavedProfile({}, authUser, user);
-  return c.json({
-    myauction_id: profile.myauction_id,
-    myauction_pw: profile.myauction_pw,
-    author_name: profile.author_name,
-    author_title: profile.author_title,
-    author_phone: profile.author_phone,
-    requester_role: profile.requester_role,
-    requester_permission: profile.requester_permission,
-  });
+  return c.json({ error: '로컬 실행기 직접 연결은 중앙 작업 대기열로 전환되었습니다.' }, 410);
 });
 
 report.get('/agent-installer', async (c) => {
@@ -307,48 +293,104 @@ report.post('/start-batch', async (c) => {
   const permissionError = requireBusinessAutomationUser(c);
   if (permissionError) return permissionError;
 
-  const body = await c.req.json<any>();
-  const { authUser, user } = await currentReportUser(c);
-  const credentialError = requireMyAuction(user);
-  if (credentialError) return c.json({ error: credentialError }, 400);
-  if (!canUseRightsCertificate(authUser, user)) {
-    return c.json({ error: '권리분석 보증서는 master 또는 special 권한만 생성할 수 있습니다.' }, 403);
+  return enqueueAutomationJob(c, await c.req.json<any>(), true);
+});
+
+report.get('/progress/:taskId', async (c) => {
+  const permissionError = requireBusinessAutomationUser(c);
+  if (permissionError) return permissionError;
+  const job = await accessibleJob(c, c.req.param('taskId'));
+  if (!job) return c.json({ error: '작업을 찾을 수 없습니다.' }, 404);
+  const events = await c.env.DB.prepare(`SELECT step, total_steps, title, message, status, percent
+    FROM automation_job_events WHERE job_id = ? ORDER BY id ASC LIMIT 200`).bind(job.id).all<any>();
+  const updates = events.results || [];
+  const ahead = job.status === 'queued' ? await c.env.DB.prepare(`SELECT COUNT(*) AS count FROM automation_jobs
+    WHERE status='queued' AND available_at <= ? AND (priority < ? OR (priority = ? AND (created_at < ? OR (created_at = ? AND id < ?))))`)
+    .bind(job.available_at, job.priority, job.priority, job.created_at, job.created_at, job.id).first<{ count: number }>() : null;
+  const queuePosition = ahead ? Number(ahead.count || 0) + 1 : 0;
+  const currentMessage = job.status === 'queued' && queuePosition > 0
+    ? `서버 실행 순서를 기다리고 있습니다. 현재 대기 ${queuePosition}번째입니다.`
+    : job.status_message;
+  const terminalStatus = job.status === 'failed' || job.status === 'cancelled' ? 'error' : job.status === 'completed' ? 'completed' : 'running';
+  const last = updates[updates.length - 1];
+  if (!last || last.status !== terminalStatus || last.message !== currentMessage || Number(last.percent) !== Number(job.progress_percent)) {
+    updates.push({ step: job.current_step, total_steps: job.total_steps, title: job.status_title,
+      message: currentMessage, status: terminalStatus, percent: job.progress_percent });
   }
-
-  const payload = withSavedProfile(body, authUser, user);
-  return proxyJson(c, '/report/start-batch', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  let diagnostics: unknown[] = [];
+  try { diagnostics = JSON.parse(job.diagnostics_json || '[]'); } catch { diagnostics = []; }
+  return c.json({ task_id: job.id, status: job.status, queue_position: queuePosition, updates, diagnostics });
 });
 
-report.get('/progress/:taskId', (c) => {
+report.get('/download/:taskId', async (c) => {
   const permissionError = requireBusinessAutomationUser(c);
   if (permissionError) return permissionError;
-  return proxyJson(c, `/report/progress/${c.req.param('taskId')}`);
+  const job = await accessibleJob(c, c.req.param('taskId'));
+  if (!job) return c.json({ error: '작업을 찾을 수 없습니다.' }, 404);
+  const format = String(c.req.query('format') || '').toLowerCase();
+  const artifact = await c.env.DB.prepare(`SELECT * FROM automation_job_artifacts WHERE job_id = ? AND format = ?`)
+    .bind(job.id, format).first<any>();
+  if (!artifact) return c.json({ error: '요청한 형식의 결과 파일이 없습니다.' }, 404);
+  const object = await c.env.ARTICLE_BUCKET.get(artifact.object_key);
+  if (!object) return c.json({ error: '결과 파일을 찾을 수 없습니다.' }, 404);
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(artifact.file_name)}`);
+  return new Response(object.body, { headers });
 });
 
-report.get('/download/:taskId', (c) => {
+report.get('/download-history', async (c) => {
   const permissionError = requireBusinessAutomationUser(c);
   if (permissionError) return permissionError;
-
-  const query = c.req.url.split('?')[1];
-  return proxyFile(c, `/report/download/${c.req.param('taskId')}${query ? `?${query}` : ''}`);
+  const authUser = c.get('user');
+  await ensureAutomationJobQueueSchema(c.env.DB);
+  const jobs = await c.env.DB.prepare(`SELECT * FROM automation_jobs WHERE owner_user_id = ? AND status = 'completed'
+    ORDER BY completed_at DESC LIMIT 20`).bind(authUser.sub).all<any>();
+  const items = [];
+  for (const job of jobs.results || []) {
+    const artifacts = await c.env.DB.prepare('SELECT id, format, file_name FROM automation_job_artifacts WHERE job_id = ? ORDER BY format')
+      .bind(job.id).all<any>();
+    const rows = artifacts.results || [];
+    let diagnostics: unknown[] = [];
+    try { diagnostics = JSON.parse(job.diagnostics_json || '[]'); } catch { diagnostics = []; }
+    items.push({ id: job.id, task_id: job.id, output_type: job.output_type, title: rows[0]?.file_name || '자동화 결과',
+      file_name: rows[0]?.file_name || '', created_at: job.completed_at, message: job.status_message,
+      diagnostics, exists: rows.length > 0, formats: rows.map((row: any) => row.format) });
+  }
+  return c.json({ items, limit: 20 });
 });
 
-report.get('/download-history', (c) => {
+report.get('/download-history/:historyId', async (c) => {
   const permissionError = requireBusinessAutomationUser(c);
   if (permissionError) return permissionError;
-  return proxyJson(c, '/report/download-history');
+  const job = await accessibleJob(c, c.req.param('historyId'));
+  if (!job) return c.json({ error: '작업을 찾을 수 없습니다.' }, 404);
+  const format = String(c.req.query('format') || '').toLowerCase();
+  const artifact = await c.env.DB.prepare('SELECT * FROM automation_job_artifacts WHERE job_id = ? AND format = ?').bind(job.id, format).first<any>();
+  if (!artifact) return c.json({ error: '결과 파일이 없습니다.' }, 404);
+  const object = await c.env.ARTICLE_BUCKET.get(artifact.object_key);
+  if (!object) return c.json({ error: '결과 파일을 찾을 수 없습니다.' }, 404);
+  const headers = new Headers(); object.writeHttpMetadata(headers);
+  headers.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(artifact.file_name)}`);
+  return new Response(object.body, { headers });
 });
 
-report.get('/download-history/:historyId', (c) => {
+report.get('/central-agent-status', async (c) => {
   const permissionError = requireBusinessAutomationUser(c);
   if (permissionError) return permissionError;
-
-  const query = c.req.url.split('?')[1];
-  return proxyFile(c, `/report/download-history/${c.req.param('historyId')}${query ? `?${query}` : ''}`);
+  await ensureAutomationJobQueueSchema(c.env.DB);
+  const agent = await c.env.DB.prepare(`SELECT id, display_name, version, status, current_job_id, last_seen_at,
+    CASE WHEN last_seen_at >= datetime('now','-90 seconds') THEN 1 ELSE 0 END AS online
+    FROM automation_agents ORDER BY last_seen_at DESC LIMIT 1`).first<any>();
+  const counts = await c.env.DB.prepare(`SELECT
+    SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued,
+    SUM(CASE WHEN status IN ('leased','running','uploading') THEN 1 ELSE 0 END) AS running
+    FROM automation_jobs`).first<any>();
+  const onlineAgents = await c.env.DB.prepare(`SELECT COUNT(*) AS count FROM automation_agents
+    WHERE last_seen_at >= datetime('now','-90 seconds') AND version = ?`).bind(AUTOMATION_AGENT_VERSION).first<{ count: number }>();
+  return c.json({ agent: agent || null, online: Number(onlineAgents?.count || 0) > 0,
+    online_agents: Number(onlineAgents?.count || 0), queued: Number(counts?.queued || 0),
+    running: Number(counts?.running || 0), required_version: AUTOMATION_AGENT_VERSION });
 });
 
 export default report;

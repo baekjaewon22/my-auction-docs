@@ -28,6 +28,7 @@ AGENT_EXE = f"{AGENT_NAME}.exe"
 AGENT_ZIP = f"{AGENT_NAME}.zip"
 VERSION_FILE = "agent-version.txt"
 PORT = "8001"
+SLOT_COUNT = 3
 LOG_PATH = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / f"{AGENT_NAME}Setup" / "setup.log"
 QUIET = "--quiet" in sys.argv
 
@@ -135,18 +136,31 @@ def write_startup_runner(install_dir: Path) -> Path:
             [
                 '$ErrorActionPreference = "Continue"',
                 f'$exe = Join-Path $PSScriptRoot "{AGENT_EXE}"',
-                f'$port = "{PORT}"',
+                f'$basePort = {PORT}',
+                f'$slotCount = {SLOT_COUNT}',
+                '$configuredSlotCount = 0',
+                'if ([int]::TryParse($env:AUCTION_REPORT_SLOT_COUNT, [ref]$configuredSlotCount) -and $configuredSlotCount -ge 1 -and $configuredSlotCount -le 4) { $slotCount = $configuredSlotCount }',
                 '$log = Join-Path $PSScriptRoot "watchdog.log"',
                 '$createdNew = $false',
                 '$mutex = [System.Threading.Mutex]::new($true, "Local\\MyAuctionAutomationAgentWatchdog", [ref]$createdNew)',
                 'if (-not $createdNew) { $mutex.Dispose(); exit 0 }',
+                '$processes = @{}',
                 'while ($true) {',
-                '  try {',
-                '    $process = Start-Process -FilePath $exe -ArgumentList $port -WindowStyle Hidden -PassThru',
-                '    $process.WaitForExit()',
-                '    Add-Content -LiteralPath $log -Value ("{0:o} agent exited ({1}); restarting" -f (Get-Date), $process.ExitCode)',
-                '  } catch {',
-                '    Add-Content -LiteralPath $log -Value ("{0:o} watchdog error: {1}" -f (Get-Date), $_.Exception.Message)',
+                '  for ($slot = 1; $slot -le $slotCount; $slot++) {',
+                '    $existing = $processes[$slot]',
+                '    if ($existing -and -not $existing.HasExited) { continue }',
+                '    try {',
+                '      $port = $basePort + $slot - 1',
+                '      $workRoot = Join-Path $PSScriptRoot ("workspaces\\slot-{0}" -f $slot)',
+                '      New-Item -ItemType Directory -Force -Path $workRoot | Out-Null',
+                '      $agentId = "office-automation-{0:d2}" -f $slot',
+                '      $agentName = "Office automation server #{0}" -f $slot',
+                '      $command = "set AUCTION_REPORT_PORT=$port&&set AUCTION_REPORT_QUEUE_AGENT_ID=$agentId&&set AUCTION_REPORT_QUEUE_AGENT_NAME=$agentName&&set AUCTION_REPORT_WORK_ROOT=$workRoot&&`"$exe`" $port"',
+                '      $processes[$slot] = Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/s", "/c", $command -WindowStyle Hidden -PassThru',
+                '      Add-Content -LiteralPath $log -Value ("{0:o} slot {1} started on port {2}" -f (Get-Date), $slot, $port)',
+                '    } catch {',
+                '      Add-Content -LiteralPath $log -Value ("{0:o} slot {1} watchdog error: {2}" -f (Get-Date), $slot, $_.Exception.Message)',
+                '    }',
                 '  }',
                 '  Start-Sleep -Seconds 5',
                 '}',

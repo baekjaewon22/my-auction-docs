@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type ClipboardEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
@@ -11,6 +11,10 @@ import BidAnalysis from './BidAnalysis';
 import BidMatchCheck from './BidMatchCheck';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import LegalGlossaryTool from '../components/LegalGlossaryTool';
+import { EVICTION_QUOTE_VISIBILITY } from '../../shared/eviction-quote-access';
+import { canShareCommunityWithAll, defaultCommunityVisibility } from '../../shared/community-visibility';
+
+const PdfCanvasViewer = lazy(() => import('../components/PdfCanvasViewer'));
 
 type NoteCategory = 'community' | 'notice' | 'article_news' | 'briefing_schedule' | 'resource_library' | 'eviction_quote' | 'legal_support' | 'cooperation';
 type LegalSubcategory = 'auction' | 'lawsuit' | 'legal_terms' | 'glossary' | 'fee_calculation';
@@ -118,6 +122,7 @@ function formatDate(iso: string) {
 }
 
 function getVisibilityLabel(v: string): string {
+  if (v === EVICTION_QUOTE_VISIBILITY) return '명도팀 · 정민호 지사장 · 마스터';
   if (v === 'all') return '전체';
   if (v === 'branch') return '지사';
   if (v === 'department') return '팀';
@@ -472,7 +477,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const [formContent, setFormContent] = useState('');
   const [formPinned, setFormPinned] = useState(false);
   const [formAnonymous, setFormAnonymous] = useState(false);
-  const [formVisibility, setFormVisibility] = useState('all');
+  const [formVisibility, setFormVisibility] = useState(() => activeCategory === 'eviction_quote' ? EVICTION_QUOTE_VISIBILITY : 'all');
   const [formCourt, setFormCourt] = useState(COURTS[0]);
   const [formCaseNumber, setFormCaseNumber] = useState('');
   const [formNoCaseNumber, setFormNoCaseNumber] = useState(false);
@@ -487,6 +492,9 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const [formBriefingCaseNo, setFormBriefingCaseNo] = useState('');
   const [formItemNo, setFormItemNo] = useState('');
   const [formClientName, setFormClientName] = useState('');
+  const [briefingFiles, setBriefingFiles] = useState<File[]>([]);
+  const [briefingDragActive, setBriefingDragActive] = useState(false);
+  const [briefingRegisteredNoteId, setBriefingRegisteredNoteId] = useState('');
   const [autofillHint, setAutofillHint] = useState('');
   const [autofillMatch, setAutofillMatch] = useState<null | { target_date: string; activity_type: string; case_number: string; item_no: string; court: string; client_name: string }>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -518,7 +526,6 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const isFeeCalculationTool = activeCategory === 'legal_support' && activeLegalSubcategory === 'fee_calculation';
   const isGlossaryTool = activeCategory === 'legal_support' && activeLegalSubcategory === 'glossary';
   const isStaticLegalTool = isFeeCalculationTool || isGlossaryTool;
-  const isManager = !!user && ['master', 'ceo', 'cc_ref', 'admin', 'manager'].includes(user.role);
   const isMaster = user?.role === 'master';
   const canViewPostViews = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
@@ -530,7 +537,13 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       value: `user:${m.id}`,
       label: `단일 대상 · ${m.name}${m.position_title ? ` · ${m.position_title}` : ''}${m.department ? ` · ${m.department}` : ''}`,
     }));
-  const canShareAll = isManager || (activeCategory === 'community' && communitySection === 'resource_library');
+  const visibilityCategory = activeCategory === 'community' && communitySection === 'resource_library'
+    ? 'resource_library'
+    : activeCategory;
+  const canShareAll = canShareCommunityWithAll(
+    { role: user?.role, loginType: (user as any)?.login_type },
+    visibilityCategory,
+  );
   const visibilityOptions = canShareAll
     ? [
         { value: 'all', label: '전체 공유' },
@@ -708,6 +721,20 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     if (files.length > 0) await readFiles(files);
   };
 
+  const selectBriefingFiles = (files: FileList | File[]) => {
+    const picked = Array.from(files);
+    if (picked.some(file => !/\.(pdf|ppt|pptx|pptm)$/i.test(file.name))) {
+      alert('브리핑자료는 PDF, PPT, PPTX, PPTM 파일만 첨부할 수 있습니다.');
+      return;
+    }
+    if (picked.some(file => file.size > 50 * 1024 * 1024)) {
+      alert('브리핑자료는 파일당 최대 50MB까지 첨부할 수 있습니다.');
+      return;
+    }
+    setBriefingFiles(previous => [...previous, ...picked].slice(0, 5));
+    setBriefingDragActive(false);
+  };
+
   const handleCreate = async () => {
     const isEditing = !!editingId;
     const isBriefingSchedule = activeCategory === 'community' && communitySection === 'briefing_schedule';
@@ -726,9 +753,11 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     if (isBriefingSchedule && !formAssigneeId) { alert('담당자를 목록에서 선택하세요.'); return; }
     if (isBriefingSchedule && !formTargetDate) { alert('일정일을 입력하세요.'); return; }
     if (isBriefingSchedule && (!formBriefingCaseNo.trim() || !formCourt || !formClientName.trim())) { alert('사건번호, 법원, 계약자명을 입력하세요.'); return; }
+    if (!isEditing && isBidHistoryMode && isBriefingSchedule && briefingFiles.length === 0) { alert('제출할 브리핑자료 파일을 첨부하세요.'); return; }
     if (!isBriefingSchedule && !formContent.trim()) { alert('내용을 입력하세요.'); return; }
     if (!isEditing && isResourceLibrary && formAttachments.length === 0) { alert('자료실은 다운로드할 첨부파일을 1개 이상 등록하세요.'); return; }
     setSubmitting(true);
+    let briefingRecordSaved = Boolean(briefingRegisteredNoteId);
     try {
       const briefingCaseNumber = `${formCaseYear}타경${formBriefingCaseNo.trim()}`;
       const title = activeCategory === 'eviction_quote'
@@ -753,12 +782,14 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           setAttachments(res.attachments || []);
         }
       } else {
-        await api.adminNotes.create({
+        let registeredNoteId = briefingRegisteredNoteId;
+        if (!registeredNoteId) {
+          const created = await api.adminNotes.create({
           title,
           content: isBriefingSchedule ? '' : formContent.trim(),
           pinned: formPinned,
           is_anonymous: activeCategory === 'legal_support' ? formAnonymous : formAnonymous,
-          visibility: isNotice || isBriefingSchedule ? 'all' : formVisibility,
+          visibility: activeCategory === 'eviction_quote' ? EVICTION_QUOTE_VISIBILITY : isNotice || isBriefingSchedule ? 'all' : formVisibility,
           category: isBriefingSchedule ? 'briefing_schedule' : isNotice ? 'notice' : isResourceLibrary ? 'resource_library' : activeCategory,
           legal_subcategory: activeCategory === 'legal_support' ? formLegalSubcategory : undefined,
           lawsuit_cost_requested: activeCategory === 'legal_support' && usesLawsuitCostCheckbox(formLegalSubcategory) ? formLawsuitCostRequested : false,
@@ -770,20 +801,44 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           no_case_number: isLegalAuction ? formNoCaseNumber : undefined,
           item_no: isBriefingSchedule ? formItemNo.trim() : undefined,
           client_name: isBriefingSchedule ? formClientName.trim() : undefined,
-        });
+          });
+          registeredNoteId = created.id;
+          if (isBidHistoryMode && isBriefingSchedule) {
+            briefingRecordSaved = true;
+            setBriefingRegisteredNoteId(created.id);
+          }
+        }
+        if (isBidHistoryMode && isBriefingSchedule) {
+          for (const file of [...briefingFiles]) {
+            await api.briefingMaterials.upload(file, formAssigneeId, briefingCaseNumber);
+            setBriefingFiles(previous => previous.filter(candidate => candidate !== file));
+          }
+        }
       }
       resetForm();
       await load();
-    } catch (err: any) { alert(err.message); }
+    } catch (err: any) {
+      alert(briefingRecordSaved
+        ? `제출 등록정보는 저장되었습니다. 남은 파일을 다시 제출해 주세요.\n${err.message || ''}`
+        : err.message);
+    }
     setSubmitting(false);
   };
 
-  const resetForm = () => {
+  const resetForm = (category: NoteCategory = activeCategory) => {
     setFormTitle(''); setFormContent(''); setFormPinned(false);
-    setFormAnonymous(false); setFormVisibility(isManager || (activeCategory === 'community' && communitySection === 'resource_library') ? 'all' : 'branch');
+    const visibilityCategory = category === 'community' && communitySection === 'resource_library'
+      ? 'resource_library'
+      : category;
+    setFormAnonymous(false); setFormVisibility(defaultCommunityVisibility(
+      { role: user?.role, loginType: (user as any)?.login_type },
+      visibilityCategory,
+      EVICTION_QUOTE_VISIBILITY,
+    ));
     setFormCourt(COURTS[0]); setFormCaseNumber(''); setFormNoCaseNumber(false); setFormLegalSubcategory(activeLegalSubcategory); setFormLawsuitCostRequested(false); setFormAttachments([]);
     setFormAssigneeId(members[0]?.id || ''); setFormTargetDate(new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10));
     setFormCaseYear('2026'); setFormBriefingCaseNo(''); setFormItemNo(''); setFormClientName(''); setAutofillHint(''); setAutofillMatch(null);
+    setBriefingFiles([]); setBriefingDragActive(false); setBriefingRegisteredNoteId('');
     setShowForm(false); setEditingId(null);
   };
 
@@ -1053,7 +1108,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
             {detail.source_type === 'minutes' && (
               <span className="admin-note-source-badge"><BookOpen size={11} /> 회의록</span>
             )}
-            <span className="admin-note-visibility-badge">{getVisibilityLabel(detail.visibility)}</span>
+            <span className="admin-note-visibility-badge">{detail.category === 'eviction_quote' ? '명도팀 · 정민호 지사장 · 마스터' : getVisibilityLabel(detail.visibility)}</span>
           </div>
           {(detail.category === 'eviction_quote' || detail.category === 'briefing_schedule') && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 0' }}>
@@ -1089,7 +1144,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                 </div>
                 {articlePdfAttachment && (
                   <button type="button" className="btn btn-sm" onClick={() => openAttachment(articlePdfAttachment)}>
-                    <Download size={13} /> 새 창 열람
+                    <Download size={13} /> 원본 열기
                   </button>
                 )}
               </div>
@@ -1097,19 +1152,13 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                 {articlePdfLoading && <div className="article-pdf-placeholder">PDF를 불러오는 중...</div>}
                 {!articlePdfLoading && articlePdfError && <div className="article-pdf-placeholder error">{articlePdfError}</div>}
                 {!articlePdfLoading && !articlePdfError && articlePdfUrl && (
-                  <object
-                    key={articlePdfUrl}
-                    title={articlePdfAttachment?.file_name || detail.title}
-                    data={`${articlePdfUrl}#toolbar=1&navpanes=0&view=FitH`}
-                    type="application/pdf"
-                    className="article-pdf-frame"
-                  >
-                    <embed
-                      src={`${articlePdfUrl}#toolbar=1&navpanes=0&view=FitH`}
-                      type="application/pdf"
-                      className="article-pdf-frame"
+                  <Suspense fallback={<div className="article-pdf-placeholder">PDF 뷰어 준비 중...</div>}>
+                    <PdfCanvasViewer
+                      key={articlePdfUrl}
+                      url={articlePdfUrl}
+                      title={articlePdfAttachment?.file_name || detail.title}
                     />
-                  </object>
+                  </Suspense>
                 )}
                 {!articlePdfLoading && !articlePdfError && !articlePdfUrl && (
                   <div className="article-pdf-placeholder">열람할 PDF가 없습니다.</div>
@@ -1206,7 +1255,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
               setActiveCategory(key);
               setCommunitySection('posts');
               setDetail(null);
-              resetForm();
+              resetForm(key);
               setSearchParams(key === 'community' ? {} : key === 'legal_support' ? { tab: key, section: activeLegalSubcategory } : { tab: key });
             }}
           >
@@ -1446,6 +1495,38 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                 </div>
               </div>
               {autofillHint && <div style={{ fontSize: '0.78rem', color: autofillHint.includes('없습니다') ? '#5f6368' : '#188038' }}>{autofillHint}</div>}
+              {isBidHistoryMode && !editingId && (
+                <div className="briefing-registration-files">
+                  <div className="briefing-registration-files-head">
+                    <strong>브리핑자료 파일 *</strong>
+                    <span>문서보관함 기록 및 Google Drive 자동 백업</span>
+                  </div>
+                  <label
+                    className={`briefing-material-dropzone ${briefingDragActive ? 'dragging' : ''}`}
+                    onDragEnter={(event) => { event.preventDefault(); setBriefingDragActive(true); }}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDragLeave={(event) => { event.preventDefault(); setBriefingDragActive(false); }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      if (event.dataTransfer.files?.length) selectBriefingFiles(event.dataTransfer.files);
+                    }}
+                  >
+                    <Paperclip size={25} />
+                    <strong>파일을 여기로 끌어다 놓으세요</strong>
+                    <span>또는 눌러서 선택 · PDF/PPT/PPTX/PPTM · 파일당 최대 50MB · 최대 5개</span>
+                    <input type="file" multiple accept=".pdf,.ppt,.pptx,.pptm" onChange={(event) => {
+                      if (event.target.files) selectBriefingFiles(event.target.files);
+                      event.currentTarget.value = '';
+                    }} />
+                  </label>
+                  {briefingFiles.length > 0 && <div className="briefing-registration-file-list">
+                    {briefingFiles.map((file, index) => <div key={`${file.name}-${file.size}-${index}`}>
+                      <span><Paperclip size={13} /> {file.name} <small>{(file.size / 1024 / 1024).toFixed(1)}MB</small></span>
+                      <button type="button" onClick={() => setBriefingFiles(previous => previous.filter((_, fileIndex) => fileIndex !== index))} aria-label={`${file.name} 첨부 제거`}><X size={14} /></button>
+                    </div>)}
+                  </div>}
+                </div>
+              )}
             </div>
           ) : activeCategory === 'eviction_quote' ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 12 }}>
@@ -1619,12 +1700,18 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
               {((activeCategory === 'community' && communitySection !== 'briefing_schedule' && communitySection !== 'notice') || activeCategory === 'eviction_quote' || activeCategory === 'legal_support') && (
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label style={{ fontSize: '0.8rem', marginBottom: 4, display: 'block' }}>공유 범위 / 1:1 수신자</label>
-                  <select className="form-input" value={formVisibility} onChange={(e) => setFormVisibility(e.target.value)}
-                    style={{ padding: '6px 10px', fontSize: '0.82rem', minWidth: 180 }}>
-                    {visibilityOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                  {formVisibility.startsWith('user:') && (
+                  <label style={{ fontSize: '0.8rem', marginBottom: 4, display: 'block' }}>{activeCategory === 'eviction_quote' ? '공유 범위' : '공유 범위 / 1:1 수신자'}</label>
+                  {activeCategory === 'eviction_quote' ? (
+                    <div className="form-input" style={{ padding: '7px 10px', fontSize: '0.82rem', minWidth: 260, background: '#f8f9fa' }}>
+                      명도팀 · 정민호 지사장 · 마스터
+                    </div>
+                  ) : (
+                    <select className="form-input" value={formVisibility} onChange={(e) => setFormVisibility(e.target.value)}
+                      style={{ padding: '6px 10px', fontSize: '0.82rem', minWidth: 180 }}>
+                      {visibilityOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  )}
+                  {activeCategory !== 'eviction_quote' && formVisibility.startsWith('user:') && (
                     <div style={{ marginTop: 4, color: '#1a73e8', fontSize: '0.74rem' }}>선택한 한 사람에게만 게시글 알림이 전송됩니다.</div>
                   )}
                 </div>
@@ -1641,7 +1728,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
             <button className="btn btn-primary" onClick={handleCreate} disabled={submitting}>
               {submitting ? '저장 중...' : editingId ? '수정' : activeCategory === 'community' && communitySection === 'briefing_schedule' ? (isBidHistoryMode ? '브리핑자료 제출 등록' : '일정 등록') : activeCategory === 'community' && communitySection === 'notice' ? '공지 등록' : activeCategory === 'community' && communitySection === 'resource_library' ? '자료 업로드' : '등록'}
             </button>
-            <button className="btn" onClick={resetForm}>취소</button>
+            <button className="btn" onClick={() => resetForm()}>취소</button>
           </div>
         </div>
       )}
@@ -1693,7 +1780,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                 <div className="admin-notes-card-meta">
                   <span>{authorLabel(note)}</span>
                   <span>{formatDate(note.created_at)}</span>
-                  <span className="admin-note-visibility-badge">{getVisibilityLabel(note.visibility)}</span>
+                  <span className="admin-note-visibility-badge">{note.category === 'eviction_quote' ? '명도팀 · 정민호 지사장 · 마스터' : getVisibilityLabel(note.visibility)}</span>
                   {note.comment_count > 0 && !isLegalTerms(note) && (
                     <span className="comment-badge"><MessageSquare size={11} /> {note.comment_count}</span>
                   )}

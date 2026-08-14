@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS bid_analysis_entries (
   id TEXT PRIMARY KEY,
   bid_datetime TEXT NOT NULL,
+  assignee_user_id TEXT,
   assignee_name TEXT NOT NULL DEFAULT '',
   branch_name TEXT NOT NULL DEFAULT '',
   case_number TEXT NOT NULL DEFAULT '',
@@ -25,5 +26,6 @@ CREATE INDEX IF NOT EXISTS idx_bid_analysis_bid_datetime ON bid_analysis_entries
 CREATE INDEX IF NOT EXISTS idx_bid_analysis_case_number ON bid_analysis_entries(case_number);
 CREATE INDEX IF NOT EXISTS idx_bid_analysis_branch ON bid_analysis_entries(branch_name);
 CREATE INDEX IF NOT EXISTS idx_bid_analysis_assignee ON bid_analysis_entries(assignee_name);
+CREATE INDEX IF NOT EXISTS idx_bid_analysis_assignee_user ON bid_analysis_entries(assignee_user_id);
 CREATE INDEX IF NOT EXISTS idx_bid_analysis_upload_batch ON bid_analysis_entries(upload_batch);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bid_analysis_dedupe_key ON bid_analysis_entries(dedupe_key);

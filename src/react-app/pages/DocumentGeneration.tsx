@@ -116,7 +116,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   };
 
   useEffect(() => {
-    refreshAgentStatus(true);
+    refreshAgentStatus(false);
     const timer = window.setInterval(() => refreshAgentStatus(false, false), 30000);
     return () => window.clearInterval(timer);
   }, []);
@@ -163,7 +163,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     const connectProgressSocket = async () => {
       try {
         const progressUrl = await automationApi.progressWsUrl(taskId);
-        if (stopped) return;
+        if (stopped || !progressUrl) return;
         socket = new WebSocket(progressUrl);
         socket.onopen = () => setWsConnected(true);
         socket.onclose = () => setWsConnected(false);
@@ -235,7 +235,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
           diagnostics,
         });
       } catch {
-        // 중앙 진단 저장 실패가 로컬 파일 생성과 다운로드를 막지 않도록 한다.
+        // 진단 저장 실패가 중앙 결과 파일 생성과 다운로드를 막지 않도록 한다.
       }
     };
     sync();
@@ -243,10 +243,6 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   }, [result, diagnostics, agentStatus?.version]);
 
   const selectWork = (next: OutputType) => {
-    if (agentState !== 'connected') {
-      setAgentModalOpen(true);
-      return;
-    }
     if (next === 'rights_certificate' && !canUseRights) {
       setError('권리분석 보증서는 master 또는 special 권한만 생성할 수 있습니다.');
       return;
@@ -324,8 +320,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   };
 
   const startGeneration = async () => {
-    const agentOk = await refreshAgentStatus(true);
-    if (!agentOk) return;
+    await refreshAgentStatus(false);
     const validation = validateInput();
     if (validation) {
       setError(validation);
@@ -669,7 +664,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
           <div className="document-history-head">
             <div>
               <h3 style={{ margin: 0 }}>다운로드 이력</h3>
-              <p style={{ margin: '4px 0 0', color: '#5f6368', fontSize: '0.8rem' }}>기간 제한 없이 로컬 파일이 남아 있는 동안 재다운로드할 수 있으며, 목록에는 최근 20건까지 표시됩니다.</p>
+              <p style={{ margin: '4px 0 0', color: '#5f6368', fontSize: '0.8rem' }}>회사 중앙 저장소에 보관된 완료 결과 중 최근 20건을 다시 다운로드할 수 있습니다.</p>
             </div>
             <button className="btn btn-sm" onClick={loadHistory} disabled={historyLoading}><RefreshCw size={14} /> 목록 새로고침</button>
           </div>
@@ -1649,41 +1644,29 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
   const isOutdated = state === 'outdated';
   const isConnected = state === 'connected';
   const isUnverified = state === 'unverified';
-  const isPermissionDenied = status?.connectionIssue === 'permission_denied';
-  const isBrowserBlocked = status?.connectionIssue === 'browser_blocked';
   const title = isConnected
-    ? '자동화 실행기 버전 확인'
+    ? '회사 자동화 서버 연결 정상'
     : isOutdated
-      ? '자동화 실행기 업데이트가 필요합니다'
+      ? '회사 자동화 서버 업데이트 필요'
       : isUnverified
-        ? '최신 버전을 확인하지 못했습니다'
-        : '자동화 실행기 설치가 필요합니다';
+        ? '서버 버전을 확인하지 못했습니다'
+        : '회사 자동화 서버 연결 대기';
   const statusText = state === 'connected'
-    ? '자동화 실행기가 최신 버전으로 연결되었습니다.'
+    ? `24시간 운영되는 회사 자동화 서버 ${status?.onlineSlots || 1}개 슬롯이 연결되었습니다.`
     : state === 'checking'
-      ? '자동화 실행기 연결을 확인하고 있습니다.'
+      ? '회사 자동화 서버 연결을 확인하고 있습니다.'
       : isOutdated
         ? `현재 버전 ${status?.version || '확인 불가'} · 필요 버전 ${status?.requiredVersion || REQUIRED_AUTOMATION_AGENT_VERSION}`
         : isUnverified
-          ? '이 PC의 실행기는 연결됐지만 서버 최신 버전을 확인하지 못했습니다.'
-        : isPermissionDenied
-          ? 'Chrome에서 이 사이트의 로컬 네트워크 접근이 차단되어 있습니다.'
-          : isBrowserBlocked
-            ? '실행기가 꺼져 있거나 Chrome의 로컬 네트워크 연결 허용이 필요합니다.'
-            : '현재 PC에서 자동화 실행기를 찾지 못했습니다.';
+          ? '회사 자동화 서버는 연결됐지만 배포 버전을 확인하지 못했습니다.'
+          : '회사 자동화 서버가 현재 오프라인입니다. 작업은 대기열에 접수할 수 있습니다.';
   const description = isConnected
-      ? '서버의 최신 배포 버전과 이 PC에 설치된 실행기 버전을 캐시 없이 직접 비교한 결과입니다.'
+      ? '여러 사용자가 동시에 접수해도 회사 서버 한 대가 접수 순서대로 한 건씩 안전하게 처리합니다.'
       : isOutdated
-        ? '이 PC에 설치된 자동화 실행기가 구버전입니다. 최신 설치관리자를 다시 받아 실행하면 기존 실행기를 종료하고 새 버전으로 업데이트합니다.'
-        : isUnverified
-          ? status?.versionCheckIssue === 'authentication_required'
-            ? '로그인이 만료되어 서버 버전을 확인하지 못했습니다. 다시 로그인하거나 설치관리자를 내려받아 덮어 설치해 주세요.'
-            : '서버 버전 조회가 일시적으로 실패했습니다. 다시 확인하거나 설치관리자를 내려받아 덮어 설치해 주세요.'
-        : isPermissionDenied
-          ? '주소창 왼쪽의 사이트 설정을 열어 “로컬 네트워크 액세스”를 허용한 뒤 페이지를 새로고침하고 다시 확인해 주세요. 실행기를 다시 설치할 필요는 없습니다.'
-          : isBrowserBlocked
-            ? '먼저 바탕화면의 “마이실행기”를 실행해 주세요. 계속 연결되지 않으면 주소창 왼쪽의 사이트 설정에서 로컬 네트워크 액세스를 허용한 뒤 다시 확인해 주세요.'
-            : '브리핑자료와 권리분석 보증서 자동 생성을 사용하려면 이 PC에 자동화 실행기가 설치되어 있어야 합니다. 설치관리자 실행 후 다시 확인을 눌러 주세요.';
+        ? '구버전 실행기는 새 작업을 가져가지 않습니다. 서버 PC에서 관리자가 실행기를 업데이트해야 합니다.'
+      : isUnverified
+        ? '로그인 또는 서버 상태를 확인한 뒤 다시 조회해 주세요.'
+        : '사용자 PC에는 실행기를 설치할 필요가 없습니다. 접수된 작업은 회사 서버가 다시 연결되면 순서대로 처리합니다.';
   const checkedAt = status?.checkedAt
     ? new Date(status.checkedAt).toLocaleString('ko-KR', { hour12: false })
     : '확인 전';
@@ -1706,8 +1689,8 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
           <p>{description}</p>
           <div className="automation-agent-version-grid">
             <div>
-              <span>이 PC 설치 버전</span>
-              <strong>{status?.version || (isPermissionDenied ? '브라우저에서 확인 차단' : isBrowserBlocked ? '실행기 연결 전' : state === 'missing' ? '설치되지 않음' : '확인 중')}</strong>
+              <span>회사 서버 실행기 버전</span>
+              <strong>{status?.version || (state === 'missing' ? '오프라인' : '확인 중')}</strong>
             </div>
             <div>
               <span>최신 배포 버전</span>
@@ -1718,24 +1701,8 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
               <strong>{checkedAt}</strong>
             </div>
           </div>
-          {(isOutdated || isUnverified || (state === 'missing' && !isPermissionDenied && !isBrowserBlocked)) && (
-            <div className="automation-agent-steps">
-              <span>1. 최신 설치관리자 다운로드</span>
-              <span>2. 마이실행기.exe 실행</span>
-              <span>3. 지금 다시 확인</span>
-            </div>
-          )}
         </div>
         <div className="automation-agent-modal-actions">
-          {(isOutdated || isUnverified || (state === 'missing' && !isPermissionDenied && !isBrowserBlocked)) && (
-            <button
-              className="btn btn-primary"
-              onClick={() => automationApi.downloadAgentInstaller().catch((err) => alert(err.message))}
-              type="button"
-            >
-              <Download size={14} /> 설치관리자 다운로드
-            </button>
-          )}
           <button className="btn" onClick={onRecheck} type="button">
             <RefreshCw size={14} /> 지금 다시 확인
           </button>

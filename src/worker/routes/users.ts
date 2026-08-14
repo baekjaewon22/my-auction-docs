@@ -15,6 +15,8 @@ import {
   ensureEmploymentTypeHistoryTable,
   getFreelancerConversionImpact,
 } from '../lib/employment-conversion';
+import { reinitUserLeave } from './leave';
+import { requiresEmployeeLogin } from '../../shared/employment-access';
 
 const users = new Hono<AuthEnv>();
 users.use('*', authMiddleware);
@@ -84,6 +86,9 @@ async function ensureUsersResignedAtColumn(db: D1Database): Promise<void> {
 // GET /api/users
 users.get('/', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_asst', 'manager'), async (c) => {
   const user = c.get('user');
+  if (user.login_type === 'freelancer') {
+    return c.json({ error: '프리랜서 계정은 직원 사용자관리를 조회할 수 없습니다.' }, 403);
+  }
   const db = c.env.DB;
   await ensureUsersResignedAtColumn(db);
 
@@ -191,6 +196,15 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin', 'accountant'), asyn
   }
 
   const newRole = role || existing.role;
+  const nextDepartment = department ?? existing.department;
+  if ((existing.login_type || 'employee') === 'freelancer' && requiresEmployeeLogin({
+    role: newRole,
+    login_type: 'freelancer',
+    department: nextDepartment,
+    position_title: existing.position_title,
+  })) {
+    return c.json({ error: '일반 로그인 필수 직책·부서는 프리랜서 계정에 지정할 수 없습니다. 먼저 정규직(일반 로그인)으로 전환해 주세요.' }, 400);
+  }
   if (currentUser.role === 'accountant') {
     const canSetResigned = newRole === 'resigned' && !['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(existing.role);
     const canEditResignedDate = existing.role === 'resigned' && newRole === 'resigned';
@@ -227,7 +241,7 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin', 'accountant'), asyn
 
   await db.prepare(
     "UPDATE users SET role = ?, branch = ?, department = ?, resigned_at = ?, updated_at = datetime('now') WHERE id = ?"
-  ).bind(newRole, branch !== undefined ? normalizeBranchName(branch) : existing.branch, department ?? existing.department, nextResignedAt, id).run();
+  ).bind(newRole, branch !== undefined ? normalizeBranchName(branch) : existing.branch, nextDepartment, nextResignedAt, id).run();
 
   return c.json({ success: true });
 });
@@ -240,14 +254,17 @@ users.get('/:id/freelancer-conversion-impact', requireRole('master', 'ceo', 'acc
   const id = c.req.param('id');
   const db = c.env.DB;
   const target = await db.prepare(
-    'SELECT id, name, role, login_type FROM users WHERE id = ? AND approved = 1'
-  ).bind(id).first<{ id: string; name: string; role: string; login_type: string }>();
+    'SELECT id, name, role, department, position_title, login_type FROM users WHERE id = ? AND approved = 1'
+  ).bind(id).first<{ id: string; name: string; role: string; department: string; position_title: string; login_type: string }>();
   if (!target) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
   if ((target.login_type || 'employee') !== 'employee') {
     return c.json({ error: '정규직 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
   }
   if (!canConvertEmployeeRoleToFreelancer(target.role)) {
-    return c.json({ error: '총괄이사·팀장·팀원 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
+    return c.json({ error: '팀장·팀원 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
+  }
+  if (requiresEmployeeLogin(target)) {
+    return c.json({ error: '명도팀·PD·사무장 및 관리자 이상 계정은 일반 로그인을 유지해야 합니다.' }, 400);
   }
 
   const impact = await getFreelancerConversionImpact(db, id);
@@ -314,13 +331,32 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
     ORDER BY created_at DESC, rowid DESC
     LIMIT 1
   `).bind(id).first<{ impact_snapshot: string }>();
-  const restoredRole = restoreEmployeeRoleFromSnapshot(previousConversion?.impact_snapshot);
+  const restoredRole = restoreEmployeeRoleFromSnapshot(previousConversion?.impact_snapshot, target.role);
+  if (currentUser.role === 'accountant' && restoredRole !== target.role) {
+    return c.json({ error: '총무담당은 전환 과정에서 직책을 변경할 수 없습니다.' }, 403);
+  }
   const existingAccounting = await db.prepare('SELECT * FROM user_accounting WHERE user_id = ?').bind(id).first<any>();
+  const preservedSsn = String(existingAccounting?.ssn || '');
+  const preservedAddress = String(existingAccounting?.address || '');
   const standardSales = Math.round(nextSalary * 1.3 * 4);
+  const conversionClaimId = crypto.randomUUID();
   const statements = [
+    db.prepare(`
+      INSERT INTO user_employment_conversion_claims (
+        id, user_id, from_login_type, to_login_type, effective_month
+      )
+      SELECT ?, ?, 'freelancer', 'employee', ?
+      FROM users
+      WHERE id = ? AND login_type = 'freelancer'
+    `).bind(conversionClaimId, id, effectiveMonth, id),
     db.prepare(
-      "UPDATE users SET login_type = 'employee', role = ?, auth_version = COALESCE(auth_version, 0) + 1, updated_at = datetime('now') WHERE id = ?"
-    ).bind(restoredRole, id),
+      `UPDATE users
+       SET login_type = 'employee', role = ?,
+           auth_version = COALESCE(auth_version, 0) + 1,
+           updated_at = datetime('now')
+       WHERE id = ?
+         AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)`
+    ).bind(restoredRole, id, conversionClaimId),
   ];
 
   if (existingAccounting) {
@@ -328,7 +364,12 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
       INSERT OR IGNORE INTO user_pay_type_history (
         id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
         grade, position_allowance, source, changed_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'before_employee_conversion', ?)
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'before_employee_conversion', ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM user_pay_type_history WHERE user_id = ?
+      )
+        AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
     `).bind(
       crypto.randomUUID(),
       id,
@@ -340,6 +381,8 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
       String(existingAccounting.grade || ''),
       Number(existingAccounting.position_allowance || 0),
       currentUser.sub || '',
+      id,
+      conversionClaimId,
     ));
     statements.push(db.prepare(`
       UPDATE user_accounting
@@ -349,32 +392,40 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
           position_allowance = ?,
           pay_type = 'salary',
           commission_rate = 0,
-          ssn = '',
-          address = '',
+          ssn = ?,
+          address = ?,
           updated_at = datetime('now')
       WHERE user_id = ?
-    `).bind(nextSalary, standardSales, nextGrade, nextAllowance, id));
+        AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+    `).bind(nextSalary, standardSales, nextGrade, nextAllowance, preservedSsn, preservedAddress, id, conversionClaimId));
   } else {
     statements.push(db.prepare(`
       INSERT OR IGNORE INTO user_pay_type_history (
         id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
         grade, position_allowance, source, changed_by
-      ) VALUES (?, ?, ?, 'commission', 50, 0, 0, '', 0, 'before_employee_conversion', ?)
-    `).bind(crypto.randomUUID(), id, beforeMonth, currentUser.sub || ''));
+      )
+      SELECT ?, ?, ?, 'commission', 50, 0, 0, '', 0, 'before_employee_conversion', ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM user_pay_type_history WHERE user_id = ?
+      )
+        AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+    `).bind(crypto.randomUUID(), id, beforeMonth, currentUser.sub || '', id, conversionClaimId));
     statements.push(db.prepare(`
       INSERT INTO user_accounting (id, user_id, salary, standard_sales, grade, position_allowance, pay_type, commission_rate, ssn, address)
-      VALUES (?, ?, ?, ?, ?, ?, 'salary', 0, '', '')
-    `).bind(crypto.randomUUID(), id, nextSalary, standardSales, nextGrade, nextAllowance));
+      SELECT ?, ?, ?, ?, ?, ?, 'salary', 0, '', ''
+      WHERE EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+    `).bind(crypto.randomUUID(), id, nextSalary, standardSales, nextGrade, nextAllowance, conversionClaimId));
   }
 
   statements.push(db.prepare(`
     INSERT OR REPLACE INTO user_pay_type_history (
       id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
       grade, position_allowance, source, changed_by
-    ) VALUES (
+    )
+    SELECT
       COALESCE((SELECT id FROM user_pay_type_history WHERE user_id = ? AND effective_month = ? AND source = 'employee_conversion'), ?),
       ?, ?, 'salary', 0, ?, ?, ?, ?, 'employee_conversion', ?
-    )
+    WHERE EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
   `).bind(
     id,
     effectiveMonth,
@@ -386,20 +437,30 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
     nextGrade,
     nextAllowance,
     currentUser.sub || '',
+    conversionClaimId,
   ));
   statements.push(db.prepare(`
     INSERT INTO user_employment_type_history (
       id, user_id, from_login_type, to_login_type, effective_month, changed_by, impact_snapshot
-    ) VALUES (?, ?, 'freelancer', 'employee', ?, ?, ?)
+    )
+    SELECT ?, ?, 'freelancer', 'employee', ?, ?, ?
+    WHERE EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
   `).bind(
     crypto.randomUUID(),
     id,
     effectiveMonth,
     currentUser.sub || '',
     JSON.stringify({ previous_role: target.role, restored_role: restoredRole }),
+    conversionClaimId,
   ));
+  statements.push(
+    db.prepare('DELETE FROM user_employment_conversion_claims WHERE id = ?').bind(conversionClaimId),
+  );
 
-  await db.batch(statements);
+  const batchResults = await db.batch(statements);
+  if (Number(batchResults[0]?.meta?.changes || 0) !== 1) {
+    return c.json({ error: '계정 상태가 변경되었습니다. 다시 확인해 주세요.' }, 409);
+  }
 
   return c.json({
     success: true,
@@ -412,8 +473,8 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
       position_allowance: nextAllowance,
       pay_type: 'salary',
       commission_rate: 0,
-      ssn: '',
-      address: '',
+      ssn: preservedSsn,
+      address: preservedAddress,
       effective_month: effectiveMonth,
     },
   });
@@ -430,12 +491,14 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
     ssn,
     address,
     effective_month,
+    resolve_pending_work,
   } = await c.req.json<{
     commission_rate?: number;
     position_allowance?: number;
     ssn?: string;
     address?: string;
     effective_month?: string;
+    resolve_pending_work?: boolean;
   }>();
 
   const target = await db.prepare(EMPLOYMENT_CONVERSION_USER_SELECT)
@@ -446,10 +509,16 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
     return c.json({ error: '정규직 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
   }
   if (!canConvertEmployeeRoleToFreelancer(target.role)) {
-    return c.json({ error: '총괄이사·팀장·팀원 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
+    return c.json({ error: '팀장·팀원 계정만 프리랜서로 전환할 수 있습니다.' }, 400);
+  }
+  if (requiresEmployeeLogin(target)) {
+    return c.json({ error: '명도팀·PD·사무장 및 관리자 이상 계정은 일반 로그인을 유지해야 합니다.' }, 400);
+  }
+  if (currentUser.role === 'accountant' && target.role !== 'member') {
+    return c.json({ error: '총무담당은 전환 과정에서 직책을 변경할 수 없습니다.' }, 403);
   }
 
-  const nextCommissionRate = normalizeCommissionRate(commission_rate);
+  const nextCommissionRate = normalizeCommissionRate(commission_rate ?? 50);
   if (nextCommissionRate === null) {
     return c.json({ error: '비율은 0보다 크고 100 이하인 숫자로 입력해주세요.' }, 400);
   }
@@ -466,9 +535,47 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
   const beforeMonth = previousMonth(effectiveMonth) || '1900-01';
   const impact = await getFreelancerConversionImpact(db, id);
   const blockers = freelancerConversionBlockers(impact);
-  if (blockers.length > 0) {
+  const shouldResolvePendingWork = resolve_pending_work === true;
+  if (blockers.length > 0 && !shouldResolvePendingWork) {
     return c.json({
       error: `전환 전에 다음 업무를 처리해주세요: ${blockers.join(', ')}`,
+      impact,
+      blockers,
+    }, 409);
+  }
+
+  const pendingReassignment = await db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM approval_steps aps
+    JOIN documents d ON d.id = aps.document_id
+    WHERE aps.approver_id = ?
+      AND aps.status = 'pending'
+      AND d.status = 'submitted'
+      AND d.author_id <> ?
+      AND COALESCE(d.cancelled, 0) = 0
+      AND COALESCE(d.is_myauction, 0) = 0
+  `).bind(id, id).first<{ count: number }>();
+  const pendingReassignmentCount = Number(pendingReassignment?.count || 0);
+  const fallbackApprover = pendingReassignmentCount > 0
+    ? await db.prepare(`
+        SELECT id, name
+        FROM users
+        WHERE approved = 1
+          AND id <> ?
+          AND COALESCE(login_type, 'employee') = 'employee'
+          AND role IN ('master', 'accountant', 'ceo')
+        ORDER BY CASE
+          WHEN id = ? THEN 0
+          WHEN role = 'master' THEN 1
+          WHEN role = 'accountant' THEN 2
+          ELSE 3
+        END, name
+        LIMIT 1
+      `).bind(id, currentUser.sub).first<{ id: string; name: string }>()
+    : null;
+  if (shouldResolvePendingWork && pendingReassignmentCount > 0 && !fallbackApprover) {
+    return c.json({
+      error: '대기 중인 일반 문서 결재를 넘겨받을 일반 로그인 관리자(마스터/총무담당/대표)가 없습니다.',
       impact,
       blockers,
     }, 409);
@@ -483,35 +590,210 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
   ).bind(id).first<any>();
   const nextSsn = String(ssn ?? existingAccounting?.ssn ?? '').trim();
   const nextAddress = String(address ?? existingAccounting?.address ?? '').trim();
+  const conversionClaimId = crypto.randomUUID();
+  const pendingWorkGuard = shouldResolvePendingWork ? '' : `
+        AND NOT EXISTS (
+          SELECT 1 FROM leave_requests
+          WHERE user_id = ? AND status IN ('pending', 'cancel_requested')
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM approval_steps aps
+          JOIN documents d ON d.id = aps.document_id
+          WHERE aps.approver_id = ?
+            AND aps.status = 'pending'
+            AND d.status = 'submitted'
+            AND COALESCE(d.cancelled, 0) = 0
+            AND COALESCE(d.is_myauction, 0) = 0
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM documents
+          WHERE author_id = ?
+            AND COALESCE(is_myauction, 0) = 0
+            AND COALESCE(cancelled, 0) = 0
+            AND status IN ('draft', 'submitted', 'rejected')
+        )`;
+  const claimBindings = shouldResolvePendingWork
+    ? [conversionClaimId, id, effectiveMonth, id]
+    : [conversionClaimId, id, effectiveMonth, id, id, id, id];
   const statements = [
+    db.prepare(`
+      INSERT INTO user_employment_conversion_claims (
+        id, user_id, from_login_type, to_login_type, effective_month
+      )
+      SELECT ?, ?, 'employee', 'freelancer', ?
+      FROM users
+      WHERE id = ?
+        AND COALESCE(login_type, 'employee') = 'employee'
+        ${pendingWorkGuard}
+    `).bind(...claimBindings),
+  ];
+  let cancelledDocumentsStatementIndex = -1;
+  let cancelledLeavesStatementIndex = -1;
+  let reassignedApprovalsStatementIndex = -1;
+
+  if (shouldResolvePendingWork) {
+    const conversionReason = '프리랜서 전환에 따라 진행 중인 일반 사내 문서를 자동 취소했습니다.';
+    statements.push(db.prepare(`
+      INSERT INTO document_logs (id, document_id, user_id, action, details)
+      SELECT lower(hex(randomblob(16))), d.id, ?, 'cancelled_for_freelancer_conversion', ?
+      FROM documents d
+      WHERE d.author_id = ?
+        AND COALESCE(d.is_myauction, 0) = 0
+        AND COALESCE(d.cancelled, 0) = 0
+        AND d.status IN ('draft', 'submitted', 'rejected')
+        AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+    `).bind(currentUser.sub, conversionReason, id, conversionClaimId));
+    statements.push(db.prepare(`
+      UPDATE alert_approval_pending
+      SET status = 'cancelled', acted_at = datetime('now'), acted_action = 'cancelled',
+          last_checked_at = datetime('now')
+      WHERE status = 'open'
+        AND document_id IN (
+          SELECT id FROM documents
+          WHERE author_id = ?
+            AND COALESCE(is_myauction, 0) = 0
+            AND COALESCE(cancelled, 0) = 0
+            AND status IN ('draft', 'submitted', 'rejected')
+        )
+        AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+    `).bind(id, conversionClaimId));
+    statements.push(db.prepare(`
+      UPDATE approval_steps
+      SET status = 'rejected', comment = ?
+      WHERE status = 'pending'
+        AND document_id IN (
+          SELECT id FROM documents
+          WHERE author_id = ?
+            AND COALESCE(is_myauction, 0) = 0
+            AND COALESCE(cancelled, 0) = 0
+            AND status = 'submitted'
+        )
+        AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+    `).bind(conversionReason, id, conversionClaimId));
+    cancelledDocumentsStatementIndex = statements.length;
+    statements.push(db.prepare(`
+      UPDATE documents
+      SET status = CASE WHEN status = 'submitted' THEN 'rejected' ELSE status END,
+          reject_reason = CASE WHEN status = 'submitted' THEN ? ELSE reject_reason END,
+          cancelled = 1,
+          cancel_requested = 0,
+          cancel_reason = ?,
+          updated_at = datetime('now')
+      WHERE author_id = ?
+        AND COALESCE(is_myauction, 0) = 0
+        AND COALESCE(cancelled, 0) = 0
+        AND status IN ('draft', 'submitted', 'rejected')
+        AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+    `).bind(conversionReason, conversionReason, id, conversionClaimId));
+    cancelledLeavesStatementIndex = statements.length;
+    statements.push(db.prepare(`
+      UPDATE leave_requests
+      SET status = 'cancelled', approved_by = ?, approved_at = datetime('now'),
+          reject_reason = '프리랜서 전환에 따른 자동 취소', updated_at = datetime('now')
+      WHERE user_id = ?
+        AND status IN ('pending', 'cancel_requested')
+        AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+    `).bind(currentUser.sub, id, conversionClaimId));
+
+    if (fallbackApprover) {
+      statements.push(db.prepare(`
+        INSERT INTO alert_approval_pending (
+          id, document_id, approver_id, cycle_no, step_order, my_status,
+          document_title, document_template_id, document_author_id, document_author_name,
+          document_branch, document_department, document_submitted_at,
+          status, detected_at, last_checked_at, notification_sent, metadata
+        )
+        SELECT lower(hex(randomblob(16))), a.document_id, ?, a.cycle_no, a.step_order, a.my_status,
+               a.document_title, a.document_template_id, a.document_author_id, a.document_author_name,
+               a.document_branch, a.document_department, a.document_submitted_at,
+               'open', datetime('now'), datetime('now'), 0, a.metadata
+        FROM alert_approval_pending a
+        JOIN documents d ON d.id = a.document_id
+        WHERE a.approver_id = ?
+          AND a.status = 'open'
+          AND d.author_id <> ?
+          AND d.status = 'submitted'
+          AND COALESCE(d.cancelled, 0) = 0
+          AND COALESCE(d.is_myauction, 0) = 0
+          AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+        ON CONFLICT(document_id, approver_id, cycle_no) DO UPDATE SET
+          step_order = excluded.step_order,
+          my_status = 'need_approve',
+          status = 'open',
+          detected_at = datetime('now'),
+          last_checked_at = datetime('now'),
+          acted_at = NULL,
+          acted_action = NULL,
+          notification_sent = 0,
+          notification_sent_at = NULL,
+          notification_error = NULL
+      `).bind(fallbackApprover.id, id, id, conversionClaimId));
+      statements.push(db.prepare(`
+        UPDATE alert_approval_pending
+        SET status = 'cancelled', acted_at = datetime('now'), acted_action = 'reassigned',
+            last_checked_at = datetime('now')
+        WHERE approver_id = ?
+          AND status = 'open'
+          AND document_id IN (
+            SELECT id FROM documents
+            WHERE author_id <> ?
+              AND status = 'submitted'
+              AND COALESCE(cancelled, 0) = 0
+              AND COALESCE(is_myauction, 0) = 0
+          )
+          AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+      `).bind(id, id, conversionClaimId));
+      statements.push(db.prepare(`
+        INSERT INTO document_logs (id, document_id, user_id, action, details)
+        SELECT lower(hex(randomblob(16))), d.id, ?, 'approval_reassigned_for_freelancer_conversion', ?
+        FROM documents d
+        WHERE d.id IN (
+          SELECT DISTINCT document_id FROM approval_steps
+          WHERE approver_id = ? AND status = 'pending'
+        )
+          AND d.author_id <> ?
+          AND d.status = 'submitted'
+          AND COALESCE(d.cancelled, 0) = 0
+          AND COALESCE(d.is_myauction, 0) = 0
+          AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+      `).bind(
+        currentUser.sub,
+        `프리랜서 전환으로 결재 담당자를 ${fallbackApprover.name}님에게 재배정했습니다.`,
+        id,
+        id,
+        conversionClaimId,
+      ));
+      reassignedApprovalsStatementIndex = statements.length;
+      statements.push(db.prepare(`
+        UPDATE approval_steps
+        SET approver_id = ?
+        WHERE approver_id = ?
+          AND status = 'pending'
+          AND document_id IN (
+            SELECT id FROM documents
+            WHERE author_id <> ?
+              AND status = 'submitted'
+              AND COALESCE(cancelled, 0) = 0
+              AND COALESCE(is_myauction, 0) = 0
+          )
+          AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+      `).bind(fallbackApprover.id, id, id, conversionClaimId));
+    }
+  }
+
+  statements.push(
     db.prepare(
       `UPDATE users
        SET login_type = 'freelancer',
-           role = 'member',
            auth_version = COALESCE(auth_version, 0) + 1,
            updated_at = datetime('now')
        WHERE id = ?
-         AND COALESCE(login_type, 'employee') = 'employee'
-         AND NOT EXISTS (
-           SELECT 1 FROM leave_requests
-           WHERE user_id = ? AND status IN ('pending', 'cancel_requested')
-         )
-         AND NOT EXISTS (
-           SELECT 1
-           FROM approval_steps aps
-           JOIN documents d ON d.id = aps.document_id
-           WHERE aps.approver_id = ?
-             AND aps.status = 'pending'
-             AND d.status = 'submitted'
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM documents
-           WHERE author_id = ?
-             AND COALESCE(is_myauction, 0) = 0
-             AND status IN ('draft', 'submitted', 'rejected')
+         AND EXISTS (
+           SELECT 1 FROM user_employment_conversion_claims WHERE id = ?
          )`
-    ).bind(id, id, id, id),
-  ];
+    ).bind(id, conversionClaimId),
+  );
 
   if (existingAccounting) {
     statements.push(db.prepare(`
@@ -520,7 +802,8 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
         grade, position_allowance, source, changed_by
       )
       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'before_freelancer_conversion', ?
-      WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+      WHERE EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+        AND NOT EXISTS (SELECT 1 FROM user_pay_type_history WHERE user_id = ?)
     `).bind(
       crypto.randomUUID(),
       id,
@@ -532,6 +815,7 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
       String(existingAccounting.grade || ''),
       Number(existingAccounting.position_allowance || 0),
       currentUser.sub || '',
+      conversionClaimId,
       id,
     ));
     statements.push(db.prepare(`
@@ -546,8 +830,8 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
           address = ?,
           updated_at = datetime('now')
       WHERE user_id = ?
-        AND EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
-    `).bind(nextAllowance, nextCommissionRate, nextSsn, nextAddress, id, id));
+        AND EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+    `).bind(nextAllowance, nextCommissionRate, nextSsn, nextAddress, id, conversionClaimId));
   } else {
     statements.push(db.prepare(`
       INSERT OR IGNORE INTO user_pay_type_history (
@@ -555,15 +839,16 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
         grade, position_allowance, source, changed_by
       )
       SELECT ?, ?, ?, 'salary', 0, 0, 0, '', 0, 'before_freelancer_conversion', ?
-      WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
-    `).bind(crypto.randomUUID(), id, beforeMonth, currentUser.sub || '', id));
+      WHERE EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
+        AND NOT EXISTS (SELECT 1 FROM user_pay_type_history WHERE user_id = ?)
+    `).bind(crypto.randomUUID(), id, beforeMonth, currentUser.sub || '', conversionClaimId, id));
     statements.push(db.prepare(`
       INSERT INTO user_accounting (
         id, user_id, salary, standard_sales, grade, position_allowance,
         pay_type, commission_rate, ssn, address
       )
       SELECT ?, ?, 0, 0, '', ?, 'commission', ?, ?, ?
-      WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+      WHERE EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
     `).bind(
       crypto.randomUUID(),
       id,
@@ -571,7 +856,7 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
       nextCommissionRate,
       nextSsn,
       nextAddress,
-      id,
+      conversionClaimId,
     ));
   }
 
@@ -583,7 +868,7 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
     SELECT
       COALESCE((SELECT id FROM user_pay_type_history WHERE user_id = ? AND effective_month = ? AND source = 'freelancer_conversion'), ?),
       ?, ?, 'commission', ?, 0, 0, '', ?, 'freelancer_conversion', ?
-    WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+    WHERE EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
   `).bind(
     id,
     effectiveMonth,
@@ -593,22 +878,25 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
     nextCommissionRate,
     nextAllowance,
     currentUser.sub || '',
-    id,
+    conversionClaimId,
   ));
   statements.push(db.prepare(`
     INSERT INTO user_employment_type_history (
       id, user_id, from_login_type, to_login_type, effective_month, changed_by, impact_snapshot
     )
     SELECT ?, ?, 'employee', 'freelancer', ?, ?, ?
-    WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND login_type = 'freelancer')
+    WHERE EXISTS (SELECT 1 FROM user_employment_conversion_claims WHERE id = ?)
   `).bind(
     crypto.randomUUID(),
     id,
     effectiveMonth,
     currentUser.sub || '',
-    JSON.stringify({ ...impact, previous_role: target.role, next_role: 'member' }),
-    id,
+    JSON.stringify({ ...impact, previous_role: target.role, next_role: target.role }),
+    conversionClaimId,
   ));
+  statements.push(
+    db.prepare('DELETE FROM user_employment_conversion_claims WHERE id = ?').bind(conversionClaimId),
+  );
 
   const batchResults = await db.batch(statements);
   if (Number(batchResults[0]?.meta?.changes || 0) !== 1) {
@@ -620,9 +908,25 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
     }, 409);
   }
 
+  const cancelledDocumentCount = cancelledDocumentsStatementIndex >= 0
+    ? Number(batchResults[cancelledDocumentsStatementIndex]?.meta?.changes || 0)
+    : 0;
+  const cancelledLeaveCount = cancelledLeavesStatementIndex >= 0
+    ? Number(batchResults[cancelledLeavesStatementIndex]?.meta?.changes || 0)
+    : 0;
+  const reassignedApprovalCount = reassignedApprovalsStatementIndex >= 0
+    ? Number(batchResults[reassignedApprovalsStatementIndex]?.meta?.changes || 0)
+    : 0;
+
+  if (shouldResolvePendingWork && cancelledLeaveCount > 0) {
+    await reinitUserLeave(db, id).catch((err) => {
+      console.error('[employment-conversion] leave balance reinit failed', err);
+    });
+  }
+
   return c.json({
     success: true,
-    user: conversionUserResponse(target, 'freelancer', 'member'),
+    user: conversionUserResponse(target, 'freelancer', target.role),
     account: {
       user_id: id,
       salary: 0,
@@ -636,9 +940,18 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
       effective_month: effectiveMonth,
     },
     impact,
+    cleanup: shouldResolvePendingWork ? {
+      cancelled_leave_requests: cancelledLeaveCount,
+      cancelled_non_myauction_documents: cancelledDocumentCount,
+      reassigned_approval_steps: reassignedApprovalCount,
+      reassigned_to: fallbackApprover?.name || '',
+    } : undefined,
   });
 });
 
+// Approved accounts are never physically deleted. Past schedules, journals,
+// payroll snapshots and sales all retain the same user_id, so "delete" means
+// deactivating the login and archiving the person as resigned.
 users.delete('/:id', requireRole('master', 'ceo', 'admin'), async (c) => {
   const id = c.req.param('id');
   const currentUser = c.get('user');
@@ -662,14 +975,17 @@ users.delete('/:id', requireRole('master', 'ceo', 'admin'), async (c) => {
     return c.json({ error: '본인과 같거나 상위 등급은 삭제할 수 없습니다.' }, 403);
   }
 
-  // Delete related data
-  await db.prepare('DELETE FROM journal_entries WHERE user_id = ?').bind(id).run();
-  await db.prepare('DELETE FROM signatures WHERE user_id = ?').bind(id).run();
-  await db.prepare('DELETE FROM document_logs WHERE user_id = ?').bind(id).run();
-  await db.prepare('DELETE FROM documents WHERE author_id = ?').bind(id).run();
-  await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
+  await ensureUsersResignedAtColumn(db);
+  await db.prepare(`
+    UPDATE users
+    SET role = 'resigned',
+        resigned_at = COALESCE(NULLIF(resigned_at, ''), date('now', '+9 hours')),
+        auth_version = COALESCE(auth_version, 0) + 1,
+        updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+  `).bind(id).run();
 
-  return c.json({ success: true });
+  return c.json({ success: true, archived: true });
 });
 
 // PUT /api/users/:id - 프로필 수정 (본인: phone/branch/dept/password, 상위: 모든 필드)
@@ -748,6 +1064,16 @@ users.put('/:id', async (c) => {
   const nextMyauctionId = myauction_id !== undefined ? String(myauction_id || '').trim() : String((existing as any).myauction_id || '');
   const nextMyauctionPw = myauction_pw !== undefined ? String(myauction_pw || '') : String((existing as any).myauction_pw || '');
   const nextReportPermission = report_permission !== undefined ? report_permission : String((existing as any).report_permission || 'basic');
+  const nextDepartment = department ?? existing.department;
+  const nextPositionTitle = position_title ?? existing.position_title;
+  if ((existing.login_type || 'employee') === 'freelancer' && requiresEmployeeLogin({
+    role: existing.role,
+    login_type: 'freelancer',
+    department: nextDepartment,
+    position_title: nextPositionTitle,
+  })) {
+    return c.json({ error: '일반 로그인 필수 직책·부서는 프리랜서 계정에 지정할 수 없습니다. 먼저 정규직(일반 로그인)으로 전환해 주세요.' }, 400);
+  }
 
   await db.prepare(
     `UPDATE users
@@ -759,8 +1085,8 @@ users.put('/:id', async (c) => {
     nextName,
     phone ?? existing.phone,
     branch !== undefined ? normalizeBranchName(branch) : existing.branch,
-    department ?? existing.department,
-    position_title ?? existing.position_title,
+    nextDepartment,
+    nextPositionTitle,
     newHash,
     api_key ?? (existing as any).api_key ?? '',
     nextMyauctionId,

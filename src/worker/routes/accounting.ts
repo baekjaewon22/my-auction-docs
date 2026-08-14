@@ -3,6 +3,8 @@ import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { branchAliases, isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { confirmedSalesSql, pendingCardSettlementSql, recognizedSalesDateSql } from '../lib/sales-recognition';
+import { currentKstMonth, ensurePayTypeHistoryTable, normalizeYearMonth } from '../lib/pay-type-history';
+import { classifyPayrollSavesFromMonth } from '../../shared/payroll-effective-month';
 
 const accounting = new Hono<AuthEnv>();
 accounting.use('*', authMiddleware);
@@ -1615,14 +1617,29 @@ accounting.get('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
     return c.json({ error: '해당 직원의 회계 정보 열람 권한이 없습니다.' }, 403);
   }
 
-  const account = await db.prepare(`
+  await ensurePayTypeHistoryTable(db);
+  const [account, previousEmployeeAccount] = await Promise.all([
+    db.prepare(`
     SELECT ua.*, u.name as user_name, u.branch, u.department, u.role, u.position_title
     FROM user_accounting ua
     JOIN users u ON u.id = ua.user_id
     WHERE ua.user_id = ?
-  `).bind(userId).first();
+  `).bind(userId).first(),
+    db.prepare(`
+      SELECT salary, standard_sales, grade, position_allowance, effective_month
+      FROM user_pay_type_history
+      WHERE user_id = ?
+        AND pay_type = 'salary'
+        AND salary > 0
+      ORDER BY effective_month DESC, created_at DESC, rowid DESC
+      LIMIT 1
+    `).bind(userId).first(),
+  ]);
 
-  return c.json({ account: account || null });
+  return c.json({
+    account: account || null,
+    previous_employee_account: previousEmployeeAccount || null,
+  });
 });
 
 // PUT /api/accounting/:userId - 직원 회계 정보 생성/수정 (급여, 직급)
@@ -1632,11 +1649,22 @@ accounting.put('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   if (!(await canAccessUserAccounting(c.env.DB, viewer, userId))) {
     return c.json({ error: '해당 직원의 회계 정보 수정 권한이 없습니다.' }, 403);
   }
-  const { salary, grade, position_allowance, pay_type, commission_rate, ssn, address } = await c.req.json<{ salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number; ssn?: string; address?: string }>();
+  const { salary, grade, position_allowance, pay_type, commission_rate, ssn, address, effective_month } = await c.req.json<{
+    salary?: number;
+    grade?: string;
+    position_allowance?: number;
+    pay_type?: string;
+    commission_rate?: number;
+    ssn?: string;
+    address?: string;
+    effective_month?: string;
+  }>();
   const db = c.env.DB;
 
   // 사용자 존재 확인
-  const user = await db.prepare('SELECT id FROM users WHERE id = ? AND approved = 1').bind(userId).first();
+  const user = await db.prepare('SELECT id, login_type FROM users WHERE id = ? AND approved = 1')
+    .bind(userId)
+    .first<{ id: string; login_type?: string }>();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
 
   // 직급 유효성 검사
@@ -1654,21 +1682,116 @@ accounting.put('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const newSsn = ssn !== undefined ? ssn : (existing as any)?.ssn || '';
   const newAddress = address !== undefined ? address : (existing as any)?.address || '';
   const standardSales = Math.round(newSalary * 1.3 * 4);
-
-  if (existing) {
-    await db.prepare(`
-      UPDATE user_accounting SET salary = ?, standard_sales = ?, grade = ?, position_allowance = ?, pay_type = ?, commission_rate = ?, ssn = ?, address = ?, updated_at = datetime('now')
-      WHERE user_id = ?
-    `).bind(newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate, newSsn, newAddress, userId).run();
-  } else {
-    const id = crypto.randomUUID();
-    await db.prepare(`
-      INSERT INTO user_accounting (id, user_id, salary, standard_sales, grade, position_allowance, pay_type, commission_rate, ssn, address)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, userId, newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate, newSsn, newAddress).run();
+  if (!['salary', 'commission'].includes(String(newPayType))) {
+    return c.json({ error: '정산유형은 급여제 또는 비율제만 선택할 수 있습니다.' }, 400);
+  }
+  const expectedPayType = (user.login_type || 'employee') === 'freelancer' ? 'commission' : 'salary';
+  if (newPayType !== expectedPayType) {
+    return c.json({
+      error: expectedPayType === 'commission'
+        ? '프리랜서 계정은 비율제로만 저장할 수 있습니다. 정규직 변경은 정규직 전환 버튼을 이용해 주세요.'
+        : '일반 계정은 급여제로만 저장할 수 있습니다. 프리랜서 변경은 프리랜서 전환 버튼을 이용해 주세요.',
+    }, 409);
+  }
+  const currentMonth = currentKstMonth();
+  const effectiveMonth = effective_month === undefined
+    ? currentMonth
+    : normalizeYearMonth(effective_month);
+  if (!effectiveMonth) {
+    return c.json({ error: '적용 시작월은 YYYY-MM 형식이어야 합니다.' }, 400);
+  }
+  const effectiveMonthNumber = Number(effectiveMonth.slice(5, 7));
+  if (effectiveMonthNumber < 1 || effectiveMonthNumber > 12) {
+    return c.json({ error: '적용 시작월의 월은 01~12 사이여야 합니다.' }, 400);
+  }
+  if (effectiveMonth > currentMonth) {
+    return c.json({ error: '적용 시작월은 현재 월 이후로 지정할 수 없습니다.' }, 400);
   }
 
-  return c.json({ success: true, salary: newSalary, standard_sales: standardSales, grade: newGrade, position_allowance: newAllowance, pay_type: newPayType, commission_rate: newCommRate, ssn: newSsn, address: newAddress });
+  const payrollSaves = await db.prepare(
+    'SELECT period, locked FROM payroll_saves WHERE user_id = ?'
+  ).bind(userId).all<{ period: string; locked: number }>();
+  const affectedPayroll = classifyPayrollSavesFromMonth(payrollSaves.results || [], effectiveMonth);
+  if (affectedPayroll.locked.length > 0) {
+    return c.json({
+      error: `적용월 이후에 확정된 급여정산이 있습니다: ${affectedPayroll.locked.join(', ')}. 먼저 확정취소 후 수정하세요.`,
+      locked_periods: affectedPayroll.locked,
+    }, 409);
+  }
+
+  await ensurePayTypeHistoryTable(db);
+  const latestHistory = await db.prepare(`
+    SELECT effective_month
+    FROM user_pay_type_history
+    WHERE user_id = ?
+    ORDER BY effective_month DESC, created_at DESC, rowid DESC
+    LIMIT 1
+  `).bind(userId).first<{ effective_month: string }>();
+  const shouldUpdateCurrentAccount = !existing
+    || !latestHistory?.effective_month
+    || effectiveMonth >= latestHistory.effective_month;
+  const accountingStatement = !shouldUpdateCurrentAccount
+    ? null
+    : existing
+    ? db.prepare(`
+      UPDATE user_accounting SET salary = ?, standard_sales = ?, grade = ?, position_allowance = ?, pay_type = ?, commission_rate = ?, ssn = ?, address = ?, updated_at = datetime('now')
+      WHERE user_id = ?
+    `).bind(newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate, newSsn, newAddress, userId)
+    : db.prepare(`
+      INSERT INTO user_accounting (id, user_id, salary, standard_sales, grade, position_allowance, pay_type, commission_rate, ssn, address)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(crypto.randomUUID(), userId, newSalary, standardSales, newGrade, newAllowance, newPayType, newCommRate, newSsn, newAddress);
+  const historyStatement = db.prepare(`
+    INSERT OR REPLACE INTO user_pay_type_history (
+      id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
+      grade, position_allowance, source, changed_by
+    ) VALUES (
+      COALESCE((SELECT id FROM user_pay_type_history WHERE user_id = ? AND effective_month = ? AND source = 'accounting_update'), ?),
+      ?, ?, ?, ?, ?, ?, ?, ?, 'accounting_update', ?
+    )
+  `).bind(
+    userId,
+    effectiveMonth,
+    crypto.randomUUID(),
+    userId,
+    effectiveMonth,
+    newPayType,
+    newCommRate,
+    newSalary,
+    standardSales,
+    newGrade,
+    newAllowance,
+    viewer.sub || '',
+  );
+  const snapshotInvalidationStatements = affectedPayroll.recalculable.map((period) => db.prepare(`
+    UPDATE payroll_saves
+    SET data = CASE
+          WHEN json_valid(data) THEN json_set(data, '$.payroll_snapshot', NULL)
+          ELSE data
+        END,
+        updated_at = datetime('now')
+    WHERE user_id = ? AND period = ? AND locked = 0
+  `).bind(userId, period));
+  await db.batch([
+    ...(accountingStatement ? [accountingStatement] : []),
+    historyStatement,
+    ...snapshotInvalidationStatements,
+  ]);
+
+  return c.json({
+    success: true,
+    salary: newSalary,
+    standard_sales: standardSales,
+    grade: newGrade,
+    position_allowance: newAllowance,
+    pay_type: newPayType,
+    commission_rate: newCommRate,
+    ssn: newSsn,
+    address: newAddress,
+    effective_month: effectiveMonth,
+    current_account_updated: shouldUpdateCurrentAccount,
+    recalculation_required_periods: affectedPayroll.recalculable,
+  });
 });
 
 // PUT /api/accounting/:userId/grade - 직급 강등 (관리자급 이상만)
@@ -1688,9 +1811,35 @@ accounting.put('/:userId/grade', requireRole(...ACCOUNTING_ROLES), async (c) => 
   const existing = await db.prepare('SELECT * FROM user_accounting WHERE user_id = ?').bind(userId).first();
   if (!existing) return c.json({ error: '회계 정보가 없습니다.' }, 404);
 
-  await db.prepare(`
-    UPDATE user_accounting SET grade = ?, updated_at = datetime('now') WHERE user_id = ?
-  `).bind(grade, userId).run();
+  await ensurePayTypeHistoryTable(db);
+  const effectiveMonth = currentKstMonth();
+  await db.batch([
+    db.prepare(`
+      UPDATE user_accounting SET grade = ?, updated_at = datetime('now') WHERE user_id = ?
+    `).bind(grade, userId),
+    db.prepare(`
+      INSERT OR REPLACE INTO user_pay_type_history (
+        id, user_id, effective_month, pay_type, commission_rate, salary, standard_sales,
+        grade, position_allowance, source, changed_by
+      ) VALUES (
+        COALESCE((SELECT id FROM user_pay_type_history WHERE user_id = ? AND effective_month = ? AND source = 'accounting_update'), ?),
+        ?, ?, ?, ?, ?, ?, ?, ?, 'accounting_update', ?
+      )
+    `).bind(
+      userId,
+      effectiveMonth,
+      crypto.randomUUID(),
+      userId,
+      effectiveMonth,
+      (existing as any).pay_type || 'salary',
+      Number((existing as any).commission_rate || 0),
+      Number((existing as any).salary || 0),
+      Number((existing as any).standard_sales || 0),
+      grade,
+      Number((existing as any).position_allowance || 0),
+      viewer.sub || '',
+    ),
+  ]);
 
   return c.json({ success: true });
 });

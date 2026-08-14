@@ -8,6 +8,8 @@ import {
   findOrCreateFolder,
 } from '../drive-oauth';
 import { cleanupOldDocuments } from '../lib/document-retention';
+import { ensureBriefingMaterialSchema } from '../lib/briefing-materials';
+import { cleanupBackedUpBriefingMaterials } from '../lib/briefing-material-retention';
 import { createDriveOAuthState, DRIVE_OAUTH_ADMIN_ROLES } from '../lib/drive-oauth-state';
 
 const drive = new Hono<AuthEnv>();
@@ -50,6 +52,7 @@ drive.use('/*', authMiddleware);
 // GET /api/drive/settings — 현재 설정 + 통계 반환
 drive.get('/settings', requireRole(...DRIVE_ROLES), async (c) => {
   const db = c.env.DB;
+  await ensureBriefingMaterialSchema(db);
   const s = await db.prepare("SELECT * FROM drive_settings WHERE id = 'default'").first<any>();
   const lastLog = await db.prepare(
     "SELECT run_at, status FROM drive_backup_logs WHERE status = 'success' ORDER BY run_at DESC LIMIT 1"
@@ -67,6 +70,8 @@ drive.get('/settings', requireRole(...DRIVE_ROLES), async (c) => {
   const failed = await db.prepare(`
     SELECT COUNT(*) as cnt FROM drive_backup_logs WHERE status = 'failed' AND run_at > datetime('now', '-7 days')
   `).first<{ cnt: number }>();
+  const briefingPending = await db.prepare(`SELECT COUNT(*) AS cnt FROM briefing_materials
+    WHERE archived_at IS NULL AND drive_status != 'success' AND drive_attempt_count < 5`).first<{ cnt: number }>();
   return c.json({
     settings: {
       ...s,
@@ -76,7 +81,8 @@ drive.get('/settings', requireRole(...DRIVE_ROLES), async (c) => {
       connected: !!(s?.refresh_token_encrypted),
     },
     last_backup_at: lastLog?.run_at || null,
-    pending_count: pending?.cnt || 0,
+    pending_count: Number(pending?.cnt || 0) + Number(briefingPending?.cnt || 0),
+    briefing_pending_count: Number(briefingPending?.cnt || 0),
     failed_last_7d: failed?.cnt || 0,
   });
 });
@@ -200,6 +206,18 @@ drive.get('/document-retention', requireRole(...DRIVE_ROLES), async (c) => {
 drive.post('/document-retention/run', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
   const result = await cleanupOldDocuments(c.env.DB, { dryRun: false });
   return c.json(result);
+});
+
+drive.get('/briefing-material-retention', requireRole(...DRIVE_ROLES), async (c) => {
+  await ensureBriefingMaterialSchema(c.env.DB);
+  const row = await c.env.DB.prepare(`SELECT COUNT(*) AS count FROM briefing_materials
+    WHERE archived_at IS NULL AND created_at < datetime('now', '-3 months')
+      AND drive_status='success' AND drive_backed_up_at IS NOT NULL`).first<{ count: number }>();
+  return c.json({ retention_months: 3, eligible: Number(row?.count || 0) });
+});
+
+drive.post('/briefing-material-retention/run', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
+  return c.json(await cleanupBackedUpBriefingMaterials(c.env, 500));
 });
 
 drive.get('/logs', requireRole(...DRIVE_ROLES), async (c) => {

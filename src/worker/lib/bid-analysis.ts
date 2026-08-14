@@ -4,6 +4,7 @@ export type BidResult = '실패' | '낙찰' | '취소' | '취하/변경';
 
 export interface BidAnalysisInput {
   bid_datetime: string;
+  assignee_user_id?: string | null;
   assignee_name?: string;
   branch_name?: string;
   case_number?: string;
@@ -25,6 +26,7 @@ export async function ensureBidAnalysisTable(db: D1Database): Promise<void> {
     CREATE TABLE IF NOT EXISTS bid_analysis_entries (
       id TEXT PRIMARY KEY,
       bid_datetime TEXT NOT NULL,
+      assignee_user_id TEXT,
       assignee_name TEXT NOT NULL DEFAULT '',
       branch_name TEXT NOT NULL DEFAULT '',
       case_number TEXT NOT NULL DEFAULT '',
@@ -50,6 +52,7 @@ export async function ensureBidAnalysisTable(db: D1Database): Promise<void> {
     "ALTER TABLE bid_analysis_entries ADD COLUMN bid_result TEXT NOT NULL DEFAULT '실패'",
     "ALTER TABLE bid_analysis_entries ADD COLUMN source_type TEXT NOT NULL DEFAULT 'excel'",
     'ALTER TABLE bid_analysis_entries ADD COLUMN source_id TEXT',
+    'ALTER TABLE bid_analysis_entries ADD COLUMN assignee_user_id TEXT',
     'ALTER TABLE bid_analysis_entries ADD COLUMN dedupe_key TEXT',
     "ALTER TABLE bid_analysis_entries ADD COLUMN branch_name TEXT NOT NULL DEFAULT ''",
     'ALTER TABLE bid_analysis_entries ADD COLUMN manual_override INTEGER NOT NULL DEFAULT 0',
@@ -61,8 +64,31 @@ export async function ensureBidAnalysisTable(db: D1Database): Promise<void> {
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_bid_analysis_case_number ON bid_analysis_entries(case_number)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_bid_analysis_branch ON bid_analysis_entries(branch_name)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_bid_analysis_assignee ON bid_analysis_entries(assignee_name)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_bid_analysis_assignee_user ON bid_analysis_entries(assignee_user_id)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_bid_analysis_upload_batch ON bid_analysis_entries(upload_batch)').run();
   await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_bid_analysis_dedupe_key ON bid_analysis_entries(dedupe_key)').run();
+  try {
+    await db.prepare(`
+      UPDATE bid_analysis_entries
+      SET assignee_user_id = (
+        SELECT j.user_id FROM journal_entries j
+        WHERE j.id = bid_analysis_entries.source_id
+      )
+      WHERE assignee_user_id IS NULL
+        AND source_type = 'journal'
+        AND source_id IS NOT NULL
+    `).run();
+    await db.prepare(`
+      UPDATE bid_analysis_entries
+      SET assignee_user_id = uploaded_by
+      WHERE assignee_user_id IS NULL
+        AND source_type = 'freelancer'
+        AND uploaded_by IS NOT NULL
+    `).run();
+  } catch {
+    // Legacy/fresh databases may not have every source table yet. New writes
+    // still persist the authoritative user id and later calls retry backfill.
+  }
 }
 
 export function normalizeAmount(value: unknown): number | null {
@@ -107,13 +133,14 @@ export async function upsertBidAnalysisEntry(db: D1Database, input: BidAnalysisI
   const dedupeKey = makeBidDedupeKey(input);
   await db.prepare(`
     INSERT INTO bid_analysis_entries (
-      id, bid_datetime, assignee_name, branch_name, case_number, property_type,
+      id, bid_datetime, assignee_user_id, assignee_name, branch_name, case_number, property_type,
       suggested_bid_price, actual_bid_price, winning_price, is_won, bid_result,
       client_name, source_type, source_id, dedupe_key, source_file_name, upload_batch, uploaded_by,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})
     ON CONFLICT(dedupe_key) DO UPDATE SET
       bid_datetime = CASE WHEN bid_analysis_entries.manual_override = 1 OR (bid_analysis_entries.source_type = 'journal' AND excluded.source_type = 'excel') THEN bid_analysis_entries.bid_datetime ELSE excluded.bid_datetime END,
+      assignee_user_id = COALESCE(excluded.assignee_user_id, bid_analysis_entries.assignee_user_id),
       assignee_name = CASE WHEN bid_analysis_entries.manual_override = 1 OR (bid_analysis_entries.source_type = 'journal' AND excluded.source_type = 'excel') THEN bid_analysis_entries.assignee_name ELSE COALESCE(NULLIF(excluded.assignee_name, ''), bid_analysis_entries.assignee_name) END,
       branch_name = CASE WHEN bid_analysis_entries.manual_override = 1 OR (bid_analysis_entries.source_type = 'journal' AND excluded.source_type = 'excel') THEN bid_analysis_entries.branch_name ELSE COALESCE(NULLIF(excluded.branch_name, ''), bid_analysis_entries.branch_name) END,
       case_number = CASE WHEN bid_analysis_entries.manual_override = 1 OR (bid_analysis_entries.source_type = 'journal' AND excluded.source_type = 'excel') THEN bid_analysis_entries.case_number ELSE COALESCE(NULLIF(excluded.case_number, ''), bid_analysis_entries.case_number) END,
@@ -133,6 +160,7 @@ export async function upsertBidAnalysisEntry(db: D1Database, input: BidAnalysisI
   `).bind(
     crypto.randomUUID(),
     input.bid_datetime,
+    input.assignee_user_id || null,
     input.assignee_name || '',
     input.branch_name || '',
     input.case_number || '',
@@ -153,7 +181,7 @@ export async function upsertBidAnalysisEntry(db: D1Database, input: BidAnalysisI
 }
 
 export async function upsertBidAnalysisFromJournal(db: D1Database, entry: {
-  id: string; target_date: string; activity_type: string; activity_subtype?: string | null; data: string; user_name?: string | null; branch?: string | null;
+  id: string; user_id: string; target_date: string; activity_type: string; activity_subtype?: string | null; data: string; user_name?: string | null; branch?: string | null;
 }): Promise<void> {
   if (entry.activity_type !== '입찰') return;
   let data: any = {};
@@ -162,6 +190,7 @@ export async function upsertBidAnalysisFromJournal(db: D1Database, entry: {
   await deleteBidAnalysisForJournal(db, entry.id);
   await upsertBidAnalysisEntry(db, {
     bid_datetime: `${entry.target_date}${data.timeFrom ? ` ${data.timeFrom}` : ''}`,
+    assignee_user_id: entry.user_id,
     assignee_name: entry.user_name || '',
     branch_name: entry.branch || '',
     case_number: caseNumberWithItem(data.caseNo || entry.activity_subtype || '', data.itemNo || data.item_no),

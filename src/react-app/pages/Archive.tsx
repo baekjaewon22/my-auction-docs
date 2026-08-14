@@ -9,6 +9,7 @@ import { useBranches } from '../hooks/useBranches';
 import { Archive, FileCheck, FileText, Search, Trash2, MapPin, Cloud, CloudOff } from 'lucide-react';
 import DriveBackupModal from '../components/DriveBackupModal';
 import { sameBranchName } from '../lib/branchAliases';
+import BriefingMaterialArchive from '../components/BriefingMaterialArchive';
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   draft: { label: '작성중', className: 'status-draft' },
@@ -182,10 +183,16 @@ export default function ArchivePage() {
     } catch (err: any) { alert(err.message); }
   };
 
+  if (searchParams.get('category') === 'briefing') return <BriefingMaterialArchive />;
+
   if (loading) return <div className="page-loading">로딩중...</div>;
 
   return (
     <div className="page">
+      <nav className="archive-category-tabs" aria-label="문서보관함 하위 카테고리">
+        <button type="button" className="active"><FileText size={16} /> 결재문서</button>
+        <button type="button" onClick={() => setSearchParams({ category: 'briefing' })}><FileCheck size={16} /> 브리핑자료</button>
+      </nav>
       <div className="page-header">
         <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Archive size={24} style={{ verticalAlign: 'middle' }} /> 문서 보관함

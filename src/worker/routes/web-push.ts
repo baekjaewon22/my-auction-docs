@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import webpush from 'web-push';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireHumanMaster, requireHumanUser } from '../middleware/auth';
 import {
@@ -216,6 +215,7 @@ webPush.post('/self-test', requireHumanUser(), async (c) => {
   const subscriptions = result.results || [];
   if (!subscriptions.length) return c.json({ error: '활성화된 알림 기기가 없습니다.' }, 400);
 
+  const { default: webpush } = await import('web-push');
   webpush.setVapidDetails(
     String(c.env.VAPID_SUBJECT),
     String(c.env.VAPID_PUBLIC_KEY),

@@ -70,6 +70,23 @@ export interface WebPushSetupStatus {
   }>;
 }
 
+export interface LawitgoProgressItem {
+  id: string;
+  title: string;
+  caseNumber: string;
+  court: string;
+  status: string;
+  statusLabel: string;
+  stage: string;
+  stageLabel: string;
+  progressSummary: string;
+  updatedAt: string;
+  consultantName: string;
+  clientName: string;
+  receivedAt: string;
+  caseType: string;
+}
+
 function getToken(): string | null {
   return localStorage.getItem('token');
 }
@@ -112,6 +129,37 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new Error(data?.error || '요청 처리에 실패했습니다.');
   }
   return data as T;
+}
+
+async function formRequest<T>(path: string, form: FormData): Promise<T> {
+  const token = getToken();
+  const headers: Record<string, string> = { 'X-Source-Page': currentSourcePage };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${path}`, { method: 'POST', headers, body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || '파일을 제출하지 못했습니다.');
+  return data as T;
+}
+
+async function authenticatedDownload(path: string, fallbackFileName: string): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${BASE}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || '파일을 다운로드하지 못했습니다.');
+  }
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  let fileName = fallbackFileName;
+  try { if (encoded) fileName = decodeURIComponent(encoded); } catch { /* use fallback */ }
+  const url = URL.createObjectURL(await res.blob());
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 // Auth
@@ -229,12 +277,19 @@ export const api = {
       ssn?: string;
       address?: string;
       effective_month?: string;
+      resolve_pending_work?: boolean;
     }) =>
       request<{
         success: boolean;
         user: import('./types').User;
         account: import('./types').UserAccounting;
         impact: import('../shared/employment-conversion').FreelancerConversionImpact;
+        cleanup?: {
+          cancelled_leave_requests: number;
+          cancelled_non_myauction_documents: number;
+          reassigned_approval_steps: number;
+          reassigned_to: string;
+        };
       }>(
         '/users/' + id + '/convert-to-freelancer',
         { method: 'PUT', body: JSON.stringify(data) },
@@ -450,12 +505,13 @@ export const api = {
 
   minutes: {
     list: () => request<{ minutes: { id: string; title: string; description: string; file_name: string; file_size: number; created_at: string; uploaded_by: string; uploader_name: string }[] }>('/minutes'),
-    upload: async (title: string, description: string, file: File) => {
+    upload: async (title: string, description: string, file: File, shareWith: string[] = []) => {
       const token = getToken();
       const fd = new FormData();
       fd.append('title', title);
       fd.append('description', description);
       fd.append('file', file);
+      fd.append('share_with', JSON.stringify(shareWith));
       const res = await fetch('/api/minutes', {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -476,6 +532,13 @@ export const api = {
       request<{ members: { id: string; name: string; role: string; branch: string; department: string }[] }>('/minutes/share-targets'),
     sharedWithMe: () => request<{ minutes: any[] }>('/minutes/shared/me'),
     markRead: (id: string) => request('/minutes/shared/' + id + '/read', { method: 'PUT' }),
+  },
+
+  lawitgoProgress: {
+    list: () => request<{ items: LawitgoProgressItem[]; refreshedAt: string }>('/lawitgo/progress'),
+    get: (id: string) => request<{ item: LawitgoProgressItem; ui: { html: string; css: string }; refreshedAt: string }>(
+      '/lawitgo/progress/' + encodeURIComponent(id)
+    ),
   },
 
   adminNotes: {
@@ -596,7 +659,7 @@ export const api = {
       return request<{ records: import('./types').SalesRecord[] }>('/sales' + (qs ? '?' + qs : ''));
     },
     ranking: (period_start: string, period_end: string) =>
-      request<{ ranking: Array<{ user_name: string; eff_branch: string; position: string; count: number; total_amount: number }> }>(
+      request<{ ranking: Array<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number }> }>(
         '/sales/ranking?period_start=' + encodeURIComponent(period_start) + '&period_end=' + encodeURIComponent(period_end)
       ),
     contractTracker: (
@@ -635,7 +698,25 @@ export const api = {
       q.set('amount', String(params.amount || 0));
       return request<{ duplicates: Array<{ id: string; type: string; client_name: string; amount: number; contract_date: string; status: string; user_name?: string; branch?: string }> }>('/sales/duplicate-check?' + q.toString());
     },
-    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string; user_id?: string }) =>
+    customerContracts: (params: { client_name: string; user_id?: string }) => {
+      const q = new URLSearchParams();
+      q.set('client_name', params.client_name);
+      if (params.user_id) q.set('user_id', params.user_id);
+      return request<{ contracts: Array<{
+        id: string; user_id: string; type: '계약'; client_name: string; client_phone: string;
+        status: string; contract_date: string; appraisal_rate: number; winning_rate: number;
+      }> }>('/sales/customer-contracts?' + q.toString());
+    },
+    customerSearch: (params: { q: string; user_id?: string }) => {
+      const query = new URLSearchParams({ q: params.q });
+      if (params.user_id) query.set('user_id', params.user_id);
+      return request<{ customers: Array<{
+        id: string; owner_user_id: string; name: string; primary_phone: string;
+        phones: string[]; addresses: string[];
+        cases: Array<{ court: string; case_number: string; item_number: string; status: string }>;
+      }> }>('/sales/customer-search?' + query.toString());
+    },
+    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string; user_id?: string; customer_id?: string }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; deposit_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
@@ -908,9 +989,15 @@ export const api = {
 
   accounting: {
     list: () => request<{ accounts: import('./types').UserAccounting[] }>('/accounting'),
-    get: (userId: string) => request<{ account: import('./types').UserAccounting | null }>('/accounting/' + userId),
-    update: (userId: string, data: { salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number; ssn?: string; address?: string }) =>
-      request<{ success: boolean; salary: number; standard_sales: number; grade: string }>('/accounting/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
+    get: (userId: string) => request<{
+      account: import('./types').UserAccounting | null;
+      previous_employee_account: Pick<
+        import('./types').UserAccounting,
+        'salary' | 'standard_sales' | 'grade' | 'position_allowance'
+      > & { effective_month?: string } | null;
+    }>('/accounting/' + userId),
+    update: (userId: string, data: { salary?: number; grade?: string; position_allowance?: number; pay_type?: string; commission_rate?: number; ssn?: string; address?: string; effective_month?: string }) =>
+      request<{ success: boolean; salary: number; standard_sales: number; grade: string; effective_month: string; recalculation_required_periods: string[] }>('/accounting/' + userId, { method: 'PUT', body: JSON.stringify(data) }),
     updateGrade: (userId: string, grade: string) =>
       request('/accounting/' + userId + '/grade', { method: 'PUT', body: JSON.stringify({ grade }) }),
     laborCostReport: () =>
@@ -970,6 +1057,27 @@ export const api = {
       request<{ success: boolean; sales_id: string }>('/accounting/staging/' + id + '/to-sales', { method: 'POST', body: JSON.stringify(data) }),
     stagingDelete: (id: string) =>
       request('/accounting/staging/' + id, { method: 'DELETE' }),
+  },
+
+  briefingMaterials: {
+    uploadOptions: () => request<{ current_user_id: string; users: Array<{ id: string; name: string; branch: string }> }>('/briefing-materials/upload-options'),
+    upload: (file: File, assigneeUserId: string, caseNumber = '') => {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('assignee_user_id', assigneeUserId);
+      form.append('case_number', caseNumber);
+      return formRequest<{ success: boolean; id: string; file_name: string; file_size: number; drive_status: string }>('/briefing-materials', form);
+    },
+    list: (params: { month?: string; branch?: string; assignee?: string; search?: string; page?: number; page_size?: number } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') q.set(key, String(value)); });
+      return request<{ materials: Array<{
+        id: string; uploader_name: string; branch: string; assignee_user_id?: string; assignee_name: string;
+        case_number: string; material_month: string; file_name: string; file_type: string; file_size: number;
+        drive_status: 'pending' | 'success' | 'failed'; drive_folder_path: string; drive_backed_up_at?: string; created_at: string;
+      }>; total: number; page: number; page_size: number }>(`/briefing-materials${q.toString() ? `?${q}` : ''}`);
+    },
+    download: (id: string, fileName: string) => authenticatedDownload(`/briefing-materials/${id}/download`, fileName),
   },
 
   announcementPopups: {
@@ -1134,23 +1242,87 @@ export const api = {
       const q = new URLSearchParams();
       Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
       return request<{ rows: Array<{
-        id: string; user_id: string; owner_name?: string; owner_branch?: string; owner_department?: string;
+        id: string; user_id: string; owner_name?: string; owner_branch?: string; owner_department?: string; owner_position_title?: string;
         can_edit?: number; can_delete?: number;
         bid_date: string; court: string; case_number: string; item_no: string;
         client_name: string; bidder_name: string; property_type: string;
         suggested_price: number | null; actual_bid_price: number | null; winning_price: number | null;
-        bid_result: '실패' | '낙찰' | '취소'; deviation_reason: string; created_at: string; updated_at: string;
+        bid_result: '대기' | '실패' | '낙찰' | '취소'; deviation_reason: string; created_at: string; updated_at: string;
+        sales_record_id?: string; sales_status?: string; sales_amount?: number;
+        source_type?: 'legacy' | 'auction_schedule'; source_id?: string; schedule_id?: string;
       }>; filters?: {
         branches: Array<{ branch: string }>;
         assignees: Array<{ id: string; name: string; branch: string }>;
       } }>(`/freelancer-bids${q.toString() ? '?' + q.toString() : ''}`);
     },
-    create: (data: Record<string, unknown>) =>
-      request<{ success: boolean; id: string }>('/freelancer-bids', { method: 'POST', body: JSON.stringify(data) }),
+  },
+
+  auctionSchedule: {
+    createOptions: () => request<{ assignees: Array<{
+      id: string; name: string; role: string; branch: string; department: string; position_title?: string;
+    }> }>('/auction-schedule/create-options'),
+    myBidResultRequirements: () => request<{ entries: Array<{
+      id: string;
+      user_id: string;
+      user_name: string;
+      target_date: string;
+      activity_subtype: string;
+      data: string;
+      missing_fields: string[];
+    }> }>('/auction-schedule/my-bid-result-requirements'),
+    list: (params: { start: string; end: string; branch?: string }) => {
+      const q = new URLSearchParams(params);
+      return request<{ entries: Array<{
+        id: string;
+        user_id: string;
+        user_name: string;
+        user_role: string;
+        position_title?: string;
+        target_date: string;
+        activity_type: '입찰' | '임장' | '미팅';
+        activity_subtype: string;
+        data: string;
+        branch: string;
+        department: string;
+        created_at: string;
+        updated_at: string;
+        source_type?: 'auction_schedule' | 'employee_journal';
+        read_only?: number;
+      }> }>('/auction-schedule?' + q.toString());
+    },
+    create: (data: {
+      user_id?: string;
+      target_date: string;
+      activity_type: string;
+      activity_subtype?: string;
+      data: Record<string, unknown>;
+    }) => request<{ entry: { id: string; user_id: string; target_date: string; activity_type: string } }>(
+      '/auction-schedule',
+      { method: 'POST', body: JSON.stringify(data) },
+    ),
     update: (id: string, data: Record<string, unknown>) =>
-      request<{ success: boolean }>('/freelancer-bids/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+      request<{ success: boolean }>('/auction-schedule/' + id, { method: 'PUT', body: JSON.stringify(data) }),
+    updateBidPrices: (id: string, data: { suggested_price?: number; actual_bid_price?: number; winning_price?: number }) =>
+      request<{ success: boolean; missing_fields: string[] }>('/auction-schedule/' + id + '/bid-prices', { method: 'PUT', body: JSON.stringify(data) }),
+    setBidResult: (id: string, data: {
+      result: 'won' | 'failed' | 'withdrawn' | 'pending';
+      suggested_price?: number;
+      actual_bid_price?: number;
+      winning_price?: number;
+      client_phone?: string;
+    }) => request<{ success: boolean; sales_record_id?: string | null; sales_status?: string | null; phone_required?: boolean }>(
+      '/auction-schedule/' + id + '/bid-result',
+      { method: 'POST', body: JSON.stringify(data) },
+    ),
     delete: (id: string) =>
-      request<{ success: boolean }>('/freelancer-bids/' + id, { method: 'DELETE' }),
+      request<{ success: boolean }>('/auction-schedule/' + id, { method: 'DELETE' }),
+    checkCaseNo: (caseNo: string, court?: string) => {
+      const q = new URLSearchParams({ case_no: caseNo });
+      if (court) q.set('court', court);
+      return request<{ exists: boolean; entries: { id: string; user_id: string; user_name: string; target_date: string; court: string }[] }>(
+        '/auction-schedule/check-case-no?' + q.toString(),
+      );
+    },
   },
 
   alimtalk: {

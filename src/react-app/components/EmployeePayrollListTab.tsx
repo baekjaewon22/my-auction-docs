@@ -3,6 +3,13 @@ import { Download, FileText, RefreshCw } from 'lucide-react';
 import { api } from '../api';
 import type { User } from '../types';
 import { useAuthStore } from '../store';
+import {
+  actualTransferAmount,
+  normalizeWithholdingSettlements,
+  withholdingSettlementAccountTag,
+  withholdingSettlementAdjustment,
+  type WithholdingSettlementItem,
+} from '../../shared/withholding-settlement';
 
 type PayrollListRow = {
   user_id: string;
@@ -20,6 +27,9 @@ type PayrollListRow = {
   extra_pay: number;
   deduction: number;
   total_pay: number;
+  withholding_settlements: WithholdingSettlementItem[];
+  withholding_adjustment: number;
+  actual_transfer: number;
 };
 
 function fmt(n: number): string { return (n || 0).toLocaleString('ko-KR'); }
@@ -198,6 +208,11 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             totalPay = payrollMoney(rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay, month);
           }
 
+          const withholdingSettlements = normalizeWithholdingSettlements(
+            saved.withholdingSettlements ?? saved.payroll_snapshot?.manual?.withholdingSettlements,
+          );
+          const withholdingAdjustment = withholdingSettlementAdjustment(withholdingSettlements);
+
           return {
             user_id: user.id,
             branch: displayBranchName(payroll.user?.branch || user.branch || '', payroll.user?.department || user.department || ''),
@@ -214,6 +229,9 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             extra_pay: rowExtraPay,
             deduction: rowDeduction,
             total_pay: totalPay,
+            withholding_settlements: withholdingSettlements,
+            withholding_adjustment: withholdingAdjustment,
+            actual_transfer: actualTransferAmount(totalPay, withholdingSettlements),
           } satisfies PayrollListRow;
         } catch {
           return null;
@@ -243,8 +261,10 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       extra_pay: acc.extra_pay + row.extra_pay,
       deduction: acc.deduction + row.deduction,
       total_pay: acc.total_pay + row.total_pay,
+      withholding_adjustment: acc.withholding_adjustment + row.withholding_adjustment,
+      actual_transfer: acc.actual_transfer + row.actual_transfer,
     }),
-    { base_pay: 0, performance_bonus: 0, case_allowance: 0, contract_award: 0, extra_pay: 0, deduction: 0, total_pay: 0 }
+    { base_pay: 0, performance_bonus: 0, case_allowance: 0, contract_award: 0, extra_pay: 0, deduction: 0, total_pay: 0, withholding_adjustment: 0, actual_transfer: 0 }
   ), [rows]);
 
   const exportExcel = async () => {
@@ -264,26 +284,28 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       row.extra_pay,
       row.deduction,
       row.total_pay,
+      row.withholding_adjustment,
+      row.actual_transfer,
     ]);
     const sheetData = [
       ['전직원 급여 내역'],
       [`기준월: ${month}`, `작성일: ${new Date().toISOString().slice(0, 10)}`, `인원: ${rows.length}명`],
       [],
-      ['No', '지사', '담당자', '직급', '정산유형', '급여', '성과금', '안건 수당', '계약포상', '기타지급', '공제', '총지급금'],
+      ['No', '지사', '담당자', '직급', '정산유형', '급여', '성과금', '안건 수당', '계약포상', '기타지급', '공제', '당월 급여 실지급(A)', '원천세 정산(B)', '실제 이체액(A+B)'],
       ...sheetRows,
       [],
-      ['합계', '', '', '', '', totals.base_pay, totals.performance_bonus, totals.case_allowance, totals.contract_award, totals.extra_pay, totals.deduction, totals.total_pay],
+      ['합계', '', '', '', '', totals.base_pay, totals.performance_bonus, totals.case_allowance, totals.contract_award, totals.extra_pay, totals.deduction, totals.total_pay, totals.withholding_adjustment, totals.actual_transfer],
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(sheetData);
     ws['!cols'] = [
       { wch: 6 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
-      { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 16 },
+      { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 20 }, { wch: 18 }, { wch: 20 },
     ];
     const firstDataRow = 5;
     const totalRow = firstDataRow + sheetRows.length + 1;
     for (let r = firstDataRow; r <= totalRow; r += 1) {
-      ['F', 'G', 'H', 'I', 'J', 'K', 'L'].forEach((col) => {
+      ['F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N'].forEach((col) => {
         const cell = ws[`${col}${r}`];
         if (cell) cell.z = '#,##0';
       });
@@ -291,6 +313,39 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '전직원 급여');
+    const settlementRows = rows.flatMap(row => row.withholding_settlements.map(item => [
+      month,
+      row.branch,
+      row.name,
+      row.position,
+      item.category,
+      item.type,
+      item.amount < 0 ? '환급' : '추징',
+      item.amount,
+      -item.amount,
+      withholdingSettlementAccountTag(item.amount),
+      item.memo || '',
+    ]));
+    if (settlementRows.length > 0) {
+      const settlementSheet = XLSX.utils.aoa_to_sheet([
+        ['원천세 정산 내역'],
+        [],
+        [],
+        ['기준월', '지사', '담당자', '직급', '구분', '세목', '처리', '세무대장 금액', '이체 조정(B)', '계정 태그', '메모'],
+        ...settlementRows,
+      ]);
+      settlementSheet['!cols'] = [
+        { wch: 11 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 14 },
+        { wch: 9 }, { wch: 18 }, { wch: 18 }, { wch: 24 }, { wch: 24 },
+      ];
+      for (let rowNumber = 5; rowNumber < settlementRows.length + 5; rowNumber += 1) {
+        ['H', 'I'].forEach(column => {
+          const cell = settlementSheet[`${column}${rowNumber}`];
+          if (cell) cell.z = '#,##0;[Red]-#,##0';
+        });
+      }
+      XLSX.utils.book_append_sheet(wb, settlementSheet, '원천세 정산');
+    }
     XLSX.writeFile(wb, `전직원_급여내역_${month}.xlsx`);
   };
 
@@ -334,7 +389,9 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                 <th style={{ width: 120, textAlign: 'right' }}>안건 수당</th>
                 <th style={{ width: 120, textAlign: 'right' }}>계약포상</th>
                 <th style={{ width: 120, textAlign: 'right' }}>기타/공제</th>
-                <th style={{ width: 140, textAlign: 'right' }}>총지급금</th>
+                <th style={{ width: 140, textAlign: 'right' }}>급여 실지급(A)</th>
+                <th style={{ width: 140, textAlign: 'right' }}>원천세 정산(B)</th>
+                <th style={{ width: 150, textAlign: 'right' }}>실제 이체액</th>
               </tr>
             </thead>
             <tbody>
@@ -350,6 +407,10 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                   <td style={{ textAlign: 'right' }}>{fmt(row.contract_award)}원</td>
                   <td style={{ textAlign: 'right' }}>{fmt(row.extra_pay - row.deduction)}원</td>
                   <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(row.total_pay)}원</td>
+                  <td style={{ textAlign: 'right', color: row.withholding_adjustment >= 0 ? '#188038' : '#d93025' }}>
+                    {row.withholding_adjustment > 0 ? '+' : ''}{fmt(row.withholding_adjustment)}원
+                  </td>
+                  <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(row.actual_transfer)}원</td>
                 </tr>
               ))}
             </tbody>
@@ -362,6 +423,10 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                 <td style={{ textAlign: 'right' }}>{fmt(totals.contract_award)}원</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.extra_pay - totals.deduction)}원</td>
                 <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(totals.total_pay)}원</td>
+                <td style={{ textAlign: 'right', color: totals.withholding_adjustment >= 0 ? '#188038' : '#d93025' }}>
+                  {totals.withholding_adjustment > 0 ? '+' : ''}{fmt(totals.withholding_adjustment)}원
+                </td>
+                <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(totals.actual_transfer)}원</td>
               </tr>
             </tfoot>
           </table>

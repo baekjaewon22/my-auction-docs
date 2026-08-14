@@ -2,6 +2,7 @@ import type { Context, Next } from 'hono';
 import { jwtVerify, SignJWT } from 'jose';
 import type { AuthEnv, JwtPayload, Role } from '../types';
 import { ensurePasswordSecuritySchemaOnce } from '../lib/password-security-schema.ts';
+import { resolveLoginSessionType } from '../../shared/login-session.ts';
 export { hashPassword, verifyPassword } from '../../shared/password-security.ts';
 
 const TOKEN_EXPIRY = '24h';
@@ -142,7 +143,11 @@ export async function authMiddleware(c: Context<AuthEnv>, next: Next) {
     payload.team_id = freshUser.team_id;
     payload.branch = freshUser.branch;
     payload.department = freshUser.department;
-    payload.login_type = freshUser.login_type || 'employee';
+    payload.login_type = resolveLoginSessionType(
+      freshUser.role,
+      freshUser.login_type,
+      payload.login_type,
+    );
     payload.auth_version = freshUser.auth_version || 0;
 
     payload.auth_type = 'user';

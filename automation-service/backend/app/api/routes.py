@@ -25,6 +25,7 @@ from ..services.orchestrator import generate_report
 from ..services.rights_certificate import generate_rights_certificate, export_pptx_to_pdf
 from ..core.config import settings, OUTPUT_DIR, CAPTURE_DIR, POPPLER_PATH, ensure_dirs, load_config, save_config
 from ..core.security import AGENT_SESSION_TOKEN, fetch_trusted_profile, is_allowed_origin, is_valid_agent_token
+from ..core.execution import AUTOMATION_EXECUTION_LOCK
 from ..core.utils import normalize_myauction_detail_url
 
 logger = logging.getLogger(__name__)
@@ -333,6 +334,17 @@ def _write_batch_zip(task_id: str, output_files: list[str]) -> str:
     return str(zip_path)
 
 
+def _run_exclusive(coroutine):
+    """Serialize every legacy local execution while generators share work paths."""
+    with AUTOMATION_EXECUTION_LOCK:
+        return asyncio.run(coroutine)
+
+
+def _run_batch_exclusive(request: RightsCertificateBatchRequest, task_id: str) -> None:
+    with AUTOMATION_EXECUTION_LOCK:
+        _run_rights_certificate_batch(request, task_id)
+
+
 def _run_rights_certificate_batch(request: RightsCertificateBatchRequest, task_id: str) -> None:
     import asyncio as _aio
 
@@ -503,7 +515,7 @@ async def api_generate_report(request: ReportRequest, trusted_profile: dict = De
         if not _has_rights_certificate_permission(request):
             raise HTTPException(status_code=403, detail="권리분석 보증서는 특별 권한이 있는 사원만 생성할 수 있습니다.")
         result = await asyncio.to_thread(
-            lambda: asyncio.run(generate_rights_certificate(request, progress_callback=_progress, task_id=task_id))
+            lambda: _run_exclusive(generate_rights_certificate(request, progress_callback=_progress, task_id=task_id))
         )
         if result.get("output_file"):
             report_files[task_id] = result["output_file"]
@@ -515,7 +527,7 @@ async def api_generate_report(request: ReportRequest, trusted_profile: dict = De
         )
 
     result = await asyncio.to_thread(
-        lambda: asyncio.run(generate_report(request, progress_callback=_progress, task_id=task_id))
+        lambda: _run_exclusive(generate_report(request, progress_callback=_progress, task_id=task_id))
     )
     if result.get("output_file"):
         report_files[task_id] = result["output_file"]
@@ -558,7 +570,7 @@ async def api_start_report(request: ReportRequest, trusted_profile: dict = Depen
         def _run_sync():
             try:
                 import asyncio as _aio
-                result = _aio.run(generate_rights_certificate(request, progress_callback=_sync_progress, task_id=task_id))
+                result = _run_exclusive(generate_rights_certificate(request, progress_callback=_sync_progress, task_id=task_id))
                 if result.get("output_file"):
                     report_files[task_id] = result["output_file"]
                     _register_download_history(task_id, result["output_file"], "rights_certificate", result.get("message", ""))
@@ -603,7 +615,7 @@ async def api_start_report(request: ReportRequest, trusted_profile: dict = Depen
         try:
             # generate_report는 내부에서 블로킹 작업(Selenium 등)을 하므로 스레드에서 실행
             import asyncio as _aio
-            result = _aio.run(generate_report(request, progress_callback=_sync_progress, task_id=task_id))
+            result = _run_exclusive(generate_report(request, progress_callback=_sync_progress, task_id=task_id))
             if result.get("output_file"):
                 report_files[task_id] = result["output_file"]
                 _register_download_history(
@@ -675,7 +687,7 @@ async def api_start_rights_certificate_batch(
         interval_seconds=max(0, int(request.interval_seconds or 0)),
     )
 
-    t = threading.Thread(target=_run_rights_certificate_batch, args=(normalized_request, task_id), daemon=True)
+    t = threading.Thread(target=_run_batch_exclusive, args=(normalized_request, task_id), daemon=True)
     t.start()
 
     return {"task_id": task_id}

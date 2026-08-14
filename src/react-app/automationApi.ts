@@ -1,8 +1,6 @@
-import { assessAutomationAgentHealth } from '../shared/automation-agent-health';
 import { AUTOMATION_AGENT_VERSION } from '../shared/automation-agent-version';
 
 const AUTOMATION_API_BASE = (import.meta.env.VITE_AUTOMATION_API_BASE || '/api').replace(/\/$/, '');
-const LOCAL_AUTOMATION_API_BASE = (import.meta.env.VITE_LOCAL_AUTOMATION_API_BASE || 'http://127.0.0.1:8001/api').replace(/\/$/, '');
 const AUTOMATION_WS_BASE = (import.meta.env.VITE_AUTOMATION_WS_BASE || '').replace(/\/$/, '');
 const AUTOMATION_AGENT_INSTALLER_URL = import.meta.env.VITE_AUTOMATION_AGENT_INSTALLER_URL || '/api/report/agent-installer';
 export const REQUIRED_AUTOMATION_AGENT_VERSION = import.meta.env.VITE_REQUIRED_AUTOMATION_AGENT_VERSION || AUTOMATION_AGENT_VERSION;
@@ -18,54 +16,6 @@ function authHeaders(extra: HeadersInit = {}): Record<string, string> {
   return headers;
 }
 
-let localAgentSessionToken = '';
-let localAgentSessionPromise: Promise<string> | null = null;
-
-async function getLocalAgentSessionToken(forceRefresh = false): Promise<string> {
-  if (forceRefresh) {
-    localAgentSessionToken = '';
-    localAgentSessionPromise = null;
-  }
-  if (localAgentSessionToken) return localAgentSessionToken;
-  if (!localAgentSessionPromise) {
-    localAgentSessionPromise = fetch(`${LOCAL_AUTOMATION_API_BASE}/session`, {
-      method: 'GET',
-      mode: 'cors',
-      cache: 'no-store',
-    }).then(async (response) => {
-      const data = await response.json().catch(() => ({}));
-      const token = String(data?.token || '').trim();
-      if (!response.ok || !token) throw new Error(data?.detail || '자동화 실행기 인증에 실패했습니다.');
-      localAgentSessionToken = token;
-      return token;
-    }).finally(() => {
-      localAgentSessionPromise = null;
-    });
-  }
-  return localAgentSessionPromise;
-}
-
-async function localAgentFetch(
-  path: string,
-  options: RequestInit = {},
-  includeUserAuthorization = false,
-  retry = true,
-): Promise<Response> {
-  const token = await getLocalAgentSessionToken();
-  const headers = new Headers(options.headers || {});
-  headers.delete('Authorization');
-  headers.set('X-MyAuction-Agent-Token', token);
-  if (includeUserAuthorization) {
-    const userToken = getToken();
-    if (userToken) headers.set('Authorization', `Bearer ${userToken}`);
-  }
-  const response = await fetch(`${LOCAL_AUTOMATION_API_BASE}${path}`, { ...options, headers });
-  if (response.status === 401 && retry) {
-    await getLocalAgentSessionToken(true);
-    return localAgentFetch(path, options, includeUserAuthorization, false);
-  }
-  return response;
-}
 
 export type OutputType = 'auction_report' | 'rights_certificate';
 export type DownloadFormat = 'pptx' | 'pdf' | 'zip';
@@ -145,20 +95,9 @@ export interface AutomationAgentStatus {
   title?: string;
   dependencyReady?: boolean;
   dependencyMessage?: string;
+  onlineSlots?: number;
   connectionIssue?: 'permission_denied' | 'browser_blocked' | 'not_connected';
   error?: string;
-}
-
-async function getLoopbackPermissionState(): Promise<PermissionState | 'unsupported'> {
-  if (typeof navigator === 'undefined' || !navigator.permissions?.query) return 'unsupported';
-  try {
-    const permission = await navigator.permissions.query(
-      { name: 'local-network-access' } as unknown as PermissionDescriptor,
-    );
-    return permission.state;
-  } catch {
-    return 'unsupported';
-  }
 }
 
 export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
@@ -195,43 +134,29 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
     versionCheckIssue = 'server_unavailable';
   }
 
-  const loopbackPermission = await getLoopbackPermissionState();
-  if (loopbackPermission === 'denied') {
-    return {
-      ok: false,
-      requiredVersion,
-      latestVersionVerified,
-      versionCheckIssue,
-      checkedAt,
-      connectionIssue: 'permission_denied',
-      error: 'local_network_access_denied',
-    };
-  }
-
   try {
-    const res = await fetch(`${LOCAL_AUTOMATION_API_BASE}/health`, {
+    const res = await fetch(`${AUTOMATION_API_BASE}/report/central-agent-status`, {
       method: 'GET',
-      mode: 'cors',
       cache: 'no-store',
+      headers: authHeaders(),
     });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     const data = await res.json().catch(() => ({}));
-    const {
-      version,
-      updateRequired,
-      dependencyReady: popplerReady,
-    } = await assessAutomationAgentHealth(data, requiredVersion, getLocalAgentSessionToken);
+    const version = String(data?.agent?.version || '');
+    const online = Boolean(data?.online);
+    const updateRequired = online && version !== requiredVersion;
     return {
-      ok: true,
+      ok: online,
       updateRequired,
       version,
       requiredVersion,
       latestVersionVerified,
       versionCheckIssue,
       checkedAt,
-      title: data?.title || 'MyAuction Automation',
-      dependencyReady: popplerReady,
-      dependencyMessage: popplerReady ? undefined : 'PDF 변환 구성요소가 없거나 손상되었습니다.',
+      title: `회사 자동화 서버 (${Math.max(1, Number(data?.online_agents || 0))}개 슬롯)`,
+      onlineSlots: Number(data?.online_agents || 0),
+      dependencyReady: online,
+      dependencyMessage: online ? undefined : '회사 자동화 서버가 오프라인입니다.',
     };
   } catch (err: any) {
     return {
@@ -240,7 +165,7 @@ export async function checkAutomationAgent(): Promise<AutomationAgentStatus> {
       latestVersionVerified,
       versionCheckIssue,
       checkedAt,
-      connectionIssue: loopbackPermission === 'unsupported' ? 'not_connected' : 'browser_blocked',
+      connectionIssue: 'not_connected',
       error: err?.message || 'not_connected',
     };
   }
@@ -254,30 +179,7 @@ async function automationRequest<T>(path: string, options: RequestInit = {}): Pr
       ...authHeaders(options.headers || {}),
     },
   };
-  const method = String(options.method || 'GET').toUpperCase();
-  const canUseLocalFallback = method === 'GET' && !AUTOMATION_API_BASE.startsWith('http');
-  const canUseLocalStartFallback = method === 'POST'
-    && !AUTOMATION_API_BASE.startsWith('http')
-    && (path === '/report/start' || path === '/report/start-batch');
-
-  let res: Response;
-  try {
-    res = await fetch(`${AUTOMATION_API_BASE}${path}`, init);
-  } catch (err) {
-    if (canUseLocalStartFallback) {
-      res = await localStartRequest(path, options);
-    } else {
-      if (!canUseLocalFallback) throw err;
-      res = await localAgentFetch(path, options);
-    }
-  }
-
-  if (canUseLocalFallback && !res.ok) {
-    res = await localAgentFetch(path, options);
-  }
-  if (canUseLocalStartFallback && !res.ok) {
-    res = await localStartRequest(path, options);
-  }
+  const res = await fetch(`${AUTOMATION_API_BASE}${path}`, init);
 
   let data: any = null;
   try {
@@ -287,34 +189,6 @@ async function automationRequest<T>(path: string, options: RequestInit = {}): Pr
   }
   if (!res.ok) throw new Error(data?.detail || data?.error || '자동화 서비스 요청에 실패했습니다.');
   return data as T;
-}
-
-async function localStartRequest(path: string, options: RequestInit = {}) {
-  const profileRes = await fetch(`${AUTOMATION_API_BASE}/report/local-profile`, {
-    headers: authHeaders(),
-  });
-  let profile: any = null;
-  try {
-    profile = await profileRes.json();
-  } catch {
-    throw new Error('자동화 사용자 정보를 가져오지 못했습니다.');
-  }
-  if (!profileRes.ok) {
-    throw new Error(profile?.detail || profile?.error || '자동화 사용자 정보를 가져오지 못했습니다.');
-  }
-
-  let body: any = {};
-  try {
-    body = JSON.parse(String(options.body || '{}'));
-  } catch {
-    body = {};
-  }
-
-  return localAgentFetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, ...profile }),
-  }, true);
 }
 
 function defaultReportFilename(format: DownloadFormat): string {
@@ -331,16 +205,7 @@ function reportFilenameForFormat(fileName: string | undefined, format: DownloadF
 
 async function downloadFile(path: string, fallbackFilename: string) {
   const init = { headers: authHeaders() };
-  let res: Response;
-  try {
-    res = await fetch(`${AUTOMATION_API_BASE}${path}`, init);
-  } catch {
-    res = await localAgentFetch(path, {}, false);
-  }
-
-  if (!res.ok) {
-    res = await localAgentFetch(path, {}, false);
-  }
+  const res = await fetch(`${AUTOMATION_API_BASE}${path}`, init);
 
   if (!res.ok) {
     let message = '다운로드에 실패했습니다.';
@@ -436,22 +301,15 @@ export const automationApi = {
   checkAgent: checkAutomationAgent,
   downloadAgentInstaller,
   startReport: (body: ReportStartRequest) =>
-    automationRequest<{ task_id: string }>('/report/start', { method: 'POST', body: JSON.stringify(body) }),
+    automationRequest<{ task_id: string; queue_position?: number }>('/report/start', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(body) }),
   startBatch: (body: RightsBatchRequest) =>
-    automationRequest<{ task_id: string }>('/report/start-batch', { method: 'POST', body: JSON.stringify(body) }),
+    automationRequest<{ task_id: string; queue_position?: number }>('/report/start-batch', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(body) }),
   progress: (taskId: string) =>
-    automationRequest<{ task_id: string; updates: ProgressUpdate[]; diagnostics?: AutomationDiagnostic[] }>(`/report/progress/${taskId}`),
+    automationRequest<{ task_id: string; status?: string; queue_position?: number; updates: ProgressUpdate[]; diagnostics?: AutomationDiagnostic[] }>(`/report/progress/${taskId}`),
   progressWsUrl: async (taskId: string) => {
+    if (!taskId) return '';
     if (AUTOMATION_WS_BASE) return `${AUTOMATION_WS_BASE}/ws/progress/${taskId}`;
-    if (AUTOMATION_API_BASE.startsWith('http')) {
-      return `${AUTOMATION_API_BASE.replace(/^http/i, 'ws')}/ws/progress/${taskId}`;
-    }
-    if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
-      const sessionToken = await getLocalAgentSessionToken();
-      return `ws://127.0.0.1:8001/api/ws/progress/${taskId}?token=${encodeURIComponent(sessionToken)}`;
-    }
-    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${scheme}://${window.location.host}${AUTOMATION_API_BASE}/ws/progress/${taskId}`;
+    return '';
   },
   history: () =>
     automationRequest<{ items: DownloadHistoryItem[]; limit: number }>('/report/download-history'),
