@@ -7,6 +7,15 @@ import { useBranches } from '../hooks/useBranches';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { MIN_PASSWORD_LENGTH } from '../../shared/password-security';
 const SAVED_CRED_KEY = 'myauction_saved_cred';
+const LAST_LOGIN_TYPE_KEY = 'myauction_last_login_type';
+
+function loadLastLoginType(): 'employee' | 'freelancer' {
+  try {
+    return localStorage.getItem(LAST_LOGIN_TYPE_KEY) === 'freelancer' ? 'freelancer' : 'employee';
+  } catch {
+    return 'employee';
+  }
+}
 
 // ━━━ 일반(임직원) 개인정보 처리방침 ━━━
 const PRIVACY_POLICY = `(주)엘앤씨부동산중개법인 (사업자등록번호: 127-86-29704, 이하 "회사")은 개인정보보호법, 정보통신망 이용촉진 및 정보보호 등에 관한 법률 등 관련 법령에 따라 이용자의 개인정보를 보호하고 있습니다.
@@ -194,7 +203,7 @@ export default function Login() {
     }
   });
 
-  const [loginType, setLoginType] = useState<'employee' | 'freelancer'>('employee');
+  const [loginType, setLoginType] = useState<'employee' | 'freelancer'>(loadLastLoginType);
   const isFreelancer = loginType === 'freelancer';
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState(savedEmail);
@@ -255,6 +264,9 @@ export default function Login() {
           localStorage.removeItem(SAVED_CRED_KEY);
         }
         await login(email, password, loginType);
+        try {
+          localStorage.setItem(LAST_LOGIN_TYPE_KEY, loginType);
+        } catch { /* 브라우저 저장소를 사용할 수 없어도 로그인은 유지한다. */ }
         navigate('/dashboard');
       }
     } catch (err: any) {

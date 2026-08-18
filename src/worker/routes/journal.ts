@@ -8,6 +8,7 @@ import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { isNonWorkingDate, previousWorkDate } from '../../shared/work-calendar';
 import { loadSystemHolidayDates } from '../lib/system-holidays';
 import { canViewSuggestedBidPrice, redactSuggestedBidPrice } from '../../shared/auction-schedule';
+import { canDismissDashboardAlertItems } from '../../shared/dashboard-alert-dismiss';
 
 function fmtDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
@@ -47,7 +48,7 @@ const journal = new Hono<AuthEnv>();
 journal.use('*', authMiddleware);
 journal.use('*', async (c, next) => {
   const user = c.get('user');
-  if (user.login_type === 'freelancer') {
+  if (user.login_type === 'freelancer' && user.role !== 'master') {
     const supervisorMemberLookup = user.role === 'manager' && c.req.path.endsWith('/members');
     if (!supervisorMemberLookup) {
       return c.json({ error: '프리랜서는 컨설턴트 일지·근태 기능을 사용할 수 없습니다.' }, 403);
@@ -390,11 +391,14 @@ journal.delete('/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/journal/dismiss-alert — 알림 삭제 (마스터/관리자)
-journal.post('/dismiss-alert', requireRole('master', 'admin'), async (c) => {
+// POST /api/journal/dismiss-alert — 대시보드 개별 알림 삭제
+journal.post('/dismiss-alert', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const { alert_type, alert_key } = await c.req.json<{ alert_type: string; alert_key: string }>();
+  const canDismiss = canDismissDashboardAlertItems(user)
+    || (user.role === 'admin' && alert_type === 'schedule_gap');
+  if (!canDismiss) return c.json({ error: '대시보드 알림 삭제 권한이 없습니다.' }, 403);
   const id = crypto.randomUUID();
   await db.prepare('INSERT OR IGNORE INTO dismissed_alerts (id, alert_type, alert_key, dismissed_by) VALUES (?, ?, ?, ?)')
     .bind(id, alert_type, alert_key, user.sub).run();

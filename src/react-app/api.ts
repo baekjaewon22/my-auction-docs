@@ -536,16 +536,16 @@ export const api = {
 
   lawitgoProgress: {
     list: () => request<{ items: LawitgoProgressItem[]; refreshedAt: string }>('/lawitgo/progress'),
-    get: (id: string) => request<{ item: LawitgoProgressItem; ui: { html: string; css: string }; refreshedAt: string }>(
+    get: (id: string) => request<{ item: LawitgoProgressItem; ui: { html: string; css: string }; refreshedAt: string; consultantStatement: { title: string; format: 'text'; content: string } | null }>(
       '/lawitgo/progress/' + encodeURIComponent(id)
     ),
   },
 
   adminNotes: {
-    list: (params: { category?: string; search?: string; legal_subcategory?: string } = {}) => {
+    list: (params: { category?: string; search?: string; legal_subcategory?: string; page?: number; page_size?: number } = {}) => {
       const q = new URLSearchParams();
       Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') q.set(k, String(v)); });
-      return request<{ notes: any[] }>('/admin-notes' + (q.toString() ? '?' + q.toString() : ''));
+      return request<{ notes: any[]; pagination: { page: number; page_size: number; has_more: boolean } }>('/admin-notes' + (q.toString() ? '?' + q.toString() : ''));
     },
     get: (id: string, options: { trackView?: boolean } = {}) =>
       request<{ note: any; comments: any[]; attachments: any[] }>('/admin-notes/' + id + (options.trackView ? '?view=1' : '')),
@@ -1183,6 +1183,24 @@ export const api = {
       request<{ success: boolean }>(`/cases/${id}${reason ? '?reason=' + encodeURIComponent(reason) : ''}`, { method: 'DELETE' }),
     finalizeBonus: (period: string) =>
       request<{ success: boolean; period: string; period_label: string; inserted: number; skipped: number; ineligible: number; details: Array<{ user_id: string; user_name: string; bonus: number; status: string; reason?: string }> }>(`/cases/finalize-bonus`, { method: 'POST', body: JSON.stringify({ period }) }),
+  },
+
+  lawitgoSettlementLedger: {
+    list: (params: { month?: string; status?: 'active' | 'deleted' | 'all'; search?: string; limit?: number } = {}) => {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') q.set(key, String(value)); });
+      return request<{ items: any[] }>(`/lawitgo-settlement-ledger${q.toString() ? '?' + q.toString() : ''}`);
+    },
+    history: (id: string) => request<{ history: any[] }>(`/lawitgo-settlement-ledger/${encodeURIComponent(id)}/history`),
+    update: (id: string, data: {
+      consultant_user_id: string; client_name: string; settlement_date: string; amount: number;
+      statement_title?: string; statement_content?: string | null; reason?: string;
+    }) => request<{ success: boolean }>(`/lawitgo-settlement-ledger/${encodeURIComponent(id)}`, {
+      method: 'PUT', body: JSON.stringify(data),
+    }),
+    delete: (id: string, reason: string) => request<{ success: boolean }>(`/lawitgo-settlement-ledger/${encodeURIComponent(id)}`, {
+      method: 'DELETE', body: JSON.stringify({ reason }),
+    }),
   },
 
   rooms: {

@@ -27,7 +27,7 @@ export default function TemplateEdit() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
   const isNew = id === 'new';
-  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
   const canEdit = !!user && !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   // 권한 없으면 목록으로

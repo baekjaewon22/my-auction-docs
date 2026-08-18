@@ -11,6 +11,7 @@ import type { ApprovalStep } from '../types';
 import { sameBranchName } from '../lib/branchAliases';
 import { refundApprovalMonth, refundRecoveryPayrollUrl } from '../../shared/refund-recovery';
 import { isNonWorkingDate } from '../../shared/work-calendar';
+import { canDismissDashboardAlertItems } from '../../shared/dashboard-alert-dismiss';
 import type { AuctionBidResultEntry } from '../components/AuctionBidResultEditor';
 
 const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
@@ -261,7 +262,7 @@ function FreelancerDashboard() {
 
 export default function Dashboard() {
   const { user } = useAuthStore();
-  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
   if (isFreelancer) return <FreelancerDashboard />;
 
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -297,6 +298,7 @@ export default function Dashboard() {
   const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '')
     || ACCOUNTING_ALERT_EXTRA_USER_IDS.includes(user?.id || '');
   const isMaster = user?.role === 'master';
+  const canDismissAlertItems = canDismissDashboardAlertItems(user);
   const canResolveRefundRecovery = ['master', 'accountant'].includes(user?.role || '');
   const canDismissScheduleGapAlerts = ['master', 'admin'].includes(user?.role || '');
   const canSeePushSetupStatus = ['manager', 'admin', 'master'].includes(user?.role || '');
@@ -343,16 +345,21 @@ export default function Dashboard() {
     </button>
   ) : null;
 
-  // 마스터 전용 개별 항목 삭제 버튼
-  const MasterItemCloseBtn = ({ alertType, alertKey }: { alertType: string; alertKey: string }) => isMaster ? (
+  // 마스터·정민호 지사장·총무담당 전용 개별 항목 삭제 버튼
+  const AlertItemCloseBtn = ({ alertType, alertKey, alertKeys }: { alertType: string; alertKey?: string; alertKeys?: string[] }) => canDismissAlertItems ? (
     <button className="btn-icon"
-      title="이 항목 삭제 (마스터 전용 — 영구 삭제)"
+      title="이 알림 항목 삭제 (영구 삭제)"
       onClick={async (e) => {
         e.preventDefault(); e.stopPropagation();
         if (!confirm('이 알림 항목을 삭제하시겠습니까?\n(영구 삭제 — 새로고침해도 복구되지 않음)')) return;
         try {
-          await api.journal.dismissAlert(alertType, alertKey);
-          setDismissedKeys(prev => new Set(prev).add(alertKey));
+          const keys = alertKeys?.length ? alertKeys : (alertKey ? [alertKey] : []);
+          await Promise.all(keys.map(key => api.journal.dismissAlert(alertType, key)));
+          setDismissedKeys(prev => {
+            const next = new Set(prev);
+            keys.forEach(key => next.add(key));
+            return next;
+          });
         } catch (err: any) { alert(err.message); }
       }}
       style={{ color: '#bdc1c6', padding: '2px 4px', background: 'transparent', border: 'none', cursor: 'pointer', marginLeft: 4 }}>
@@ -392,6 +399,7 @@ export default function Dashboard() {
     if (dismissedKeys.size === 0) return;
     setCoopAlerts(prev => prev.filter((a: any) => !dismissedKeys.has(`coop_${a.id}`)));
     setMyMissingDocs(prev => prev.filter(r => !dismissedKeys.has(`my_doc_missing_${r.id}`)));
+    setMissingPhoneSales(prev => prev.filter(r => !dismissedKeys.has(`missing_phone_${r.id}`)));
     setAlerts(prev => prev.filter(a => !dismissedKeys.has(`missing_${a.userId}_${a.date}_${a.activity || ''}`) && !dismissedKeys.has(`my_missing_${a.userId}_${a.date}_${a.activity || ''}`)));
     setDupInspections(prev => prev.filter((d: any) => !dismissedKeys.has(`dup_${d.case_no}_${d.court}_${d.branch || ''}`)));
     setContractAlerts(prev => prev.filter(r => !dismissedKeys.has(`contract_${r.id}`)));
@@ -517,7 +525,7 @@ export default function Dashboard() {
           canSeeAccountingAlerts ? api.sales.dashboardRefundImpacts().catch(() => null) : Promise.resolve(null),
           api.sales.deposits().catch(() => null),
           api.leave.accountantLeaves().catch(() => null),
-          (user as any)?.login_type !== 'freelancer'
+          ((user as any)?.login_type !== 'freelancer' || user?.role === 'master')
             ? api.cooperation.dashboard().catch(() => null)
             : Promise.resolve(null),
           api.journal.duplicateInspections(dupAllBranches).catch(() => null),
@@ -558,6 +566,7 @@ export default function Dashboard() {
           setMissingPhoneSales(records.filter(r =>
             isMissingWinningCustomerPhone(r)
             && (canCorrectAllPhones || r.user_id === user?.id)
+            && !localDismissed.has(`missing_phone_${r.id}`)
           ));
         }
 
@@ -873,7 +882,7 @@ export default function Dashboard() {
               const isTomorrow = lv.start_date === tomorrowStr;
               return (
                 <div key={lv.id} style={{ padding: '8px 12px', background: '#fff', borderRadius: 8, marginBottom: 6, border: '1px solid #ffe082', position: 'relative' }}>
-                  {isMaster && <div style={{ position: 'absolute', top: 4, right: 4 }}><MasterItemCloseBtn alertType="accountant_leave" alertKey={`acc_leave_${lv.id}`} /></div>}
+                  {canDismissAlertItems && <div style={{ position: 'absolute', top: 4, right: 4 }}><AlertItemCloseBtn alertType="accountant_leave" alertKey={`acc_leave_${lv.id}`} /></div>}
                   <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1a1a2e' }}>
                     {lv.branch}지사 {lv.name} {lv.position_title || ''} {leaveLabel}
                   </div>
@@ -918,7 +927,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                   </Link>
-                  {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="coop" alertKey={`coop_${a.id}`} /></div>}
+                  {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="coop" alertKey={`coop_${a.id}`} /></div>}
                 </div>
               );
             })}
@@ -939,7 +948,7 @@ export default function Dashboard() {
             </h3>
             <div className="missing-alert-list">
               {myAlerts.map((a, i) => (
-                <div key={i} className="missing-alert-item" style={{ borderLeft: `3px solid ${a.dDay >= 7 ? '#d93025' : a.dDay >= 3 ? '#e65100' : '#f9ab00'}` }}>
+                <div key={i} className="missing-alert-item" style={{ borderLeft: `3px solid ${a.dDay >= 7 ? '#d93025' : a.dDay >= 3 ? '#e65100' : '#f9ab00'}`, position: 'relative' }}>
                   <div className="missing-alert-content" style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
                     <span style={{
                       minWidth: 52, textAlign: 'center', padding: '3px 8px', borderRadius: 8, fontSize: '0.75rem', fontWeight: 700,
@@ -962,6 +971,7 @@ export default function Dashboard() {
                         면제 사유서
                       </button>
                     )}
+                    {canDismissAlertItems && <AlertItemCloseBtn alertType="my_missing" alertKey={`my_missing_${a.userId}_${a.date}_${a.activity || ''}`} />}
                   </div>
                 </div>
               ))}
@@ -979,16 +989,19 @@ export default function Dashboard() {
           <p>낙찰 업무성과는 정상 등록되었지만 고객 전화번호가 비어 있습니다. 항목을 누르면 전화번호 입력란으로 이동합니다.</p>
           <div className="missing-alert-list">
             {missingPhoneSales.slice(0, 10).map(record => (
-              <Link key={record.id} to={dashboardSalesFocusUrl(record, 'phone')} className="missing-alert-item" style={{ textDecoration: 'none' }}>
-                <div style={{ flex: 1 }}>
-                  <div className="missing-alert-main">
-                    <span className="missing-alert-doc">전화번호 미입력</span>
-                    {record.user_name && <span style={{ marginLeft: 8 }}>{record.user_name}</span>}
-                    <span style={{ marginLeft: 8 }}>{record.client_name}</span>
+              <div key={record.id} style={{ position: 'relative' }}>
+                <Link to={dashboardSalesFocusUrl(record, 'phone')} className="missing-alert-item" style={{ textDecoration: 'none' }}>
+                  <div style={{ flex: 1 }}>
+                    <div className="missing-alert-main">
+                      <span className="missing-alert-doc">전화번호 미입력</span>
+                      {record.user_name && <span style={{ marginLeft: 8 }}>{record.user_name}</span>}
+                      <span style={{ marginLeft: 8 }}>{record.client_name}</span>
+                    </div>
+                    <div className="missing-alert-detail">{record.contract_date} · 낙찰 · {record.amount?.toLocaleString()}원</div>
                   </div>
-                  <div className="missing-alert-detail">{record.contract_date} · 낙찰 · {record.amount?.toLocaleString()}원</div>
-                </div>
-              </Link>
+                </Link>
+                {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="missing_phone" alertKey={`missing_phone_${record.id}`} /></div>}
+              </div>
             ))}
           </div>
         </section>
@@ -1025,7 +1038,7 @@ export default function Dashboard() {
                       <div className="missing-alert-detail">{r.contract_date} · {r.type} · {r.amount?.toLocaleString()}원</div>
                     </div>
                   </Link>
-                  {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="my_doc_missing" alertKey={`my_doc_missing_${r.id}`} /></div>}
+                  {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="my_doc_missing" alertKey={`my_doc_missing_${r.id}`} /></div>}
                 </div>
               );
             })}
@@ -1046,16 +1059,18 @@ export default function Dashboard() {
           <div className="missing-alert-list">
             {(() => {
               // 같은 사용자+카테고리 묶기
-              const grouped: { userName: string; missingDoc: string; count: number; dates: string[]; maxDDay: number; journalEntryIds: string[] }[] = [];
+              const grouped: { userName: string; missingDoc: string; count: number; dates: string[]; maxDDay: number; journalEntryIds: string[]; alertKeys: string[] }[] = [];
               alerts.forEach((a) => {
+                const alertKey = `missing_${a.userId}_${a.date}_${a.activity || ''}`;
                 const existing = grouped.find((g) => g.userName === a.userName && g.missingDoc === a.missingDoc);
                 if (existing) {
                   existing.count++;
                   if (!existing.dates.includes(a.date)) existing.dates.push(a.date);
                   existing.maxDDay = Math.max(existing.maxDDay, a.dDay);
                   existing.journalEntryIds.push(...(a.journalEntryIds || []));
+                  existing.alertKeys.push(alertKey);
                 } else {
-                  grouped.push({ userName: a.userName, missingDoc: a.missingDoc, count: 1, dates: [a.date], maxDDay: a.dDay, journalEntryIds: [...(a.journalEntryIds || [])] });
+                  grouped.push({ userName: a.userName, missingDoc: a.missingDoc, count: 1, dates: [a.date], maxDDay: a.dDay, journalEntryIds: [...(a.journalEntryIds || [])], alertKeys: [alertKey] });
                 }
               });
               return grouped.slice(0, 15).map((g, i) => (
@@ -1092,6 +1107,7 @@ export default function Dashboard() {
                       면제 사유서
                     </button>
                   )}
+                  {canDismissAlertItems && <AlertItemCloseBtn alertType="missing_report" alertKeys={g.alertKeys} />}
                 </div>
               ));
             })()}
@@ -1132,7 +1148,7 @@ export default function Dashboard() {
                     공백: {g.gaps.join(', ')}
                   </span>
                 </div>
-                {canDismissScheduleGapAlerts && (
+                {(canDismissScheduleGapAlerts || canDismissAlertItems) && (
                   <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#bdc1c6', padding: 2 }}
                     onClick={async () => {
                       const key = `gap_${g.userName}_${g.date}`;
@@ -1193,7 +1209,7 @@ export default function Dashboard() {
               ));
               return (
                 <div key={i} className="missing-alert-item" style={{ borderLeft: '3px solid #7b1fa2', position: 'relative' }}>
-                  {isMaster && <div style={{ position: 'absolute', top: 6, right: 6 }}><MasterItemCloseBtn alertType="dup_inspection" alertKey={`dup_${dup.case_no}_${dup.court}_${dup.branch || ''}`} /></div>}
+                  {canDismissAlertItems && <div style={{ position: 'absolute', top: 6, right: 6 }}><AlertItemCloseBtn alertType="dup_inspection" alertKey={`dup_${dup.case_no}_${dup.court}_${dup.branch || ''}`} /></div>}
                   <div className="missing-alert-content">
                     <div className="missing-alert-main" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 700, background: '#f3e5f5', color: '#7b1fa2' }}>{dup.case_no}</span>
@@ -1229,7 +1245,7 @@ export default function Dashboard() {
           <div className="missing-alert-list">
             {contractAlerts.slice(0, 10).map((r) => (
               <div key={r.id} style={{ position: 'relative' }}>
-                {isMaster && <div style={{ position: 'absolute', top: 6, right: 6 }}><MasterItemCloseBtn alertType="contract_alert" alertKey={`contract_${r.id}`} /></div>}
+                {canDismissAlertItems && <div style={{ position: 'absolute', top: 6, right: 6 }}><AlertItemCloseBtn alertType="contract_alert" alertKey={`contract_${r.id}`} /></div>}
                 <Link to={dashboardSalesFocusUrl(r)} className="missing-alert-item" style={{ borderLeft: `3px solid ${r.contract_submitted ? '#1a73e8' : '#d93025'}`, textDecoration: 'none' }}>
                   <div className="missing-alert-content">
                     <div className="missing-alert-main">
@@ -1281,7 +1297,7 @@ export default function Dashboard() {
                       {isWaiting ? '최종 승인 대기' : '승인 필요'}
                     </span>
                   </Link>
-                  {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="pending_approval" alertKey={`approval_${doc.id}`} /></div>}
+                  {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="pending_approval" alertKey={`approval_${doc.id}`} /></div>}
                 </div>
               );
             })}
@@ -1323,7 +1339,7 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </Link>
-                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="pending_sales" alertKey={`pending_sales_${r.id}`} /></div>}
+                {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="pending_sales" alertKey={`pending_sales_${r.id}`} /></div>}
               </div>
             ))}
           </div>
@@ -1354,7 +1370,7 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </Link>
-                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="refund_request" alertKey={`refund_request_${r.id}`} /></div>}
+                {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="refund_request" alertKey={`refund_request_${r.id}`} /></div>}
               </div>
             ))}
           </div>
@@ -1412,7 +1428,7 @@ export default function Dashboard() {
                     </button>
                   </div>
                 )}
-                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="refund_impact" alertKey={`refund_impact_${imp.id}`} /></div>}
+                {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="refund_impact" alertKey={`refund_impact_${imp.id}`} /></div>}
               </div>
             ))}
           </div>
@@ -1446,7 +1462,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                   </Link>
-                  {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="deposit_notice" alertKey={`deposit_${d.id}`} /></div>}
+                  {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="deposit_notice" alertKey={`deposit_${d.id}`} /></div>}
                 </div>
               );
             })}
@@ -1465,7 +1481,7 @@ export default function Dashboard() {
           <div className="doc-list">
             {salesAlerts.map((a: any) => (
               <div key={a.id} className="doc-item" style={{ borderLeft: '3px solid #e65100', position: 'relative' }}>
-                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="sales_shortfall" alertKey={`shortfall_${a.id}`} /></div>}
+                {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="sales_shortfall" alertKey={`shortfall_${a.id}`} /></div>}
                 <div className="doc-info">
                   <TrendingDown size={16} style={{ color: '#e65100', marginRight: 8, flexShrink: 0 }} />
                   <div>
@@ -1495,7 +1511,7 @@ export default function Dashboard() {
           <div className="doc-list">
             {demotionCandidates.map((a: any) => (
               <div key={a.id} className="doc-item" style={{ borderLeft: '3px solid #d93025', background: '#fce4ec', position: 'relative' }}>
-                {isMaster && <div style={{ position: 'absolute', top: 8, right: 8 }}><MasterItemCloseBtn alertType="demotion" alertKey={`demotion_${a.id}`} /></div>}
+                {canDismissAlertItems && <div style={{ position: 'absolute', top: 8, right: 8 }}><AlertItemCloseBtn alertType="demotion" alertKey={`demotion_${a.id}`} /></div>}
                 <div className="doc-info">
                   <ArrowDownCircle size={16} style={{ color: '#d93025', marginRight: 8, flexShrink: 0 }} />
                   <div>
@@ -1544,7 +1560,7 @@ export default function Dashboard() {
                       setCancelRequests(prev => prev.filter(d => d.id !== doc.id));
                     } catch (err: any) { alert(err.message); }
                   }}>취소 승인</button>
-                  {isMaster && <MasterItemCloseBtn alertType="cancel_request" alertKey={`cancel_${doc.id}`} />}
+                  {canDismissAlertItems && <AlertItemCloseBtn alertType="cancel_request" alertKey={`cancel_${doc.id}`} />}
                 </div>
               </div>
             ))}

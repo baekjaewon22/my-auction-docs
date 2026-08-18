@@ -183,8 +183,8 @@ class Settings(BaseSettings):
     queue_agent_key: str = ""
     queue_agent_id: str = "office-automation-01"
     queue_agent_name: str = "회사 자동화 서버"
-    queue_poll_seconds: int = 3
-    agent_version: str = "2026.08.13.3"
+    queue_poll_seconds: int = 5
+    agent_version: str = "2026.08.18.1"
 
     # 템플릿
     pptm_template: str = str(TEMPLATES_DIR / "sample2_configured.pptx")

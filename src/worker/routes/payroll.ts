@@ -10,6 +10,7 @@ import { confirmedSalesSql, payrollRecognizedOrRefundedSql, recognizedSalesDateS
 import { buildBranchSummaryQueryScope } from '../../shared/payroll-branch-summary';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { normalizeWithholdingSettlements } from '../../shared/withholding-settlement';
+import { getLawitgoNewSettlements } from '../lib/lawitgo-new-settlement';
 
 // ───── 계약포상 (신설) ─────
 // 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
@@ -362,12 +363,14 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
   const savedPayroll = await db.prepare('SELECT * FROM payroll_saves WHERE user_id = ? AND period = ?').bind(userId, periodLabel).first<any>();
   const savedPayrollData = parsePayrollSaveData(savedPayroll?.data);
+  const lawitgoNewSettlements = await getLawitgoNewSettlements(db, userId, month);
   const excludeCaseAllowanceFromBonusBasis = excludesCaseAllowanceFromBonusBasis(month);
   const shouldUseSavedSnapshot = !!savedPayroll && !!savedPayroll.locked;
   const savedSnapshot = savedPayrollData.payroll_snapshot;
   if (shouldUseSavedSnapshot && savedSnapshot?.response) {
     return c.json({
       ...savedSnapshot.response,
+      lawitgo_new_settlements: lawitgoNewSettlements,
       is_paid_period: isPaidPeriod,
       is_snapshot: true,
       payroll_snapshot: {
@@ -556,6 +559,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
         ), 0) as total_fee_adjusted
         FROM cases
         WHERE consultant_user_id = ? AND bimonthly_period = ?
+          AND NOT EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.case_id = cases.id)
           ${salaryMonthFilter}
       `).bind(userId, periodKey, ...salaryBonusMonths).first<any>();
       bonusCaseAllowance = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
@@ -653,6 +657,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       saved_at: savedPayroll.updated_at || savedPayroll.created_at,
     } : null,
     records: recordsWithVat,
+    lawitgo_new_settlements: lawitgoNewSettlements,
     refunded_records: refundedRecords,
     refund_recoveries: refundRecoveries,
     contract_award: contractAward, // { rank, count, award, total_amount } — rank null이면 자격 미달
@@ -1007,12 +1012,15 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
         ), 0) as total_fee_adjusted
         FROM cases
         WHERE consultant_user_id = ? AND bimonthly_period = ?
+          AND NOT EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.case_id = cases.id)
       `).bind(u.id, periodKey).first<any>();
       caseAllowanceIncome = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
     }
 
     const commissionAmount = truncMoney(normalSupply * rate / 100);
-    const amount = commissionAmount + proxyIncome + caseAllowanceIncome; // 총 소득
+    const lawitgoNewSettlementIncome = (await getLawitgoNewSettlements(db, u.id, month))
+      .reduce((sum, item) => sum + item.amount, 0);
+    const amount = commissionAmount + proxyIncome + caseAllowanceIncome + lawitgoNewSettlementIncome; // 총 소득
     const tax = truncMoney(amount * 0.033);
     const net = amount - tax;
     autoMap[u.id] = { amount, tax, net };

@@ -86,7 +86,7 @@ async function ensureUsersResignedAtColumn(db: D1Database): Promise<void> {
 // GET /api/users
 users.get('/', requireRole('master', 'ceo', 'admin', 'accountant', 'accountant_asst', 'manager'), async (c) => {
   const user = c.get('user');
-  if (user.login_type === 'freelancer') {
+  if (user.login_type === 'freelancer' && user.role !== 'master') {
     return c.json({ error: '프리랜서 계정은 직원 사용자관리를 조회할 수 없습니다.' }, 403);
   }
   const db = c.env.DB;

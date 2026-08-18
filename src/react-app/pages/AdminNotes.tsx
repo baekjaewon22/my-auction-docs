@@ -74,6 +74,26 @@ interface NoteAttachment {
   expires_at?: string;
 }
 
+type NoteListCacheEntry = {
+  notes: Note[];
+  page: number;
+  hasMore: boolean;
+  updatedAt: number;
+};
+
+const ADMIN_NOTES_CACHE_TTL_MS = 60_000;
+const adminNotesListCache = new Map<string, NoteListCacheEntry>();
+
+function invalidateAdminNotesListCache(userId?: string) {
+  if (!userId) {
+    adminNotesListCache.clear();
+    return;
+  }
+  for (const key of adminNotesListCache.keys()) {
+    if (key.startsWith(`${userId}|`)) adminNotesListCache.delete(key);
+  }
+}
+
 function isPdfAttachment(file: NoteAttachment) {
   return file.file_type === 'application/pdf' || /\.pdf$/i.test(file.file_name || '');
 }
@@ -446,12 +466,18 @@ function escapeHtml(value: string) {
 export default function AdminNotes({ mode = 'community' }: { mode?: 'community' | 'bid_history' }) {
   const isBidHistoryMode = mode === 'bid_history';
   const { user } = useAuthStore();
-  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
   const { departments } = useDepartments();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [listPage, setListPage] = useState(1);
+  const [hasMoreNotes, setHasMoreNotes] = useState(false);
+  const [listError, setListError] = useState('');
+  const listRequestId = useRef(0);
+  const membersRequested = useRef(false);
   const [search, setSearch] = useState('');
   const [bidHistoryPage, setBidHistoryPage] = useState(1);
   const [bidHistoryPageSize, setBidHistoryPageSize] = useState<10 | 20 | 30>(10);
@@ -559,28 +585,76 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
         ...userVisibilityOptions,
       ];
 
-  const load = async () => {
+  const load = async (options: { page?: number; append?: boolean; force?: boolean } = {}) => {
+    const requestId = ++listRequestId.current;
     if (activeCategory === 'cooperation') {
       setNotes([]);
       setLoading(false);
+      setRefreshing(false);
+      setHasMoreNotes(false);
       return;
     }
     if (activeCategory === 'legal_support' && activeLegalSubcategory === 'glossary') {
       setNotes([]);
       setLoading(false);
+      setRefreshing(false);
+      setHasMoreNotes(false);
       return;
     }
-    setLoading(true);
+    const page = options.page || 1;
+    const append = Boolean(options.append && page > 1);
+    const listCategory = activeCategory === 'community' && communitySection !== 'posts' ? communitySection : activeCategory;
+    const cacheKey = `${user?.id || 'anonymous'}|${listCategory}|${activeCategory === 'legal_support' ? activeLegalSubcategory : ''}|${search.trim()}`;
+    const cached = !append ? adminNotesListCache.get(cacheKey) : undefined;
+    const cacheIsFresh = Boolean(cached && Date.now() - cached.updatedAt < ADMIN_NOTES_CACHE_TTL_MS);
+    if (cached) {
+      setNotes(cached.notes);
+      setListPage(cached.page);
+      setHasMoreNotes(cached.hasMore);
+      setLoading(false);
+      if (!options.force && cacheIsFresh) {
+        setRefreshing(false);
+        return;
+      }
+    } else if (!append) {
+      setNotes([]);
+      setLoading(true);
+    }
+    setRefreshing(Boolean(cached || append));
+    setListError('');
     try {
-      const listCategory = activeCategory === 'community' && communitySection !== 'posts' ? communitySection : activeCategory;
       const res = await api.adminNotes.list({
         category: listCategory,
         search,
         legal_subcategory: activeCategory === 'legal_support' ? activeLegalSubcategory : undefined,
+        page,
+        page_size: 30,
       });
-      setNotes(res.notes);
-    } catch { /* */ }
-    setLoading(false);
+      if (requestId !== listRequestId.current) return;
+      setNotes(previous => {
+        const next = append
+          ? [...previous, ...res.notes.filter(note => !previous.some(existing => existing.id === note.id))]
+          : res.notes;
+        adminNotesListCache.set(cacheKey, {
+          notes: next,
+          page,
+          hasMore: Boolean(res.pagination?.has_more),
+          updatedAt: Date.now(),
+        });
+        return next;
+      });
+      setListPage(page);
+      setHasMoreNotes(Boolean(res.pagination?.has_more));
+    } catch (error) {
+      if (requestId === listRequestId.current && !cached) {
+        setListError(error instanceof Error ? error.message : '게시글을 불러오지 못했습니다.');
+      }
+    } finally {
+      if (requestId === listRequestId.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
   };
 
   useEffect(() => {
@@ -639,12 +713,14 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
 
   useEffect(() => {
     if (!(canCreateBriefingSchedule || activeCategory === 'community')) return;
+    if (membersRequested.current) return;
+    membersRequested.current = true;
     api.journal.members()
       .then(res => {
         setMembers(res.members);
         setFormAssigneeId(prev => prev || res.members[0]?.id || '');
       })
-      .catch(() => undefined);
+      .catch(() => { membersRequested.current = false; });
   }, [canCreateBriefingSchedule, activeCategory]);
 
   const assigneeOptions = groupUserOptions(
@@ -816,7 +892,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
         }
       }
       resetForm();
-      await load();
+      invalidateAdminNotesListCache(user?.id);
+      await load({ force: true });
     } catch (err: any) {
       alert(briefingRecordSaved
         ? `제출 등록정보는 저장되었습니다. 남은 파일을 다시 제출해 주세요.\n${err.message || ''}`
@@ -864,7 +941,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     try {
       await api.adminNotes.delete(id);
       if (detail?.id === id) setDetail(null);
-      await load();
+      invalidateAdminNotesListCache(user?.id);
+      await load({ force: true });
     } catch (err: any) { alert(err.message); }
   };
 
@@ -879,7 +957,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       const res = await api.adminNotes.get(detail.id);
       setComments(res.comments);
       setDetail(res.note);
-      await load();
+      invalidateAdminNotesListCache(user?.id);
+      await load({ force: true });
     } catch (err: any) { alert(err.message); }
     setCommentLoading(false);
   };
@@ -889,7 +968,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     try {
       await api.adminNotes.deleteComment(commentId);
       setComments(comments.filter(c => c.id !== commentId));
-      await load();
+      invalidateAdminNotesListCache(user?.id);
+      await load({ force: true });
     } catch (err: any) { alert(err.message); }
   };
 
@@ -1067,8 +1147,6 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       setBidHistoryPage(bidHistoryTotalPages);
     }
   }, [paginateBidHistory, bidHistoryPage, bidHistoryTotalPages]);
-
-  if (loading) return <div className="page-loading">로딩중...</div>;
 
   // 상세 보기
   if (detail) {
@@ -1394,11 +1472,11 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                 setSearch(e.target.value);
                 if (isBidHistoryMode) setBidHistoryPage(1);
               }}
-              onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') load({ force: true }); }}
               placeholder={activeCategory === 'eviction_quote' ? '법원, 사건번호, 내용 검색...' : activeCategory === 'legal_support' ? '궁금한 법률 내용을 검색하세요' : communitySection === 'briefing_schedule' ? '담당자, 사건번호, 계약자명 검색...' : communitySection === 'article_news' ? '뉴스 제목, 내용 검색...' : communitySection === 'resource_library' ? '자료명, 설명, 업로더 검색...' : '제목, 내용, 작성자 검색...'}
               style={{ flex: 1, border: 'none', outline: 'none', padding: activeCategory === 'legal_support' ? '12px 18px' : '8px 12px', fontSize: activeCategory === 'legal_support' ? 15 : 13 }}
             />
-            <button onClick={load} aria-label="검색" style={{ width: activeCategory === 'legal_support' ? 66 : 44, alignSelf: 'stretch', border: 'none', background: activeCategory === 'legal_support' ? 'var(--primary)' : '#f8f9fa', color: activeCategory === 'legal_support' ? '#fff' : '#5f6368', display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
+            <button onClick={() => load({ force: true })} aria-label="검색" style={{ width: activeCategory === 'legal_support' ? 66 : 44, alignSelf: 'stretch', border: 'none', background: activeCategory === 'legal_support' ? 'var(--primary)' : '#f8f9fa', color: activeCategory === 'legal_support' ? '#fff' : '#5f6368', display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
               <Search size={activeCategory === 'legal_support' ? 28 : 18} strokeWidth={activeCategory === 'legal_support' ? 3 : 2} />
             </button>
           </div>
@@ -1733,7 +1811,11 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
         </div>
       )}
 
-      {!isStaticLegalTool && (filtered.length === 0 ? (
+      {listError && <div className="empty-state" style={{ padding: 18, color: '#b3261e' }}>{listError}</div>}
+      {loading && <div className="admin-notes-list-loading" role="status">게시글을 불러오는 중입니다...</div>}
+      {refreshing && !loading && <div className="admin-notes-list-refreshing" role="status">최신 게시글을 확인하는 중...</div>}
+
+      {!isStaticLegalTool && !loading && (filtered.length === 0 ? (
         <div className="empty-state" style={{ padding: 40 }}>
           {notes.length === 0 ? '등록된 게시글이 없습니다.' : '검색 결과가 없습니다.'}
         </div>
@@ -1803,6 +1885,18 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           ))}
         </div>
       ))}
+      {!isStaticLegalTool && !loading && hasMoreNotes && (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
+          <button
+            type="button"
+            className="btn"
+            disabled={refreshing}
+            onClick={() => load({ page: listPage + 1, append: true })}
+          >
+            {refreshing ? '불러오는 중...' : '게시글 더보기'}
+          </button>
+        </div>
+      )}
       {paginateBidHistory && filtered.length > 0 && (
         <div className="bid-history-pagination" aria-label="입찰 내역 페이지 이동">
           <span className="bid-history-pagination-total">총 {filtered.length.toLocaleString('ko-KR')}건</span>

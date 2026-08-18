@@ -5,6 +5,7 @@ import { isSafeLawitgoProgressId } from '../lib/lawitgo-progress';
 import { resolveLawitgoConsultantId } from '../lib/lawitgo-consultant-mapping';
 import { cachedLawitgoDetail, cachedLawitgoList } from '../lib/lawitgo-progress-cache';
 import { canViewAllEvictionProgress } from '../../shared/eviction-quote-access';
+import { getLawitgoStatementByProgress } from '../lib/lawitgo-new-settlement';
 
 const lawitgoProgress = new Hono<AuthEnv>();
 
@@ -82,7 +83,8 @@ lawitgoProgress.get('/:id', async (c) => {
   if (!scope.canViewAll && !scope.ownConsultantId) return c.json({ error: '담당자 매핑을 확인할 수 없습니다.' }, 403);
   const detail = await cachedLawitgoDetail(c.env.DB, id, scope.canViewAll ? undefined : scope.ownConsultantId!);
   if (!detail) return c.json({ error: '캐시된 사건 진행사항을 찾을 수 없습니다.' }, 404);
-  return c.json(detail);
+  const consultantStatement = await getLawitgoStatementByProgress(c.env.DB, id);
+  return c.json({ ...detail, consultantStatement });
 });
 
 export default lawitgoProgress;

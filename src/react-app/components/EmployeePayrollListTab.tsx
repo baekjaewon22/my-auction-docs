@@ -23,6 +23,7 @@ type PayrollListRow = {
   position_allowance: number;
   performance_bonus: number;
   case_allowance: number;
+  lawitgo_new_settlement: number;
   contract_award: number;
   extra_pay: number;
   deduction: number;
@@ -150,6 +151,8 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             + Number(payroll.termination_settlement?.leave_deduction || 0)
             + commDeductionRaw;
           const terminationLeavePayout = Number(payroll.termination_settlement?.leave_payout || 0);
+          const lawitgoNewSettlement = (payroll.lawitgo_new_settlements || [])
+            .reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0);
 
           let rowBasePay = basePay;
           let rowPerformanceBonus = performanceBonus;
@@ -157,7 +160,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
           let rowContractAward = contractAward;
           let rowExtraPay = manualExtraPay + commExtraRaw + terminationLeavePayout;
           let rowDeduction = deduction;
-          let totalPay = payrollMoney(rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay, month);
+          let totalPay = payrollMoney(rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay + lawitgoNewSettlement, month);
 
           if (isCommission) {
             const rate = Number(accounting.commission_rate || 0);
@@ -194,7 +197,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                   .filter((item: any) => !item?.isFood && !item?.skipTax)
                   .reduce((sum: number, item: any) => sum + parseMoney(item?.amount), 0)
               : 0;
-            const totalIncome = commissionAmount + proxyIncome + extraDetails.reduce((sum: number, item: any) => sum + item.afterRate, 0);
+            const totalIncome = commissionAmount + proxyIncome + lawitgoNewSettlement + extraDetails.reduce((sum: number, item: any) => sum + item.afterRate, 0);
             const taxExemptAmount = extraDetails.filter((item: any) => item.skipTax).reduce((sum: number, item: any) => sum + item.afterRate, 0);
             const taxableIncome = totalIncome - taxExemptAmount - preTaxDeductions;
             const tax33 = truncMoney(taxableIncome * 0.033);
@@ -205,7 +208,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             rowContractAward = contractAward;
             rowExtraPay = extraDetails.reduce((sum: number, item: any) => sum + item.afterRate, 0);
             rowDeduction = preTaxDeductions + otherDeductions + tax33 + contractAwardTax;
-            totalPay = payrollMoney(rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay, month);
+            totalPay = payrollMoney(rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay + lawitgoNewSettlement, month);
           }
 
           const withholdingSettlements = normalizeWithholdingSettlements(
@@ -225,6 +228,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             position_allowance: positionAllowance,
             performance_bonus: rowPerformanceBonus,
             case_allowance: rowCaseAllowance,
+            lawitgo_new_settlement: lawitgoNewSettlement,
             contract_award: rowContractAward,
             extra_pay: rowExtraPay,
             deduction: rowDeduction,
@@ -257,6 +261,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       base_pay: acc.base_pay + row.base_pay,
       performance_bonus: acc.performance_bonus + row.performance_bonus,
       case_allowance: acc.case_allowance + row.case_allowance,
+      lawitgo_new_settlement: acc.lawitgo_new_settlement + row.lawitgo_new_settlement,
       contract_award: acc.contract_award + row.contract_award,
       extra_pay: acc.extra_pay + row.extra_pay,
       deduction: acc.deduction + row.deduction,
@@ -264,7 +269,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       withholding_adjustment: acc.withholding_adjustment + row.withholding_adjustment,
       actual_transfer: acc.actual_transfer + row.actual_transfer,
     }),
-    { base_pay: 0, performance_bonus: 0, case_allowance: 0, contract_award: 0, extra_pay: 0, deduction: 0, total_pay: 0, withholding_adjustment: 0, actual_transfer: 0 }
+    { base_pay: 0, performance_bonus: 0, case_allowance: 0, lawitgo_new_settlement: 0, contract_award: 0, extra_pay: 0, deduction: 0, total_pay: 0, withholding_adjustment: 0, actual_transfer: 0 }
   ), [rows]);
 
   const exportExcel = async () => {
@@ -280,6 +285,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       row.base_pay,
       row.performance_bonus,
       row.case_allowance,
+      row.lawitgo_new_settlement,
       row.contract_award,
       row.extra_pay,
       row.deduction,
@@ -291,21 +297,21 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       ['전직원 급여 내역'],
       [`기준월: ${month}`, `작성일: ${new Date().toISOString().slice(0, 10)}`, `인원: ${rows.length}명`],
       [],
-      ['No', '지사', '담당자', '직급', '정산유형', '급여', '성과금', '안건 수당', '계약포상', '기타지급', '공제', '당월 급여 실지급(A)', '원천세 정산(B)', '실제 이체액(A+B)'],
+      ['No', '지사', '담당자', '직급', '정산유형', '급여', '성과금', '안건 수당', '신 안건수당', '계약포상', '기타지급', '공제', '당월 급여 실지급(A)', '원천세 정산(B)', '실제 이체액(A+B)'],
       ...sheetRows,
       [],
-      ['합계', '', '', '', '', totals.base_pay, totals.performance_bonus, totals.case_allowance, totals.contract_award, totals.extra_pay, totals.deduction, totals.total_pay, totals.withholding_adjustment, totals.actual_transfer],
+      ['합계', '', '', '', '', totals.base_pay, totals.performance_bonus, totals.case_allowance, totals.lawitgo_new_settlement, totals.contract_award, totals.extra_pay, totals.deduction, totals.total_pay, totals.withholding_adjustment, totals.actual_transfer],
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(sheetData);
     ws['!cols'] = [
       { wch: 6 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
-      { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 20 }, { wch: 18 }, { wch: 20 },
+      { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 20 }, { wch: 18 }, { wch: 20 },
     ];
     const firstDataRow = 5;
     const totalRow = firstDataRow + sheetRows.length + 1;
     for (let r = firstDataRow; r <= totalRow; r += 1) {
-      ['F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N'].forEach((col) => {
+      ['F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'].forEach((col) => {
         const cell = ws[`${col}${r}`];
         if (cell) cell.z = '#,##0';
       });
@@ -387,6 +393,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                 <th style={{ width: 120, textAlign: 'right' }}>급여</th>
                 <th style={{ width: 120, textAlign: 'right' }}>성과금</th>
                 <th style={{ width: 120, textAlign: 'right' }}>안건 수당</th>
+                <th style={{ width: 150, textAlign: 'right' }}>신 안건수당</th>
                 <th style={{ width: 120, textAlign: 'right' }}>계약포상</th>
                 <th style={{ width: 120, textAlign: 'right' }}>기타/공제</th>
                 <th style={{ width: 140, textAlign: 'right' }}>급여 실지급(A)</th>
@@ -404,6 +411,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                   <td style={{ textAlign: 'right' }}>{fmt(row.base_pay)}원</td>
                   <td style={{ textAlign: 'right' }}>{fmt(row.performance_bonus)}원</td>
                   <td style={{ textAlign: 'right' }}>{fmt(row.case_allowance)}원</td>
+                  <td style={{ textAlign: 'right', color: row.lawitgo_new_settlement > 0 ? '#188038' : undefined }}>{fmt(row.lawitgo_new_settlement)}원</td>
                   <td style={{ textAlign: 'right' }}>{fmt(row.contract_award)}원</td>
                   <td style={{ textAlign: 'right' }}>{fmt(row.extra_pay - row.deduction)}원</td>
                   <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(row.total_pay)}원</td>
@@ -420,6 +428,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                 <td style={{ textAlign: 'right' }}>{fmt(totals.base_pay)}원</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.performance_bonus)}원</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.case_allowance)}원</td>
+                <td style={{ textAlign: 'right', color: totals.lawitgo_new_settlement > 0 ? '#188038' : undefined }}>{fmt(totals.lawitgo_new_settlement)}원</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.contract_award)}원</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.extra_pay - totals.deduction)}원</td>
                 <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(totals.total_pay)}원</td>

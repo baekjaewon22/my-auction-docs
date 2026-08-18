@@ -75,7 +75,7 @@ export default function Layout() {
   }, [location.pathname]);
 
   const role = (user?.role || 'member') as Role;
-  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isFreelancer = (user as any)?.login_type === 'freelancer' && role !== 'master';
   const isSupport = role === 'support';
   const isRestrictedAsst = role === 'accountant_asst' && isRestrictedAccountingAsstBranch(user?.branch);
   const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'support'].includes(role);
@@ -241,6 +241,12 @@ export default function Layout() {
         {!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst', 'manager', 'director'].includes(role) && (
           <Link to="/cases" className={`nav-item ${isActive('/cases') ? 'active' : ''}`} title="명도 사건" onClick={() => setMobileOpen(false)}>
             <Briefcase size={18} /> {!collapsed && '명도 사건'}
+          </Link>
+        )}
+
+        {canAccounting && (
+          <Link to="/lawitgo-settlement-ledger" className={`nav-item ${isActive('/lawitgo-settlement-ledger') ? 'active' : ''}`} title="명승 신정산 원장" onClick={() => setMobileOpen(false)}>
+            <FileSpreadsheet size={18} /> {!collapsed && '명승 신정산 원장'}
           </Link>
         )}
 

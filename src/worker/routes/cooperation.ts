@@ -9,7 +9,7 @@ cooperation.use('*', authMiddleware);
 // 프리랜서 차단 미들웨어
 cooperation.use('*', async (c, next) => {
   const user = c.get('user');
-  if ((user as any).login_type === 'freelancer') return c.json({ error: '접근 권한이 없습니다.' }, 403);
+  if ((user as any).login_type === 'freelancer' && user.role !== 'master') return c.json({ error: '접근 권한이 없습니다.' }, 403);
   await next();
 });
 

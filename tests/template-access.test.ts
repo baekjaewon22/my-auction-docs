@@ -48,8 +48,10 @@ test('프리랜서 여부는 서버가 갱신한 login_type으로 판정한다',
   assert.equal(isFreelancerViewer({}), false);
 });
 
-test('프리랜서 로그인은 관리자 역할을 함께 가져도 템플릿 관리자가 아니다', () => {
-  assert.equal(isEmployeeTemplateAdmin({ role: 'master', login_type: 'freelancer' }), false);
+test('마스터는 프리랜서 로그인에서도 템플릿 관리 권한을 유지한다', () => {
+  assert.equal(isFreelancerViewer({ role: 'master', login_type: 'freelancer' }), false);
+  assert.equal(isEmployeeTemplateAdmin({ role: 'master', login_type: 'freelancer' }), true);
+  assert.equal(isEmployeeTemplateAdmin({ role: 'admin', login_type: 'freelancer' }), false);
   assert.equal(isEmployeeTemplateAdmin({ role: 'master', login_type: 'employee' }), true);
   assert.equal(isEmployeeTemplateAdmin({ role: 'member', login_type: 'employee' }), false);
 });

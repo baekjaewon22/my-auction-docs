@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 import zipfile
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import requests
@@ -24,6 +25,29 @@ from .rights_certificate import export_pptx_to_pdf, generate_rights_certificate
 logger = logging.getLogger(__name__)
 
 
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Return a bounded Retry-After delay from an HTTP error, when available."""
+    if not isinstance(exc, requests.HTTPError) or exc.response is None:
+        return None
+    value = str(exc.response.headers.get("Retry-After") or "").strip()
+    if not value:
+        return None
+    try:
+        return max(0.0, min(300.0, float(value)))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            now_header = exc.response.headers.get("Date")
+            if now_header:
+                now = parsedate_to_datetime(now_header)
+            else:
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc)
+            return max(0.0, min(300.0, (retry_at - now).total_seconds()))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
 class CentralQueueWorker:
     def __init__(self) -> None:
         self.base_url = str(settings.queue_base_url or "").rstrip("/")
@@ -31,7 +55,7 @@ class CentralQueueWorker:
         self.agent_id = str(settings.queue_agent_id or socket.gethostname()).strip()
         self.display_name = str(settings.queue_agent_name or socket.gethostname()).strip()
         self.version = str(settings.agent_version or "unknown")
-        self.poll_seconds = max(2, int(settings.queue_poll_seconds or 3))
+        self.poll_seconds = max(5, int(settings.queue_poll_seconds or 5))
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         safe_agent_id = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in self.agent_id)
@@ -78,6 +102,7 @@ class CentralQueueWorker:
 
     def run_forever(self) -> None:
         logger.info("중앙 자동화 큐 소비자 시작: agent_id=%s", self.agent_id)
+        consecutive_failures = 0
         while not self.stop_event.is_set():
             try:
                 claimed = self._post("/jobs/claim", {
@@ -89,14 +114,15 @@ class CentralQueueWorker:
                 if job:
                     self._execute(job)
                 else:
-                    self._post("/heartbeat", {
-                        "agent_id": self.agent_id, "display_name": self.display_name,
-                        "version": self.version, "status": "idle", "current_job_id": "",
-                    })
                     self.stop_event.wait(self.poll_seconds)
+                consecutive_failures = 0
             except Exception as exc:
-                logger.warning("중앙 자동화 큐 연결 실패: %s", exc)
-                self.stop_event.wait(min(30, self.poll_seconds * 3))
+                consecutive_failures += 1
+                retry_after = _retry_after_seconds(exc)
+                backoff = min(60.0, self.poll_seconds * (2 ** min(consecutive_failures, 4)))
+                delay = max(backoff, retry_after or 0.0)
+                logger.warning("중앙 자동화 큐 연결 실패(재시도 %.0f초 후): %s", delay, exc)
+                self.stop_event.wait(delay)
 
     def _progress(self, job_id: str, lease_token: str, update) -> None:
         try:

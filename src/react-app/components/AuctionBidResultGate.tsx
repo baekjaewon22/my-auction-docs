@@ -7,7 +7,7 @@ export default function AuctionBidResultGate() {
   const { user } = useAuthStore();
   const [entries, setEntries] = useState<AuctionBidResultEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
 
   const load = useCallback(async () => {
     if (!user || !isFreelancer) {

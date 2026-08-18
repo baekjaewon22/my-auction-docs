@@ -66,7 +66,7 @@ export default function DocumentEdit() {
   // Layout.tsx의 일지 메뉴 비노출 조건과 동일 정책
   const NON_JOURNAL_ROLES = ['accountant', 'accountant_asst', 'director', 'support'];
   const isJournalUser = !NON_JOURNAL_ROLES.includes(user?.role || '')
-                     && (user as any)?.login_type !== 'freelancer';
+                     && ((user as any)?.login_type !== 'freelancer' || user?.role === 'master');
   const requiresJournalLink = isOutdoorReport && isJournalUser;
 
   const STAMP_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'];
@@ -183,7 +183,7 @@ export default function DocumentEdit() {
 
   // 결재선에 내가 포함되어 있고 pending인 단계가 있으면 승인 가능, 또는 master/ceo/admin
   const myPendingStep = approvalSteps.find(s => s.approver_id === user?.id && s.status === 'pending');
-  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
   const prevAllApproved = myPendingStep
     ? approvalSteps.filter(s => s.step_order < myPendingStep.step_order).every(s => s.status === 'approved')
     : false;

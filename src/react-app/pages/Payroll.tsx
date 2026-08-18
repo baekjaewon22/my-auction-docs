@@ -416,6 +416,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const visibleBranchCards = PAYROLL_BRANCH_SELECTOR;
 
   const s = data?.summary;
+  const lawitgoNewSettlements: any[] = Array.isArray(data?.lawitgo_new_settlements) ? data.lawitgo_new_settlements : [];
+  const lawitgoNewSettlementTotal = lawitgoNewSettlements.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 
   // 공제/기타 반영 계산
   const deductionNum = Number(deduction) || 0;
@@ -433,7 +435,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const afterDeduction = basePay - joiningBaseDeduction - terminationBaseDeduction - deductionNum - unpaidDeduction - extraDeductionNum - terminationLeaveDeduction;
   const caseAllowanceValue = caseAllowance?.bonus || 0;
   const contractAwardAmount = (data?.is_payout_month && data?.contract_award?.rank) ? (data.contract_award.award || 0) : 0;
-  const totalPay = s ? payrollMoney(afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount, selectedMonth) : 0;
+  const totalPay = s ? payrollMoney(afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount + lawitgoNewSettlementTotal, selectedMonth) : 0;
   const commExtraTotal = commExtras.reduce((sum, item) => sum + (Number(item.amount.replace(/[^0-9]/g, '')) || 0), 0);
   const commDeductionTotal = commDeductions.reduce((sum, item) => sum + (Number(item.amount.replace(/[^0-9]/g, '')) || 0), 0);
   const salaryNetPay = payrollMoney(totalPay + commExtraTotal - commDeductionTotal, selectedMonth);
@@ -703,7 +705,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                     .filter(e => !e.isFood && !e.skipTax)
                     .reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0);
                   // 소득 합계: 매출수입(비율) + 매수신청대리(100%) + 추가정산
-                  const totalIncome = commissionAmount + proxyIncome + extraDetails.reduce((s, e) => s + e.afterRate, 0);
+                  const totalIncome = commissionAmount + proxyIncome + lawitgoNewSettlementTotal + extraDetails.reduce((s, e) => s + e.afterRate, 0);
                   // 원천세: (소득 - 세전공제 - 원천세면제항목) × 3.3%
                   const taxExemptAmount = extraDetails.filter(e => e.skipTax).reduce((s, e) => s + e.afterRate, 0);
                   const taxableIncome = totalIncome - taxExemptAmount - preTaxDeductions;
@@ -742,6 +744,18 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                             <span className="num">{fmtWon(proxyIncome)}</span>
                           </div>
                         )}
+
+                        {lawitgoNewSettlements.map((item) => (
+                          <div key={item.external_id} className="payroll-bonus-row" style={{ color: '#188038', alignItems: 'flex-start' }}>
+                            <span>
+                              신 안건수당
+                              <small style={{ display: 'block', color: '#80868b', marginTop: 2 }}>
+                                {item.client_name} · 최종정산일 {item.settlement_date}
+                              </small>
+                            </span>
+                            <span className="num">+{fmtWon(Number(item.amount) || 0)}</span>
+                          </div>
+                        ))}
 
                         {/* 추가 정산 */}
                         {extraDetails.map((e, i) => (
@@ -1197,6 +1211,17 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 <span className="num">+{fmtWon(contractAwardAmount)}</span>
               </div>
               )}
+              {lawitgoNewSettlements.map((item) => (
+                <div key={item.external_id} className="payroll-bonus-row" style={{ color: '#188038', alignItems: 'flex-start' }}>
+                  <span>
+                    신 안건수당
+                    <small style={{ display: 'block', color: '#80868b', marginTop: 2 }}>
+                      {item.client_name} · 최종정산일 {item.settlement_date}
+                    </small>
+                  </span>
+                  <span className="num">+{fmtWon(Number(item.amount) || 0)}</span>
+                </div>
+              ))}
               {extraPayNum > 0 && (
                 <div className="payroll-bonus-row">
                   <span>{extraLabel || '기타'}</span>

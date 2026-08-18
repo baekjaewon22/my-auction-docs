@@ -212,6 +212,52 @@ CREATE TABLE IF NOT EXISTS lawitgo_winning_delivery_runs (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lawitgo_winning_runs_slot
 ON lawitgo_winning_delivery_runs(scheduled_slot);
 
+-- lawitgo 신정산 담당컨설턴트 지급 원장
+-- 내부 배분액(mau/명승)은 저장하지 않고 담당컨설턴트 노출액만 보관한다.
+CREATE TABLE IF NOT EXISTS lawitgo_new_settlements (
+  id TEXT PRIMARY KEY,
+  external_id TEXT NOT NULL UNIQUE,
+  progress_id TEXT,
+  case_id TEXT NOT NULL,
+  consultant_user_id TEXT NOT NULL,
+  client_name TEXT NOT NULL,
+  settlement_date TEXT NOT NULL,
+  payroll_month TEXT NOT NULL,
+  consultant_share INTEGER NOT NULL CHECK(consultant_share >= 0),
+  statement_title TEXT,
+  statement_format TEXT,
+  statement_content TEXT,
+  source_registered_at TEXT NOT NULL,
+  deleted_at TEXT,
+  deleted_by TEXT,
+  delete_reason TEXT NOT NULL DEFAULT '',
+  manual_override_at TEXT,
+  manual_override_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_lawitgo_new_settlements_payroll
+ON lawitgo_new_settlements(consultant_user_id, payroll_month);
+CREATE INDEX IF NOT EXISTS idx_lawitgo_new_settlements_case
+ON lawitgo_new_settlements(case_id);
+CREATE INDEX IF NOT EXISTS idx_lawitgo_new_settlements_progress
+ON lawitgo_new_settlements(progress_id);
+
+CREATE TABLE IF NOT EXISTS lawitgo_new_settlement_audit (
+  id TEXT PRIMARY KEY,
+  settlement_id TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('update', 'delete')),
+  before_json TEXT NOT NULL,
+  after_json TEXT,
+  reason TEXT NOT NULL DEFAULT '',
+  changed_by TEXT NOT NULL,
+  changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lawitgo_new_settlement_audit_settlement
+ON lawitgo_new_settlement_audit(settlement_id, changed_at DESC);
+
 -- Durable central queue for the single office automation runner.
 CREATE TABLE IF NOT EXISTS automation_jobs (
   id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, output_type TEXT NOT NULL,

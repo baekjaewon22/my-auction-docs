@@ -29,6 +29,15 @@ interface CaseRow {
   raw_payload: string | null;
   created_at: string;
   updated_at: string;
+  settlement_method?: 'legacy' | 'new';
+  new_settlement?: {
+    external_id: string;
+    settlement_date: string;
+    payroll_month: string;
+    amount: number;
+    statement: { title: string; format: 'text'; content: string } | null;
+    updated_at: string;
+  } | null;
 }
 
 interface BonusSummaryRow {
@@ -143,6 +152,16 @@ export default function Cases() {
     if (tab === 'bonus') await loadBonus();
   };
 
+  const handleOpenCase = async (row: CaseRow) => {
+    setOpenCase(row);
+    try {
+      const detail = await api.cases.detail(row.id);
+      setOpenCase(detail.case as CaseRow);
+    } catch {
+      // 목록 정보로 상세 모달을 유지한다.
+    }
+  };
+
   useEffect(() => { load(); }, [search, period]);
   useEffect(() => { if (tab === 'bonus') loadBonus(); }, [tab, period]);
 
@@ -233,7 +252,7 @@ export default function Cases() {
                 </thead>
                 <tbody>
                   {rows.map((r) => (
-                    <tr key={r.id} onClick={() => setOpenCase(r)} style={{ cursor: 'pointer' }}>
+                    <tr key={r.id} onClick={() => handleOpenCase(r)} style={{ cursor: 'pointer' }}>
                       <td style={{ fontSize: 12 }}>{r.registered_at?.slice(0, 10)}</td>
                       <td style={{ fontSize: 11, color: '#5f6368' }}>{labelOfPeriod(r.bimonthly_period)}</td>
                       <td style={{ fontWeight: 600 }}>
@@ -249,7 +268,7 @@ export default function Cases() {
                       </td>
                       <td>
                         <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, background: r.fee_type === 'fixed' ? '#e8f0fe' : '#fff3e0', color: r.fee_type === 'fixed' ? '#1a73e8' : '#e65100' }}>
-                          {r.fee_type === 'fixed' ? '정액' : '실비'}
+                          {r.settlement_method === 'new' ? '신정산' : r.fee_type === 'fixed' ? '정액' : '실비'}
                         </span>
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtKRW(r.fee_amount)}</td>
@@ -389,7 +408,7 @@ export default function Cases() {
       )}
 
       {/* 상세 모달 */}
-      {openCase && <CaseDetailModal c={openCase} canEdit={isAdminPlus} onClose={() => setOpenCase(null)} onSave={handleSaveCase} />}
+      {openCase && <CaseDetailModal c={openCase} canEdit={isAdminPlus && openCase.settlement_method !== 'new'} onClose={() => setOpenCase(null)} onSave={handleSaveCase} />}
     </div>
   );
 }
@@ -518,6 +537,12 @@ function CaseDetailModal({ c, canEdit, onClose, onSave }: { c: CaseRow; canEdit:
           <DetailRow icon={<User size={14} />} label="컨설턴트" value={c.consultant_name ? `${c.consultant_name} ${c.consultant_position || ''}` : '-'} />
           <DetailRow icon={<User size={14} />} label="위임인" value={c.client_name} highlight />
           <DetailRow icon={<Coins size={14} />} label="수임료" value={`${fmtKRW(c.fee_amount)} (${c.fee_type === 'fixed' ? '정액' : '실비'})`} highlight />
+          {c.new_settlement && (
+            <>
+              <DetailRow icon={<Coins size={14} />} label="신 안건수당" value={fmtKRW(c.new_settlement.amount)} highlight />
+              <DetailRow icon={<Calendar size={14} />} label="최종정산일" value={c.new_settlement.settlement_date} />
+            </>
+          )}
           <DetailRow icon={<Calendar size={14} />} label="등록 시각" value={c.created_at} />
           <DetailRow icon={<Calendar size={14} />} label="최종 수정" value={c.updated_at} />
             </>

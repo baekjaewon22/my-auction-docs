@@ -9,6 +9,7 @@ import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { ensurePayTypeHistoryTable, payTypeAtMonthSql } from '../lib/pay-type-history';
 import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import { ensureLawitgoNewSettlementTable } from '../lib/lawitgo-new-settlement';
 
 const cases = new Hono<AuthEnv>();
 
@@ -212,7 +213,7 @@ cases.get('/consultants', async (c) => {
 // ───── 외부 ingest: POST /api/cases ─────
 cases.post('/', async (c) => {
   const db = c.env.DB;
-  await ensureCaseHiddenTable(db);
+  await Promise.all([ensureCaseHiddenTable(db), ensureLawitgoNewSettlementTable(db)]);
   let body: any;
   try {
     body = await c.req.json();
@@ -227,28 +228,81 @@ cases.post('/', async (c) => {
   if (!body.registeredAt || typeof body.registeredAt !== 'string') {
     return c.json({ ok: false, error: 'registeredAt is required' }, 400);
   }
+  if (Number.isNaN(new Date(body.registeredAt).getTime())) {
+    return c.json({ ok: false, error: 'registeredAt must be a valid date string' }, 400);
+  }
   if (!body.manager?.username || !body.manager?.name) {
     return c.json({ ok: false, error: 'manager.username and manager.name are required' }, 400);
   }
   if (!body.client?.name) {
     return c.json({ ok: false, error: 'client.name is required' }, 400);
   }
+  const isNewSettlement = body.settlement?.method === 'new';
   if (!body.fee?.type || !['fixed', 'actual'].includes(body.fee.type)) {
     return c.json({ ok: false, error: 'fee.type must be fixed or actual' }, 400);
   }
-  if (typeof body.fee.amount !== 'number' || body.fee.amount < 0 || !Number.isInteger(body.fee.amount)) {
-    return c.json({ ok: false, error: 'fee.amount must be a non-negative integer' }, 400);
+  const receivedFeeAmount = body.fee.amount ?? (isNewSettlement ? body.settlement?.consultantShare : undefined);
+  if (typeof receivedFeeAmount !== 'number' || receivedFeeAmount < 0 || !Number.isInteger(receivedFeeAmount)) {
+    return c.json({ ok: false, error: 'fee.amount (or settlement.consultantShare for new settlement) must be a non-negative integer' }, 400);
+  }
+
+  let settlementDate: string | null = null;
+  let statement: { title: string; format: 'text'; content: string } | null = null;
+  if (isNewSettlement) {
+    const suppliedShare = body.settlement?.consultantShare;
+    if (suppliedShare !== undefined && (!Number.isInteger(suppliedShare) || suppliedShare < 0)) {
+      return c.json({ ok: false, error: 'settlement.consultantShare must be a non-negative integer' }, 400);
+    }
+    if (body.fee.amount !== undefined && suppliedShare !== undefined && suppliedShare !== body.fee.amount) {
+      return c.json({ ok: false, error: 'fee.amount and settlement.consultantShare must match' }, 400);
+    }
+
+    const suppliedDate = body.settlement?.settlementDate;
+    if (suppliedDate !== undefined && (
+      typeof suppliedDate !== 'string'
+      || !/^\d{4}-\d{2}-\d{2}$/.test(suppliedDate)
+      || Number.isNaN(new Date(`${suppliedDate}T00:00:00Z`).getTime())
+      || new Date(`${suppliedDate}T00:00:00Z`).toISOString().slice(0, 10) !== suppliedDate
+    )) {
+      return c.json({ ok: false, error: 'settlement.settlementDate must be YYYY-MM-DD' }, 400);
+    }
+    settlementDate = suppliedDate || new Date(new Date(body.registeredAt).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    if (body.consultantStatement !== undefined && body.consultantStatement !== null) {
+      const format = body.consultantStatement.format || 'text';
+      if (format !== 'text') {
+        return c.json({ ok: false, error: 'consultantStatement.format is not supported', supportedFormats: ['text'] }, 400);
+      }
+      if (typeof body.consultantStatement.content !== 'string' || !body.consultantStatement.content.trim()) {
+        return c.json({ ok: false, error: 'consultantStatement.content is required when consultantStatement is provided' }, 400);
+      }
+      if (body.consultantStatement.content.length > 100_000) {
+        return c.json({ ok: false, error: 'consultantStatement.content must be 100000 characters or fewer' }, 413);
+      }
+      statement = {
+        title: String(body.consultantStatement.title || '담당컨설턴트 열람용 결산내역서').slice(0, 200),
+        format: 'text',
+        content: body.consultantStatement.content,
+      };
+    }
   }
 
   const externalId = body.externalId;
+  const progressId = isNewSettlement
+    ? String(body.progressId || body.progress?.id || body.settlement?.progressId || externalId).trim()
+    : null;
+  if (isNewSettlement && !/^[A-Za-z0-9_-]{1,120}$/.test(progressId || '')) {
+    return c.json({ ok: false, error: 'progressId must contain only letters, numbers, hyphens, or underscores' }, 400);
+  }
   const registeredAt = body.registeredAt;
   const consultantName = body.consultant?.name || null;
   const consultantPosition = body.consultant?.position || null;
+  const consultantUsername = body.consultant?.username || body.consultant?.id || null;
   const managerUsername = body.manager.username;
   const managerName = body.manager.name;
   const clientName = body.client.name;
   const feeType = body.fee.type;
-  const feeAmount = body.fee.amount;
+  const feeAmount = receivedFeeAmount;
   const bimonthlyPeriod = getBimonthlyPeriod(registeredAt);
 
   // username → user_id 매핑 (활성 사용자 우선, 동명이인·퇴사자 후순위)
@@ -292,7 +346,13 @@ cases.post('/', async (c) => {
   let consultantUserId: string | null = null;
   let consultantBranch: string | null = null;
   let consultantDepartment: string | null = null;
-  if (consultantName) {
+  if (consultantUsername) {
+    const byUsername = await resolveCaseUser(db, { username: consultantUsername });
+    consultantUserId = byUsername.user_id;
+    consultantBranch = byUsername.branch;
+    consultantDepartment = byUsername.department;
+  }
+  if (consultantName && !consultantUserId) {
     if (consultantPosition) {
       const byNamePos = await db.prepare(
         `SELECT id, branch, department FROM users WHERE name = ? AND position_title = ? ${ORDER_CLAUSE} LIMIT 1`,
@@ -315,19 +375,49 @@ cases.post('/', async (c) => {
     }
   }
 
-  const rawPayload = JSON.stringify(body).slice(0, 4000);
+  if (isNewSettlement && !consultantUserId) {
+    return c.json({
+      ok: false,
+      error: 'consultant could not be mapped to a my-docs user',
+      code: 'CONSULTANT_MAPPING_NOT_FOUND',
+    }, 422);
+  }
+
+  // 신정산의 내부 배분액(mau/명승 등)은 my-docs에 저장하거나 노출하지 않는다.
+  const safePayload = isNewSettlement ? {
+    externalId: body.externalId,
+    progressId,
+    registeredAt: body.registeredAt,
+    consultant: body.consultant,
+    manager: body.manager,
+    client: body.client,
+    fee: { ...body.fee, amount: feeAmount },
+    settlement: {
+      method: 'new',
+      consultantShare: feeAmount,
+      settlementDate,
+    },
+    ...(statement ? { consultantStatement: statement } : {}),
+  } : body;
+  const rawPayload = JSON.stringify(safePayload).slice(0, 4000);
   const existing = await db.prepare(`SELECT id, created_at FROM cases WHERE external_id = ?`).bind(externalId).first<any>();
 
   let id: string;
   if (existing) {
     id = existing.id;
-    await db.prepare(`
+    const caseStatement = db.prepare(`
       UPDATE cases SET
-        registered_at = ?, consultant_name = ?, consultant_position = ?,
-        consultant_user_id = ?, consultant_branch = ?, consultant_department = ?,
+        registered_at = ?,
+        consultant_name = CASE WHEN EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.external_id = cases.external_id AND lns.manual_override_at IS NOT NULL) THEN consultant_name ELSE ? END,
+        consultant_position = CASE WHEN EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.external_id = cases.external_id AND lns.manual_override_at IS NOT NULL) THEN consultant_position ELSE ? END,
+        consultant_user_id = CASE WHEN EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.external_id = cases.external_id AND lns.manual_override_at IS NOT NULL) THEN consultant_user_id ELSE ? END,
+        consultant_branch = CASE WHEN EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.external_id = cases.external_id AND lns.manual_override_at IS NOT NULL) THEN consultant_branch ELSE ? END,
+        consultant_department = CASE WHEN EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.external_id = cases.external_id AND lns.manual_override_at IS NOT NULL) THEN consultant_department ELSE ? END,
         manager_username = ?, manager_name = ?, manager_user_id = ?,
         manager_branch = ?, manager_department = ?,
-        client_name = ?, fee_type = ?, fee_amount = ?,
+        client_name = CASE WHEN EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.external_id = cases.external_id AND lns.manual_override_at IS NOT NULL) THEN client_name ELSE ? END,
+        fee_type = ?,
+        fee_amount = CASE WHEN EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.external_id = cases.external_id AND lns.manual_override_at IS NOT NULL) THEN fee_amount ELSE ? END,
         bimonthly_period = ?, raw_payload = ?, updated_at = datetime('now')
       WHERE external_id = ?
     `).bind(
@@ -337,10 +427,39 @@ cases.post('/', async (c) => {
       managerBranch, managerDepartment,
       clientName, feeType, feeAmount,
       bimonthlyPeriod, rawPayload, externalId,
-    ).run();
+    );
+    if (isNewSettlement) {
+      const settlementStatement = db.prepare(`
+        INSERT INTO lawitgo_new_settlements (
+          id, external_id, progress_id, case_id, consultant_user_id, client_name,
+          settlement_date, payroll_month, consultant_share,
+          statement_title, statement_format, statement_content, source_registered_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(external_id) DO UPDATE SET
+          progress_id = excluded.progress_id,
+          case_id = excluded.case_id,
+          consultant_user_id = CASE WHEN lawitgo_new_settlements.manual_override_at IS NULL THEN excluded.consultant_user_id ELSE lawitgo_new_settlements.consultant_user_id END,
+          client_name = CASE WHEN lawitgo_new_settlements.manual_override_at IS NULL THEN excluded.client_name ELSE lawitgo_new_settlements.client_name END,
+          settlement_date = CASE WHEN lawitgo_new_settlements.manual_override_at IS NULL THEN excluded.settlement_date ELSE lawitgo_new_settlements.settlement_date END,
+          payroll_month = CASE WHEN lawitgo_new_settlements.manual_override_at IS NULL THEN excluded.payroll_month ELSE lawitgo_new_settlements.payroll_month END,
+          consultant_share = CASE WHEN lawitgo_new_settlements.manual_override_at IS NULL THEN excluded.consultant_share ELSE lawitgo_new_settlements.consultant_share END,
+          statement_title = CASE WHEN lawitgo_new_settlements.manual_override_at IS NULL THEN COALESCE(excluded.statement_title, lawitgo_new_settlements.statement_title) ELSE lawitgo_new_settlements.statement_title END,
+          statement_format = CASE WHEN lawitgo_new_settlements.manual_override_at IS NULL THEN COALESCE(excluded.statement_format, lawitgo_new_settlements.statement_format) ELSE lawitgo_new_settlements.statement_format END,
+          statement_content = CASE WHEN lawitgo_new_settlements.manual_override_at IS NULL THEN COALESCE(excluded.statement_content, lawitgo_new_settlements.statement_content) ELSE lawitgo_new_settlements.statement_content END,
+          source_registered_at = excluded.source_registered_at,
+          updated_at = datetime('now')
+      `).bind(
+        `lns-${crypto.randomUUID().slice(0, 12)}`, externalId, progressId, id, consultantUserId, clientName,
+        settlementDate, settlementDate!.slice(0, 7), feeAmount,
+        statement?.title || null, statement?.format || null, statement?.content || null, registeredAt,
+      );
+      await db.batch([caseStatement, settlementStatement]);
+    } else {
+      await caseStatement.run();
+    }
   } else {
     id = `case-${crypto.randomUUID().slice(0, 8)}`;
-    await db.prepare(`
+    const caseStatement = db.prepare(`
       INSERT INTO cases (id, external_id, registered_at, consultant_name, consultant_position,
         consultant_user_id, consultant_branch, consultant_department,
         manager_username, manager_name, manager_user_id, manager_branch, manager_department,
@@ -351,13 +470,31 @@ cases.post('/', async (c) => {
       consultantUserId, consultantBranch, consultantDepartment,
       managerUsername, managerName, managerUserId, managerBranch, managerDepartment,
       clientName, feeType, feeAmount, bimonthlyPeriod, rawPayload,
-    ).run();
+    );
+    if (isNewSettlement) {
+      const settlementStatement = db.prepare(`
+        INSERT INTO lawitgo_new_settlements (
+          id, external_id, progress_id, case_id, consultant_user_id, client_name,
+          settlement_date, payroll_month, consultant_share,
+          statement_title, statement_format, statement_content, source_registered_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        `lns-${crypto.randomUUID().slice(0, 12)}`, externalId, progressId, id, consultantUserId, clientName,
+        settlementDate, settlementDate!.slice(0, 7), feeAmount,
+        statement?.title || null, statement?.format || null, statement?.content || null, registeredAt,
+      );
+      await db.batch([caseStatement, settlementStatement]);
+    } else {
+      await caseStatement.run();
+    }
   }
 
   return c.json({
     ok: true,
     documentId: id,
     url: `https://my-docs.kr/cases/${id}`,
+    consultantStatementSaved: isNewSettlement && !!statement,
+    payrollItemSaved: isNewSettlement,
   });
 });
 
@@ -368,13 +505,15 @@ const CASES_VIEW_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'acc
 cases.get('/', requireRole(...CASES_VIEW_ROLES), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  await ensureCaseHiddenTable(db);
+  await Promise.all([ensureCaseHiddenTable(db), ensureLawitgoNewSettlementTable(db)]);
   const search = c.req.query('search') || '';
   const period = c.req.query('period') || '';
   const consultantId = c.req.query('consultant_id') || c.req.query('manager_id') || '';
   const limit = Math.min(500, parseInt(c.req.query('limit') || '200', 10));
 
-  let query = `SELECT * FROM cases WHERE NOT EXISTS (
+  let query = `SELECT cases.*,
+    CASE WHEN EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.case_id = cases.id) THEN 'new' ELSE 'legacy' END as settlement_method
+    FROM cases WHERE NOT EXISTS (
     SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id
   )`;
   const params: any[] = [];
@@ -421,7 +560,7 @@ cases.get('/', requireRole(...CASES_VIEW_ROLES), async (c) => {
 cases.get('/:id', requireRole(...CASES_VIEW_ROLES), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  await ensureCaseHiddenTable(db);
+  await Promise.all([ensureCaseHiddenTable(db), ensureLawitgoNewSettlementTable(db)]);
   const id = c.req.param('id');
   const r = await db.prepare(`
     SELECT * FROM cases
@@ -447,7 +586,30 @@ cases.get('/:id', requireRole(...CASES_VIEW_ROLES), async (c) => {
     }
   }
 
-  return c.json({ case: r });
+  const newSettlement = await db.prepare(`
+    SELECT external_id, settlement_date, payroll_month, consultant_share as amount,
+      statement_title, statement_format, statement_content, updated_at
+    FROM lawitgo_new_settlements WHERE case_id = ?
+  `).bind(id).first<any>();
+
+  return c.json({
+    case: {
+      ...r,
+      settlement_method: newSettlement ? 'new' : 'legacy',
+      new_settlement: newSettlement ? {
+        external_id: newSettlement.external_id,
+        settlement_date: newSettlement.settlement_date,
+        payroll_month: newSettlement.payroll_month,
+        amount: Number(newSettlement.amount) || 0,
+        statement: newSettlement.statement_content ? {
+          title: newSettlement.statement_title || '담당컨설턴트 열람용 결산내역서',
+          format: newSettlement.statement_format || 'text',
+          content: newSettlement.statement_content,
+        } : null,
+        updated_at: newSettlement.updated_at,
+      } : null,
+    },
+  });
 });
 
 const CASES_EDIT_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
@@ -563,7 +725,7 @@ cases.delete('/:id', requireRole(...CASES_DELETE_ROLES), async (c) => {
 // 2개월 구간 + 사용자별 합계 + 등급 계산 (급여정산 통합용)
 cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
-  await ensureCaseHiddenTable(db);
+  await Promise.all([ensureCaseHiddenTable(db), ensureLawitgoNewSettlementTable(db)]);
   const period = c.req.query('period') || '';
   const salaryOnlyMonth = c.req.query('salary_only_month') || '';
   if (!period) return c.json({ error: 'period is required (e.g. 2026-03_04)' }, 400);
@@ -591,6 +753,7 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
     LEFT JOIN user_accounting ua ON ua.user_id = c.consultant_user_id
     WHERE c.bimonthly_period = ? AND c.consultant_name IS NOT NULL
       ${salaryOnlyFilter}
+      AND NOT EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.case_id = c.id)
       AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = c.external_id)
     GROUP BY c.consultant_user_id, c.consultant_name
     ORDER BY total_fee_adjusted DESC
@@ -618,7 +781,7 @@ cases.get('/bonus/summary', requireRole(...CASES_VIEW_ROLES), async (c) => {
 cases.get('/bonus/me', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  await ensureCaseHiddenTable(db);
+  await Promise.all([ensureCaseHiddenTable(db), ensureLawitgoNewSettlementTable(db)]);
   const period = c.req.query('period') || '';
   if (!period) return c.json({ error: 'period is required' }, 400);
 
@@ -634,6 +797,7 @@ cases.get('/bonus/me', async (c) => {
       COUNT(*) as cnt
     FROM cases
     WHERE bimonthly_period = ? AND consultant_user_id = ?
+      AND NOT EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.case_id = cases.id)
       AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = cases.external_id)
   `).bind(period, user.sub).first<any>();
 
@@ -671,7 +835,7 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
   details: Array<{ user_id: string; user_name: string; bonus: number; status: 'inserted' | 'skipped' | 'ineligible'; reason?: string }>;
 }> {
   const db = env.DB as D1Database;
-  await ensureCaseHiddenTable(db);
+  await Promise.all([ensureCaseHiddenTable(db), ensureLawitgoNewSettlementTable(db)]);
 
   // period 파싱: '2026-03_04' → year=2026, m1=3, m2=4
   const m = period.match(/^(\d{4})-(\d{2})_(\d{2})$/);
@@ -705,6 +869,7 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
     LEFT JOIN users u ON u.id = c.consultant_user_id
     WHERE c.bimonthly_period = ?
       AND c.consultant_user_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.case_id = c.id)
       AND NOT EXISTS (SELECT 1 FROM case_hidden ch WHERE ch.external_id = c.external_id)
     GROUP BY c.consultant_user_id
   `).bind(period).all<any>();

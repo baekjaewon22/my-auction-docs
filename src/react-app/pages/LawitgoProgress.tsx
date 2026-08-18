@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { BriefcaseBusiness, CalendarDays, Clock3, FileText, Hash, RefreshCw, Scale, Search, UserRound } from 'lucide-react';
+import { BriefcaseBusiness, CalendarDays, Clock3, FileText, Hash, RefreshCw, Scale, Search, UserRound, X } from 'lucide-react';
 import { api, type LawitgoProgressItem } from '../api';
 
 const PROGRESS_STAGES = ['사건 수임', '인도명령 신청', '인도명령 결정', '강제집행 신청', '강제집행 실시'];
@@ -42,7 +42,8 @@ export default function LawitgoProgress() {
   const [items, setItems] = useState<LawitgoProgressItem[]>([]);
   const [refreshedAt, setRefreshedAt] = useState('');
   const [selectedId, setSelectedId] = useState('');
-  const [detail, setDetail] = useState<{ item: LawitgoProgressItem; ui: { html: string; css: string }; refreshedAt: string } | null>(null);
+  const [detail, setDetail] = useState<{ item: LawitgoProgressItem; ui: { html: string; css: string }; refreshedAt: string; consultantStatement: { title: string; format: 'text'; content: string } | null } | null>(null);
+  const [statementOpen, setStatementOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState('');
@@ -68,6 +69,7 @@ export default function LawitgoProgress() {
   useEffect(() => { loadList(); }, []);
 
   useEffect(() => {
+    setStatementOpen(false);
     if (!selectedId) { setDetail(null); return; }
     let cancelled = false;
     setDetail(null);
@@ -166,10 +168,40 @@ export default function LawitgoProgress() {
                 <header><span className="lawitgo-section-icon"><FileText size={19} /></span><div><h2>상세 진행내역</h2></div></header>
                 {detailLoading ? <div className="page-loading">상세 진행사항을 불러오는 중...</div> : detail ? <iframe className="lawitgo-progress-frame" title={`${selected.title} 진행사항`} sandbox="" srcDoc={srcDoc} /> : null}
               </section>
+
+              {isCompleted(selected) && detail?.consultantStatement && (
+                <section className="lawitgo-summary-card" style={{ textAlign: 'center' }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => setStatementOpen(true)}
+                    style={{ minWidth: 180 }}
+                  >
+                    <FileText size={16} /> 결산내역서
+                  </button>
+                </section>
+              )}
             </>
           )}
         </main>
       </div>
+      {statementOpen && detail?.consultantStatement && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="결산내역서"
+          onClick={() => setStatementOpen(false)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1400, background: 'rgba(32,33,36,.52)', display: 'grid', placeItems: 'center', padding: 16 }}
+        >
+          <div onClick={event => event.stopPropagation()} style={{ width: 'min(680px, 100%)', maxHeight: '88vh', overflow: 'auto', background: '#fff', borderRadius: 14, boxShadow: '0 18px 50px rgba(0,0,0,.24)' }}>
+            <header style={{ position: 'sticky', top: 0, background: '#fff', borderBottom: '1px solid #e8eaed', padding: '16px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <strong>{detail.consultantStatement.title || '결산내역서'}</strong>
+              <button type="button" onClick={() => setStatementOpen(false)} aria-label="닫기" style={{ border: 0, background: '#f1f3f4', width: 32, height: 32, borderRadius: 16, display: 'grid', placeItems: 'center', cursor: 'pointer' }}><X size={17} /></button>
+            </header>
+            <pre style={{ margin: 0, padding: 20, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.7, color: '#202124' }}>{detail.consultantStatement.content}</pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

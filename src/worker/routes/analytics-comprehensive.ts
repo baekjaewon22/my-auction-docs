@@ -25,7 +25,8 @@ import {
 const comprehensive = new Hono<AuthEnv>();
 comprehensive.use('*', authMiddleware);
 comprehensive.use('*', async (c, next) => {
-  if (c.get('user').login_type === 'freelancer') {
+  const user = c.get('user');
+  if (user.login_type === 'freelancer' && user.role !== 'master') {
     return c.json({ error: '프리랜서는 근태·일지가 포함된 종합성과 분석을 열람할 수 없습니다.' }, 403);
   }
   await next();

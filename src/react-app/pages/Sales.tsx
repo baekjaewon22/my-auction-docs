@@ -480,6 +480,7 @@ export default function Sales() {
   // 랭킹 모드: 2달 단위(기본) vs 연간
   const [rankingYearly, setRankingYearly] = useState(false);
   const [rankingData, setRankingData] = useState<Array<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>>([]);
+  const [rankingError, setRankingError] = useState('');
   const [settleDate, setSettleDate] = useState('');
   const [invoiceDrafts, setInvoiceDrafts] = useState<Record<string, string>>({});
   // 2개월 기간 선택 (1-2, 3-4, 5-6, 7-8, 9-10, 11-12)
@@ -618,11 +619,17 @@ export default function Sales() {
         setDeposits(depRes.deposits || []);
       } catch { /* */ }
       if (showUserFilter) {
-        const memRes = await api.journal.members();
-        setMembers(memRes.members || []);
+        try {
+          const memRes = await api.journal.members();
+          setMembers(memRes.members || []);
+        } catch {
+          // 프리랜서에게 제한된 일지 보조 조회가 업무성과 본문 오류로 표시되지 않게 한다.
+          setMembers([]);
+        }
       }
       // 랭킹 집계: 전 직원 열람 가능 (개인 레코드 노출 아님)
       try {
+        setRankingError('');
         const year = new Date().getFullYear();
         const startMonth = rankingYearly
           ? `${year}-01`
@@ -632,7 +639,10 @@ export default function Sales() {
           : `${year}-${String(rankingPeriodIdx * 2 + 2).padStart(2, '0')}`;
         const rk = await api.sales.ranking(startMonth, endMonth);
         setRankingData(rk.ranking || []);
-      } catch { setRankingData([]); }
+      } catch {
+        setRankingData([]);
+        setRankingError('계약 랭킹을 불러오지 못했습니다.');
+      }
     } catch (err: any) {
       console.error(err);
       setLoadError(err?.message || '업무성과 데이터를 불러오지 못했습니다.');
@@ -1031,7 +1041,6 @@ export default function Sales() {
           (u as any)._rank = rank;
           return { ...u, rank };
         });
-        if (ranking.length === 0) return null;
         const medalColors = ['#FFD700', '#C0C0C0', '#CD7F32'];
         const medalBg = ['linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%)', 'linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)', 'linear-gradient(135deg, #fdf0e6 0%, #f5e6d3 100%)'];
         const medalBorder = ['#ffd700', '#c0c0c0', '#cd7f32'];
@@ -1067,7 +1076,15 @@ export default function Sales() {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {ranking.filter(u => u.rank <= 3).map((u) => {
+              {rankingError ? (
+                <div style={{ width: '100%', padding: '12px 14px', borderRadius: 8, background: '#fef2f2', color: '#b42318', fontSize: '0.78rem' }}>
+                  {rankingError}
+                </div>
+              ) : ranking.length === 0 ? (
+                <div style={{ width: '100%', padding: '12px 14px', borderRadius: 8, background: '#f8fafc', color: '#64748b', fontSize: '0.78rem' }}>
+                  선택한 기간에 확정된 계약 실적이 없습니다. 기간을 변경하거나 연간으로 전환해 확인해 주세요.
+                </div>
+              ) : ranking.filter(u => u.rank <= 3).map((u) => {
                 const ri = u.rank - 1; // 메달 색상용 (0-based)
                 const isMedal = true;
                 return (

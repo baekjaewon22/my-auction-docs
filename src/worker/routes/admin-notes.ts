@@ -31,7 +31,9 @@ const adminNotes = new Hono<AuthEnv>();
 
 adminNotes.use('*', authMiddleware);
 
-async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
+const adminNoteSchemaPromises = new WeakMap<object, Promise<void>>();
+
+async function ensureAdminNoteExtensionsUncached(db: D1Database): Promise<void> {
   const columns = [
     'ALTER TABLE admin_notes ADD COLUMN category TEXT DEFAULT "community"',
     'ALTER TABLE admin_notes ADD COLUMN court TEXT',
@@ -139,6 +141,8 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
   await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_note_view_logs_daily ON admin_note_view_logs(note_id, viewer_id, viewed_date)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_category ON admin_notes(category)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_legal_subcategory ON admin_notes(legal_subcategory)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_category_order ON admin_notes(category, pinned DESC, created_at DESC)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_list_order ON admin_notes(category, legal_subcategory, pinned DESC, created_at DESC)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_notes_journal_entry ON admin_notes(journal_entry_id)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_attachments_note ON admin_note_attachments(note_id)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_admin_note_view_logs_note ON admin_note_view_logs(note_id)').run();
@@ -177,6 +181,20 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
     WHERE COALESCE(category, 'community') = 'notice'
   `).run();
   await ensureArticlePdfTable(db);
+}
+
+async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
+  const key = db as object;
+  const existing = adminNoteSchemaPromises.get(key);
+  if (existing) return existing;
+  const promise = ensureAdminNoteExtensionsUncached(db);
+  adminNoteSchemaPromises.set(key, promise);
+  try {
+    await promise;
+  } catch (error) {
+    adminNoteSchemaPromises.delete(key);
+    throw error;
+  }
 }
 
 function normalizeCategory(category: unknown): NoteCategory {
@@ -610,11 +628,15 @@ adminNotes.get('/my-alerts', async (c) => {
 
 adminNotes.get('/', async (c) => {
   const db = c.env.DB;
+  c.header('Cache-Control', 'private, no-store');
   await ensureAdminNoteExtensions(db);
   const viewer = c.get('user');
   const category = normalizeCategory(c.req.query('category') || 'community');
   const search = (c.req.query('search') || '').trim();
   const legalSubcategory = normalizeLegalSubcategory(c.req.query('legal_subcategory') || 'lawsuit');
+  const page = Math.max(1, Number.parseInt(c.req.query('page') || '1', 10) || 1);
+  const pageSize = Math.min(50, Math.max(10, Number.parseInt(c.req.query('page_size') || '30', 10) || 30));
+  const offset = (page - 1) * pageSize;
 
   // 사용자 정보 조회 (branch, department)
   const viewerInfo = await db.prepare(
@@ -623,6 +645,10 @@ adminNotes.get('/', async (c) => {
   if (!viewerInfo) return c.json({ error: '사용자 정보 오류' }, 400);
 
   const role = viewerInfo.role;
+  const paged = (rows: any[]) => ({
+    notes: rows.slice(0, pageSize).map((n: any) => maskNote(n, role, viewerInfo.department)),
+    pagination: { page, page_size: pageSize, has_more: rows.length > pageSize },
+  });
   if (category === 'briefing_schedule' && !canCreateBriefingSchedule(role)) {
     return c.json({ error: '브리핑자료 제출 카테고리 열람 권한이 없습니다.' }, 403);
   }
@@ -637,8 +663,9 @@ adminNotes.get('/', async (c) => {
       LEFT JOIN users u ON np.author_id = u.id
       WHERE (? = '' OR np.title LIKE ? OR np.content LIKE ? OR np.author_name LIKE ?)
       ORDER BY np.pinned DESC, np.created_at DESC
-    `).bind(search, `%${search}%`, `%${search}%`, `%${search}%`).all();
-    return c.json({ notes: (rows.results || []).map((n: any) => maskNote(n, role, viewerInfo.department)) });
+      LIMIT ? OFFSET ?
+    `).bind(search, `%${search}%`, `%${search}%`, `%${search}%`, pageSize + 1, offset).all();
+    return c.json(paged(rows.results || []));
   }
   if (category === 'resource_library') {
     const baseSelect = `
@@ -656,8 +683,9 @@ adminNotes.get('/', async (c) => {
         ${baseSelect}
         WHERE ${searchWhere}
         ORDER BY rp.pinned DESC, rp.created_at DESC
-      `).bind(search, `%${search}%`, `%${search}%`, `%${search}%`).all();
-      return c.json({ notes: (rows.results || []).map((n: any) => maskNote(n, role, viewerInfo.department)) });
+        LIMIT ? OFFSET ?
+      `).bind(search, `%${search}%`, `%${search}%`, `%${search}%`, pageSize + 1, offset).all();
+      return c.json(paged(rows.results || []));
     }
     const rows = await db.prepare(`
       ${baseSelect}
@@ -669,10 +697,11 @@ adminNotes.get('/', async (c) => {
           OR (rp.visibility LIKE 'team:%' AND rp.visibility = ?)
           OR (rp.visibility LIKE 'user:%' AND rp.visibility = ?)
           OR rp.author_id = ?
-        )
+      )
       ORDER BY rp.pinned DESC, rp.created_at DESC
-    `).bind(search, `%${search}%`, `%${search}%`, `%${search}%`, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, 'user:' + viewer.sub, viewer.sub).all();
-    return c.json({ notes: (rows.results || []).map((n: any) => maskNote(n, role, viewerInfo.department)) });
+      LIMIT ? OFFSET ?
+    `).bind(search, `%${search}%`, `%${search}%`, `%${search}%`, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, 'user:' + viewer.sub, viewer.sub, pageSize + 1, offset).all();
+    return c.json(paged(rows.results || []));
   }
   // visibility 필터링 — master만 전체 열람, 그 외는 전부 visibility 조건 적용
   let notes;
@@ -684,11 +713,12 @@ adminNotes.get('/', async (c) => {
          ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL) + (SELECT COUNT(*) FROM resource_library_files rf WHERE rf.note_id = n.id)) as attachment_count
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
-       WHERE COALESCE(n.category, 'community') = ?
+       WHERE n.category = ?
          AND (? != 'legal_support' OR ${LEGAL_SUBCATEGORY_SQL} = ?)
          AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ? OR COALESCE(n.client_name, '') LIKE ? OR COALESCE(n.target_date, '') LIKE ?)
-       ORDER BY n.pinned DESC, n.created_at DESC`
-    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`).all();
+       ORDER BY n.pinned DESC, n.created_at DESC
+       LIMIT ? OFFSET ?`
+    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, pageSize + 1, offset).all();
   } else {
     const canViewEvictionTeam = canAccessEvictionQuote({
       userId: viewer.sub,
@@ -703,12 +733,12 @@ adminNotes.get('/', async (c) => {
          ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = n.id) + (SELECT COUNT(*) FROM article_pdf_uploads ap WHERE ap.note_id = n.id AND ap.deleted_at IS NULL) + (SELECT COUNT(*) FROM resource_library_files rf WHERE rf.note_id = n.id)) as attachment_count
        FROM admin_notes n
        LEFT JOIN users u ON n.author_id = u.id
-       WHERE COALESCE(n.category, 'community') = ?
+       WHERE n.category = ?
          AND (? != 'legal_support' OR ${LEGAL_SUBCATEGORY_SQL} = ?)
          AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(n.court, '') LIKE ? OR COALESCE(n.case_number, '') LIKE ? OR COALESCE(n.client_name, '') LIKE ? OR COALESCE(n.target_date, '') LIKE ?)
          AND (
-           (COALESCE(n.category, 'community') = 'eviction_quote' AND (? = 1 OR n.author_id = ?))
-           OR (COALESCE(n.category, 'community') != 'eviction_quote' AND (
+           (n.category = 'eviction_quote' AND (? = 1 OR n.author_id = ?))
+           OR (n.category != 'eviction_quote' AND (
              n.visibility = 'all'
              OR (n.visibility = 'branch' AND n.author_branch = ?)
              OR (n.visibility = 'department' AND n.author_branch = ? AND n.author_department = ?)
@@ -717,12 +747,12 @@ adminNotes.get('/', async (c) => {
              OR n.author_id = ?
            ))
          )
-       ORDER BY n.pinned DESC, n.created_at DESC`
-    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, canViewEvictionTeam ? 1 : 0, viewer.sub, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, 'user:' + viewer.sub, viewer.sub).all();
+       ORDER BY n.pinned DESC, n.created_at DESC
+       LIMIT ? OFFSET ?`
+    ).bind(category, category, legalSubcategory, search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, canViewEvictionTeam ? 1 : 0, viewer.sub, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, 'user:' + viewer.sub, viewer.sub, pageSize + 1, offset).all();
   }
 
-  const masked = (notes.results || []).map((n: any) => maskNote(n, role, viewerInfo.department));
-  return c.json({ notes: masked });
+  return c.json(paged(notes.results || []));
 });
 
 // GET /api/admin-notes/briefing-autofill - 브리핑자료 일정 자동채우기 후보

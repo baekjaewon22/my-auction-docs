@@ -21,6 +21,7 @@ import Cases from './pages/Cases';
 import OrgChart from './pages/OrgChart';
 import MeetingMinutes from './pages/MeetingMinutes';
 import LawitgoProgress from './pages/LawitgoProgress';
+import LawitgoSettlementLedger from './pages/LawitgoSettlementLedger';
 // import Commissions from './pages/Commissions'; // 매출확인으로 통합됨
 import Accounting from './pages/Accounting';
 import Sales from './pages/Sales';
@@ -192,7 +193,7 @@ function MissingDocumentsRoute({ children }: { children: React.ReactNode }) {
 
 function BidHistoryRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  if (!user || (user as any).login_type === 'freelancer' || !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -201,7 +202,7 @@ function BidHistoryRoute({ children }: { children: React.ReactNode }) {
 function ApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'];
-  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
   if (!user || (!isFreelancer && !allowed.includes(user.role))) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
@@ -219,7 +220,7 @@ function BidListAdminRoute({ children }: { children: React.ReactNode }) {
 function AccountingOrApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'];
-  if (!user || (user as any).login_type === 'freelancer' || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -346,7 +347,7 @@ function FinanceAnalyticsRoute({ children }: { children: React.ReactNode }) {
 function AuctionScheduleRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const employeeViewerRoles = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'];
-  const isFreelancer = (user as any)?.login_type === 'freelancer';
+  const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
   if (!user || (!isFreelancer && !employeeViewerRoles.includes(user.role))) {
     return <Navigate to="/dashboard" replace />;
   }
@@ -355,7 +356,7 @@ function AuctionScheduleRoute({ children }: { children: React.ReactNode }) {
 
 function EmployeeOnlyRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  if (!user || (user as any).login_type === 'freelancer') {
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master')) {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -526,6 +527,7 @@ export default function App() {
             }
           />
           <Route path="cases" element={<Cases />} />
+          <Route path="lawitgo-settlement-ledger" element={<AccountingRoute><LawitgoSettlementLedger /></AccountingRoute>} />
           <Route path="profile" element={<Profile />} />
           <Route
             path="freelancer-bids"

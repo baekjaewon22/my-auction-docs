@@ -11847,6 +11847,23 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   padding: 5px 12px; cursor: pointer; transition: all 0.18s ease;
 }
 
+.admin-notes-list-loading,
+.admin-notes-list-refreshing {
+  margin: 10px 0 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f6f8fb;
+  color: #5f6368;
+  font-size: 0.84rem;
+  text-align: center;
+}
+
+.admin-notes-list-refreshing {
+  padding: 7px 12px;
+  background: #fff8e6;
+  color: #8a5a00;
+}
+
 .web-push-section { background: linear-gradient(145deg, #fff 0%, #f8fbff 100%); }
 .web-push-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .web-push-title > div { display: flex; align-items: center; gap: 8px; color: #174ea6; }
