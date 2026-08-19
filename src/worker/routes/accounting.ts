@@ -5,6 +5,7 @@ import { branchAliases, isRestrictedAccountingBranch, normalizeBranchName, sameB
 import { confirmedSalesSql, pendingCardSettlementSql, recognizedSalesDateSql } from '../lib/sales-recognition';
 import { currentKstMonth, ensurePayTypeHistoryTable, normalizeYearMonth } from '../lib/pay-type-history';
 import { classifyPayrollSavesFromMonth } from '../../shared/payroll-effective-month';
+import { SALES_EVALUATION_EMPLOYEE_FILTER, SALES_EVALUATION_EXCLUDED_USER_ID } from '../lib/sales-evaluation-eligibility';
 
 const accounting = new Hono<AuthEnv>();
 accounting.use('*', authMiddleware);
@@ -1871,7 +1872,14 @@ accounting.post('/evaluate', requireRole(...ACCOUNTING_ROLES), async (c) => {
   }
 
   // 회계 정보가 있는 모든 직원 조회
-  const accounts = await db.prepare('SELECT * FROM user_accounting WHERE salary > 0').all();
+  const accounts = await db.prepare(`
+    SELECT ua.*
+    FROM user_accounting ua
+    JOIN users u ON u.id = ua.user_id
+    WHERE ua.salary > 0
+      AND COALESCE(ua.standard_sales, 0) > 0
+      AND ${SALES_EVALUATION_EMPLOYEE_FILTER}
+  `).bind(SALES_EVALUATION_EXCLUDED_USER_ID).all();
   const results: any[] = [];
 
   for (const acc of accounts.results as any[]) {
@@ -1955,9 +1963,9 @@ accounting.get('/alerts/dashboard', async (c) => {
     JOIN user_accounting ua ON ua.user_id = se.user_id
     JOIN users u ON u.id = se.user_id
     WHERE se.met_target = 0
-      AND COALESCE(u.login_type, 'employee') != 'freelancer'
+      AND ${SALES_EVALUATION_EMPLOYEE_FILTER}
     ORDER BY se.consecutive_misses DESC, se.period_start DESC
-  `).all();
+  `).bind(SALES_EVALUATION_EXCLUDED_USER_ID).all();
 
   // 강등 대상 (3회 연속 미달)
   const demotionCandidates = (alerts.results as any[]).filter((a: any) => a.consecutive_misses >= 3);

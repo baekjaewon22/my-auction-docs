@@ -3,6 +3,7 @@
 // - analytics_snapshots: 조직 단위 집계 (조직 평균, 비율제 평균 등)
 
 import { analyticsSalesBucketSql, confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from './lib/sales-recognition';
+import { SALES_EVALUATION_EMPLOYEE_FILTER } from './lib/sales-evaluation-eligibility';
 
 const KST_OFFSET = 9 * 60 * 60 * 1000;
 
@@ -248,7 +249,7 @@ export async function runMonthlyAggregation(env: any): Promise<{ prevMonth: stri
     SELECT u.id, COALESCE(ua.standard_sales, 0) as standard_sales
     FROM users u
     LEFT JOIN user_accounting ua ON ua.user_id = u.id
-    WHERE ${CONSULTANT_FILTER}
+    WHERE ${SALES_EVALUATION_EMPLOYEE_FILTER}
       AND COALESCE(ua.pay_type, 'salary') = 'salary'
       AND COALESCE(ua.standard_sales, 0) > 0
   `).bind(JEONG_MINHO_ID).all<{ id: string; standard_sales: number }>();
