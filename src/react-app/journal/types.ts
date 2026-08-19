@@ -3,6 +3,7 @@ export interface JournalEntry {
   user_id: string;
   user_name?: string;
   user_role?: string;
+  user_login_type?: string;
   target_date: string;
   activity_type: ActivityType;
   activity_subtype: string;

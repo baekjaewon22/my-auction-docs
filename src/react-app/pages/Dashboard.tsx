@@ -9,6 +9,7 @@ import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLin
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 import { sameBranchName } from '../lib/branchAliases';
+import { isCurrentEmployeeDashboardEntry, isDashboardPhoneAlertDate } from '../lib/dashboard-alerts';
 import { refundApprovalMonth, refundRecoveryPayrollUrl } from '../../shared/refund-recovery';
 import { isNonWorkingDate } from '../../shared/work-calendar';
 import { canDismissDashboardAlertItems } from '../../shared/dashboard-alert-dismiss';
@@ -105,7 +106,11 @@ function FreelancerDashboard() {
     && !r.contract_submitted
     && !r.contract_not_submitted
   );
-  const missingPhoneSales = mySales.filter(r => r.user_id === user?.id && isMissingWinningCustomerPhone(r));
+  const missingPhoneSales = mySales.filter(r =>
+    r.user_id === user?.id
+    && isMissingWinningCustomerPhone(r)
+    && isDashboardPhoneAlertDate(r.contract_date)
+  );
   const todayLegalFact = pickTodayLegalFact(legalFacts);
   const legalPreview = todayLegalFact ? dashboardNewsPreview(todayLegalFact.content || '') : '';
 
@@ -467,6 +472,7 @@ export default function Dashboard() {
           } else {
             entriesForDetect = entries;
           }
+          entriesForDetect = entriesForDetect.filter(isCurrentEmployeeDashboardEntry);
           // 미제출 감지 시 draft 문서는 제외 (작성 중인 보고서는 제출 완료가 아니므로)
           const docsForDetect = allDocs.filter(d => d.status !== 'draft');
           // 외근 link 활성 entry IDs 조회 (cutoff 이후)
@@ -565,6 +571,7 @@ export default function Dashboard() {
           const canCorrectAllPhones = ['master', 'accountant', 'accountant_asst'].includes(role);
           setMissingPhoneSales(records.filter(r =>
             isMissingWinningCustomerPhone(r)
+            && isDashboardPhoneAlertDate(r.contract_date)
             && (canCorrectAllPhones || r.user_id === user?.id)
             && !localDismissed.has(`missing_phone_${r.id}`)
           ));

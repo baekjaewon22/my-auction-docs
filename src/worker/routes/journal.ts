@@ -135,7 +135,7 @@ journal.get('/', async (c) => {
   const date = c.req.query('date');
   const range = c.req.query('range');
 
-  let query = 'SELECT j.*, u.name as user_name, u.role as user_role FROM journal_entries j LEFT JOIN users u ON j.user_id = u.id';
+  let query = 'SELECT j.*, u.name as user_name, u.role as user_role, u.login_type as user_login_type FROM journal_entries j LEFT JOIN users u ON j.user_id = u.id';
   const conditions: string[] = [];
   const params: string[] = [];
 

@@ -96,7 +96,7 @@ documents.use('*', async (c, next) => {
   await next();
 });
 const ASSIGNED_APPROVER_EXISTS = 'EXISTS (SELECT 1 FROM approval_steps aps WHERE aps.document_id = d.id AND aps.approver_id = ?)';
-const DOCUMENT_APPROVER_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant']);
+const DOCUMENT_APPROVER_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant']);
 const DOCUMENT_REJECT_PROXY_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant']);
 const DOCUMENT_ADMIN_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin']);
 
@@ -426,10 +426,10 @@ documents.post('/:id/submit', async (c) => {
     true,
   );
   if (doc.template_id === PROPERTY_REPORT_TEMPLATE_ID) {
-    chain = await buildPropertyReportApprovalChain(db, user.sub, chain);
+    chain = await buildPropertyReportApprovalChain(db, doc.branch || user.branch);
     if (chain.length === 0) {
       return c.json(
-        { error: '물건분석보고서의 대표이사 결재자를 찾을 수 없습니다. 대표이사 계정 또는 조직도를 확인해 주세요.' },
+        { error: '해당 지사의 물건분석보고서 결재 관리자를 찾을 수 없습니다. 지원 지사와 관리자 계정을 확인해 주세요.' },
         400,
       );
     }
@@ -544,6 +544,16 @@ documents.post('/:id/approve', requireDocumentApprover, async (c) => {
   }
   if (doc.status !== 'submitted') return c.json({ error: '제출된 문서만 승인할 수 있습니다.' }, 400);
 
+  // 물건분석보고서는 지정된 지사 관리자 본인만 대표 직인을 사용해 결재한다.
+  if (doc.template_id === PROPERTY_REPORT_TEMPLATE_ID) {
+    const assigned = await db.prepare(
+      "SELECT approver_id FROM approval_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order ASC LIMIT 1"
+    ).bind(id).first<{ approver_id: string }>();
+    if (!assigned || assigned.approver_id !== user.sub) {
+      return c.json({ error: '물건분석보고서는 해당 지사의 지정 관리자만 승인할 수 있습니다.' }, 403);
+    }
+  }
+
   // 결재선에서 현재 대기중인 내 단계 찾기
   let myStep: { id: string; step_order: number } | null = null;
   if (body.step_id) {
@@ -638,6 +648,28 @@ documents.post('/:id/approve', requireDocumentApprover, async (c) => {
   const allDone = !remaining || remaining.cnt === 0;
 
   if (allDone) {
+    if (doc.template_id === PROPERTY_REPORT_TEMPLATE_ID) {
+      await db.prepare(`
+        INSERT OR IGNORE INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent)
+        SELECT 'property-report-stamp-' || s.document_id || '-' || s.approver_id,
+               s.document_id,
+               s.approver_id,
+               '/LNCstemp.png',
+               'property-report-finalize',
+               'branch-manager-representative-stamp'
+        FROM approval_steps s
+        WHERE s.document_id = ?
+          AND s.status = 'approved'
+          AND NOT EXISTS (
+            SELECT 1 FROM signatures sig
+            WHERE sig.document_id = s.document_id
+              AND sig.signature_data = '/LNCstemp.png'
+          )
+        ORDER BY s.step_order DESC
+        LIMIT 1
+      `).bind(id).run();
+    }
+
     await db.prepare(`
       INSERT OR IGNORE INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent)
       SELECT 'ceo-stamp-' || s.document_id || '-' || s.approver_id,

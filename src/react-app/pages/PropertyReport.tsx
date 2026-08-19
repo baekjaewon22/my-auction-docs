@@ -84,6 +84,18 @@ export default function PropertyReport() {
     if (!docId) return;
     if (approvingRef.current) return;
 
+    // 신규 물건분석보고서는 지정 지사 관리자가 실제 결재하고 서버가 대표 직인을 삽입한다.
+    if (type === 'approver' && approvalSteps.length === 1 && stepId === approvalSteps[0]?.id && approverRole !== 'ceo') {
+      approvingRef.current = true;
+      setApproving(true);
+      try {
+        await api.documents.approve(docId, { step_id: stepId });
+        await loadDoc(docId);
+      } catch (err: any) { alert(err.message); }
+      finally { approvingRef.current = false; setApproving(false); }
+      return;
+    }
+
     // CEO 결재란 → 자동으로 대표 직인
     if (canUseStamp && approverRole === 'ceo') {
       approvingRef.current = true;
@@ -426,6 +438,7 @@ export default function PropertyReport() {
             currentUserRole={user?.role}
             docStatus={status}
             authorName={user?.name}
+            representativeStampStepIds={approvalSteps.length === 1 ? [approvalSteps[0].id] : []}
             onSign={handleSignRequest}
           />
         </div>
@@ -462,7 +475,9 @@ export default function PropertyReport() {
                 {(() => {
                   const headers = ['담당자'];
                   if (approvalSteps.length > 0) {
-                    approvalSteps.forEach(s => headers.push((s as any).approver_title || s.approver_name || '승인자'));
+                    approvalSteps.forEach(s => headers.push(
+                      approvalSteps.length === 1 ? '대표' : ((s as any).approver_title || s.approver_name || '승인자')
+                    ));
                   } else {
                     headers.push('결재자');
                   }

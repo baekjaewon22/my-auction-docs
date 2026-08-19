@@ -1955,6 +1955,7 @@ accounting.get('/alerts/dashboard', async (c) => {
     JOIN user_accounting ua ON ua.user_id = se.user_id
     JOIN users u ON u.id = se.user_id
     WHERE se.met_target = 0
+      AND COALESCE(u.login_type, 'employee') != 'freelancer'
     ORDER BY se.consecutive_misses DESC, se.period_start DESC
   `).all();
 

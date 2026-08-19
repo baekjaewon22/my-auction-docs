@@ -7,10 +7,11 @@ interface Props {
   currentUserRole?: string;
   docStatus: string;
   authorName?: string;
+  representativeStampStepIds?: string[];
   onSign: (type: 'author' | 'approver', approverRole?: string, stepId?: string) => void;
 }
 
-export default function ApprovalBar({ signatures, approvalSteps, currentUserId, currentUserRole, docStatus, authorName, onSign }: Props) {
+export default function ApprovalBar({ signatures, approvalSteps, currentUserId, currentUserRole, docStatus, authorName, representativeStampStepIds = [], onSign }: Props) {
   // 빈 signature_data는 서명으로 간주하지 않음 (백필된 placeholder 포함)
   const authorSigRaw = signatures[0] || null;
   const authorSig = authorSigRaw?.signature_data ? authorSigRaw : null;
@@ -35,6 +36,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
   if (approvalSteps.length > 0) {
     for (const step of approvalSteps) {
       const isCeoStep = (step as any).approver_role === 'ceo';
+      const isRepresentativeStampStep = representativeStampStepIds.includes(step.id);
       let stepSig: Signature | undefined;
       // CEO step은 대표 직인(/LNCstemp.png)을 최우선 매칭
       if (isCeoStep) {
@@ -59,7 +61,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
         step.status === 'pending' && prevAllApproved && docStatus === 'submitted';
 
       slots.push({
-        label: step.approver_name || `승인 ${step.step_order}`,
+        label: isRepresentativeStampStep ? '대표' : (step.approver_name || `승인 ${step.step_order}`),
         name: step.approver_name,
         status: step.status === 'approved' ? 'approved' : step.status === 'rejected' ? 'rejected' : 'pending',
         signature: stepSig || undefined,
@@ -110,7 +112,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
                 <div className="approval-slot-empty">
                   {slot.canSign && (
                     <button className="approval-sign-btn" onClick={() => onSign(idx === 0 ? 'author' : 'approver', slot.approverRole, slot.stepId)}>
-                      {slot.approverRole === 'ceo' && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUserRole || '')
+                      {(slot.approverRole === 'ceo' || (slot.stepId && representativeStampStepIds.includes(slot.stepId))) && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst'].includes(currentUserRole || '')
                         ? '대표 직인'
                         : '서명'}
                     </button>
