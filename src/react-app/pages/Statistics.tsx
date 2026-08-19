@@ -1023,7 +1023,7 @@ function AnomalyDetection({ entries, members, holidayDates }: { entries: Journal
       </div>
 
       {/* 상태 도넛 + 파이프라인 퍼널 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+      <div className="stats-chart-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
         <div className="stats-chart-card">
           <h4>임장 → 입찰 상태 분포</h4>
           {statusPie.length > 0 ? (
@@ -1292,7 +1292,7 @@ function SalesAnalysis({ records, viewLevel }: {
 
         if (branchPies.length === 0) return null;
         return (
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(branchPies.length, 4)}, 1fr)`, gap: 12, marginBottom: 20 }}>
+          <div className="stats-branch-pies" style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(branchPies.length, 4)}, 1fr)`, gap: 12, marginBottom: 20 }}>
             {branchPies.map(bp => (
               <div key={bp.branch} className="card" style={{ padding: 16, textAlign: 'center' }}>
                 <h4 style={{ margin: '0 0 4px', fontSize: '0.9rem', color: '#1a1a2e' }}>{bp.branch}</h4>

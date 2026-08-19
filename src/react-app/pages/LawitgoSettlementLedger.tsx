@@ -102,7 +102,7 @@ export default function LawitgoSettlementLedger() {
         <button onClick={() => void load()} className="btn"><RefreshCw size={15} /> 새로고침</button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginBottom: 14 }}>
+      <div className="mobile-summary-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginBottom: 14 }}>
         <Summary label="조회 건수" value={`${items.length}건`} />
         <Summary label="사용 중 합계" value={won(total)} />
         <Summary label="조회 급여월" value={month || '전체'} />

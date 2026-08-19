@@ -173,7 +173,7 @@ export default function ComprehensiveAnalysis({
     <div>
       <MonthNav />
       {/* 정렬 */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+      <div className="comprehensive-toolbar" style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: '#5f6368', alignSelf: 'center' }}>정렬:</span>
         {([
           { key: 'score', label: '종합점수↓' },
@@ -262,7 +262,7 @@ function MemberCard({ m, onClick }: { m: CompMember; onClick: () => void }) {
             <div style={{ fontSize: 10, color: '#5f6368' }}>해당 월 매출</div>
             <div style={{ fontSize: 17, fontWeight: 800, color: '#c2410c' }}>{fmtKRW(m.sales.confirmed)}</div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
+          <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
             <div style={{ background: '#e8f0fe', borderRadius: 8, padding: '6px 8px' }}>
               <div style={{ fontSize: 10, color: '#5f6368' }}>입찰률</div>
               <div style={{ fontSize: 16, fontWeight: 800, color: '#1a73e8' }}>{bidCompletion.toFixed(1)}%</div>
@@ -324,7 +324,7 @@ function PersonalDashboard({ member: m, benchmarks }: { member: CompMember; benc
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10, color: '#3c4043', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             <Target size={13} strokeWidth={2.2} /> 입찰 성과
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, fontSize: 11 }}>
+          <div className="comprehensive-metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, fontSize: 11 }}>
             <div style={{ background: '#fff', border: '1px solid #fed7aa', borderRadius: 10, padding: 10 }}>
               <div style={{ color: '#5f6368' }}>해당 월 매출</div>
               <div style={{ fontSize: 20, fontWeight: 800, color: '#c2410c' }}>{fmtKRW(m.sales.confirmed)}</div>
@@ -363,7 +363,7 @@ function PersonalDashboard({ member: m, benchmarks }: { member: CompMember; benc
               {fmtKRW(m.sales.confirmed)} / {fmtKRW(m.sales.target_amount)}
             </span>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginTop: 10, fontSize: 11 }}>
+          <div className="comprehensive-metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginTop: 10, fontSize: 11 }}>
             <div><div style={{ color: '#5f6368' }}>확정</div><div style={{ fontWeight: 700, color: '#188038' }}>{fmtKRW(m.sales.confirmed)}</div></div>
             <div><div style={{ color: '#5f6368' }}>대기</div><div style={{ fontWeight: 700, color: '#e65100' }}>{fmtKRW(m.sales.pending)}</div></div>
             <div><div style={{ color: '#5f6368' }}>환불</div><div style={{ fontWeight: 700, color: '#d93025' }}>{fmtKRW(m.sales.refunded)}</div></div>
@@ -433,7 +433,7 @@ function PersonalDashboard({ member: m, benchmarks }: { member: CompMember; benc
       </div>
 
       {/* 강점 / 약점 */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+      <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
         <div style={{ background: '#e8f5e9', borderRadius: 10, padding: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#188038', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 5 }}>
             <ThumbsUp size={14} strokeWidth={2.2} /> 잘하는 점
@@ -472,7 +472,7 @@ function PersonalDashboard({ member: m, benchmarks }: { member: CompMember; benc
       )}
 
       {/* 이상감지 요약 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, fontSize: 11 }}>
+      <div className="comprehensive-anomaly-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, fontSize: 11 }}>
         <StatBox label="5% 편차" value={m.anomalies.deviation} color={m.anomalies.deviation > 0 ? '#e65100' : '#188038'} />
         <StatBox label="환불" value={m.anomalies.refund} color={m.anomalies.refund > 0 ? '#d93025' : '#188038'} />
         <StatBox label="이상 합계" value={m.anomalies.total} color={m.anomalies.total > 0 ? '#d93025' : '#188038'} />

@@ -1508,10 +1508,10 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                   />
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(310px, 1.2fr) minmax(140px, 1fr)', gap: 10, alignItems: 'end' }}>
+              <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(310px, 1.2fr) minmax(140px, 1fr)', gap: 10, alignItems: 'end' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label>사건번호 *</label>
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'nowrap' }}>
+                  <div className="mobile-case-number-row" style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'nowrap' }}>
                     <select className="form-input" value={formCaseYear} onChange={(e) => setFormCaseYear(e.target.value)} style={{ width: 88 }}>
                       {YEARS.map(year => <option key={year} value={year}>{year}</option>)}
                     </select>
@@ -1564,7 +1564,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                   )}
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) auto', gap: 10, alignItems: 'end' }}>
+              <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) auto', gap: 10, alignItems: 'end' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label>법원 *</label>
                   <select className="form-input" value={formCourt} onChange={(e) => setFormCourt(e.target.value)} style={{ width: '100%' }}>

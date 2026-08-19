@@ -181,7 +181,7 @@ export default function FinanceAnalytics() {
       </div>
 
       {/* 차트 그리드 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 16, marginBottom: 24 }}>
+      <div className="finance-chart-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 16, marginBottom: 24 }}>
 
         {/* 월별 손익 */}
         <div className="card" style={{ padding: '16px 20px' }}>

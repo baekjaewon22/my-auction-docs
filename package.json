@@ -79,6 +79,7 @@
 		"preview": "npm run build && vite preview",
 		"test": "npm run test:unit && npm run test:automation-python",
 		"test:unit": "node --experimental-strip-types --test tests/*.test.ts",
+		"test:mobile-layout": "node scripts/audit-mobile-layout.mjs",
 		"test:automation-python": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/test-automation-python.ps1",
 		"test:automation-access": "node --experimental-strip-types --test tests/automation-access.test.ts",
 		"test:automation-agent-health": "node --experimental-strip-types --test tests/automation-agent-health.test.ts",

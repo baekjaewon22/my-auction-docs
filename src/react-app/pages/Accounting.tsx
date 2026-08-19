@@ -1835,7 +1835,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                           {isOpen && (l.before_snapshot || l.after_snapshot) && (
                             <tr>
                               <td colSpan={6} style={{ background: '#f8fafc', padding: 12 }}>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: '0.75rem' }}>
+                                <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: '0.75rem' }}>
                                   {l.before_snapshot && (
                                     <div>
                                       <div style={{ fontWeight: 600, marginBottom: 4, color: '#64748b', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>변경 전</div>

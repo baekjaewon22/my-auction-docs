@@ -1767,7 +1767,7 @@ export default function Sales() {
                           {isOpen && (l.before_snapshot || l.after_snapshot) && (
                             <tr>
                               <td colSpan={6} style={{ background: '#f8f9fa', padding: 12 }}>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: '0.75rem' }}>
+                                <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: '0.75rem' }}>
                                   {l.before_snapshot && (
                                     <div>
                                       <div style={{ fontWeight: 600, marginBottom: 4, color: '#d93025' }}>변경 전</div>
@@ -1933,7 +1933,7 @@ export default function Sales() {
             return (
               <div style={{ marginTop: 14, padding: 16, background: '#f0f4ff', borderRadius: 8, border: '1px solid #c8d6e5' }}>
                 <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: 10, color: '#3c4043' }}>매수신청대리비용</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'end' }}>
+                <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'end' }}>
                   <div>
                     <label className="form-label">대리비용 (담당자 지급금액)</label>
                     <input className="form-input" value={toMoneyDisplay(formProxyCost)} onChange={(e) => setFormProxyCost(fromMoneyDisplay(e.target.value))} style={{ width: '100%' }} placeholder="대리비용" />
@@ -1961,7 +1961,7 @@ export default function Sales() {
           {formType === '계약' && (
             <div style={{ marginTop: 14, padding: 16, background: '#f8f9fa', borderRadius: 8, border: '1px solid #e8eaed' }}>
               <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: 10, color: '#3c4043' }}>계약내용</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div><label className="form-label">감정가 %</label>
                   <input className="form-input" type="number" step="0.1" min="0" max="100" value={formAppraisalRate}
                     onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+\.?\d{0,1}$/.test(v)) setFormAppraisalRate(v); }}
@@ -2542,7 +2542,7 @@ export default function Sales() {
               >×</button>
             </div>
             <div style={{ padding: '16px 20px' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+              <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
                 <div>
                   <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>유형</span>
                   {isMaster ? (
@@ -2759,7 +2759,7 @@ export default function Sales() {
               {((detailRecord.user_id === currentUser?.id && detailRecord.status === 'pending') || canModifyAccounting) && (
                 <div style={{ borderTop: '1px solid #e8eaed', paddingTop: 12, marginBottom: 12 }}>
                   <div style={{ fontSize: '0.78rem', color: '#3c4043', fontWeight: 600, marginBottom: 8 }}>내역 수정</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                     <div>
                       <label className="form-label" style={{ fontSize: '0.72rem' }}>금액 (부가세포함)</label>
                       <input className="form-input" defaultValue={detailRecord.amount ? detailRecord.amount.toLocaleString() : ''}

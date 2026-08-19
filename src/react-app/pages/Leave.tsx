@@ -776,7 +776,7 @@ export default function Leave() {
               {/* 휴가 유형 선택 */}
               <div style={{ marginBottom: 16 }}>
                 <label className="form-label">휴가 유형</label>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+                <div className="leave-type-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
                   {FORM_LEAVE_TYPES.filter(t => canViewHourly || t.value !== '시간차').map(t => (
                     <button key={t.value} type="button" onClick={() => { setFormType(t.value); setSpecialSubtype('특별유급휴가'); setSpecialItem(0); setSpecialEtcReason(''); }}
                       style={{ padding: '10px 6px', borderRadius: 8, border: formType === t.value ? `2px solid ${t.color}` : '1px solid #dadce0', background: formType === t.value ? t.color + '10' : '#fff', cursor: 'pointer', textAlign: 'center' }}>

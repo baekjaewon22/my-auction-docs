@@ -85,7 +85,7 @@ export default function LegalGlossaryTool() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 0.35fr) minmax(280px, 1.65fr)', gap: 10, marginBottom: 12 }}>
+      <div className="legal-glossary-controls" style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 0.35fr) minmax(280px, 1.65fr)', gap: 10, marginBottom: 12 }}>
         <select className="form-input" value={category} onChange={(event) => {
           const next = event.target.value;
           setCategory(next);
