@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS sales_records (
   memo TEXT NOT NULL DEFAULT '',
   branch TEXT NOT NULL DEFAULT '',
   department TEXT NOT NULL DEFAULT '',
+  attribution_branch TEXT NOT NULL DEFAULT '',
   appraisal_price INTEGER NOT NULL DEFAULT 0,
   winning_price INTEGER NOT NULL DEFAULT 0,
   appraisal_rate REAL NOT NULL DEFAULT 0,

@@ -11,6 +11,7 @@ import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../li
 import { canUseRequestedSalesOwner } from '../../shared/sales-assignment';
 import { isValidCustomerPhone, normalizeCustomerName, normalizeCustomerPhone } from '../../shared/sales-customer-identity';
 import { resolveSalesCustomer, searchSalesCustomers } from '../lib/sales-customer-master';
+import { resolveSalesAttributionBranch } from '../lib/sales-attribution';
 import {
   ensureEmploymentTypeHistoryTable,
   resolveEmploymentTypeFromHistory,
@@ -706,13 +707,14 @@ sales.post('/', async (c) => {
 
   const id = crypto.randomUUID();
   await db.prepare(`
-    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, payment_type, receipt_type, receipt_phone, proxy_cost, customer_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, attribution_branch, payment_type, receipt_type, receipt_phone, proxy_cost, customer_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     id, ownerId, body.type, body.type_detail || '', body.client_name,
     body.depositor_name || '', body.depositor_different ? 1 : 0,
     body.amount || 0, body.contract_date || new Date().toISOString().slice(0, 10),
     body.journal_entry_id || null, direction, ownerBranch, ownerDepartment,
+    resolveSalesAttributionBranch(ownerName),
     body.payment_type || '', body.receipt_type || '', body.receipt_phone || '',
     body.proxy_cost || 0, customerId
   ).run();
@@ -1613,12 +1615,12 @@ sales.post('/deposits/:id/claim', async (c) => {
   // 매출 내역 생성 (입금등록 클레임 → 기본 이체로 기록)
   const salesId = crypto.randomUUID();
   await db.prepare(`
-    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, status, confirmed_at, confirmed_by, branch, department, payment_type)
-    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'pending', NULL, NULL, ?, ?, '이체')
+    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, status, confirmed_at, confirmed_by, branch, department, attribution_branch, payment_type)
+    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'pending', NULL, NULL, ?, ?, ?, '이체')
   `).bind(
     salesId, user.sub, type, type_detail || '', client_name,
     notice.depositor, notice.amount, contract_date || notice.deposit_date,
-    user.branch, user.department
+    user.branch, user.department, resolveSalesAttributionBranch(user.name)
   ).run();
 
   // 입금 등록 업데이트
@@ -1717,14 +1719,14 @@ sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
   // 카드 정산대기는 수입 매출에만 적용한다. 지출은 입력일에 즉시 회계 인식한다.
   const initialStatus = accountingEntryInitialStatus(dir, paymentType);
   const actualAssignee = assignee_id === '__all__' ? user.sub : assignee_id;
-  const assignee = await db.prepare('SELECT id, branch, department FROM users WHERE id = ?').bind(actualAssignee).first<any>();
+  const assignee = await db.prepare('SELECT id, name, branch, department FROM users WHERE id = ?').bind(actualAssignee).first<any>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
 
   const id = crypto.randomUUID();
   await db.prepare(`
-    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, amount, contract_date, status, confirmed_at, confirmed_by, direction, branch, department, payment_type)
-    VALUES (?, ?, '기타', ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?)
-  `).bind(id, actualAssignee, content, content, amount, date, initialStatus, user.sub, dir, assignee.branch || '', assignee.department || '', paymentType).run();
+    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, amount, contract_date, status, confirmed_at, confirmed_by, direction, branch, department, attribution_branch, payment_type)
+    VALUES (?, ?, '기타', ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?)
+  `).bind(id, actualAssignee, content, content, amount, date, initialStatus, user.sub, dir, assignee.branch || '', assignee.department || '', resolveSalesAttributionBranch(assignee.name), paymentType).run();
 
   return c.json({ success: true, id });
 });
@@ -2067,13 +2069,13 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
         INSERT INTO sales_records
           (id, user_id, type, type_detail, client_name, depositor_name, client_phone,
            amount, contract_date, deposit_date, card_deposit_date, status,
-           confirmed_at, confirmed_by, branch, department, memo,
+           confirmed_at, confirmed_by, branch, department, attribution_branch, memo,
            payment_type, receipt_type, receipt_phone)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         id, userId, type, finalTypeDetail, clientName, clientName, r.client_phone || '',
         amount, contractDate, depositDate, cardDepDate, importedStatus, user.sub,
-        branch, department, memoParts.join(' | '),
+        branch, department, resolveSalesAttributionBranch(u?.name || userName), memoParts.join(' | '),
         paymentType, receiptType, receiptPhone,
       )
     );

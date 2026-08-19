@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
+import { resolveSalesAttributionBranch } from '../lib/sales-attribution';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { branchAliases, isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { confirmedSalesSql, pendingCardSettlementSql, recognizedSalesDateSql } from '../lib/sales-recognition';
@@ -2206,18 +2207,19 @@ accounting.post('/staging/:id/to-sales', requireRole(...ACCOUNTING_ROLES), async
 
   // 담당자 정보
   const assignee = user_id
-    ? await db.prepare('SELECT id, branch, department FROM users WHERE id = ?').bind(user_id).first<any>()
+    ? await db.prepare('SELECT id, name, branch, department FROM users WHERE id = ?').bind(user_id).first<any>()
     : null;
 
   const salesId = crypto.randomUUID();
   await db.prepare(`
-    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, amount, contract_date, deposit_date, status, confirmed_at, confirmed_by, branch, department, memo, payment_type, direction)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, '이체', ?)
+    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, amount, contract_date, deposit_date, status, confirmed_at, confirmed_by, branch, department, attribution_branch, memo, payment_type, direction)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, ?, '이체', ?)
   `).bind(
     salesId, assignee?.id || user.sub, entryType, type_detail || '',
     item.depositor, item.depositor, item.amount,
     item.transaction_date, item.transaction_date,
     user.sub, assignee?.branch || user.branch || '', assignee?.department || user.department || '',
+    resolveSalesAttributionBranch(assignee?.name || (assignee ? '' : user.name)),
     item.description || '거래내역 첨부에서 이동', entryDirection
   ).run();
 
