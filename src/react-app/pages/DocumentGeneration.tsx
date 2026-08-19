@@ -1641,6 +1641,7 @@ function AutomationDiagnostics({ diagnostics, compact = false }: { diagnostics: 
 }
 
 function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: AgentState; status: AutomationAgentStatus | null; onClose: () => void; onRecheck: () => void }) {
+  const [downloadingInstaller, setDownloadingInstaller] = useState(false);
   const isOutdated = state === 'outdated';
   const isConnected = state === 'connected';
   const isUnverified = state === 'unverified';
@@ -1670,6 +1671,17 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
   const checkedAt = status?.checkedAt
     ? new Date(status.checkedAt).toLocaleString('ko-KR', { hour12: false })
     : '확인 전';
+  const downloadLatestInstaller = async () => {
+    if (downloadingInstaller) return;
+    setDownloadingInstaller(true);
+    try {
+      await automationApi.downloadAgentInstaller();
+    } catch (err: any) {
+      window.alert(err?.message || '최신 실행기 설치 파일을 다운로드하지 못했습니다.');
+    } finally {
+      setDownloadingInstaller(false);
+    }
+  };
 
   return (
     <div className="automation-agent-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="automation-agent-title">
@@ -1703,6 +1715,11 @@ function AutomationAgentModal({ state, status, onClose, onRecheck }: { state: Ag
           </div>
         </div>
         <div className="automation-agent-modal-actions">
+          {!isConnected && (
+            <button className="btn btn-primary" onClick={downloadLatestInstaller} disabled={downloadingInstaller} type="button">
+              <Download size={14} /> {downloadingInstaller ? '다운로드 준비 중' : '최신 실행기 다운로드'}
+            </button>
+          )}
           <button className="btn" onClick={onRecheck} type="button">
             <RefreshCw size={14} /> 지금 다시 확인
           </button>

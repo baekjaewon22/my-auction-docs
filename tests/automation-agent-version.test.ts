@@ -42,6 +42,13 @@ test('실행기 버전은 프런트·Worker·Python·빌드가 공용 원본을 
 
   assert.match(frontend, /automation-agent-version/);
   assert.match(frontend, /extendedMatch/);
+  assert.match(frontend, /downloadAgentInstaller/);
+  const documentGeneration = readFileSync(
+    new URL('../src/react-app/pages/DocumentGeneration.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(documentGeneration, /최신 실행기 다운로드/);
+  assert.match(documentGeneration, /automationApi\.downloadAgentInstaller\(\)/);
   assert.match(worker, /automation-agent-version/);
   assert.match(backend, /automation-agent-version\.ts/);
   assert.match(backend, /return "unknown"/);
