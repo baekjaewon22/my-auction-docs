@@ -5,6 +5,8 @@ import { ROLE_LABELS } from '../types';
 import type { Role } from '../types';
 import { isHeadOfficeBranch, isRestrictedAccountingBranch } from '../lib/branchAliases';
 import { canUseBusinessAutomation } from '../../shared/automation-access';
+import { canViewAuctionSchedule } from '../../shared/auction-schedule';
+import { canViewConsultantJournal } from '../../shared/consultant-journal-access';
 import WebPushConsentPrompt from './WebPushConsentPrompt';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
@@ -84,7 +86,8 @@ export default function Layout() {
   const canViewBidHistory = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canViewFreelancerBids = role === 'master'
     || (!isFreelancer && ['ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role));
-  const canViewAuctionSchedule = isFreelancer || (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'].includes(role));
+  const showAuctionSchedule = canViewAuctionSchedule(user);
+  const showConsultantJournal = canViewConsultantJournal(user);
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
   const canPayroll = canAccounting || PAYROLL_EXTRA_IDS.includes(user?.id || '');
   const canManagementSupport = canAccounting || canPayroll || (!isFreelancer && !isSupport && role === 'admin');
@@ -93,7 +96,6 @@ export default function Layout() {
     ['master', 'ceo', 'accountant'].includes(role) ||
     (role === 'admin' && isHeadOfficeBranch(user?.branch))
   );
-  const isAccountingOnly = !isFreelancer && ['accountant', 'accountant_asst'].includes(role);
   const isDirector = role === 'director';
   const canViewContractTracker = !isFreelancer && (
     ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role) ||
@@ -132,10 +134,12 @@ export default function Layout() {
         <Link to="/admin-notes" className={`nav-item ${isActive('/admin-notes') ? 'active' : ''}`} title="사내 커뮤니티" onClick={() => setMobileOpen(false)}>
           <StickyNote size={18} /> {!collapsed && '사내 커뮤니티'}
         </Link>
-        <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
-          <BookOpen size={18} /> {!collapsed && '회의록'}
-        </Link>
-        {!isAccountingOnly && !isFreelancer && !isDirector && !isSupport && (
+        {showAuctionSchedule && (
+          <Link to="/auction-schedule" className={`nav-item ${isActive('/auction-schedule') ? 'active' : ''}`} title="경매 스케줄" onClick={() => setMobileOpen(false)}>
+            <CalendarDays size={18} /> {!collapsed && '경매 스케줄'}
+          </Link>
+        )}
+        {showConsultantJournal && (
           <Link to="/journal" className={`nav-item ${isActive('/journal') ? 'active' : ''}`} title="컨설턴트 일지" onClick={() => setMobileOpen(false)}>
             <CalendarDays size={18} /> {!collapsed && '컨설턴트 일지'}
           </Link>
@@ -153,11 +157,9 @@ export default function Layout() {
             <FileText size={18} /> {!collapsed && '미제출 문서 현황'}
           </Link>
         )}
-        {canViewAuctionSchedule && (
-          <Link to="/auction-schedule" className={`nav-item ${isActive('/auction-schedule') ? 'active' : ''}`} title="경매 스케줄" onClick={() => setMobileOpen(false)}>
-            <CalendarDays size={18} /> {!collapsed && '경매 스케줄'}
-          </Link>
-        )}
+        <Link to="/minutes" className={`nav-item ${isActive('/minutes') ? 'active' : ''}`} title="회의록" onClick={() => setMobileOpen(false)}>
+          <BookOpen size={18} /> {!collapsed && '회의록'}
+        </Link>
         {canViewFreelancerBids && (
           <Link to="/freelancer-bids" className={`nav-item ${isActive('/freelancer-bids') ? 'active' : ''}`} title="입찰 내역" onClick={() => setMobileOpen(false)}>
             <span className="nav-freelancer-bid-icon" aria-hidden="true">F</span> {!collapsed && '입찰 내역'}
@@ -168,6 +170,9 @@ export default function Layout() {
             <CalendarCheck size={18} /> {!collapsed && '연차관리'}
           </Link>
         )}
+        <Link to="/personal-calendar" className={`nav-item ${isActive('/personal-calendar') ? 'active' : ''}`} title="캘린더" onClick={() => setMobileOpen(false)}>
+          <CalendarDays size={18} /> {!collapsed && '캘린더'}
+        </Link>
         <Link to="/rooms" className={`nav-item ${isActive('/rooms') ? 'active' : ''}`} title="회의실 예약" onClick={() => setMobileOpen(false)}>
           <DoorOpen size={18} /> {!collapsed && '회의실 예약'}
         </Link>
@@ -230,8 +235,8 @@ export default function Layout() {
           </>
         )}
 
-        {/* 통계: master/ceo/admin/director */}
-        {!isFreelancer && ['master', 'ceo', 'admin', 'director'].includes(role) && (
+        {/* 통계: master/ceo/admin */}
+        {!isFreelancer && ['master', 'ceo', 'admin'].includes(role) && (
           <Link to="/statistics" className={`nav-item ${isActive('/statistics') ? 'active' : ''}`} title="통계" onClick={() => setMobileOpen(false)}>
             <BarChart3 size={18} /> {!collapsed && '통계'}
           </Link>

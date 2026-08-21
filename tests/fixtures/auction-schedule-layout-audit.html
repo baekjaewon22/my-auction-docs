@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="../../src/react-app/index.css" />
+  <title>경매 스케줄 반응형 감사</title>
+</head>
+<body>
+  <main class="auction-schedule-page">
+    <div class="auction-schedule-heading">
+      <div><h2>경매 스케줄</h2></div>
+      <div class="auction-schedule-heading-actions">
+        <div class="auction-schedule-branch-filter">
+          <button class="active">전체보기</button><button>의정부</button><button>서초</button><button>대전</button><button>부산</button>
+        </div>
+        <button class="btn btn-primary">＋ 일정 등록</button>
+        <button class="journal-cal-toggle">달력</button>
+      </div>
+    </div>
+    <div class="auction-schedule-toolbar">
+      <button class="btn btn-secondary">‹</button>
+      <button class="auction-schedule-current-week"><strong>8월 넷째 주</strong><span>2026-08-17 ~ 2026-08-23</span></button>
+      <button class="btn btn-secondary">›</button>
+    </div>
+    <div class="auction-schedule-week-scroll">
+      <div class="auction-schedule-week-grid" id="schedule-grid"></div>
+    </div>
+  </main>
+  <div class="modal-overlay" id="schedule-modal-audit">
+    <section class="journal-form-modal" id="schedule-form-audit">
+      <div class="journal-form-header"><h3>일정 등록 — 2026-09-15</h3><button>×</button></div>
+      <form class="journal-form-body" id="schedule-form-body-audit">
+        <div class="form-group auction-inspection-autofill">
+          <label>기존 임장 정보 자동채우기</label>
+          <div class="auction-inspection-autofill-input"><input value="2025타경 1" /><span>검색 중</span></div>
+          <div class="auction-inspection-suggestion-list">
+            <button type="button"><strong>2025타경12345 · 물건 2</strong><span>김민수 · 의정부지방법원</span><em>입찰기일 2026-09-15</em></button>
+          </div>
+          <small>선택하면 저장된 사건번호·계약자명·법원·물건종류만 채웁니다.</small>
+        </div>
+        <div style="height: 680px; flex: 0 0 680px" aria-hidden="true"></div>
+        <div class="form-group auction-inspection-bid-date" id="bid-date-audit">
+          <label>입찰기일 <span>선택사항</span></label>
+          <div class="auction-inspection-bid-date-selects">
+            <select aria-label="입찰기일 연도"><option>2026년</option></select>
+            <select aria-label="입찰기일 월"><option>9월</option></select>
+            <select aria-label="입찰기일 일자" id="bid-day-audit"><option value="">일자</option></select>
+          </div>
+        </div>
+      </form>
+    </section>
+  </div>
+  <script>
+    const labels = ['월', '화', '수', '목', '금', '토', '일'];
+    const grid = document.querySelector('#schedule-grid');
+    labels.forEach((label, index) => {
+      const weekend = index >= 5;
+      const holiday = index === 2;
+      const card = document.createElement('section');
+      card.className = `auction-schedule-day${weekend ? ' weekend' : ''}${holiday ? ' holiday' : ''}`;
+      card.innerHTML = `
+        <header class="auction-schedule-day-header">
+          <div><strong>${label}</strong><span>${17 + index}</span>${holiday ? '<em>공휴일</em>' : ''}</div>
+          <button>＋</button>
+        </header>
+        <div class="auction-schedule-day-body">
+          <div class="auction-schedule-team-group">
+            <div class="auction-schedule-team-label">의정부지사 · 컨설팅팀</div>
+            <button class="auction-schedule-item">홍길동 · 지사장 · 입찰 (서울중앙지방법원)</button>
+            <button class="auction-schedule-item">김담당 · 컨설턴트 · 임장 (긴 장소명이 표시되는 현장)</button>
+          </div>
+        </div>`;
+      grid.appendChild(card);
+    });
+    const bidDay = document.querySelector('#bid-day-audit');
+    for (let day = 1; day <= 31; day += 1) {
+      const option = document.createElement('option');
+      option.value = String(day).padStart(2, '0');
+      option.textContent = `${day}일`;
+      bidDay.appendChild(option);
+    }
+  </script>
+</body>
+</html>

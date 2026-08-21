@@ -8,7 +8,7 @@ import { useAuthStore } from '../store';
 import JournalForm from '../journal/JournalForm';
 import { ACTIVITY_COLORS, type ActivityType } from '../journal/types';
 import { ROLE_LABELS, type Role } from '../types';
-import { getKoreanWeekLabel, type AuctionScheduleActivityType } from '../../shared/auction-schedule';
+import { auctionScheduleBidResult, getKoreanWeekLabel, type AuctionScheduleActivityType } from '../../shared/auction-schedule';
 import AuctionBidResultEditor from '../components/AuctionBidResultEditor';
 import { useSearchParams } from 'react-router-dom';
 import { AUCTION_SCHEDULE_BRANCH_OPTIONS, canSelectAuctionScheduleBranch, defaultAuctionScheduleBranch } from '../../shared/auction-schedule-branch';
@@ -74,7 +74,7 @@ const DETAIL_LABELS: Array<[string, string]> = [
   ['caseNo', '사건번호'], ['itemNo', '물건번호'], ['court', '법원'], ['place', '장소'],
   ['client', '계약자명'], ['bidder', '입찰자명'], ['propertyType', '물건종류'],
   ['meetingType', '미팅 유형'], ['suggestedPrice', '제시 입찰가'], ['bidPrice', '입찰가'],
-  ['memo', '메모'], ['inspEtcReason', '대상/사유'],
+  ['bidDate', '입찰기일'], ['memo', '메모'], ['inspEtcReason', '대상/사유'],
 ];
 
 export default function AuctionSchedule() {
@@ -89,6 +89,7 @@ export default function AuctionSchedule() {
       : mondayOf(new Date());
   });
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
+  const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
   const [selectedBranch, setSelectedBranch] = useState(() => defaultAuctionScheduleBranch(user));
   const [loading, setLoading] = useState(true);
   const [formDate, setFormDate] = useState<string | null>(null);
@@ -101,9 +102,9 @@ export default function AuctionSchedule() {
   }>>([]);
   const focusHandled = useRef(false);
 
-  const weekdays = useMemo(() => Array.from({ length: 5 }, (_, index) => addDays(weekStart, index)), [weekStart]);
-  const start = dateKey(weekdays[0]);
-  const end = dateKey(weekdays[4]);
+  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
+  const start = dateKey(weekDays[0]);
+  const end = dateKey(weekDays[6]);
   const canCreate = user?.role === 'master' || (user as any)?.login_type === 'freelancer';
   const canChooseCreateAssignee = user?.role === 'master';
   const canSelectBranch = canSelectAuctionScheduleBranch(user);
@@ -116,6 +117,7 @@ export default function AuctionSchedule() {
       const result = await api.auctionSchedule.list({ start, end, branch: selectedBranch });
       const nextEntries = result.entries as ScheduleEntry[];
       setEntries(nextEntries);
+      setHolidayDates(new Set(result.holidays || []));
       if (!focusHandled.current && focusScheduleId) {
         const target = nextEntries.find((entry) => entry.id === focusScheduleId);
         if (target) {
@@ -151,8 +153,12 @@ export default function AuctionSchedule() {
     }
   };
 
-  const applySimpleBidResult = async (entry: ScheduleEntry, result: 'withdrawn' | 'pending') => {
-    const label = result === 'withdrawn' ? '취하/변경' : '입찰 결과 초기화';
+  const applySimpleBidResult = async (entry: ScheduleEntry, result: 'withdrawn' | 'cancelled' | 'pending') => {
+    const label = result === 'withdrawn'
+      ? '취하/변경'
+      : result === 'cancelled'
+        ? '취소'
+        : '입찰 결과 초기화';
     if (!confirm(`${entry.user_name}님의 입찰을 ${label} 처리할까요?`)) return;
     setProcessingResult(true);
     try {
@@ -201,6 +207,7 @@ export default function AuctionSchedule() {
   };
 
   const selectedData = selected ? parseData(selected) : {};
+  const selectedBidResult = auctionScheduleBidResult(selectedData);
   const canWriteSelected = Boolean(selected && !selected.read_only && (
     user?.role === 'master'
     || ((user as any)?.login_type === 'freelancer' && selected.user_id === user?.id)
@@ -277,8 +284,10 @@ export default function AuctionSchedule() {
 
       <div className="auction-schedule-week-scroll">
         <div className="auction-schedule-week-grid">
-          {weekdays.map((day, index) => {
+          {weekDays.map((day, index) => {
             const key = dateKey(day);
+            const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+            const isHoliday = holidayDates.has(key);
             const dayEntries = entries.filter(entry => entry.target_date === key);
             const groupedEntries = dayEntries.reduce<Record<string, ScheduleEntry[]>>((groups, entry) => {
               const groupKey = `${entry.branch || '미지정'}\u0000${entry.department || '미지정'}`;
@@ -286,9 +295,16 @@ export default function AuctionSchedule() {
               return groups;
             }, {});
             return (
-              <section className="auction-schedule-day" key={key}>
+              <section
+                className={`auction-schedule-day${isWeekend ? ' weekend' : ''}${isHoliday ? ' holiday' : ''}`}
+                key={key}
+              >
                 <header className="auction-schedule-day-header">
-                  <div><strong>{['월', '화', '수', '목', '금'][index]}</strong><span>{day.getDate()}</span></div>
+                  <div>
+                    <strong>{['월', '화', '수', '목', '금', '토', '일'][index]}</strong>
+                    <span>{day.getDate()}</span>
+                    {isHoliday && <em>공휴일</em>}
+                  </div>
                   {canCreate && <button aria-label={`${key} 일정 등록`} onClick={() => setFormDate(key)}><Plus size={15} /></button>}
                 </header>
                 <div className="auction-schedule-day-body">
@@ -306,6 +322,7 @@ export default function AuctionSchedule() {
                             const location = scheduleLocation(entry);
                             const position = schedulePosition(entry);
                             const data = parseData(entry);
+                            const bidResult = auctionScheduleBidResult(data);
                             return (
                               <button
                                 key={entry.id}
@@ -316,8 +333,10 @@ export default function AuctionSchedule() {
                                 <span>{entry.user_name}{position ? ` · ${position}` : ''} · {entry.activity_type}{location ? ` (${location})` : ''}</span>
                                 <span className="auction-schedule-item-badges">
                                   {entry.read_only ? <em>이전 일지</em> : null}
-                                  {data.bidWon ? <em className="won">낙찰</em> : null}
-                                  {data.bidCancelled ? <em className="cancelled">취하/변경</em> : null}
+                                  {bidResult === 'won' ? <em className="won">낙찰</em> : null}
+                                  {bidResult === 'failed' ? <em className="cancelled">실패</em> : null}
+                                  {bidResult === 'cancelled' ? <em className="cancelled">취소</em> : null}
+                                  {bidResult === 'withdrawn' ? <em className="cancelled">취하/변경</em> : null}
                                 </span>
                               </button>
                             );
@@ -360,9 +379,10 @@ export default function AuctionSchedule() {
             </div>
             <div className="auction-schedule-detail-grid">
               {selected.read_only ? <div className="auction-schedule-detail-row"><span>기록 출처</span><strong>정규직 시절 컨설턴트 일지</strong></div> : null}
-              {selected.activity_type === '입찰' && selectedData.bidWon ? <div className="auction-schedule-detail-row"><span>입찰 결과</span><strong style={{ color: '#188038' }}>낙찰</strong></div> : null}
-              {selected.activity_type === '입찰' && selectedData.bidFailed ? <div className="auction-schedule-detail-row"><span>입찰 결과</span><strong style={{ color: '#d93025' }}>실패</strong></div> : null}
-              {selected.activity_type === '입찰' && selectedData.bidCancelled ? <div className="auction-schedule-detail-row"><span>입찰 결과</span><strong style={{ color: '#e65100' }}>취하/변경</strong></div> : null}
+              {selected.activity_type === '입찰' && selectedBidResult === 'won' ? <div className="auction-schedule-detail-row"><span>입찰 결과</span><strong style={{ color: '#188038' }}>낙찰</strong></div> : null}
+              {selected.activity_type === '입찰' && selectedBidResult === 'failed' ? <div className="auction-schedule-detail-row"><span>입찰 결과</span><strong style={{ color: '#d93025' }}>실패</strong></div> : null}
+              {selected.activity_type === '입찰' && selectedBidResult === 'cancelled' ? <div className="auction-schedule-detail-row"><span>입찰 결과</span><strong style={{ color: '#b3261e' }}>취소{selectedData.bidResultCancelledAutomatically ? ' (5일 경과 자동 처리)' : ''}</strong></div> : null}
+              {selected.activity_type === '입찰' && selectedBidResult === 'withdrawn' ? <div className="auction-schedule-detail-row"><span>입찰 결과</span><strong style={{ color: '#e65100' }}>취하/변경</strong></div> : null}
               {selected.activity_subtype && <div className="auction-schedule-detail-row"><span>구분</span><strong>{selected.activity_subtype}</strong></div>}
               {DETAIL_LABELS.map(([key, label]) => {
                 const value = selectedData[key];
@@ -374,33 +394,41 @@ export default function AuctionSchedule() {
               <div className="auction-schedule-bid-actions">
                 <button
                   type="button"
-                  className={`btn btn-sm journal-bid-won-btn ${selectedData.bidWon ? 'active' : ''}`}
-                  disabled={processingResult}
-                  onClick={() => selectedData.bidWon ? applySimpleBidResult(selected, 'pending') : applyFinalBidResult(selected, 'won')}
+                  className={`btn btn-sm journal-bid-won-btn ${selectedBidResult === 'won' ? 'active' : ''}`}
+                  disabled={processingResult || !['pending', 'won'].includes(selectedBidResult)}
+                  onClick={() => selectedBidResult === 'won' ? applySimpleBidResult(selected, 'pending') : applyFinalBidResult(selected, 'won')}
                 >
-                  <Trophy size={13} /> {selectedData.bidWon ? '낙찰 취소' : '낙찰'}
+                  <Trophy size={13} /> {selectedBidResult === 'won' ? '낙찰 해제' : '낙찰'}
                 </button>
-                {!selectedData.bidWon && !selectedData.bidCancelled && (
+                {['pending', 'failed'].includes(selectedBidResult) && (
                   <button
                     type="button"
-                    className={`btn btn-sm ${selectedData.bidFailed ? 'btn-danger' : ''}`}
+                    className={`btn btn-sm ${selectedBidResult === 'failed' ? 'btn-danger' : ''}`}
                     disabled={processingResult}
-                    onClick={() => selectedData.bidFailed ? applySimpleBidResult(selected, 'pending') : applyFinalBidResult(selected, 'failed')}
+                    onClick={() => selectedBidResult === 'failed' ? applySimpleBidResult(selected, 'pending') : applyFinalBidResult(selected, 'failed')}
                   >
-                    {selectedData.bidFailed ? '실패 취소' : '실패'}
+                    {selectedBidResult === 'failed' ? '실패 해제' : '실패'}
                   </button>
                 )}
                 <button
                   type="button"
                   className="btn btn-sm"
-                  disabled={processingResult || Boolean(selectedData.bidWon)}
-                  onClick={() => applySimpleBidResult(selected, selectedData.bidCancelled ? 'pending' : 'withdrawn')}
+                  disabled={processingResult || !['pending', 'withdrawn'].includes(selectedBidResult)}
+                  onClick={() => applySimpleBidResult(selected, selectedBidResult === 'withdrawn' ? 'pending' : 'withdrawn')}
                 >
-                  {selectedData.bidCancelled ? '✓ 취하/변경' : '취하/변경'}
+                  {selectedBidResult === 'withdrawn' ? '취하/변경 해제' : '취하/변경'}
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-sm ${selectedBidResult === 'cancelled' ? 'btn-danger' : ''}`}
+                  disabled={processingResult || !['pending', 'cancelled'].includes(selectedBidResult)}
+                  onClick={() => applySimpleBidResult(selected, selectedBidResult === 'cancelled' ? 'pending' : 'cancelled')}
+                >
+                  {selectedBidResult === 'cancelled' ? '취소 해제' : '취소'}
                 </button>
               </div>
             )}
-            {selected.activity_type === '입찰' && canWriteSelected && !selectedData.bidWon && !selectedData.bidCancelled && (
+            {selected.activity_type === '입찰' && canWriteSelected && ['pending', 'failed'].includes(selectedBidResult) && (
               <button type="button" className="btn btn-secondary btn-full auction-schedule-write-prices" onClick={() => setPriceEditorEntry(selected)}>
                 입찰가 작성
               </button>

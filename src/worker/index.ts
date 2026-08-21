@@ -25,6 +25,7 @@ import casesRoute from './routes/cases';
 import adminNotesRoute from './routes/admin-notes';
 import cooperationRoute from './routes/cooperation';
 import roomsRoute from './routes/rooms';
+import personalCalendarRoute from './routes/personal-calendar';
 import driveRoute from './routes/drive';
 import briefingMaterialsRoute from './routes/briefing-materials';
 import linksRoute from './routes/links';
@@ -112,6 +113,7 @@ app.route('/api/cases', casesRoute);
 app.route('/api/admin-notes', adminNotesRoute);
 app.route('/api/cooperation', cooperationRoute);
 app.route('/api/rooms', roomsRoute);
+app.route('/api/personal-calendar', personalCalendarRoute);
 app.route('/api/drive', driveRoute);
 app.route('/api/briefing-materials', briefingMaterialsRoute);
 app.route('/api/links', linksRoute);
@@ -481,6 +483,12 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
       runAuctionBidResultReminders(env, new Date((event as any).scheduledTime || Date.now())).then(
         (r) => { if (r.reminders > 0) console.log('[cron auction-bid-result-reminders] done', r); },
         (err) => console.error('[cron auction-bid-result-reminders] error', err),
+      ),
+    ));
+    ctx.waitUntil(import('./lib/auction-schedule-auto-cancellation').then(({ runAuctionScheduleAutoCancellation }) =>
+      runAuctionScheduleAutoCancellation(env, scheduledAt).then(
+        (r) => { if (r.cancelled > 0) console.log('[cron auction-schedule-auto-cancellation] done', r); },
+        (err) => console.error('[cron auction-schedule-auto-cancellation] error', err),
       ),
     ));
   } else if (cron === '30 0 * * 1-5') {

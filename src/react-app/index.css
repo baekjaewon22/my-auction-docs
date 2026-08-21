@@ -5609,6 +5609,147 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   padding: 20px 0 4px;
 }
 
+.dashboard-today-bids .section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dashboard-today-bids-date {
+  color: #667085;
+  font-size: .72rem;
+  font-weight: 600;
+}
+
+.dashboard-today-bids-list {
+  overflow: hidden;
+  border: 1px solid #e4e8f0;
+  border-radius: 12px;
+}
+
+.dashboard-today-bids-row {
+  display: grid;
+  grid-template-columns: minmax(90px, .85fr) minmax(75px, .75fr) minmax(70px, .65fr) minmax(120px, 1.1fr) minmax(150px, 1.4fr) minmax(130px, 1.2fr) minmax(82px, .7fr);
+  align-items: center;
+  min-width: 0;
+  border-top: 1px solid #edf0f5;
+  background: #fff;
+}
+
+.dashboard-today-bids-row.clickable {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color .15s ease, box-shadow .15s ease;
+}
+
+.dashboard-today-bids-row.clickable:hover {
+  background: #f5f8ff;
+}
+
+.dashboard-today-bids-row.clickable:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid #4f6bed;
+  outline-offset: -2px;
+}
+
+.dashboard-today-bids-row:first-child {
+  border-top: 0;
+}
+
+.dashboard-today-bids-row.header {
+  background: #f6f8fb;
+  color: #667085;
+  font-size: .68rem;
+  font-weight: 800;
+}
+
+.dashboard-today-bids-row > span {
+  min-width: 0;
+  padding: 10px 9px;
+  color: #344054;
+  font-size: .75rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-today-bids-row.header > span {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.dashboard-today-bid-result {
+  display: inline-flex;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  color: #4b5563;
+  font-size: .66rem;
+  white-space: nowrap;
+}
+
+.dashboard-today-bid-result.won { background: #dcfce7; color: #166534; }
+.dashboard-today-bid-result.failed,
+.dashboard-today-bid-result.cancelled { background: #fee2e2; color: #b91c1c; }
+.dashboard-today-bid-result.withdrawn { background: #ffedd5; color: #9a3412; }
+
+.dashboard-today-bids-empty {
+  padding: 18px;
+  border: 1px dashed #d9dee8;
+  border-radius: 10px;
+  color: #7b8494;
+  font-size: .78rem;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .dashboard-today-bids-row.header {
+    display: none;
+  }
+
+  .dashboard-today-bids-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .dashboard-today-bids-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    border: 1px solid #e4e8f0;
+    border-radius: 10px;
+  }
+
+  .dashboard-today-bids-row > span {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    gap: 8px;
+    padding: 6px 9px;
+    border-top: 1px solid #f0f2f6;
+  }
+
+  .dashboard-today-bids-row > span:first-child {
+    border-top: 0;
+  }
+
+  .dashboard-today-bids-row > span::before {
+    content: attr(data-label);
+    color: #8a94a6;
+    font-size: .66rem;
+    font-weight: 800;
+  }
+}
+
+@media (max-width: 600px) {
+  .dashboard-today-bids-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .template-card-footer {
   display: flex;
   gap: 6px;
@@ -7503,7 +7644,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border-radius: 12px;
   width: 100%;
   max-width: 520px;
-  max-height: 92vh;
+  max-height: min(92vh, calc(100dvh - 32px));
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg);
@@ -7594,6 +7735,155 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .journal-form-body .form-group label {
   margin-bottom: 4px;
+}
+
+.auction-inspection-autofill {
+  position: relative;
+  padding: 10px;
+  border: 1px solid #d6e4f7;
+  border-radius: 9px;
+  background: #f8fbff;
+}
+
+.auction-inspection-autofill-input {
+  position: relative;
+}
+
+.auction-inspection-autofill-input input {
+  width: 100%;
+  padding-right: 58px;
+}
+
+.auction-inspection-autofill-input > span {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: #6b7280;
+  font-size: .7rem;
+  transform: translateY(-50%);
+}
+
+.auction-inspection-suggestion-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 230px;
+  margin-top: 5px;
+  border: 1px solid #cdd9e8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(32, 54, 82, .13);
+  overflow-y: auto;
+}
+
+.auction-inspection-suggestion-list button {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 9px 10px;
+  border: 0;
+  border-bottom: 1px solid #edf1f6;
+  background: #fff;
+  color: #202124;
+  text-align: left;
+}
+
+.auction-inspection-suggestion-list button:last-child {
+  border-bottom: 0;
+}
+
+.auction-inspection-suggestion-list button:hover,
+.auction-inspection-suggestion-list button:focus-visible {
+  background: #edf5ff;
+  outline: none;
+}
+
+.auction-inspection-suggestion-list strong,
+.auction-inspection-suggestion-list span,
+.auction-inspection-suggestion-list em {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.auction-inspection-suggestion-list strong {
+  font-size: .78rem;
+}
+
+.auction-inspection-suggestion-list span {
+  color: #5f6368;
+  font-size: .72rem;
+}
+
+.auction-inspection-suggestion-list em {
+  color: #1a73e8;
+  font-size: .68rem;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.auction-inspection-autofill small {
+  display: block;
+  margin-top: 6px;
+  color: #687386;
+  font-size: .68rem;
+  line-height: 1.45;
+}
+
+.auction-inspection-autofill-notice {
+  margin: 7px 0 0;
+  color: #188038;
+  font-size: .72rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.auction-inspection-bid-date {
+  padding-top: 10px;
+  border-top: 1px dashed #d7dde5;
+}
+
+.auction-inspection-bid-date > label span {
+  color: #7b8494;
+  font-size: .68rem;
+  font-weight: 400;
+}
+
+.auction-inspection-bid-date-selects {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr 1fr;
+  gap: 7px;
+}
+
+.auction-inspection-bid-date-selects select {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 28px 7px 9px;
+  border: 1px solid #cbd3dd;
+  border-radius: 7px;
+  background-color: #fff;
+  color: #202124;
+  font-size: .8rem;
+  cursor: pointer;
+}
+
+.auction-inspection-bid-date-selects select:focus {
+  border-color: #1a73e8;
+  outline: 2px solid #e8f0fe;
+  outline-offset: 0;
+}
+
+@media (max-width: 768px) {
+  .journal-form-modal {
+    max-height: calc(100dvh - 16px);
+  }
+
+  .auction-inspection-bid-date-selects select {
+    min-height: 44px;
+    padding: 8px 22px 8px 8px;
+    font-size: .82rem;
+  }
 }
 
 .activity-type-tabs {
@@ -15392,16 +15682,16 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .auction-schedule-week-scroll {
   width: 100%;
-  overflow-x: auto;
+  overflow-x: hidden;
   padding-bottom: 8px;
 }
 
 .auction-schedule-week-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   align-items: start;
-  gap: 12px;
-  min-width: 840px;
+  gap: 9px;
+  min-width: 0;
 }
 
 .auction-schedule-day {
@@ -15417,7 +15707,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 11px 12px;
+  padding: 9px;
   border-bottom: 1px solid #edf0f2;
   background: #f8fafc;
   border-radius: 12px 12px 0 0;
@@ -15426,11 +15716,34 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .auction-schedule-day-header div {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: 5px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .auction-schedule-day-header span {
   color: #6b7280;
+}
+
+.auction-schedule-day-header em {
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #fff0f0;
+  color: #c5221f;
+  font-size: .61rem;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.auction-schedule-day.weekend .auction-schedule-day-header,
+.auction-schedule-day.holiday .auction-schedule-day-header {
+  background: #fff8f7;
+}
+
+.auction-schedule-day.weekend .auction-schedule-day-header strong,
+.auction-schedule-day.holiday .auction-schedule-day-header strong {
+  color: #c5221f;
 }
 
 .auction-schedule-day-header button {
@@ -15449,8 +15762,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   display: flex;
   flex-direction: column;
   gap: 7px;
-  min-height: 96px;
-  padding: 10px;
+  min-height: 84px;
+  padding: 8px;
 }
 
 .auction-schedule-team-group {
@@ -15475,13 +15788,13 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 .auction-schedule-item {
   width: 100%;
-  min-height: 38px;
-  padding: 8px 9px;
+  min-height: 34px;
+  padding: 6px 7px;
   border: 1px solid;
   border-left-width: 4px;
   border-radius: 8px;
   font: inherit;
-  font-size: .82rem;
+  font-size: .76rem;
   font-weight: 700;
   line-height: 1.4;
   text-align: left;
@@ -15785,8 +16098,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   }
 
   .auction-schedule-week-grid {
-    min-width: 760px;
-    gap: 9px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+    gap: 8px;
   }
 
   .auction-bid-result-fields {
@@ -15802,6 +16116,50 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
     width: 100%;
     max-height: 94vh;
     border-radius: 16px 16px 0 0;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1023px) {
+  .auction-schedule-week-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1399px) {
+  .auction-schedule-week-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 479px) {
+  .auction-schedule-toolbar {
+    gap: 6px;
+  }
+
+  .auction-schedule-current-week {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 7px 4px;
+  }
+
+  .auction-schedule-current-week strong {
+    font-size: 1rem;
+  }
+
+  .auction-schedule-current-week span {
+    font-size: .7rem;
+  }
+
+  .auction-schedule-week-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .auction-schedule-day-header {
+    padding: 8px 10px;
+  }
+
+  .auction-schedule-day-body {
+    min-height: 68px;
   }
 }
 
@@ -16387,4 +16745,911 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .mobile-overlay {
     backdrop-filter: blur(1px);
   }
+}
+
+/* 마이페이지 개인 캘린더 */
+.personal-calendar-page {
+  --calendar-border: #e4e8f0;
+  --calendar-muted: #8a94a6;
+  --calendar-accent: #4f6bed;
+  --calendar-accent-soft: #eef2ff;
+  max-width: 1480px;
+  margin: 0 auto;
+}
+
+.personal-calendar-page-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 5px;
+}
+
+.personal-calendar-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.personal-calendar-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  min-width: 0;
+}
+
+.personal-calendar-anomaly-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid #f2b8b5;
+  border-radius: 11px;
+  background: #fff7f6;
+  color: #b42318;
+  font-size: .78rem;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.personal-calendar-anomaly-link:hover,
+.personal-calendar-anomaly-link:focus-visible {
+  border-color: #e48c86;
+  background: #fff0ee;
+  outline: none;
+}
+
+.personal-calendar-view-slider {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 3px;
+  border: 1px solid var(--calendar-border);
+  border-radius: 12px;
+  background: #f1f4f9;
+}
+
+.personal-calendar-view-slider button {
+  min-height: 38px;
+  padding: 5px 14px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #667085;
+  font-size: .76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.personal-calendar-view-slider button small {
+  display: block;
+  margin-top: 1px;
+  font-size: .58rem;
+  font-weight: 700;
+}
+
+.personal-calendar-view-slider button.active {
+  background: #fff;
+  color: #2949a8;
+  box-shadow: 0 2px 7px rgba(31, 42, 68, .12);
+}
+
+.personal-calendar-page-header p {
+  margin: 0;
+  color: #6f7785;
+  font-size: 0.86rem;
+}
+
+.personal-calendar-shell {
+  display: block;
+  width: 100%;
+}
+
+.personal-calendar-card {
+  min-width: 0;
+  background: #fff;
+  border: 1px solid var(--calendar-border);
+  border-radius: 18px;
+  box-shadow: 0 10px 30px rgba(31, 42, 68, 0.07);
+  overflow: hidden;
+}
+
+.personal-calendar-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 72px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--calendar-border);
+}
+
+.personal-calendar-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 4px;
+  padding: 3px;
+  border: 1px solid var(--calendar-border);
+  border-radius: 10px;
+  background: #f7f9fc;
+}
+
+.personal-calendar-zoom-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: #fff;
+  color: #3d4655;
+  cursor: pointer;
+}
+
+.personal-calendar-zoom-controls button:hover:not(:disabled),
+.personal-calendar-zoom-controls button:focus-visible {
+  background: #e9eef8;
+  outline: none;
+}
+
+.personal-calendar-zoom-controls button:disabled {
+  opacity: .35;
+  cursor: default;
+}
+
+.personal-calendar-zoom-controls output {
+  min-width: 38px;
+  color: #596273;
+  font-size: .68rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.personal-calendar-grid-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-gutter: stable;
+}
+
+.personal-calendar-grid-scroll:focus-visible {
+  outline: 2px solid #9db7f0;
+  outline-offset: -2px;
+}
+
+.personal-calendar-grid-canvas {
+  min-width: 700px;
+  max-width: none;
+}
+
+.personal-calendar-month-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.personal-calendar-month-title strong {
+  font-size: 1.16rem;
+  white-space: nowrap;
+}
+
+.personal-calendar-month-title span {
+  color: var(--calendar-muted);
+  font-size: 0.73rem;
+  white-space: nowrap;
+}
+
+.calendar-icon-button,
+.calendar-today-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  min-height: 38px;
+  border: 1px solid var(--calendar-border);
+  border-radius: 10px;
+  background: #fff;
+  color: #3d4655;
+  cursor: pointer;
+}
+
+.calendar-icon-button:hover,
+.calendar-today-button:hover {
+  border-color: #bac4dc;
+  background: #f7f9fd;
+}
+
+.calendar-today-button {
+  padding: 0 13px;
+  font-weight: 700;
+  font-size: 0.78rem;
+}
+
+.personal-calendar-error {
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff1f1;
+  color: #b42318;
+  font-size: 0.8rem;
+}
+
+.personal-calendar-weekdays,
+.personal-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.personal-calendar-grid {
+  grid-auto-rows: minmax(118px, auto);
+  align-items: stretch;
+}
+
+.personal-calendar-weekdays {
+  border-bottom: 1px solid var(--calendar-border);
+  background: #fafbfe;
+}
+
+.personal-calendar-weekdays span {
+  padding: 11px 4px;
+  color: #596273;
+  text-align: center;
+  font-weight: 700;
+  font-size: 0.76rem;
+}
+
+.personal-calendar-weekdays .sunday,
+.personal-calendar-day-number.sunday {
+  color: #d84b4b;
+}
+
+.personal-calendar-weekdays .saturday,
+.personal-calendar-day-number.saturday {
+  color: #3f6fc5;
+}
+
+.personal-calendar-day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  min-height: 100%;
+  height: auto;
+  padding: 9px;
+  border: 0;
+  border-right: 1px solid var(--calendar-border);
+  border-bottom: 1px solid var(--calendar-border);
+  background: #fff;
+  color: #2f3745;
+  text-align: left;
+  cursor: default;
+  overflow: hidden;
+}
+
+.personal-calendar-day:nth-child(7n) {
+  border-right: 0;
+}
+
+.personal-calendar-day:nth-last-child(-n + 7) {
+  border-bottom: 0;
+}
+
+.personal-calendar-day:hover {
+  background: #f8faff;
+}
+
+.personal-calendar-day.outside {
+  background: #fbfcfe;
+}
+
+.personal-calendar-day.outside .personal-calendar-day-number {
+  opacity: 0.36;
+}
+
+.personal-calendar-day-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.personal-calendar-day.today .personal-calendar-day-number {
+  background: var(--calendar-accent);
+  color: #fff;
+}
+
+.personal-calendar-day-events {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.personal-calendar-event-chip {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0;
+  border-left: 3px solid var(--event-color, var(--calendar-accent));
+  border-radius: 5px;
+  background: #f3f5f9;
+  color: #3c4657;
+  font-size: 0.69rem;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  cursor: pointer;
+}
+
+.personal-calendar-event-chip:hover,
+.personal-calendar-event-chip:focus-visible {
+  background: #e9eef8;
+  outline: none;
+}
+
+.personal-calendar-event-chip:focus-visible {
+  box-shadow: 0 0 0 2px #9db7f0;
+}
+
+.personal-calendar-event-chip.auction {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.personal-calendar-event-chip.auction.inspection {
+  background: #fff1cc;
+  box-shadow: inset 0 0 0 1px #f5d990;
+}
+
+.personal-calendar-event-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.personal-calendar-event-result {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  color: #374151;
+  font-size: .58rem;
+  font-weight: 800;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.personal-calendar-event-result.won { background: #dcfce7; color: #166534; }
+.personal-calendar-event-result.failed,
+.personal-calendar-event-result.cancelled { background: #fee2e2; color: #b91c1c; }
+.personal-calendar-event-result.withdrawn { background: #ffedd5; color: #9a3412; }
+
+.personal-calendar-event-detail {
+  width: min(520px, calc(100vw - 28px));
+  max-height: min(88vh, calc(100dvh - 28px));
+  padding: 20px;
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 20px 55px rgba(15, 23, 42, .24);
+  overflow-y: auto;
+}
+
+.personal-calendar-event-detail > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.personal-calendar-event-detail h3 {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+}
+
+.personal-calendar-event-detail header span {
+  color: #6b7280;
+  font-size: .78rem;
+}
+
+.personal-calendar-event-detail-grid > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.personal-calendar-event-detail-grid > div:last-child {
+  border-bottom: 0;
+}
+
+.personal-calendar-event-detail-grid span {
+  color: #6b7280;
+  font-size: .78rem;
+}
+
+.personal-calendar-event-detail-grid strong {
+  min-width: 0;
+  color: #252b35;
+  font-size: .84rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.personal-calendar-event-detail-grid .bid-result.won { color: #188038; }
+.personal-calendar-event-detail-grid .bid-result.failed,
+.personal-calendar-event-detail-grid .bid-result.cancelled { color: #d93025; }
+.personal-calendar-event-detail-grid .bid-result.withdrawn { color: #e65100; }
+.personal-calendar-event-detail-grid .bid-result.pending { color: #6b7280; }
+
+.personal-calendar-personal-detail {
+  padding: 12px;
+  border-radius: 8px;
+  background: #f6f8fb;
+  color: #3c4657;
+  font-size: .84rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .personal-calendar-grid {
+    grid-auto-rows: minmax(96px, auto);
+  }
+}
+
+@media (max-width: 600px) {
+  .personal-calendar-page-header {
+    align-items: flex-start;
+  }
+
+  .personal-calendar-view-slider {
+    margin-left: 0;
+  }
+
+  .personal-calendar-header-actions {
+    flex-wrap: wrap;
+  }
+
+  .personal-calendar-anomaly-link {
+    min-height: 40px;
+    padding-inline: 10px;
+    font-size: .7rem;
+  }
+
+  .personal-calendar-view-slider button {
+    min-height: 34px;
+    padding: 4px 9px;
+    font-size: .68rem;
+  }
+
+  .personal-calendar-page-header p {
+    font-size: 0.78rem;
+    line-height: 1.5;
+  }
+
+  .personal-calendar-card {
+    border-radius: 13px;
+  }
+
+  .personal-calendar-toolbar {
+    min-height: 62px;
+    padding: 10px;
+  }
+
+  .personal-calendar-zoom-controls {
+    width: 100%;
+    justify-content: flex-end;
+    margin: 2px 0 0;
+  }
+
+  .personal-calendar-month-title {
+    gap: 5px;
+  }
+
+  .personal-calendar-month-title strong {
+    font-size: 0.96rem;
+  }
+
+  .personal-calendar-month-title span {
+    display: none;
+  }
+
+  .calendar-icon-button,
+  .calendar-today-button {
+    min-width: 34px;
+    min-height: 34px;
+  }
+
+  .calendar-today-button {
+    padding: 0 9px;
+    font-size: 0.72rem;
+  }
+
+  .personal-calendar-weekdays span {
+    padding: 8px 2px;
+    font-size: 0.68rem;
+  }
+
+  .personal-calendar-day {
+    min-height: 100%;
+    padding: 5px 3px;
+    gap: 2px;
+  }
+
+  .personal-calendar-grid {
+    grid-auto-rows: minmax(72px, auto);
+  }
+
+  .personal-calendar-day-number {
+    width: 24px;
+    height: 24px;
+    font-size: 0.7rem;
+  }
+
+  .personal-calendar-day-events {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-content: flex-start;
+    gap: 3px;
+  }
+
+  .personal-calendar-event-chip {
+    width: 6px;
+    height: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--event-color, var(--calendar-accent));
+    color: transparent;
+  }
+
+  .personal-calendar-event-chip.auction {
+    width: 100%;
+    height: auto;
+    min-height: 24px;
+    padding: 2px 2px;
+    border-left: 2px solid var(--event-color, var(--calendar-accent));
+    border-radius: 4px;
+    background: #eef3fb;
+    color: #334155;
+    font-size: .64rem;
+    line-height: 1.2;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .personal-calendar-event-result {
+    padding: 1px 2px;
+    font-size: .56rem;
+  }
+
+  .personal-calendar-event-detail {
+    max-height: calc(100dvh - 16px);
+    padding: 16px;
+    border-radius: 13px;
+  }
+
+  .personal-calendar-event-detail-grid > div {
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+}
+
+@media (max-width: 430px) {
+  .personal-calendar-page-header {
+    flex-direction: column;
+  }
+
+  .personal-calendar-header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .personal-calendar-grid {
+    grid-auto-rows: minmax(64px, auto);
+  }
+
+  .personal-calendar-day {
+    padding-inline: 2px;
+  }
+}
+
+/* 경매 진행 단계 이상현황 */
+.auction-story-anomaly-page {
+  max-width: 1440px;
+  margin: 0 auto;
+}
+
+.auction-story-anomaly-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.auction-story-back,
+.auction-story-anomaly-header h2,
+.auction-story-controls,
+.auction-story-controls label,
+.auction-story-controls button {
+  display: flex;
+  align-items: center;
+}
+
+.auction-story-back {
+  width: fit-content;
+  gap: 4px;
+  margin-bottom: 8px;
+  color: #667085;
+  font-size: .78rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.auction-story-anomaly-header h2 {
+  gap: 8px;
+  margin: 0 0 6px;
+}
+
+.auction-story-anomaly-header p {
+  margin: 0;
+  color: #667085;
+  font-size: .82rem;
+}
+
+.auction-story-controls {
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.auction-story-controls label {
+  gap: 7px;
+  min-height: 42px;
+  padding: 0 10px;
+  border: 1px solid #d8dee9;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.auction-story-controls input {
+  min-width: 130px;
+  border: 0;
+  background: transparent;
+  color: #344054;
+  font: inherit;
+}
+
+.auction-story-controls button {
+  justify-content: center;
+  gap: 6px;
+  min-height: 42px;
+  padding: 0 13px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #344054;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.auction-story-branch-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 20px 0 12px;
+}
+
+.auction-story-branch-tabs button {
+  min-height: 40px;
+  padding: 0 15px;
+  border: 1px solid #d8dee9;
+  border-radius: 999px;
+  background: #fff;
+  color: #667085;
+  font-size: .78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.auction-story-branch-tabs button.active {
+  border-color: #335cd6;
+  background: #335cd6;
+  color: #fff;
+}
+
+.auction-story-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.auction-story-summary > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid #e3e8ef;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.auction-story-summary span {
+  color: #667085;
+  font-size: .76rem;
+  font-weight: 700;
+}
+
+.auction-story-summary strong {
+  color: #b42318;
+  font-size: 1.2rem;
+}
+
+.auction-story-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.auction-story-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #e3e8ef;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, .05);
+}
+
+.auction-story-card > header,
+.auction-story-card > header > div,
+.auction-story-card > footer {
+  display: flex;
+  align-items: center;
+}
+
+.auction-story-card > header {
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.auction-story-card > header > div {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.auction-story-card > header small,
+.auction-story-card > header time {
+  color: #667085;
+  font-size: .72rem;
+}
+
+.auction-story-card > header time { white-space: nowrap; }
+
+.auction-story-branch {
+  padding: 3px 7px;
+  border-left: 4px solid #2563eb;
+  border-radius: 5px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: .68rem;
+  font-weight: 850;
+}
+
+.auction-story-branch.seocho { border-color: #f97316; background: #fff7ed; color: #9a3412; }
+.auction-story-branch.busan { border-color: #172554; background: #eef2ff; color: #172554; }
+.auction-story-branch.daejeon { border-color: #38bdf8; background: #f0f9ff; color: #075985; }
+
+.auction-story-case {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 16px;
+  padding: 13px 0;
+}
+
+.auction-story-case > div { min-width: 0; }
+.auction-story-case span { display: block; margin-bottom: 3px; color: #7b8493; font-size: .68rem; }
+.auction-story-case strong { display: block; color: #263041; font-size: .79rem; overflow-wrap: anywhere; }
+
+.auction-story-stages {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.auction-story-stage {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 3px 5px;
+  min-width: 0;
+  padding: 9px;
+  border-radius: 9px;
+}
+
+.auction-story-stage.complete { background: #ecfdf3; color: #166534; }
+.auction-story-stage.missing { background: #fff1f0; color: #b42318; }
+.auction-story-stage span { min-width: 0; font-size: .72rem; font-weight: 800; overflow-wrap: anywhere; }
+.auction-story-stage small { grid-column: 2; font-size: .62rem; opacity: .78; }
+
+.auction-story-card > footer {
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  color: #667085;
+  font-size: .7rem;
+}
+
+.auction-story-card > footer strong {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #fee4e2;
+  color: #b42318;
+  font-size: .66rem;
+}
+
+.auction-story-error,
+.auction-story-empty {
+  padding: 22px;
+  border: 1px solid #e3e8ef;
+  border-radius: 13px;
+  background: #fff;
+}
+
+.auction-story-error { color: #b42318; }
+.auction-story-empty { display: flex; flex-direction: column; align-items: center; gap: 7px; color: #18794e; text-align: center; }
+.auction-story-empty span { color: #667085; font-size: .78rem; }
+
+@media (max-width: 900px) {
+  .auction-story-anomaly-header { align-items: flex-start; }
+  .auction-story-list { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  .auction-story-anomaly-header { flex-direction: column; }
+  .auction-story-controls { width: 100%; }
+  .auction-story-controls label { flex: 1; min-width: 0; }
+  .auction-story-controls input { width: 100%; min-width: 0; }
+  .auction-story-controls button { flex: 0 0 auto; }
+  .auction-story-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .auction-story-card { padding: 13px; }
+  .auction-story-case { grid-template-columns: 1fr; gap: 8px; }
+}
+
+@media (max-width: 390px) {
+  .auction-story-controls { flex-direction: column; align-items: stretch; }
+  .auction-story-controls button { width: 100%; }
+  .auction-story-stages { grid-template-columns: 1fr; }
+  .auction-story-stage { grid-template-columns: auto 1fr auto; }
+  .auction-story-stage small { grid-column: 3; }
 }

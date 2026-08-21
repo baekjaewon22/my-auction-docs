@@ -312,7 +312,7 @@ const defaultPopupForm = (): AnnouncementPopupForm => ({
   dismiss_days: 7,
 });
 
-function PopupNoticeManager({ canManage }: { canManage: boolean }) {
+function PopupNoticeManager({ canManage, canDelete }: { canManage: boolean; canDelete: boolean }) {
   const [popups, setPopups] = useState<any[]>([]);
   const [form, setForm] = useState<AnnouncementPopupForm>(defaultPopupForm);
   const [saving, setSaving] = useState(false);
@@ -444,7 +444,7 @@ function PopupNoticeManager({ canManage }: { canManage: boolean }) {
               <div className="popup-manager-item-actions">
                 <button className="btn btn-sm" type="button" onClick={() => editPopup(popup)}>수정</button>
                 {popup.enabled !== 0 && <button className="btn btn-sm" type="button" onClick={() => endPopup(popup)}>종료</button>}
-                <button className="btn btn-sm btn-danger" type="button" onClick={() => deletePopup(popup)}>삭제</button>
+                {canDelete && <button className="btn btn-sm btn-danger" type="button" onClick={() => deletePopup(popup)}>삭제</button>}
               </div>
             </article>
           ))}
@@ -547,6 +547,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
 
   const canCreateBriefingSchedule = !!user && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
   const canCreateNotice = !!user && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user.role);
+  const canDeleteNoticePopup = !!user && ['master', 'ceo', 'admin'].includes(user.role);
   const canCreateLegalTerms = !!user && (['master', 'ceo', 'cc_ref', 'admin'].includes(user.role) || user.role === 'support' || String(user.department || '').includes('법률지원'));
   const canCreateCurrentLegalCategory = activeCategory !== 'legal_support' || activeLegalSubcategory !== 'legal_terms' || canCreateLegalTerms;
   const isFeeCalculationTool = activeCategory === 'legal_support' && activeLegalSubcategory === 'fee_calculation';
@@ -1434,7 +1435,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           )}
           {communitySection === 'notice' && (
             <div style={{ flexBasis: '100%' }}>
-              <PopupNoticeManager canManage={canCreateNotice} />
+              <PopupNoticeManager canManage={canCreateNotice} canDelete={canDeleteNoticePopup} />
             </div>
           )}
         </div>

@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../store';
 import { api } from '../api';
-import type { WebPushSetupStatus } from '../api';
+import type { TodayBidDashboardEntry, WebPushSetupStatus } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, BellOff, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale, Phone } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, BellOff, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale, Phone, Gavel } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 import { sameBranchName } from '../lib/branchAliases';
@@ -61,6 +61,68 @@ function pickTodayLegalFact(legalFacts: any[]) {
     .sort((a: any, b: any) => String(a.created_at || a.updated_at || '').localeCompare(String(b.created_at || b.updated_at || '')));
   const kstDayIndex = Math.floor((Date.now() + 9 * 60 * 60 * 1000) / 86400000);
   return ordered[Math.floor(kstDayIndex / 3) % ordered.length];
+}
+
+const TODAY_BID_RESULT_LABELS: Record<TodayBidDashboardEntry['bid_result'], string> = {
+  pending: '미정',
+  won: '낙찰',
+  failed: '실패',
+  cancelled: '취소',
+  withdrawn: '취하/변경',
+};
+
+function TodayBidList() {
+  const [todayBids, setTodayBids] = useState<TodayBidDashboardEntry[] | null>(null);
+  const [todayDate, setTodayDate] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    api.personalCalendar.todayBids()
+      .then(result => {
+        if (!active) return;
+        setTodayDate(result.date || '');
+        setTodayBids(result.bids || []);
+      })
+      .catch(() => { if (active) setTodayBids([]); });
+    return () => { active = false; };
+  }, []);
+
+  return (
+    <section className="section dashboard-today-bids">
+      <h3 className="section-title">
+        <Gavel size={18} /> 오늘의 입찰
+        {todayDate && <span className="dashboard-today-bids-date">{todayDate.replace(/-/g, '.')}</span>}
+        {todayBids && <span className="missing-alert-count">{todayBids.length}명</span>}
+      </h3>
+      {todayBids === null ? (
+        <div className="dashboard-today-bids-empty">오늘 입찰을 확인하는 중입니다.</div>
+      ) : todayBids.length === 0 ? (
+        <div className="dashboard-today-bids-empty">오늘 예정된 입찰이 없습니다.</div>
+      ) : (
+        <div className="dashboard-today-bids-list">
+          <div className="dashboard-today-bids-row header" aria-hidden="true">
+            <span>지사</span><span>담당자</span><span>직책</span><span>물건카테고리</span><span>법원</span><span>사건번호</span><span>낙찰유무</span>
+          </div>
+          {todayBids.map(bid => (
+            <Link
+              className="dashboard-today-bids-row clickable"
+              key={bid.id}
+              to={`/personal-calendar?${new URLSearchParams({ date: todayDate, event: bid.id }).toString()}`}
+              aria-label={`${bid.assignee_name || '담당자'} 입찰 일정 캘린더 상세 보기`}
+            >
+              <span data-label="지사">{bid.branch || '-'}</span>
+              <span data-label="담당자">{bid.assignee_name || '-'}</span>
+              <span data-label="직책">{bid.position_title || '-'}</span>
+              <span data-label="물건카테고리">{bid.property_category || '-'}</span>
+              <span data-label="법원">{bid.court || '-'}</span>
+              <span data-label="사건번호">{bid.case_no || '-'}{bid.item_no ? ` · ${bid.item_no}번` : ''}</span>
+              <span data-label="낙찰유무"><strong className={`dashboard-today-bid-result ${bid.bid_result}`}>{TODAY_BID_RESULT_LABELS[bid.bid_result]}</strong></span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function FreelancerDashboard() {
@@ -208,6 +270,8 @@ function FreelancerDashboard() {
           )}
         </div>
       </section>
+
+      <TodayBidList />
 
       {myMissingDocs.length > 0 && (
         <section className="section">
@@ -868,6 +932,8 @@ export default function Dashboard() {
         <LegalFactPanel />
         <TodayNewsPanel />
       </section>
+
+      <TodayBidList />
 
       {/* 총무 휴가 알림 (전체 직원에게 노출) */}
       {accountantLeaves.length > 0 && (

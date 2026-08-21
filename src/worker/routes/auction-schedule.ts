@@ -23,6 +23,9 @@ import { linkSalesCustomerCase, resolveSalesCustomer } from '../lib/sales-custom
 import { ensureBidAnalysisTable, normalizeAmount, upsertBidAnalysisEntry } from '../lib/bid-analysis';
 import { ensureAuctionScheduleTable } from '../lib/auction-schedule-schema';
 import { findCanonicalBidSale, type LinkedBidSale } from '../lib/performance-activity';
+import { DEFAULT_COMPANY_HOLIDAYS } from '../../shared/work-calendar';
+import { loadSystemHolidayDates } from '../lib/system-holidays';
+import { findAuctionInspectionSuggestions } from '../lib/auction-schedule-inspection-suggestions';
 
 const auctionSchedule = new Hono<AuthEnv>();
 auctionSchedule.use('*', authMiddleware);
@@ -92,11 +95,17 @@ auctionSchedule.get('/', async (c) => {
   if (days > 31) return c.json({ error: '경매 스케줄은 한 번에 31일까지만 조회할 수 있습니다.' }, 400);
 
   await ensureAuctionScheduleTable(db);
+  const holidayYears = [...new Set([start.slice(0, 4), end.slice(0, 4)])];
+  const dynamicHolidays = await loadSystemHolidayDates(db, holidayYears, 'journal');
+  const holidays = [...new Set([...DEFAULT_COMPANY_HOLIDAYS, ...dynamicHolidays])]
+    .filter(date => date >= start && date <= end)
+    .sort();
   let query = `
     SELECT s.*, u.name AS user_name, u.role AS user_role, u.position_title
     FROM freelancer_auction_schedules s
     JOIN users u ON u.id = s.user_id
     WHERE s.target_date BETWEEN ? AND ?
+      AND s.activity_type IN ('입찰', '임장')
   `;
   const params: unknown[] = [start, end];
 
@@ -118,7 +127,7 @@ auctionSchedule.get('/', async (c) => {
     FROM journal_entries j
     JOIN users u ON u.id = j.user_id
     WHERE j.target_date BETWEEN ? AND ?
-      AND j.activity_type IN ('입찰', '임장', '미팅')
+      AND j.activity_type IN ('입찰', '임장')
   `;
   const historyParams: unknown[] = [start, end];
   if (canViewResignedAuctionHistory(user.role)) {
@@ -154,7 +163,7 @@ auctionSchedule.get('/', async (c) => {
       || String(a.user_name).localeCompare(String(b.user_name), 'ko')
       || String(a.created_at).localeCompare(String(b.created_at))
   );
-  return c.json({ entries });
+  return c.json({ entries, holidays });
 });
 
 auctionSchedule.get('/check-case-no', async (c) => {
@@ -229,6 +238,25 @@ auctionSchedule.get('/create-options', async (c) => {
   return c.json({ assignees: rows.results || [] });
 });
 
+auctionSchedule.get('/inspection-suggestions', async (c) => {
+  const user = c.get('user');
+  if (user.role !== 'master' && user.login_type !== 'freelancer') {
+    return c.json({ error: '경매 스케줄 자동채우기는 마스터 또는 프리랜서만 사용할 수 있습니다.' }, 403);
+  }
+  const query = String(c.req.query('q') || '').slice(0, 100);
+  if (!query) return c.json({ suggestions: [] });
+  const requestedOwnerId = String(c.req.query('owner_id') || '').trim();
+  if (user.role !== 'master' && requestedOwnerId && requestedOwnerId !== user.sub) {
+    return c.json({ error: '다른 담당자의 임장 정보를 조회할 수 없습니다.' }, 403);
+  }
+  const ownerId = user.role === 'master' ? requestedOwnerId : user.sub;
+  if (!ownerId) return c.json({ suggestions: [] });
+
+  await ensureAuctionScheduleTable(c.env.DB);
+  const suggestions = await findAuctionInspectionSuggestions(c.env.DB, ownerId, query);
+  return c.json({ suggestions });
+});
+
 auctionSchedule.post('/', async (c) => {
   const user = c.get('user');
   if (user.role !== 'master' && user.login_type !== 'freelancer') {
@@ -244,11 +272,11 @@ auctionSchedule.post('/', async (c) => {
   const targetDate = String(body.target_date || '');
   const activityType = String(body.activity_type || '');
   if (!isDate(targetDate) || !isAuctionScheduleActivityType(activityType)) {
-    return c.json({ error: '날짜와 활동유형(입찰·임장·미팅)을 확인해 주세요.' }, 400);
+    return c.json({ error: '날짜와 활동유형(입찰·임장)을 확인해 주세요.' }, 400);
   }
   const rawData = sanitizeAuctionScheduleData(body.data);
   const data = activityType === '입찰'
-    ? { ...rawData, bidWon: false, bidFailed: false, bidCancelled: false, winPrice: '' }
+    ? { ...rawData, bidWon: false, bidFailed: false, bidCancelled: false, bidResultCancelled: false, winPrice: '' }
     : rawData;
   const validationError = getAuctionScheduleValidationError(activityType, data);
   if (validationError) return c.json({ error: validationError }, 400);
@@ -314,7 +342,7 @@ auctionSchedule.put('/:id', async (c) => {
   const targetDate = body.target_date === undefined ? existing.target_date : String(body.target_date);
   const activityType = body.activity_type === undefined ? existing.activity_type : String(body.activity_type);
   if (!isDate(targetDate) || !isAuctionScheduleActivityType(activityType)) {
-    return c.json({ error: '날짜와 활동유형(입찰·임장·미팅)을 확인해 주세요.' }, 400);
+    return c.json({ error: '날짜와 활동유형(입찰·임장)을 확인해 주세요.' }, 400);
   }
   const existingData = parseJsonObject(existing.data);
   const incomingData = body.data === undefined
@@ -326,6 +354,9 @@ auctionSchedule.put('/:id', async (c) => {
       bidWon: existing.activity_type === '입찰' ? !!existingData.bidWon : false,
       bidFailed: existing.activity_type === '입찰' ? !!existingData.bidFailed : false,
       bidCancelled: existing.activity_type === '입찰' ? !!existingData.bidCancelled : false,
+      bidResultCancelled: existing.activity_type === '입찰' ? !!existingData.bidResultCancelled : false,
+      bidResultCancelledAutomatically: existing.activity_type === '입찰' ? !!existingData.bidResultCancelledAutomatically : false,
+      bidResultCancelledAt: existing.activity_type === '입찰' ? String(existingData.bidResultCancelledAt || '') : '',
       winPrice: existing.activity_type === '입찰' ? String(existingData.winPrice || '') : '',
     }
     : incomingData;
@@ -422,14 +453,14 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
   if (existing.activity_type !== '입찰') return c.json({ error: '입찰 일정만 결과를 처리할 수 있습니다.' }, 400);
 
   const body = await c.req.json<{
-    result?: 'won' | 'failed' | 'withdrawn' | 'pending';
+    result?: 'won' | 'failed' | 'withdrawn' | 'cancelled' | 'pending';
     suggested_price?: number;
     actual_bid_price?: number;
     winning_price?: number;
     client_phone?: string;
   }>();
   const result = String(body.result || '');
-  if (!['won', 'failed', 'withdrawn', 'pending'].includes(result)) return c.json({ error: '입찰 결과를 확인해 주세요.' }, 400);
+  if (!['won', 'failed', 'withdrawn', 'cancelled', 'pending'].includes(result)) return c.json({ error: '입찰 결과를 확인해 주세요.' }, 400);
 
   const data = parseJsonObject(existing.data);
   const externalId = auctionScheduleSalesExternalId(id);
@@ -469,6 +500,9 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         bidWon: false,
         bidFailed: true,
         bidCancelled: false,
+        bidResultCancelled: false,
+        bidResultCancelledAutomatically: false,
+        bidResultCancelledAt: '',
       });
       await db.prepare(`UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?`)
         .bind(nextData, id).run();
@@ -526,6 +560,9 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       bidWon: true,
       bidFailed: false,
       bidCancelled: false,
+      bidResultCancelled: false,
+      bidResultCancelledAutomatically: false,
+      bidResultCancelledAt: '',
       bidPrice: String(actualBidPrice),
       winPrice: String(winningPrice),
       clientPhone,
@@ -636,8 +673,8 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     });
   }
 
-  if (result === 'withdrawn' && linkedSale) {
-    return c.json({ error: '입금신청이 연결된 낙찰 건은 취하/변경으로 바꿀 수 없습니다. 업무성과의 환불·취소 절차를 이용하세요.' }, 409);
+  if ((result === 'withdrawn' || result === 'cancelled') && linkedSale) {
+    return c.json({ error: '입금신청이 연결된 낙찰 건은 취소 또는 취하/변경으로 바꿀 수 없습니다. 업무성과의 환불·취소 절차를 이용하세요.' }, 409);
   }
   if (result !== 'won' && linkedCommission?.status === 'completed') {
     return c.json({ error: '이미 완료된 수수료가 연결되어 있어 입찰 결과를 취소할 수 없습니다.' }, 409);
@@ -654,6 +691,9 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     bidWon: false,
     bidFailed: false,
     bidCancelled: result === 'withdrawn',
+    bidResultCancelled: result === 'cancelled',
+    bidResultCancelledAutomatically: false,
+    bidResultCancelledAt: result === 'cancelled' ? new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19) : '',
     ...(result === 'pending' ? { winPrice: '' } : {}),
   });
   const statements = [
@@ -676,7 +716,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
   }
   await db.batch(statements);
   await db.prepare("DELETE FROM bid_analysis_entries WHERE source_type = 'freelancer' AND source_id = ?").bind(externalId).run();
-  if (result === 'withdrawn') {
+  if (result === 'withdrawn' || result === 'cancelled') {
     await upsertBidAnalysisEntry(db, {
       bid_datetime: existing.target_date,
       assignee_user_id: existing.user_id,
@@ -687,7 +727,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       suggested_bid_price: normalizeAmount(data.suggestedPrice),
       actual_bid_price: null,
       winning_price: null,
-      bid_result: '취소',
+      bid_result: result === 'withdrawn' ? '취하/변경' : '취소',
       client_name: String(data.bidder || data.client || ''),
       source_type: 'freelancer',
       source_id: externalId,

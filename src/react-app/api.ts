@@ -87,6 +87,65 @@ export interface LawitgoProgressItem {
   caseType: string;
 }
 
+export interface PersonalCalendarEvent {
+  id: string;
+  event_date: string;
+  end_date: string;
+  title: string;
+  content: string;
+  color: string;
+  all_day: number;
+  created_at: string;
+  updated_at: string;
+  source_type?: 'personal' | 'auction_bid' | 'auction_inspection';
+  source_id?: string;
+  branch?: string;
+  assignee_name?: string;
+  position_title?: string;
+  activity_type?: '입찰' | '임장';
+  client_name?: string;
+  court?: string;
+  case_no?: string;
+  item_no?: string;
+  property_category?: string;
+  property_type?: string;
+  bid_result?: 'pending' | 'won' | 'failed' | 'cancelled' | 'withdrawn';
+  automatic_cancel?: number;
+}
+
+export interface TodayBidDashboardEntry {
+  id: string;
+  branch: string;
+  assignee_name: string;
+  position_title: string;
+  property_category: string;
+  court: string;
+  case_no: string;
+  item_no: string;
+  bid_result: 'pending' | 'won' | 'failed' | 'cancelled' | 'withdrawn';
+}
+
+export type AuctionStoryStage = 'inspection' | 'briefing' | 'bid';
+
+export interface AuctionStoryAnomaly {
+  id: string;
+  reference_date: string;
+  branch: string;
+  assignee_id: string;
+  assignee_name: string;
+  position_title: string;
+  property_category: string;
+  property_type: string;
+  court: string;
+  case_no: string;
+  item_no: string;
+  client_name: string;
+  inspection_date: string;
+  briefing_date: string;
+  bid_date: string;
+  missing_stages: AuctionStoryStage[];
+}
+
 function getToken(): string | null {
   return localStorage.getItem('token');
 }
@@ -202,6 +261,28 @@ export const api = {
       ),
     remove: (id: string) =>
       request<{ success: boolean }>('/auction-reference/items/' + encodeURIComponent(id), { method: 'DELETE' }),
+  },
+
+  personalCalendar: {
+    list: (from: string, to: string) =>
+      request<{ events: PersonalCalendarEvent[] }>(
+        `/personal-calendar/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      ),
+    todayBids: () => request<{ date: string; bids: TodayBidDashboardEntry[] }>('/personal-calendar/today-bids'),
+    storyAnomalies: (params: { month?: string; branch?: string } = {}) => {
+      const query = new URLSearchParams();
+      if (params.month) query.set('month', params.month);
+      if (params.branch) query.set('branch', params.branch);
+      return request<{
+        month: string;
+        from: string;
+        to: string;
+        selected_branch: string;
+        available_branches: string[];
+        counts: { total: number; missing_inspection: number; missing_briefing: number };
+        anomalies: AuctionStoryAnomaly[];
+      }>(`/personal-calendar/story-anomalies${query.toString() ? `?${query}` : ''}`);
+    },
   },
 
   automationDiagnostics: {
@@ -1279,6 +1360,22 @@ export const api = {
     createOptions: () => request<{ assignees: Array<{
       id: string; name: string; role: string; branch: string; department: string; position_title?: string;
     }> }>('/auction-schedule/create-options'),
+    inspectionSuggestions: (query: string, ownerId?: string) => {
+      const q = new URLSearchParams({ q: query });
+      if (ownerId) q.set('owner_id', ownerId);
+      return request<{ suggestions: Array<{
+        id: string;
+        target_date: string;
+        bid_date: string;
+        case_no: string;
+        item_no: string;
+        client: string;
+        court: string;
+        place: string;
+        property_category: string;
+        property_type: string;
+      }> }>('/auction-schedule/inspection-suggestions?' + q.toString());
+    },
     myBidResultRequirements: () => request<{ entries: Array<{
       id: string;
       user_id: string;
@@ -1306,7 +1403,7 @@ export const api = {
         updated_at: string;
         source_type?: 'auction_schedule' | 'employee_journal';
         read_only?: number;
-      }> }>('/auction-schedule?' + q.toString());
+      }>; holidays: string[] }>('/auction-schedule?' + q.toString());
     },
     create: (data: {
       user_id?: string;
@@ -1323,7 +1420,7 @@ export const api = {
     updateBidPrices: (id: string, data: { suggested_price?: number; actual_bid_price?: number; winning_price?: number }) =>
       request<{ success: boolean; missing_fields: string[] }>('/auction-schedule/' + id + '/bid-prices', { method: 'PUT', body: JSON.stringify(data) }),
     setBidResult: (id: string, data: {
-      result: 'won' | 'failed' | 'withdrawn' | 'pending';
+      result: 'won' | 'failed' | 'withdrawn' | 'cancelled' | 'pending';
       suggested_price?: number;
       actual_bid_price?: number;
       winning_price?: number;

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="../../src/react-app/index.css" />
+  <title>개인 캘린더 반응형 감사</title>
+</head>
+<body>
+  <main class="page personal-calendar-page">
+    <div class="page-header personal-calendar-page-header">
+      <div>
+        <h2>캘린더</h2>
+      </div>
+      <div class="personal-calendar-view-slider">
+        <button type="button">입찰</button>
+        <button type="button" class="active">전체보기 <small>임장 포함</small></button>
+      </div>
+    </div>
+    <div class="personal-calendar-shell">
+      <section class="personal-calendar-card">
+        <header class="personal-calendar-toolbar">
+          <button class="calendar-icon-button" type="button">‹</button>
+          <div class="personal-calendar-month-title"><strong>2026년 8월</strong><span>불러오는 중...</span></div>
+          <button class="calendar-icon-button" type="button">›</button>
+          <button class="calendar-today-button" type="button">오늘</button>
+          <div class="personal-calendar-zoom-controls"><button type="button">−</button><output>100%</output><button type="button">＋</button></div>
+        </header>
+        <div class="personal-calendar-grid-scroll">
+          <div class="personal-calendar-grid-canvas" style="width:100%;min-width:700px">
+            <div class="personal-calendar-weekdays">
+              <span class="sunday">일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span class="saturday">토</span>
+            </div>
+            <div class="personal-calendar-grid" id="calendar-grid"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <div class="modal-overlay">
+    <section class="personal-calendar-event-detail" id="calendar-detail-audit">
+      <header><div><h3>입찰 일정</h3><span>2026년 8월 18일 화요일</span></div><button>×</button></header>
+      <div class="personal-calendar-event-detail-grid">
+        <div><span>담당자</span><strong>김민수 컨설턴트</strong></div>
+        <div><span>구분</span><strong>입찰</strong></div>
+        <div><span>고객명</span><strong>홍길동 고객</strong></div>
+        <div><span>관련법원 · 지원</span><strong>의정부지방법원 고양지원</strong></div>
+        <div><span>사건번호</span><strong>2026타경12345 · 물건번호 2</strong></div>
+        <div><span>입찰결과</span><strong class="bid-result cancelled">취소 · 5일 경과 자동 처리</strong></div>
+      </div>
+    </section>
+  </div>
+  <script>
+    const grid = document.querySelector('#calendar-grid');
+    for (let index = 0; index < 42; index += 1) {
+      const day = document.createElement('button');
+      day.type = 'button';
+      day.className = `personal-calendar-day${index === 12 ? ' today' : ''}`;
+      day.innerHTML = `<span class="personal-calendar-day-number">${index + 1}</span><span class="personal-calendar-day-events"></span>`;
+      if (index === 10) {
+        const events = day.querySelector('.personal-calendar-day-events');
+        for (let eventIndex = 0; eventIndex < 80; eventIndex += 1) {
+          const event = document.createElement('span');
+          event.className = `personal-calendar-event-chip${eventIndex <= 1 ? ' auction' : ''}${eventIndex === 1 ? ' inspection' : ''}`;
+          event.style.setProperty('--event-color', ['#4f6bed', '#dd5a5a', '#32a071'][eventIndex % 3]);
+          if (eventIndex === 0) {
+            event.innerHTML = '<span class="personal-calendar-event-title">[김민수] 주거시설</span><span class="personal-calendar-event-result won">낙찰</span>';
+          } else if (eventIndex === 1) {
+            event.innerHTML = '<span class="personal-calendar-event-title">[이서초] 임장 · 상업·업무시설</span>';
+          } else {
+            event.textContent = `일정 ${eventIndex + 1} - 긴 일정 제목 반응형 확인`;
+          }
+          events.appendChild(event);
+        }
+      }
+      grid.appendChild(day);
+    }
+  </script>
+</body>
+</html>

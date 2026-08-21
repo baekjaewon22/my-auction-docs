@@ -143,27 +143,40 @@ async function sourceRows(db: D1Database): Promise<WinningSourceRow[]> {
     LEFT JOIN lawitgo_consultant_mappings m ON m.user_id = sr.user_id
     LEFT JOIN journal_entries j ON j.id = sr.journal_entry_id
     LEFT JOIN freelancer_auction_schedules fs
-      ON fs.id = CASE WHEN sr.external_id LIKE 'auction_schedule:%'
-                      THEN substr(sr.external_id, length('auction_schedule:') + 1) ELSE NULL END
-    LEFT JOIN bid_analysis_entries ba ON ba.id = (
+      ON fs.id = CASE
+        WHEN sr.external_id LIKE 'auction-schedule:%'
+          THEN substr(sr.external_id, length('auction-schedule:') + 1)
+        WHEN sr.external_id LIKE 'auction_schedule:%'
+          THEN substr(sr.external_id, length('auction_schedule:') + 1)
+        ELSE NULL END
+    LEFT JOIN bid_analysis_entries ba ON ba.id = COALESCE((
       SELECT b.id FROM bid_analysis_entries b
       WHERE b.bid_result = '낙찰'
         AND b.assignee_user_id = sr.user_id
         AND (
           b.source_id = sr.journal_entry_id OR b.source_id = sr.external_id OR
-          b.source_id = CASE WHEN sr.external_id LIKE 'auction_schedule:%'
-                             THEN substr(sr.external_id, length('auction_schedule:') + 1) ELSE NULL END OR
-          (substr(b.bid_datetime, 1, 10) = substr(sr.contract_date, 1, 10)
-           AND REPLACE(LOWER(TRIM(b.client_name)), ' ', '') = REPLACE(LOWER(TRIM(sr.client_name)), ' ', '')
-           AND (SELECT COUNT(*) FROM bid_analysis_entries bx
-                WHERE bx.bid_result = '낙찰' AND bx.assignee_user_id = sr.user_id
-                  AND substr(bx.bid_datetime, 1, 10) = substr(sr.contract_date, 1, 10)
-                  AND REPLACE(LOWER(TRIM(bx.client_name)), ' ', '') = REPLACE(LOWER(TRIM(sr.client_name)), ' ', '')) = 1)
+          b.source_id = CASE
+            WHEN sr.external_id LIKE 'auction-schedule:%'
+              THEN substr(sr.external_id, length('auction-schedule:') + 1)
+            WHEN sr.external_id LIKE 'auction_schedule:%'
+              THEN substr(sr.external_id, length('auction_schedule:') + 1)
+            ELSE NULL END
         )
-      ORDER BY CASE WHEN b.source_id = sr.journal_entry_id OR b.source_id = sr.external_id THEN 0 ELSE 1 END,
-               b.updated_at DESC
+      ORDER BY b.updated_at DESC
       LIMIT 1
-    )
+    ), (
+      SELECT b.id FROM bid_analysis_entries b
+      WHERE b.bid_result = '낙찰'
+        AND b.assignee_user_id = sr.user_id
+        AND substr(b.bid_datetime, 1, 10) = substr(sr.contract_date, 1, 10)
+        AND REPLACE(LOWER(TRIM(b.client_name)), ' ', '') = REPLACE(LOWER(TRIM(sr.client_name)), ' ', '')
+        AND (SELECT COUNT(*) FROM bid_analysis_entries bx
+             WHERE bx.bid_result = '낙찰' AND bx.assignee_user_id = sr.user_id
+               AND substr(bx.bid_datetime, 1, 10) = substr(sr.contract_date, 1, 10)
+               AND REPLACE(LOWER(TRIM(bx.client_name)), ' ', '') = REPLACE(LOWER(TRIM(sr.client_name)), ' ', '')) = 1
+      ORDER BY b.updated_at DESC
+      LIMIT 1
+    ))
     WHERE sr.type = '낙찰' AND COALESCE(sr.amount, 0) > 0
       AND COALESCE(sr.direction, 'income') != 'expense' AND COALESCE(sr.status, '') != 'refunded'
       AND sr.created_at >= ?
@@ -211,6 +224,10 @@ export async function runLawitgoWinningDelivery(
   const db = env.DB;
   const slot = lawitgoWinningSlot(scheduledAt);
   await ensureLawitgoWinningSchema(db);
+  await db.prepare(`UPDATE lawitgo_winning_delivery_runs
+    SET status='failed', error=COALESCE(error, 'stale delivery run recovered'),
+        finished_at=COALESCE(finished_at, datetime('now', '+9 hours'))
+    WHERE status='running' AND started_at < datetime('now', '+9 hours', '-30 minutes')`).run();
   await db.prepare(`UPDATE lawitgo_winning_outbox
     SET status='failed', claim_token=NULL, next_attempt_at=datetime('now', '+9 hours'),
         last_error='stale delivery claim recovered', updated_at=datetime('now', '+9 hours')
@@ -221,7 +238,15 @@ export async function runLawitgoWinningDelivery(
     .bind(runId, slot).run();
   if (!claim.meta.changes) return { due: true, configured: Boolean(env.LAWITGO_WINNING_API_KEY), staged: 0, blocked: 0, claimed: 0, sent: 0, failed: 0 };
 
-  const staged = await stageLawitgoWinningOutbox(db);
+  let staged: { staged: number; blocked: number };
+  try {
+    staged = await stageLawitgoWinningOutbox(db);
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 500) : 'lawitgo staging failed';
+    await db.prepare(`UPDATE lawitgo_winning_delivery_runs SET status='failed', error=?,
+      finished_at=datetime('now', '+9 hours') WHERE id=?`).bind(message, runId).run();
+    return { due: true, configured: Boolean(env.LAWITGO_WINNING_API_KEY), staged: 0, blocked: 0, claimed: 0, sent: 0, failed: 0 };
+  }
   const apiKey = String(env.LAWITGO_WINNING_API_KEY || '').trim();
   if (!apiKey) {
     await db.prepare(`UPDATE lawitgo_winning_delivery_runs SET status='not_configured', staged_count=?, blocked_count=?,

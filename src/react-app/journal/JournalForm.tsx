@@ -7,12 +7,37 @@ import {
 } from './types';
 import Select, { toOptions } from '../components/Select';
 import { Plus, X, Trash2 } from 'lucide-react';
+import { parseAuctionCaseNumber } from '../../shared/auction-schedule';
 
 const TIME_OPTS = toOptions(generateTimeOptions());
 const YEAR_OPTS = generateYears().map((y) => ({ value: String(y), label: String(y) }));
 const MEETING_OPTS = toOptions(MEETING_SUBTYPES as unknown as string[]);
 const OFFICE_OPTS = toOptions(OFFICE_SUBTYPES as unknown as string[]);
 const PROPERTY_MAIN_OPTS = BID_PROPERTY_CATEGORIES.map((c) => ({ value: c.main, label: c.main }));
+const CURRENT_KST = new Date(Date.now() + 9 * 60 * 60 * 1000);
+const CURRENT_KST_YEAR = CURRENT_KST.getUTCFullYear();
+const CURRENT_KST_MONTH = CURRENT_KST.getUTCMonth() + 1;
+const AUCTION_DATE_YEAR_OPTS = Array.from({ length: 7 }, (_, index) => ({
+  value: String(CURRENT_KST_YEAR - 1 + index),
+  label: `${CURRENT_KST_YEAR - 1 + index}년`,
+}));
+const AUCTION_DATE_MONTH_OPTS = Array.from({ length: 12 }, (_, index) => ({
+  value: String(index + 1).padStart(2, '0'),
+  label: `${index + 1}월`,
+}));
+
+interface InspectionSuggestion {
+  id: string;
+  target_date: string;
+  bid_date: string;
+  case_no: string;
+  item_no: string;
+  client: string;
+  court: string;
+  place: string;
+  property_category: string;
+  property_type: string;
+}
 
 const formatCourtLabel = (opt: CourtOption) => (
   <span style={{ fontWeight: opt.isMain ? 700 : 400 }}>{opt.label}</span>
@@ -85,6 +110,10 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   const [bidBidderName, setBidBidderName] = useState(''); // 입찰자명 (고객명과 다를 때)
   const [bidPropertyMain, setBidPropertyMain] = useState('');
   const [bidPropertyType, setBidPropertyType] = useState('');
+  const [inspectionSearch, setInspectionSearch] = useState('');
+  const [inspectionSuggestions, setInspectionSuggestions] = useState<InspectionSuggestion[]>([]);
+  const [inspectionSuggestionLoading, setInspectionSuggestionLoading] = useState(false);
+  const [inspectionAutofillNotice, setInspectionAutofillNotice] = useState('');
   const [showDeviationWarning, setShowDeviationWarning] = useState(false);
   const bidPropertyDetailOptions = BID_PROPERTY_CATEGORIES
     .find((c) => c.main === bidPropertyMain)?.details
@@ -164,11 +193,85 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   const [inspEtcReason, setInspEtcReason] = useState('');
   const [inspPropertyMain, setInspPropertyMain] = useState('');
   const [inspPropertyType, setInspPropertyType] = useState('');
+  const [inspBidYear, setInspBidYear] = useState(String(CURRENT_KST_YEAR));
+  const [inspBidMonth, setInspBidMonth] = useState(String(CURRENT_KST_MONTH).padStart(2, '0'));
+  const [inspBidDay, setInspBidDay] = useState('');
   const inspPropertyDetailOptions = BID_PROPERTY_CATEGORIES
     .find((c) => c.main === inspPropertyMain)?.details
     .map((detail) => ({ value: detail, label: detail })) || [];
   // 임장 중복 경고
   const [inspDupWarning, setInspDupWarning] = useState<{ user_name: string; target_date: string }[] | null>(null);
+
+  const auctionDateDayCount = new Date(Number(inspBidYear), Number(inspBidMonth), 0).getDate();
+  const auctionDateDayOptions = Array.from(
+    { length: auctionDateDayCount },
+    (_, index) => ({ value: String(index + 1).padStart(2, '0'), label: `${index + 1}일` }),
+  );
+
+  useEffect(() => {
+    if (inspBidDay && !auctionDateDayOptions.some(option => option.value === inspBidDay)) {
+      setInspBidDay('');
+    }
+  }, [auctionDateDayCount, inspBidDay]);
+
+  useEffect(() => {
+    if (mode !== 'auction-schedule' || activityType !== '입찰' || !inspectionSearch.trim()) {
+      setInspectionSuggestions([]);
+      setInspectionSuggestionLoading(false);
+      return;
+    }
+    if (canChooseAssignee && !assigneeId) {
+      setInspectionSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    setInspectionSuggestionLoading(true);
+    const timer = setTimeout(() => {
+      api.auctionSchedule.inspectionSuggestions(inspectionSearch, canChooseAssignee ? assigneeId : undefined)
+        .then(result => {
+          if (!cancelled) setInspectionSuggestions(result.suggestions || []);
+        })
+        .catch(() => {
+          if (!cancelled) setInspectionSuggestions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setInspectionSuggestionLoading(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [activityType, assigneeId, canChooseAssignee, inspectionSearch, mode]);
+
+  useEffect(() => {
+    setInspectionSearch('');
+    setInspectionSuggestions([]);
+    setInspectionAutofillNotice('');
+  }, [assigneeId]);
+
+  const applyInspectionSuggestion = (suggestion: InspectionSuggestion) => {
+    const parsedCase = parseAuctionCaseNumber(suggestion.case_no);
+    if (parsedCase) {
+      setBidYear(parsedCase.year);
+      setBidCaseNo(parsedCase.serial);
+    }
+    setBidItemNo(suggestion.item_no || '');
+    setBidBidder(suggestion.client || '');
+    setBidCourt(suggestion.court || '');
+    const category = suggestion.property_category
+      || BID_PROPERTY_CATEGORIES.find(item => (item.details as readonly string[]).includes(suggestion.property_type))?.main
+      || '';
+    setBidPropertyMain(category);
+    setBidPropertyType(suggestion.property_type || '');
+    setInspectionSearch('');
+    setInspectionSuggestions([]);
+    setInspectionAutofillNotice(
+      `${suggestion.case_no}${suggestion.client ? ` · ${suggestion.client}` : ''} 정보를 불러왔습니다. `
+      + (suggestion.bid_date !== targetDate ? `저장된 입찰기일은 ${suggestion.bid_date}이며 현재 일정 날짜는 ${targetDate}입니다. ` : '')
+      + '입찰가 등 추가정보를 확인해 주세요.',
+    );
+  };
 
   // 임장 사건번호+법원 중복 체크 (debounce). 동행은 담당자 보조 기록이라 중복 사건으로 보지 않는다.
   useEffect(() => {
@@ -246,7 +349,8 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
         data = { ...data, caseNo: `${inspYear}타경${inspCaseNo}`, itemNo: inspItemNo, court: inspCourt, place: inspPlace,
           propertyCategory: inspPropertyMain, propertyType: inspPropertyType,
           client: inspClientType === '고객명' ? inspClient : '', companion, companionPerson: companion ? inspClient : '',
-          inspClientType, inspEtcReason: inspClientType === '기타' ? inspEtcReason : '' };
+          inspClientType, inspEtcReason: inspClientType === '기타' ? inspEtcReason : '',
+          ...(mode === 'auction-schedule' && inspBidDay ? { bidDate: `${inspBidYear}-${inspBidMonth}-${inspBidDay}` } : {}) };
         subtype = `${inspYear}타경${inspCaseNo}`;
         label = `임장${companion ? ' [동행]' : ''} — ${subtype}${inspItemNo ? ` | ${inspItemNo}` : ''} | ${inspPropertyType} | ${inspClientType === '고객명' ? inspClient : inspEtcReason}`;
         break;
@@ -290,6 +394,8 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     setBidCaseNo(''); setBidItemNo(''); setBidBidder(''); setBidBidderName(''); setBidSuggestedPrice(''); setBidPrice('');
     setBidWinPrice(''); setBidWon(false); setBidProxy(false); setBidCancelled(false); setBidDeviationReason(''); setBidPropertyMain(''); setBidPropertyType('');
     setInspCaseNo(''); setInspItemNo(''); setInspPlace(''); setInspClient(''); setInspPropertyMain(''); setInspPropertyType('');
+    setInspBidYear(String(CURRENT_KST_YEAR)); setInspBidMonth(String(CURRENT_KST_MONTH).padStart(2, '0')); setInspBidDay('');
+    setInspectionSearch(''); setInspectionSuggestions([]); setInspectionAutofillNotice('');
     setMeetingEtc(''); setMeetingPlace(''); setMeetingClient(''); setMeetingCaseNo(''); setMeetingItemNo(''); setMeetingInternal(false);
     setCompanion(false);
     setOfficeEtc('');
@@ -379,7 +485,7 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
           <div className="form-group">
             <label>업무 유형</label>
             <div className="activity-type-tabs">
-              {(mode === 'auction-schedule' ? ACTIVITY_TYPES.filter((t) => ['입찰', '임장', '미팅'].includes(t)) : ACTIVITY_TYPES).map((t) => (
+              {(mode === 'auction-schedule' ? ACTIVITY_TYPES.filter((t) => ['입찰', '임장'].includes(t)) : ACTIVITY_TYPES).map((t) => (
                 <button key={t} type="button" className={`activity-tab ${activityType === t ? 'active' : ''}`} onClick={() => setActivityType(t)}>{t}</button>
               ))}
             </div>
@@ -427,6 +533,43 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
           {/* === 입찰 === */}
           {activityType === '입찰' && (
             <>
+              {mode === 'auction-schedule' && (
+                <div className="form-group auction-inspection-autofill">
+                  <label>기존 임장 정보 자동채우기</label>
+                  <div className="auction-inspection-autofill-input">
+                    <input
+                      type="search"
+                      value={inspectionSearch}
+                      onChange={(event) => {
+                        setInspectionSearch(event.target.value);
+                        setInspectionAutofillNotice('');
+                      }}
+                      placeholder="계약자명 또는 사건번호 검색 (예: 김민수, 2025타경 1)"
+                      autoComplete="off"
+                    />
+                    {inspectionSuggestionLoading && <span>검색 중</span>}
+                  </div>
+                  {inspectionSuggestions.length > 0 && (
+                    <div className="auction-inspection-suggestion-list" role="listbox" aria-label="기존 임장 정보 검색 결과">
+                      {inspectionSuggestions.map(suggestion => (
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected="false"
+                          key={suggestion.id}
+                          onClick={() => applyInspectionSuggestion(suggestion)}
+                        >
+                          <strong>{suggestion.case_no}{suggestion.item_no ? ` · 물건 ${suggestion.item_no}` : ''}</strong>
+                          <span>{suggestion.client || '계약자명 없음'} · {suggestion.court || '법원 미입력'}</span>
+                          <em>입찰기일 {suggestion.bid_date}</em>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {inspectionAutofillNotice && <p className="auction-inspection-autofill-notice">{inspectionAutofillNotice}</p>}
+                  <small>선택하면 저장된 사건번호·계약자명·법원·물건종류만 채웁니다. 입찰가 등 추가정보는 직접 확인해 주세요.</small>
+                </div>
+              )}
               <div className="form-row form-row-inline">
                 <div className="form-group" style={{ flex: 'none' }}>
                   <label>사건번호</label>
@@ -601,6 +744,35 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
                 <label>장소</label>
                 <input type="text" value={inspPlace} onChange={(e) => setInspPlace(e.target.value)} required />
               </div>
+              {mode === 'auction-schedule' && (
+                <div className="form-group auction-inspection-bid-date">
+                  <label>입찰기일 <span>선택사항 · 추후 입찰 일정 자동채우기에 사용</span></label>
+                  <div className="auction-inspection-bid-date-selects">
+                    <select
+                      aria-label="입찰기일 연도"
+                      value={inspBidYear}
+                      onChange={event => setInspBidYear(event.target.value)}
+                    >
+                      {AUCTION_DATE_YEAR_OPTS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                    <select
+                      aria-label="입찰기일 월"
+                      value={inspBidMonth}
+                      onChange={event => setInspBidMonth(event.target.value)}
+                    >
+                      {AUCTION_DATE_MONTH_OPTS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                    <select
+                      aria-label="입찰기일 일자"
+                      value={inspBidDay}
+                      onChange={event => setInspBidDay(event.target.value)}
+                    >
+                      <option value="">일자</option>
+                      {auctionDateDayOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
             </>
           )}
 

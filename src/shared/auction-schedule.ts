@@ -1,14 +1,28 @@
-export const AUCTION_SCHEDULE_ACTIVITY_TYPES = ['입찰', '임장', '미팅'] as const;
+export const AUCTION_SCHEDULE_ACTIVITY_TYPES = ['입찰', '임장'] as const;
 export type AuctionScheduleActivityType = typeof AUCTION_SCHEDULE_ACTIVITY_TYPES[number];
-export type AuctionScheduleBidResult = 'won' | 'failed' | 'withdrawn' | 'pending';
+export type AuctionScheduleBidResult = 'won' | 'failed' | 'withdrawn' | 'cancelled' | 'pending';
+
+export function canViewAuctionSchedule(user: { role?: string | null } | null | undefined): boolean {
+  return !!user && user.role !== 'resigned';
+}
 
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+export function normalizeAuctionCaseSearch(value: unknown): string {
+  return String(value || '').normalize('NFKC').replace(/\s+/g, '').trim();
+}
+
+export function parseAuctionCaseNumber(value: unknown): { year: string; serial: string } | null {
+  const match = normalizeAuctionCaseSearch(value).match(/^(\d{4})타경(\d+)$/);
+  return match ? { year: match[1], serial: match[2] } : null;
+}
 
 function positiveWon(value: unknown): boolean {
   return Number(String(value || '').replace(/[^0-9]/g, '')) > 0;
 }
 
 export function auctionScheduleBidResult(data: Record<string, unknown>): AuctionScheduleBidResult {
+  if (data.bidResultCancelled) return 'cancelled';
   if (data.bidCancelled) return 'withdrawn';
   if (data.bidWon) return 'won';
   if (data.bidFailed) return 'failed';
@@ -16,13 +30,25 @@ export function auctionScheduleBidResult(data: Record<string, unknown>): Auction
 }
 
 export function auctionScheduleBidResultMissingFields(data: Record<string, unknown>): string[] {
-  if (auctionScheduleBidResult(data) === 'withdrawn') return [];
+  if (['withdrawn', 'cancelled'].includes(auctionScheduleBidResult(data))) return [];
   const missing: string[] = [];
   if (!positiveWon(data.suggestedPrice)) missing.push('제안입찰가');
   if (!positiveWon(data.bidPrice)) missing.push('작성입찰가');
   if (auctionScheduleBidResult(data) === 'pending') missing.push('낙찰여부');
   if (!positiveWon(data.winPrice)) missing.push('최종 낙찰가');
   return missing;
+}
+
+export function auctionScheduleAutoCancellationCutoff(now: Date = new Date()): string {
+  const kstDate = new Date(now.getTime() + KST_OFFSET_MS);
+  // 입찰 다음 날부터 5일 전체를 입력 가능 기간으로 보장하고 6일째 00:00 KST에 취소한다.
+  kstDate.setUTCDate(kstDate.getUTCDate() - 6);
+  return kstDate.toISOString().slice(0, 10);
+}
+
+export function isAuctionScheduleAutoCancellationDue(targetDate: string, now: Date = new Date()): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(targetDate)
+    && targetDate <= auctionScheduleAutoCancellationCutoff(now);
 }
 
 export function isAuctionScheduleBidResultDue(targetDate: string, now: Date = new Date()): boolean {
@@ -93,9 +119,6 @@ export function getAuctionScheduleValidationError(
   if (activityType === '임장' && (
     !text('caseNo') || !text('court') || !text('propertyType') || !(text('client') || text('inspEtcReason'))
   )) return '임장은 사건번호·법원·대상·물건종류를 입력해 주세요.';
-  if (activityType === '미팅' && (!text('client') || (!data.internalMeeting && !text('place')))) {
-    return '미팅은 계약자명과 장소를 입력해 주세요.';
-  }
   return null;
 }
 

@@ -14,6 +14,8 @@ import TeamList from './pages/TeamList';
 import UserManagement from './pages/UserManagement';
 import PhoneDirectory from './pages/PhoneDirectory';
 import Profile from './pages/Profile';
+import PersonalCalendar from './pages/PersonalCalendar';
+import AuctionStoryAnomalies from './pages/AuctionStoryAnomalies';
 import Journal from './pages/Journal';
 import ArchivePage from './pages/Archive';
 import Statistics from './pages/Statistics';
@@ -63,6 +65,9 @@ import RightsAnalysisGuarantee from './pages/RightsAnalysisGuarantee';
 import AutomationDiagnosticsAdmin from './pages/AutomationDiagnosticsAdmin';
 import { X } from 'lucide-react';
 import { canUseBusinessAutomation } from '../shared/automation-access';
+import { canViewAuctionStoryAnomalies } from '../shared/auction-story-anomaly-access';
+import { canViewAuctionSchedule } from '../shared/auction-schedule';
+import { canViewConsultantJournal } from '../shared/consultant-journal-access';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -247,12 +252,6 @@ function OrgRoute({ children }: { children: React.ReactNode }) {
 }
 
 
-function NonAccountingRoute({ children }: { children: React.ReactNode }) {
-  const { user } = useAuthStore();
-  if (!user || ['accountant', 'accountant_asst'].includes(user.role)) return <Navigate to="/dashboard" replace />;
-  return <>{children}</>;
-}
-
 function AccountingRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
@@ -344,13 +343,30 @@ function FinanceAnalyticsRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function SalesRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  if (!user || user.role === 'support') return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
 function AuctionScheduleRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  const employeeViewerRoles = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'];
-  const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
-  if (!user || (!isFreelancer && !employeeViewerRoles.includes(user.role))) {
+  if (!canViewAuctionSchedule(user)) {
     return <Navigate to="/dashboard" replace />;
   }
+  return <>{children}</>;
+}
+
+function ConsultantJournalRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  if (!canViewConsultantJournal(user)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function AuctionStoryAnomalyRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuthStore();
+  if (loading) return <div className="page-loading">로딩중...</div>;
+  if (!user || !canViewAuctionStoryAnomalies(user)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -515,7 +531,7 @@ export default function App() {
           <Route path="property-report" element={<PropertyReport />} />
           <Route path="property-report/:id" element={<PropertyReport />} />
           <Route path="templates" element={<TemplateList />} />
-          <Route path="journal" element={<EmployeeOnlyRoute><NonAccountingRoute><Journal /></NonAccountingRoute></EmployeeOnlyRoute>} />
+          <Route path="journal" element={<ConsultantJournalRoute><Journal /></ConsultantJournalRoute>} />
           <Route path="case-progress" element={<LawitgoProgress />} />
           <Route path="archive" element={<EmployeeOnlyRoute><ArchivePage /></EmployeeOnlyRoute>} />
           <Route
@@ -529,6 +545,11 @@ export default function App() {
           <Route path="cases" element={<Cases />} />
           <Route path="lawitgo-settlement-ledger" element={<AccountingRoute><LawitgoSettlementLedger /></AccountingRoute>} />
           <Route path="profile" element={<Profile />} />
+          <Route path="personal-calendar" element={<PersonalCalendar />} />
+          <Route
+            path="personal-calendar/anomalies"
+            element={<AuctionStoryAnomalyRoute><AuctionStoryAnomalies /></AuctionStoryAnomalyRoute>}
+          />
           <Route
             path="freelancer-bids"
             element={
@@ -594,7 +615,7 @@ export default function App() {
             }
           />
           {/* commissions 라우트 제거 — 매출확인으로 통합 */}
-          <Route path="sales" element={<PrivateRoute><Sales /></PrivateRoute>} />
+          <Route path="sales" element={<SalesRoute><Sales /></SalesRoute>} />
           <Route
             path="missing-documents"
             element={

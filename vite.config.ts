@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig({
-	plugins: [react(), cloudflare()],
+	plugins: [react(), cloudflare({ remoteBindings: false })],
 	server: {
 		headers: {
 			// Google Identity Services 팝업이 window.closed 등을 체크할 수 있도록 허용
