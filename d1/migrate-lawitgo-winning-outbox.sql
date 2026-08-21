@@ -36,3 +36,21 @@ CREATE TABLE IF NOT EXISTS lawitgo_winning_delivery_runs (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lawitgo_winning_runs_slot
 ON lawitgo_winning_delivery_runs(scheduled_slot);
+
+CREATE TABLE IF NOT EXISTS lawitgo_winning_manual_runs (
+  id TEXT PRIMARY KEY,
+  actor_user_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  requested_count INTEGER NOT NULL DEFAULT 0,
+  claimed_count INTEGER NOT NULL DEFAULT 0,
+  sent_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  remote_request_id TEXT,
+  error TEXT,
+  started_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  finished_at TEXT,
+  FOREIGN KEY (actor_user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lawitgo_winning_manual_runs_started
+ON lawitgo_winning_manual_runs(started_at DESC);

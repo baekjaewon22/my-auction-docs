@@ -24,6 +24,7 @@ import OrgChart from './pages/OrgChart';
 import MeetingMinutes from './pages/MeetingMinutes';
 import LawitgoProgress from './pages/LawitgoProgress';
 import LawitgoSettlementLedger from './pages/LawitgoSettlementLedger';
+import LawitgoWinningAdmin from './pages/LawitgoWinningAdmin';
 // import Commissions from './pages/Commissions'; // 매출확인으로 통합됨
 import Accounting from './pages/Accounting';
 import Sales from './pages/Sales';
@@ -544,6 +545,7 @@ export default function App() {
           />
           <Route path="cases" element={<Cases />} />
           <Route path="lawitgo-settlement-ledger" element={<AccountingRoute><LawitgoSettlementLedger /></AccountingRoute>} />
+          <Route path="lawitgo-winning-admin" element={<MasterRoute><LawitgoWinningAdmin /></MasterRoute>} />
           <Route path="profile" element={<Profile />} />
           <Route path="personal-calendar" element={<PersonalCalendar />} />
           <Route

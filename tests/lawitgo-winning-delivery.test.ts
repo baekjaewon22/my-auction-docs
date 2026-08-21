@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import {
   buildLawitgoWinningItem,
   isLawitgoWinningDeliverySlot,
+  runLawitgoWinningManualDelivery,
   stageLawitgoWinningOutbox,
 } from '../src/worker/lib/lawitgo-winning-delivery.ts';
 
@@ -42,6 +43,53 @@ test('낙찰 전송 payload는 합의된 사건 정보만 포함하고 수수료
   });
   assert.equal('feeAmount' in result.item, false);
   assert.equal('winningPrice' in result.item, false);
+});
+
+test('master manual delivery sends selected outbox rows once and records the actor', async () => {
+  const sqlite = new Database(':memory:');
+  sqlite.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT);
+    CREATE TABLE lawitgo_consultant_mappings (user_id TEXT PRIMARY KEY, consultant_id TEXT);
+    CREATE TABLE journal_entries (id TEXT PRIMARY KEY, data TEXT);
+    CREATE TABLE freelancer_auction_schedules (id TEXT PRIMARY KEY, data TEXT);
+    CREATE TABLE bid_analysis_entries (
+      id TEXT PRIMARY KEY, bid_result TEXT, assignee_user_id TEXT, source_id TEXT,
+      bid_datetime TEXT, client_name TEXT, case_number TEXT, property_type TEXT, updated_at TEXT
+    );
+    CREATE TABLE sales_records (
+      id TEXT PRIMARY KEY, user_id TEXT, branch TEXT, client_name TEXT, client_phone TEXT,
+      contract_date TEXT, type_detail TEXT, journal_entry_id TEXT, external_id TEXT,
+      type TEXT, amount INTEGER, direction TEXT, status TEXT, created_at TEXT
+    );
+    INSERT INTO users VALUES ('u1', '담당자');
+    INSERT INTO lawitgo_consultant_mappings VALUES ('u1', 'law-1');
+    INSERT INTO freelancer_auction_schedules VALUES ('schedule-1', '{"court":"서울중앙지방법원","caseNo":"2026타경123","propertyType":"아파트"}');
+    INSERT INTO bid_analysis_entries VALUES ('analysis-1','낙찰','u1','auction-schedule:schedule-1','2026-08-20','고객','2026타경123','아파트','2026-08-20 16:00:00');
+    INSERT INTO sales_records VALUES ('sale-1','u1','서초지사','고객','010-1234-5678','2026-08-20','',NULL,'auction-schedule:schedule-1','낙찰',2200000,'income','confirmed','2026-08-20 16:00:00');
+  `);
+  const db = d1FromSqlite(sqlite);
+  await stageLawitgoWinningOutbox(db);
+  const outboxId = String((sqlite.prepare('SELECT id FROM lawitgo_winning_outbox').get() as any).id);
+  const originalFetch = globalThis.fetch;
+  const requests: any[] = [];
+  globalThis.fetch = async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body || '{}')));
+    return new Response('', { status: 200, headers: { 'X-Request-Id': 'lawitgo-request-1' } });
+  };
+  try {
+    const first = await runLawitgoWinningManualDelivery({ DB: db, LAWITGO_WINNING_API_KEY: 'test-key' }, 'master-1', [outboxId]);
+    const second = await runLawitgoWinningManualDelivery({ DB: db, LAWITGO_WINNING_API_KEY: 'test-key' }, 'master-1', [outboxId]);
+    assert.equal(first.sent, 1);
+    assert.equal(first.requestId, 'lawitgo-request-1');
+    assert.equal(second.sent, 0);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].items[0].externalId, 'sale-1');
+    assert.deepEqual(sqlite.prepare('SELECT status, remote_request_id FROM lawitgo_winning_outbox').get(), { status: 'sent', remote_request_id: 'lawitgo-request-1' });
+    assert.equal((sqlite.prepare('SELECT actor_user_id FROM lawitgo_winning_manual_runs ORDER BY started_at LIMIT 1').get() as any).actor_user_id, 'master-1');
+  } finally {
+    globalThis.fetch = originalFetch;
+    sqlite.close();
+  }
 });
 
 test('전화번호나 담당자 매핑 등 필수 정보가 없으면 전송 대신 보완 대기로 분류한다', () => {

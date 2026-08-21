@@ -126,6 +126,14 @@ export async function ensureLawitgoWinningSchema(db: D1Database): Promise<void> 
       started_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')), finished_at TEXT
     )`),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_lawitgo_winning_runs_slot ON lawitgo_winning_delivery_runs(scheduled_slot)'),
+    db.prepare(`CREATE TABLE IF NOT EXISTS lawitgo_winning_manual_runs (
+      id TEXT PRIMARY KEY, actor_user_id TEXT NOT NULL, status TEXT NOT NULL,
+      requested_count INTEGER NOT NULL DEFAULT 0, claimed_count INTEGER NOT NULL DEFAULT 0,
+      sent_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0,
+      remote_request_id TEXT, error TEXT,
+      started_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')), finished_at TEXT
+    )`),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_lawitgo_winning_manual_runs_started ON lawitgo_winning_manual_runs(started_at DESC)'),
   ]);
 }
 
@@ -296,5 +304,84 @@ export async function runLawitgoWinningDelivery(
     await db.prepare(`UPDATE lawitgo_winning_delivery_runs SET status='failed', staged_count=?, blocked_count=?, claimed_count=?, failed_count=?, error=?,
       finished_at=datetime('now', '+9 hours') WHERE id=?`).bind(staged.staged, staged.blocked, claimed.length, claimed.length, message, runId).run();
     return { due: true, configured: true, staged: staged.staged, blocked: staged.blocked, claimed: claimed.length, sent: 0, failed: claimed.length };
+  }
+}
+
+export async function runLawitgoWinningManualDelivery(
+  env: { DB: D1Database; LAWITGO_WINNING_API_KEY?: string },
+  actorUserId: string,
+  requestedOutboxIds: string[] = [],
+): Promise<{ configured: boolean; requested: number; staged: number; blocked: number; claimed: number; sent: number; failed: number; requestId: string }> {
+  const db = env.DB;
+  await ensureLawitgoWinningSchema(db);
+  const staged = await stageLawitgoWinningOutbox(db);
+  const uniqueIds = [...new Set(requestedOutboxIds.map((value) => String(value || '').trim()).filter(Boolean))].slice(0, BATCH_LIMIT);
+  const runId = crypto.randomUUID();
+  await db.prepare(`INSERT INTO lawitgo_winning_manual_runs (id, actor_user_id, status, requested_count)
+    VALUES (?, ?, 'running', ?)`).bind(runId, actorUserId, uniqueIds.length).run();
+
+  const apiKey = String(env.LAWITGO_WINNING_API_KEY || '').trim();
+  if (!apiKey) {
+    await db.prepare(`UPDATE lawitgo_winning_manual_runs SET status='not_configured', error=?,
+      finished_at=datetime('now', '+9 hours') WHERE id=?`)
+      .bind('LAWITGO_WINNING_API_KEY is not configured', runId).run();
+    return { configured: false, requested: uniqueIds.length, ...staged, claimed: 0, sent: 0, failed: 0, requestId: '' };
+  }
+
+  await db.prepare(`UPDATE lawitgo_winning_outbox
+    SET status='failed', claim_token=NULL, last_error='stale manual delivery claim recovered',
+        updated_at=datetime('now', '+9 hours')
+    WHERE status='sending' AND last_attempt_at < datetime('now', '+9 hours', '-30 minutes')`).run();
+
+  let selectSql = `SELECT id, sales_record_id, payload_json FROM lawitgo_winning_outbox
+    WHERE status IN ('pending','failed') AND missing_fields='[]'`;
+  const bindings: unknown[] = [];
+  if (uniqueIds.length > 0) {
+    selectSql += ` AND id IN (${uniqueIds.map(() => '?').join(',')})`;
+    bindings.push(...uniqueIds);
+  }
+  selectSql += ' ORDER BY created_at ASC LIMIT ?';
+  bindings.push(BATCH_LIMIT);
+  const dueRows = await db.prepare(selectSql).bind(...bindings)
+    .all<{ id: string; sales_record_id: string; payload_json: string }>();
+  const claimToken = crypto.randomUUID();
+  const claimed: typeof dueRows.results = [];
+  for (const row of dueRows.results || []) {
+    const result = await db.prepare(`UPDATE lawitgo_winning_outbox SET status='sending', claim_token=?,
+      attempt_count=attempt_count+1, last_attempt_at=datetime('now', '+9 hours'), updated_at=datetime('now', '+9 hours')
+      WHERE id=? AND status IN ('pending','failed')`).bind(claimToken, row.id).run();
+    if (result.meta.changes) claimed.push(row);
+  }
+
+  if (claimed.length === 0) {
+    await db.prepare(`UPDATE lawitgo_winning_manual_runs SET status='completed', claimed_count=0,
+      finished_at=datetime('now', '+9 hours') WHERE id=?`).bind(runId).run();
+    return { configured: true, requested: uniqueIds.length, ...staged, claimed: 0, sent: 0, failed: 0, requestId: '' };
+  }
+
+  try {
+    const items = claimed.map((row) => JSON.parse(row.payload_json) as LawitgoWinningItem);
+    const response = await fetch(LAWITGO_WINNING_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-API-Key': apiKey },
+      body: JSON.stringify({ source: 'my-docs', sentAt: new Date().toISOString(), items }),
+    });
+    if (!response.ok) throw new Error(`lawitgo winning batch failed (${response.status})`);
+    const requestId = response.headers.get('X-Request-Id') || '';
+    await db.batch(claimed.map((row) => db.prepare(`UPDATE lawitgo_winning_outbox SET status='sent', sent_at=datetime('now', '+9 hours'),
+      response_status=?, remote_request_id=?, last_error=NULL, claim_token=NULL, updated_at=datetime('now', '+9 hours')
+      WHERE id=? AND claim_token=?`).bind(response.status, requestId, row.id, claimToken)));
+    await db.prepare(`UPDATE lawitgo_winning_manual_runs SET status='completed', claimed_count=?, sent_count=?,
+      remote_request_id=?, finished_at=datetime('now', '+9 hours') WHERE id=?`)
+      .bind(claimed.length, claimed.length, requestId, runId).run();
+    return { configured: true, requested: uniqueIds.length, ...staged, claimed: claimed.length, sent: claimed.length, failed: 0, requestId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 500) : 'lawitgo manual delivery failed';
+    await db.batch(claimed.map((row) => db.prepare(`UPDATE lawitgo_winning_outbox SET status='failed',
+      next_attempt_at=datetime('now', '+12 hours'), last_error=?, claim_token=NULL, updated_at=datetime('now', '+9 hours')
+      WHERE id=? AND claim_token=?`).bind(message, row.id, claimToken)));
+    await db.prepare(`UPDATE lawitgo_winning_manual_runs SET status='failed', claimed_count=?, failed_count=?, error=?,
+      finished_at=datetime('now', '+9 hours') WHERE id=?`).bind(claimed.length, claimed.length, message, runId).run();
+    return { configured: true, requested: uniqueIds.length, ...staged, claimed: claimed.length, sent: 0, failed: claimed.length, requestId: '' };
   }
 }

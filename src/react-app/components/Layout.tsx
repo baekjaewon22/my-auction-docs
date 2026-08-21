@@ -12,7 +12,7 @@ import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
   PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
-  Scale, ExternalLink, Activity,
+  Scale, ExternalLink, Activity, Send,
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
@@ -281,6 +281,11 @@ export default function Layout() {
         {['master', 'ceo', 'cc_ref', 'admin'].includes(role) && (
           <Link to="/alimtalk-logs" className={`nav-item ${isActive('/alimtalk-logs') ? 'active' : ''}`} title="카카오 발송내역" onClick={() => setMobileOpen(false)}>
             <MessageSquare size={18} /> {!collapsed && '카카오 발송내역'}
+          </Link>
+        )}
+        {role === 'master' && (
+          <Link to="/lawitgo-winning-admin" className={`nav-item ${isActive('/lawitgo-winning-admin') ? 'active' : ''}`} title="Lawitgo 낙찰 전송 관리" onClick={() => setMobileOpen(false)}>
+            <Send size={18} /> {!collapsed && 'Lawitgo 낙찰 전송 관리'}
           </Link>
         )}
         {canManagementSupport && (

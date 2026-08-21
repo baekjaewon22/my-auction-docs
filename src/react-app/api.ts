@@ -622,6 +622,15 @@ export const api = {
     ),
   },
 
+  lawitgoWinningAdmin: {
+    get: () => request<any>('/lawitgo-winning-admin'),
+    refresh: () => request<any>('/lawitgo-winning-admin/refresh', { method: 'POST' }),
+    send: (ids: string[]) => request<any>('/lawitgo-winning-admin/send', {
+      method: 'POST',
+      body: JSON.stringify({ ids, confirmation: 'SEND_TO_LAWITGO' }),
+    }),
+  },
+
   adminNotes: {
     list: (params: { category?: string; search?: string; legal_subcategory?: string; page?: number; page_size?: number } = {}) => {
       const q = new URLSearchParams();
