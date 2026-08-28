@@ -12,7 +12,7 @@ import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
   PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
-  Scale, ExternalLink, Activity, Send,
+  Scale, ExternalLink, Activity, Send, ShieldCheck,
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
@@ -52,7 +52,7 @@ export default function Layout() {
   const navTo = (path: string) => { navigate(path); setMobileOpen(false); };
 
   useEffect(() => {
-    const mobileViewport = window.matchMedia('(max-width: 768px)');
+    const mobileViewport = window.matchMedia('(max-width: 1024px)');
     const syncSidebarForViewport = () => {
       if (mobileViewport.matches) {
         // 모바일 메뉴는 별도 오버레이로 열리므로 카테고리와 메뉴명을 항상 표시한다.
@@ -80,8 +80,9 @@ export default function Layout() {
   const isFreelancer = (user as any)?.login_type === 'freelancer' && role !== 'master';
   const isSupport = role === 'support';
   const isRestrictedAsst = role === 'accountant_asst' && isRestrictedAccountingAsstBranch(user?.branch);
-  const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'support'].includes(role);
-  const canApproveUsers = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role);
+  const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(role);
+  const canViewOrg = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst'].includes(role);
+  const canManageUsers = !isFreelancer && ['master', 'ceo', 'admin', 'manager', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canViewBidHistory = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const canViewFreelancerBids = role === 'master'
@@ -89,14 +90,13 @@ export default function Layout() {
   const showAuctionSchedule = canViewAuctionSchedule(user);
   const showConsultantJournal = canViewConsultantJournal(user);
   const canAccounting = !isFreelancer && !isSupport && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
-  const canPayroll = canAccounting || PAYROLL_EXTRA_IDS.includes(user?.id || '');
+  const canPayroll = canAccounting || (!isFreelancer && PAYROLL_EXTRA_IDS.includes(user?.id || ''));
   const canManagementSupport = canAccounting || canPayroll || (!isFreelancer && !isSupport && role === 'admin');
   // 회계분석은 총무보조 제외 (cc_ref도 제외)
   const canFinanceAnalytics = !isFreelancer && !isSupport && (
     ['master', 'ceo', 'accountant'].includes(role) ||
     (role === 'admin' && isHeadOfficeBranch(user?.branch))
   );
-  const isDirector = role === 'director';
   const canViewContractTracker = !isFreelancer && (
     ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role) ||
     CONTRACT_TRACKER_EXTRA_IDS.includes(user?.id || '')
@@ -261,24 +261,24 @@ export default function Layout() {
           </Link>
         )}
 
-        {(canApproveUsers || isDirector) && (
+        {canViewOrg && (
           <Link to="/org" className={`nav-item ${isActive('/org') ? 'active' : ''}`} title="조직도" onClick={() => setMobileOpen(false)}>
             <Network size={18} /> {!collapsed && '조직도'}
           </Link>
         )}
 
-        {canApproveUsers && !isDirector && (
+        {canManageUsers && (
           <Link to="/users" className={`nav-item ${isActive('/users') ? 'active' : ''}`} title="사용자 관리" onClick={() => setMobileOpen(false)}>
             <UserCog size={18} /> {!collapsed && '사용자 관리'}
           </Link>
         )}
 
-        {['master', 'accountant', 'admin'].includes(role) && (
+        {!isFreelancer && ['master', 'accountant', 'admin'].includes(role) && (
           <Link to="/link-review" className={`nav-item ${isActive('/link-review') ? 'active' : ''}`} title="외근 link 검수" onClick={() => setMobileOpen(false)}>
             <Briefcase size={18} /> {!collapsed && '외근 link 검수'}
           </Link>
         )}
-        {['master', 'ceo', 'cc_ref', 'admin'].includes(role) && (
+        {!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role) && (
           <Link to="/alimtalk-logs" className={`nav-item ${isActive('/alimtalk-logs') ? 'active' : ''}`} title="카카오 발송내역" onClick={() => setMobileOpen(false)}>
             <MessageSquare size={18} /> {!collapsed && '카카오 발송내역'}
           </Link>
@@ -295,6 +295,11 @@ export default function Layout() {
             {canAccounting && (
               <Link to="/accounting" className={`nav-item ${isAccountingBookActive ? 'active' : ''}`} title="회계장부" onClick={() => setMobileOpen(false)}>
                 <BookOpenCheck size={18} /> {!collapsed && '회계장부'}
+              </Link>
+            )}
+            {canAccounting && (
+              <Link to="/expense-receipts/manage" className={`nav-item ${isActive('/expense-receipts/manage') ? 'active' : ''}`} title="지출결의 결재 관리" onClick={() => setMobileOpen(false)}>
+                <ShieldCheck size={18} /> {!collapsed && '지출결의 결재관리'}
               </Link>
             )}
             {canPayroll && (

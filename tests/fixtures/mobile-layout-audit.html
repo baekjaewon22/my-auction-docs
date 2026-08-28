@@ -14,7 +14,11 @@
     </style>
   </head>
   <body>
-    <main class="page dashboard-page" data-audit>
+    <div class="app-layout">
+      <header class="mobile-header"><button class="mobile-menu-btn">☰</button><strong class="mobile-title">모바일 점검</strong><span class="mobile-avatar">점</span></header>
+      <aside class="sidebar"><nav class="sidebar-nav"><a class="nav-item active">대시보드</a></nav></aside>
+      <main class="main-content">
+    <div class="page dashboard-page" data-audit>
       <header class="page-header">
         <div>
           <h1>모바일 화면에서 매우 긴 업무성과 및 총무관리 대시보드 제목 검증</h1>
@@ -24,10 +28,10 @@
       </header>
 
       <section class="stats-grid">
-        <article class="stat-card"><strong class="stat-number">12</strong><span class="stat-label">고객전화번호 미등록 장기 미처리</span></article>
-        <article class="stat-card"><strong class="stat-number">7</strong><span class="stat-label">결재 대기 물건분석보고서</span></article>
-        <article class="stat-card"><strong class="stat-number">4</strong><span class="stat-label">총무담당 입금신청 확인</span></article>
-        <article class="stat-card"><strong class="stat-number">21</strong><span class="stat-label">이번 달 신규 계약</span></article>
+        <article class="stat-card"><div class="stat-number">12</div><div class="stat-label">고객전화번호 미등록 장기 미처리</div></article>
+        <article class="stat-card"><div class="stat-number">7</div><div class="stat-label">결재 대기 물건분석보고서</div></article>
+        <article class="stat-card"><div class="stat-number">4</div><div class="stat-label">총무담당 입금신청 확인</div></article>
+        <article class="stat-card"><div class="stat-number">21</div><div class="stat-label">이번 달 신규 계약</div></article>
       </section>
 
       <section class="section">
@@ -48,19 +52,143 @@
           <table class="audit-table"><thead><tr><th>담당자</th><th>고객명</th><th>계약일</th><th>입금액</th><th>진행상태</th><th>상세메모</th></tr></thead><tbody><tr><td>정민호</td><td>모바일검증고객</td><td>2026-08-19</td><td>12,340,000원</td><td>승인 대기</td><td>이 표 자체는 축소하지 않고 내부 스크롤로 확인합니다.</td></tr></tbody></table>
         </div>
       </section>
-    </main>
+
+      <section class="section">
+        <h2 class="section-title">회계 금액 카드</h2>
+        <div class="acc-kpi-grid" data-fit>
+          <article class="acc-kpi-card"><span class="acc-kpi-label">총 지출 금액</span><strong class="acc-kpi-value" data-text-fit>123,456,789<span class="unit">원</span></strong></article>
+          <article class="acc-kpi-card"><span class="acc-kpi-label">총 수입 금액</span><strong class="acc-kpi-value" data-text-fit>987,654,321<span class="unit">원</span></strong></article>
+          <article class="acc-kpi-card"><span class="acc-kpi-label">잔액 / 대기</span><strong class="acc-kpi-value" data-text-fit>864,197,532<span class="unit">원</span></strong></article>
+        </div>
+        <div class="acc-branch-summary-grid" data-fit>
+          <article class="acc-stat-card"><div class="acc-stat-label">의정부지사</div><div class="acc-stat-value" data-text-fit>123,456,789<span class="unit">원</span></div></article>
+          <article class="acc-stat-card"><div class="acc-stat-label">부산지사</div><div class="acc-stat-value" data-text-fit>98,765,432<span class="unit">원</span></div></article>
+          <article class="acc-stat-card"><div class="acc-stat-label">합계</div><div class="acc-stat-value" data-text-fit>222,222,221<span class="unit">원</span></div></article>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">관리 화면 요약과 대화상자</h2>
+        <div class="lawitgo-winning-summary" data-fit>
+          <button class="lawitgo-winning-summary-card"><span>전체</span><strong>99</strong></button>
+          <button class="lawitgo-winning-summary-card"><span>전송 가능</span><strong>9</strong></button>
+          <button class="lawitgo-winning-summary-card"><span>정보 누락</span><strong>12</strong></button>
+          <button class="lawitgo-winning-summary-card"><span>전송 중</span><strong>3</strong></button>
+          <button class="lawitgo-winning-summary-card"><span>전송 완료</span><strong>75</strong></button>
+        </div>
+        <div class="property-report-reject-dialog card" data-dialog data-fit style="position:fixed;left:50%;top:80px;transform:translateX(-50%);visibility:hidden;width:90%;max-width:500px">
+          <h3>물건분석보고서 반려 사유 입력</h3>
+          <textarea class="form-input" rows="2">모바일에서도 전체 내용을 확인할 수 있어야 합니다.</textarea>
+        </div>
+      </section>
+
+      <section class="section card">
+        <div class="auction-reference-head"><div><h3>참고문구 선택</h3><p>긴 안내와 여러 작업 버튼이 작은 화면에서 겹치지 않습니다.</p></div></div>
+        <div class="auction-reference-controls combined" data-fit><select class="form-input"><option>매우 긴 경매 참고문구 제목</option></select><button class="btn">불러오기</button></div>
+        <div class="checklist-reference-controls" data-fit><select class="form-input"><option>분류 선택</option></select><select class="form-input"><option>긴 체크리스트 참고문구</option></select><button class="btn">불러오기</button><button class="btn">저장</button><button class="btn">삭제</button></div>
+        <label class="outdoor-entry-row" data-fit style="display:flex;align-items:center;gap:8px;padding:8px;border:1px solid #e8eaed">
+          <input type="checkbox"><span class="outdoor-entry-date" style="min-width:90px">2026-08-22</span><span class="outdoor-entry-type" style="min-width:40px">임장</span><span class="outdoor-entry-time" style="min-width:90px">09:00~18:00</span><span class="outdoor-entry-detail" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2026타경123456 의정부지방법원 본원 매우 긴 현장 주소</span><span class="outdoor-entry-badge">본문 일자 일치</span>
+        </label>
+      </section>
+
+      <section class="section payroll-page payroll-sheet">
+        <h2 class="payroll-title">급여 명세 표</h2>
+        <div class="payroll-table-scroll" data-scroll-region><table class="payroll-table"><thead><tr><th>날짜</th><th>고객명</th><th>매출항목</th><th>매출액</th><th>공급가액</th><th>부가세</th></tr></thead><tbody><tr><td>08-22</td><td>모바일검증고객</td><td>컨설팅</td><td>12,340,000원</td><td>11,218,181원</td><td>1,121,819원</td></tr></tbody></table></div>
+      </section>
+
+      <section class="section card sales-customer-timeline-card">
+        <div class="sales-customer-timeline-head"><strong>매우 긴 고객명 활동 기록</strong><span>확정매출 123,456,789원</span></div>
+        <div class="sales-customer-timeline-list"><div class="sales-customer-timeline-item journal" style="display:flex;gap:10px"><span class="sales-customer-timeline-date" style="min-width:80px">2026-08-22</span><span>입찰</span><div class="sales-customer-timeline-detail">의정부지방법원 2026타경123456 아파트 입찰가 320,000,000원</div><span class="sales-customer-timeline-owner">담당자명</span></div></div>
+      </section>
+
+      <section class="section bi-addmenu-wrap" style="display:flex;justify-content:flex-end">
+        <button class="btn">인원 추가</button>
+        <div class="bi-addmenu" data-popup><div class="bi-addmenu-head">사업소득신고 인원 추가</div><div class="bi-addmenu-list"><button class="bi-addmenu-item"><strong class="bi-addmenu-name">아주 긴 이름의 테스트 사용자</strong><div class="bi-addmenu-sub">의정부지사 · 경매사업부</div></button></div></div>
+      </section>
+
+      <section class="expense-receipt-approval-card" data-fit>
+        <div class="expense-receipt-approval-title">결재</div>
+        <div class="expense-receipt-approval-flow">
+          <article class="expense-receipt-approval-slot done"><span>담당자</span><strong>아주 긴 이름의 모바일 검증 담당자</strong><small>2026. 8. 25. 오전 10:30</small></article>
+          <span class="expense-receipt-approval-arrow">→</span>
+          <article class="expense-receipt-approval-slot"><span>대표이사</span><strong>직인 대기</strong><small>실제 승인자 이름 표시 영역</small></article>
+        </div>
+        <div class="expense-receipt-approval-actions"><button class="btn btn-danger">반려</button><button class="btn btn-success">대표 직인 승인</button></div>
+      </section>
+
+      <section class="expense-receipt-form-card" data-fit>
+        <div class="expense-receipt-form-heading"><div><span>지출결의 기본정보</span><small>* 표시는 제출 전 필수입니다.</small></div></div>
+        <div class="expense-receipt-basic-grid" data-fit>
+          <label><span>기안일</span><input class="form-input" value="2026-08-25" readonly></label>
+          <label><span>기안자</span><input class="form-input" value="모바일검증담당자" readonly></label>
+          <label><span>부서</span><input class="form-input" value="경매컨설팅사업부" readonly></label>
+          <label><span>직급</span><input class="form-input" value="컨설턴트" readonly></label>
+          <label class="expense-receipt-purpose"><span>지출 목적</span><textarea class="form-input">법원 현장 업무를 위한 교통비 및 주차비 지출</textarea></label>
+          <label><span>지출 예정일</span><input class="form-input" value="2026-08-25" readonly></label>
+          <label><span>지급 방법</span><select class="form-input"><option>법인카드</option></select></label>
+        </div>
+        <div class="expense-receipt-items">
+          <div class="expense-receipt-item-row header"><span>No.</span><span>항목</span><span>금액</span><span>비고</span><span>관리</span></div>
+          <div class="expense-receipt-item-row" data-fit><span class="expense-receipt-item-number">1</span><label><span>항목</span><input class="form-input" value="의정부지방법원 현장 주차비" readonly></label><label><span>금액</span><div class="expense-receipt-amount-input"><input class="form-input" value="123,456" readonly><span>원</span></div></label><label><span>비고</span><input class="form-input" value="고객 사건 현장 방문" readonly></label><div class="expense-receipt-item-actions"><button class="btn-icon-sm">×</button></div></div>
+          <div class="expense-receipt-total"><span>합계</span><strong data-text-fit>123,456원</strong></div>
+        </div>
+      </section>
+
+      <section class="expense-receipt-upload-card" data-fit>
+        <div class="expense-receipt-upload-head"><div><h3>영수증 이미지</h3><p>승인 후 아래 순서대로 합본 PDF가 생성됩니다.</p></div><span>2/10장 · 3.4MB/40MB</span></div>
+        <div class="expense-receipt-dropzone"><strong>영수증을 끌어 놓거나 사진앨범에서 선택하세요.</strong><span>JPG·PNG·WEBP · 최대 10장 · 파일당 10MB · 전체 40MB</span><span class="expense-receipt-heic-notice">iPhone HEIC/HEIF 사진은 지원하지 않습니다.</span><button class="btn btn-primary">사진 선택</button></div>
+        <div class="expense-receipt-preview-grid" data-fit>
+          <article class="expense-receipt-preview-card"><div class="expense-receipt-preview-image"><div>영수증 미리보기</div><span>1</span></div><div class="expense-receipt-preview-info"><strong>아주긴영수증파일이름_법원현장주차비_20260825.jpg</strong><span>1.7MB</span></div><div class="expense-receipt-preview-actions"><span>⋮</span><button>←</button><button>→</button><button class="danger">×</button></div></article>
+          <article class="expense-receipt-preview-card"><div class="expense-receipt-preview-image"><div>영수증 미리보기</div><span>2</span></div><div class="expense-receipt-preview-info"><strong>교통비영수증.png</strong><span>1.7MB</span></div><div class="expense-receipt-preview-actions"><span>⋮</span><button>←</button><button>→</button><button class="danger">×</button></div></article>
+        </div>
+      </section>
+
+      <section class="expense-receipt-storage-card" data-fit>
+        <h3>합본 PDF·Drive·30일 정리 상태</h3>
+        <div class="expense-receipt-storage-grid" data-fit><div><span>합본 PDF</span><strong>생성 완료</strong><small>영수증-첨부-지출결의서.pdf</small></div><div><span>Google Drive</span><strong>백업 완료</strong><small>문서보관함/지출결의서/2026/08</small></div><div><span>사이트 원본 30일 정리</span><strong>정리 예정</strong><small>2026. 9. 24.</small></div><div><span>실제 승인자</span><strong>총무담당자</strong><small>accountant</small></div></div>
+      </section>
+
+      <section class="expense-receipt-archive-page" data-fit>
+        <div class="expense-receipt-archive-summary" data-fit><div><span>검색 결과</span><strong>20건</strong></div><div><span>현재 페이지 영수증</span><strong>84장</strong><small>39.7MB</small></div><div><span>승인 완료</span><strong>16건</strong></div><div><span>Drive 완료</span><strong>15건</strong></div></div>
+        <div class="expense-receipt-archive-filters" data-fit><label><span>상태</span><select class="form-input"><option>전체 상태</option></select></label><label><span>월</span><input class="form-input" value="2026-08" readonly></label><label><span>지사</span><select class="form-input"><option>의정부지사</option></select></label><label><span>작성자</span><input class="form-input" value="테스트" readonly></label><label class="expense-receipt-archive-search"><span>검색</span><div><input value="아주 긴 지출결의서 검색어" readonly></div></label></div>
+        <article class="expense-receipt-archive-item" data-fit><div class="expense-receipt-archive-main"><div class="expense-receipt-archive-icon">영</div><div class="expense-receipt-archive-info"><div><strong>영수증 첨부 지출결의서 매우 긴 문서 제목</strong><span class="status-badge status-approved">승인</span></div><p>모바일검증담당자 · 의정부지사 · 경매컨설팅사업부</p><small>작성 2026. 8. 25. · 수정 2026. 8. 25.</small></div></div><div class="expense-receipt-archive-state"><span>영수증 10장 · 39.7MB</span><span class="success">Drive 백업 완료</span><small>실제 승인자: 총무담당자 (accountant)</small></div><div class="expense-receipt-archive-actions"><button class="btn btn-sm">상세</button><button class="btn btn-sm">Drive에서 열기</button></div></article>
+      </section>
+
+      <section class="modal expense-receipt-reject-modal" data-dialog data-fit style="position:fixed;left:50%;top:80px;transform:translateX(-50%);visibility:hidden">
+        <div class="expense-receipt-reject-head"><h3>지출결의서 반려</h3><button class="modal-close">×</button></div>
+        <label><span>반려 사유</span><textarea class="form-input">모바일에서도 긴 반려 사유를 입력하고 전체 버튼을 확인할 수 있어야 합니다.</textarea></label>
+        <div class="modal-actions"><button class="btn">취소</button><button class="btn btn-danger">반려</button></div>
+      </section>
+    </div>
+      </main>
+    </div>
     <div id="audit-result">검사 중</div>
     <script>
       addEventListener('load', () => {
         const result = document.querySelector('#audit-result');
         const pageOverflow = document.documentElement.scrollWidth > innerWidth + 1;
         const clipped = [...document.querySelectorAll('[data-audit]')].filter((node) => node.scrollWidth > node.clientWidth + 1);
+        const fitFailures = [...document.querySelectorAll('[data-fit]')].filter((node) => node.scrollWidth > node.clientWidth + 1);
+        const textFitFailures = [...document.querySelectorAll('[data-text-fit]')].filter((node) => node.scrollWidth > node.clientWidth + 1);
         const scrollRegions = [...document.querySelectorAll('[data-scroll-region]')];
         const scrollRuleMissing = scrollRegions.some((node) => getComputedStyle(node).overflowX !== 'auto');
-        const failures = Number(pageOverflow) + clipped.length + Number(scrollRuleMissing);
+        const rectFailures = [...document.querySelectorAll('[data-dialog], [data-popup]')].filter((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.left < -1 || rect.right > innerWidth + 1;
+        });
+        const mobileShell = innerWidth <= 1024;
+        const headerVisible = getComputedStyle(document.querySelector('.mobile-header')).display !== 'none';
+        const sidebarFixed = getComputedStyle(document.querySelector('.sidebar')).position === 'fixed';
+        const shellFailure = mobileShell ? (!headerVisible || !sidebarFixed) : (headerVisible || sidebarFixed);
+        const failures = Number(pageOverflow) + clipped.length + fitFailures.length + textFitFailures.length + rectFailures.length + Number(scrollRuleMissing) + Number(shellFailure);
         result.dataset.viewport = `${innerWidth}x${innerHeight}`;
         result.dataset.failures = String(failures);
-        result.dataset.tableScroll = String(scrollRegions.every((node) => node.scrollWidth > node.clientWidth));
+        result.dataset.fitFailures = String(fitFailures.length);
+        result.dataset.textFitFailures = String(textFitFailures.length);
+        result.dataset.rectFailures = String(rectFailures.length);
+        result.dataset.shellFailure = String(shellFailure);
+        const auditTableRegion = document.querySelector('.audit-table').parentElement;
+        result.dataset.tableScroll = String(auditTableRegion.scrollWidth > auditTableRegion.clientWidth);
         result.textContent = failures ? `FAIL ${failures}` : `PASS ${innerWidth}px`;
         result.classList.toggle('fail', failures > 0);
       });

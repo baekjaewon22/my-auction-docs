@@ -224,10 +224,10 @@ users.put('/:id/role', requireRole('master', 'ceo', 'admin', 'accountant'), asyn
   }
 
   if (newRole === 'master' && currentUser.role !== 'master') {
-    return c.json({ error: '마스터 권한은 마스터만 설정할 수 있습니다.' }, 403);
+    return c.json({ error: '해당 권한은 설정할 수 없습니다.' }, 403);
   }
   if (newRole === 'ceo' && currentUser.role !== 'master') {
-    return c.json({ error: '대표 권한은 마스터만 설정할 수 있습니다.' }, 403);
+    return c.json({ error: '대표 권한은 설정할 수 없습니다.' }, 403);
   }
   if (newRole === 'cc_ref' && currentUser.role !== 'master' && currentUser.role !== 'ceo' && currentUser.role !== 'cc_ref') {
     return c.json({ error: 'CC참조자 권한은 대표 이상만 설정할 수 있습니다.' }, 403);
@@ -294,7 +294,7 @@ users.put('/:id/convert-to-employee', requireRole('master', 'ceo', 'accountant')
     return c.json({ error: '프리랜서 계정만 정규직으로 전환할 수 있습니다.' }, 400);
   }
   if (target.role === 'master' && currentUser.role !== 'master') {
-    return c.json({ error: '마스터 계정은 마스터만 변경할 수 있습니다.' }, 403);
+    return c.json({ error: '해당 계정은 변경할 수 없습니다.' }, 403);
   }
   if (target.role === 'resigned') {
     return c.json({ error: '퇴사자는 정규직 전환할 수 없습니다.' }, 400);
@@ -575,7 +575,7 @@ users.put('/:id/convert-to-freelancer', requireRole('master', 'ceo', 'accountant
     : null;
   if (shouldResolvePendingWork && pendingReassignmentCount > 0 && !fallbackApprover) {
     return c.json({
-      error: '대기 중인 일반 문서 결재를 넘겨받을 일반 로그인 관리자(마스터/총무담당/대표)가 없습니다.',
+      error: '대기 중인 일반 문서 결재를 넘겨받을 관리자가 없습니다.',
       impact,
       blockers,
     }, 409);
@@ -1048,7 +1048,7 @@ users.put('/:id', async (c) => {
 
   if (report_permission !== undefined) {
     if (currentUser.role !== 'master') {
-      return c.json({ error: '자료 생성 권한 부여는 마스터만 가능합니다.' }, 403);
+      return c.json({ error: '자료 생성 권한을 부여할 수 없습니다.' }, 403);
     }
     if (!['basic', 'special'].includes(report_permission)) {
       return c.json({ error: '유효하지 않은 자료 생성 권한입니다.' }, 400);

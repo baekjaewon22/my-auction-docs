@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
-import type { AuthEnv } from '../types';
-import { authMiddleware, requireHumanUser } from '../middleware/auth';
-import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
-import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
-import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
+import type { AuthEnv } from '../types.ts';
+import { authMiddleware, requireHumanUser } from '../middleware/auth.ts';
+import { getAdminVisibleBranches } from '../lib/branch-approval-overrides.ts';
+import { isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases.ts';
+import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk.ts';
 import {
+  auctionScheduleBidResult,
   auctionScheduleBidResultMissingFields,
   auctionScheduleSalesExternalId,
   calculateAuctionScheduleWinningFee,
@@ -15,17 +16,36 @@ import {
   isAuctionScheduleActivityType,
   redactSuggestedBidPrice,
   sanitizeAuctionScheduleData,
-} from '../../shared/auction-schedule';
-import { normalizeWonSalesInput } from '../../shared/freelancer-bid-sales';
-import { canSelectAuctionScheduleBranch, normalizeAuctionScheduleBranchFilter } from '../../shared/auction-schedule-branch';
-import { isValidCustomerPhone } from '../../shared/sales-customer-identity';
-import { linkSalesCustomerCase, resolveSalesCustomer } from '../lib/sales-customer-master';
-import { ensureBidAnalysisTable, normalizeAmount, upsertBidAnalysisEntry } from '../lib/bid-analysis';
-import { ensureAuctionScheduleTable } from '../lib/auction-schedule-schema';
-import { findCanonicalBidSale, type LinkedBidSale } from '../lib/performance-activity';
-import { DEFAULT_COMPANY_HOLIDAYS } from '../../shared/work-calendar';
-import { loadSystemHolidayDates } from '../lib/system-holidays';
-import { findAuctionInspectionSuggestions } from '../lib/auction-schedule-inspection-suggestions';
+} from '../../shared/auction-schedule.ts';
+import { normalizeWonSalesInput } from '../../shared/freelancer-bid-sales.ts';
+import { canSelectAuctionScheduleBranch, normalizeAuctionScheduleBranchFilter } from '../../shared/auction-schedule-branch.ts';
+import { isValidCustomerPhone } from '../../shared/sales-customer-identity.ts';
+import { linkSalesCustomerCase, resolveSalesCustomer } from '../lib/sales-customer-master.ts';
+import { ensureBidAnalysisTable, normalizeAmount, upsertBidAnalysisEntry } from '../lib/bid-analysis.ts';
+import { ensureAuctionScheduleTable } from '../lib/auction-schedule-schema.ts';
+import { findCanonicalBidSale, type LinkedBidSale } from '../lib/performance-activity.ts';
+import {
+  assertLawitgoWinningSaleDeletable,
+  LawitgoWinningSaleDeleteBlockedError,
+} from '../lib/lawitgo-winning-delivery.ts';
+import { DEFAULT_COMPANY_HOLIDAYS } from '../../shared/work-calendar.ts';
+import { loadSystemHolidayDates } from '../lib/system-holidays.ts';
+import { findAuctionInspectionSuggestions } from '../lib/auction-schedule-inspection-suggestions.ts';
+import {
+  auctionBidItemNumbersCompatible,
+  canonicalAuctionBidGroupMarker,
+  canonicalAuctionBidItemMarker,
+  canManageAuctionBidResult,
+  inspectionMaterializedBidId,
+  normalizeAuctionBidIdentity,
+} from '../../shared/auction-bid-result-access.ts';
+import {
+  canCreateAuctionSchedule,
+  canManageAuctionSchedule,
+  getRequiredInspectionBidDateError,
+  isPastAuctionScheduleDate,
+  isValidAuctionScheduleDate,
+} from '../../shared/auction-schedule-write-access.ts';
 
 const auctionSchedule = new Hono<AuthEnv>();
 auctionSchedule.use('*', authMiddleware);
@@ -61,10 +81,6 @@ async function ensureAuctionScheduleResultSchema(db: D1Database): Promise<void> 
   }
 }
 
-function isDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
-}
-
 function parseJsonObject(value: unknown): Record<string, unknown> {
   try {
     const parsed = JSON.parse(String(value || '{}'));
@@ -74,8 +90,183 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   }
 }
 
-function canWrite(user: AuthEnv['Variables']['user'], ownerId: string): boolean {
-  return user.role === 'master' || (user.login_type === 'freelancer' && user.sub === ownerId);
+type AuctionBidResultRow = {
+  id: string;
+  user_id: string;
+  user_name: string;
+  target_date: string;
+  activity_type: string;
+  activity_subtype: string;
+  data: string;
+  branch: string;
+  department: string;
+};
+
+const BID_RESULT_EDITOR_DATA_FIELDS = [
+  'caseNo', 'court', 'itemNo', 'propertyCategory', 'propertyType',
+  'client', 'bidder', 'clientPhone',
+  'suggestedPrice', 'bidPrice', 'winPrice',
+  'bidWon', 'bidFailed', 'bidCancelled', 'bidResultCancelled',
+  'bidResultCancelledAutomatically', 'bidResultCancelledAt',
+] as const;
+
+const GENERAL_EDIT_PROTECTED_DATA_FIELDS = [
+  'suggestedPrice', 'actualBidPrice', 'bidPrice', 'winningPrice', 'winPrice',
+  'bidWon', 'bidFailed', 'bidCancelled', 'bidResultCancelled',
+  'bidResultCancelledAutomatically', 'bidResultCancelledAt',
+  'clientPhone', 'inspectionSourceId', 'materializedBidGroup', 'materializedBidItem',
+] as const;
+
+function mergeGeneralScheduleEditData(
+  existingData: Record<string, unknown>,
+  incomingData: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = sanitizeAuctionScheduleData({ ...existingData, ...incomingData });
+  for (const field of GENERAL_EDIT_PROTECTED_DATA_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(existingData, field)) merged[field] = existingData[field];
+    else delete merged[field];
+  }
+  return merged;
+}
+
+function serializeBidResultEditorData(value: unknown): string {
+  const source = parseJsonObject(value);
+  return JSON.stringify(Object.fromEntries(
+    BID_RESULT_EDITOR_DATA_FIELDS
+      .filter((field) => Object.prototype.hasOwnProperty.call(source, field))
+      .map((field) => [field, source[field]]),
+  ));
+}
+
+function bidResultEntryDto(row: AuctionBidResultRow) {
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    user_name: row.user_name || '',
+    target_date: row.activity_type === '임장'
+      ? String(parseJsonObject(row.data).bidDate || '')
+      : row.target_date,
+    activity_subtype: row.activity_subtype || '',
+    data: serializeBidResultEditorData(row.data),
+  };
+}
+
+function isCompanionInspection(data: Record<string, unknown>): boolean {
+  return data.companion === true || data.companion === 1 || String(data.companion || '').toLowerCase() === 'true';
+}
+
+function inspectionBidValidationError(data: Record<string, unknown>): string | null {
+  if (!isValidAuctionScheduleDate(data.bidDate)) return '입찰기일이 올바른 임장 일정만 결과를 입력할 수 있습니다.';
+  if (isCompanionInspection(data)) return '동행 임장 일정에는 입찰 결과를 입력할 수 없습니다.';
+  return getAuctionScheduleValidationError('입찰', data);
+}
+
+function sameBidIdentity(
+  candidate: AuctionBidResultRow,
+  ownerId: string,
+  bidDate: string,
+  sourceData: Record<string, unknown>,
+): boolean {
+  if (candidate.user_id !== ownerId || candidate.target_date !== bidDate || candidate.activity_type !== '입찰') return false;
+  const candidateData = parseJsonObject(candidate.data);
+  return normalizeAuctionBidIdentity(candidateData.court) === normalizeAuctionBidIdentity(sourceData.court)
+    && normalizeAuctionBidIdentity(candidateData.caseNo) === normalizeAuctionBidIdentity(sourceData.caseNo)
+    && auctionBidItemNumbersCompatible(candidateData.itemNo, sourceData.itemNo);
+}
+
+async function loadAuctionBidResultRow(db: D1Database, id: string): Promise<AuctionBidResultRow | null> {
+  return db.prepare(`
+    SELECT s.*, u.name AS user_name
+    FROM freelancer_auction_schedules s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.id = ?
+  `).bind(id).first<AuctionBidResultRow>();
+}
+
+async function findMatchingBidForInspection(
+  db: D1Database,
+  inspection: AuctionBidResultRow,
+  bidDate: string,
+  sourceData: Record<string, unknown>,
+): Promise<AuctionBidResultRow | null> {
+  const rows = await db.prepare(`
+    SELECT s.*, u.name AS user_name
+    FROM freelancer_auction_schedules s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.user_id = ? AND s.target_date = ? AND s.activity_type = '입찰'
+    ORDER BY s.created_at, s.id
+  `).bind(inspection.user_id, bidDate).all<AuctionBidResultRow>();
+  return (rows.results || []).find((row) => sameBidIdentity(row, inspection.user_id, bidDate, sourceData)) || null;
+}
+
+async function materializeBidFromInspection(
+  db: D1Database,
+  inspection: AuctionBidResultRow,
+): Promise<AuctionBidResultRow> {
+  const sourceData = parseJsonObject(inspection.data);
+  const bidDate = String(sourceData.bidDate || '').trim();
+  const validationError = inspectionBidValidationError(sourceData);
+  if (validationError) throw new Error(validationError);
+
+  const matching = await findMatchingBidForInspection(db, inspection, bidDate, sourceData);
+  if (matching) return matching;
+
+  const id = inspectionMaterializedBidId(inspection.id);
+  const canonicalGroup = canonicalAuctionBidGroupMarker(sourceData.court, sourceData.caseNo);
+  const canonicalItem = canonicalAuctionBidItemMarker(sourceData.itemNo);
+  const data = JSON.stringify({
+    ...sanitizeAuctionScheduleData(sourceData),
+    bidDate: undefined,
+    companion: undefined,
+    inspectionSourceId: inspection.id,
+    materializedBidGroup: canonicalGroup,
+    materializedBidItem: canonicalItem,
+    bidWon: false,
+    bidFailed: false,
+    bidCancelled: false,
+    bidResultCancelled: false,
+    bidResultCancelledAutomatically: false,
+    bidResultCancelledAt: '',
+    winPrice: '',
+  });
+  await db.prepare(`
+    INSERT OR IGNORE INTO freelancer_auction_schedules
+      (id, user_id, target_date, activity_type, activity_subtype, data, branch, department)
+    SELECT ?, ?, ?, '입찰', ?, ?, ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM freelancer_auction_schedules competing
+      WHERE competing.user_id = ?
+        AND competing.target_date = ?
+        AND competing.activity_type = '입찰'
+        AND COALESCE(json_extract(competing.data, '$.materializedBidGroup'), '') = ?
+        AND (
+          COALESCE(json_extract(competing.data, '$.materializedBidItem'), '') = ?
+          OR COALESCE(json_extract(competing.data, '$.materializedBidItem'), '') = ''
+          OR ? = ''
+        )
+    )
+  `).bind(
+    id,
+    inspection.user_id,
+    bidDate,
+    inspection.activity_subtype || String(sourceData.caseNo || '').slice(0, 200),
+    data,
+    inspection.branch || '',
+    inspection.department || '',
+    inspection.user_id,
+    bidDate,
+    canonicalGroup,
+    canonicalItem,
+    canonicalItem,
+  ).run();
+  // INSERT가 경쟁 요청 때문에 생략됐더라도, 원자 조건을 통과해 먼저 생성된
+  // 동일 입찰 행을 다시 찾아 두 요청 모두 같은 schedule_id를 사용한다.
+  const resolved = await findMatchingBidForInspection(db, inspection, bidDate, sourceData);
+  if (!resolved) {
+    throw new Error('임장 일정과 연결된 입찰 일정을 생성하지 못했습니다.');
+  }
+  return resolved;
 }
 
 auctionSchedule.get('/', async (c) => {
@@ -88,7 +279,7 @@ auctionSchedule.get('/', async (c) => {
   if (canSelectBranch && !requestedBranch) return c.json({ error: '조회할 지사를 확인해 주세요.' }, 400);
   // 선택 권한이 없는 사용자는 query 변조 여부와 무관하게 세션의 소속 지사로 강제한다.
   const branchFilter = canSelectBranch ? requestedBranch! : (normalizeBranchName(user.branch) || user.branch || '__unassigned__');
-  if (!isDate(start) || !isDate(end) || start > end) {
+  if (!isValidAuctionScheduleDate(start) || !isValidAuctionScheduleDate(end) || start > end) {
     return c.json({ error: '조회 시작일과 종료일을 YYYY-MM-DD 형식으로 입력해 주세요.' }, 400);
   }
   const days = Math.floor((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000) + 1;
@@ -226,7 +417,7 @@ auctionSchedule.get('/my-bid-result-requirements', async (c) => {
 
 auctionSchedule.get('/create-options', async (c) => {
   const user = c.get('user');
-  if (user.role !== 'master') return c.json({ error: '마스터만 대리 등록 담당자를 조회할 수 있습니다.' }, 403);
+  if (user.role !== 'master') return c.json({ error: '대리 등록 담당자를 조회할 권한이 없습니다.' }, 403);
   const rows = await c.env.DB.prepare(`
     SELECT id, name, role, branch, department, position_title
     FROM users
@@ -240,8 +431,8 @@ auctionSchedule.get('/create-options', async (c) => {
 
 auctionSchedule.get('/inspection-suggestions', async (c) => {
   const user = c.get('user');
-  if (user.role !== 'master' && user.login_type !== 'freelancer') {
-    return c.json({ error: '경매 스케줄 자동채우기는 마스터 또는 프리랜서만 사용할 수 있습니다.' }, 403);
+  if (!canCreateAuctionSchedule(user)) {
+    return c.json({ error: '경매 스케줄 자동채우기 권한이 없습니다.' }, 403);
   }
   const query = String(c.req.query('q') || '').slice(0, 100);
   if (!query) return c.json({ suggestions: [] });
@@ -259,8 +450,8 @@ auctionSchedule.get('/inspection-suggestions', async (c) => {
 
 auctionSchedule.post('/', async (c) => {
   const user = c.get('user');
-  if (user.role !== 'master' && user.login_type !== 'freelancer') {
-    return c.json({ error: '경매 스케줄 작성은 마스터 또는 프리랜서만 가능합니다.' }, 403);
+  if (!canCreateAuctionSchedule(user)) {
+    return c.json({ error: '경매 스케줄 작성 권한이 없습니다.' }, 403);
   }
   const body = await c.req.json<{
     user_id?: string;
@@ -271,14 +462,15 @@ auctionSchedule.post('/', async (c) => {
   }>();
   const targetDate = String(body.target_date || '');
   const activityType = String(body.activity_type || '');
-  if (!isDate(targetDate) || !isAuctionScheduleActivityType(activityType)) {
+  if (!isValidAuctionScheduleDate(targetDate) || !isAuctionScheduleActivityType(activityType)) {
     return c.json({ error: '날짜와 활동유형(입찰·임장)을 확인해 주세요.' }, 400);
   }
   const rawData = sanitizeAuctionScheduleData(body.data);
   const data = activityType === '입찰'
     ? { ...rawData, bidWon: false, bidFailed: false, bidCancelled: false, bidResultCancelled: false, winPrice: '' }
     : rawData;
-  const validationError = getAuctionScheduleValidationError(activityType, data);
+  const validationError = getRequiredInspectionBidDateError(activityType, data)
+    || getAuctionScheduleValidationError(activityType, data);
   if (validationError) return c.json({ error: validationError }, 400);
   const encodedData = JSON.stringify(data);
   if (encodedData.length > 20_000) return c.json({ error: '일정 내용이 너무 깁니다.' }, 400);
@@ -295,10 +487,9 @@ auctionSchedule.post('/', async (c) => {
     SELECT id, branch, department
     FROM users
     WHERE id = ? AND approved = 1 AND role != 'resigned'
-      AND COALESCE(login_type, 'employee') = 'freelancer'
     LIMIT 1
   `).bind(ownerId).first<{ id: string; branch: string; department: string }>();
-  if (!owner) return c.json({ error: '활성 프리랜서 담당자를 찾을 수 없습니다.' }, 400);
+  if (!owner) return c.json({ error: '활성 담당자를 찾을 수 없습니다.' }, 400);
   const id = crypto.randomUUID();
   await db.prepare(`
     INSERT INTO freelancer_auction_schedules
@@ -317,6 +508,24 @@ auctionSchedule.post('/', async (c) => {
   return c.json({ entry: { id, user_id: owner.id, target_date: targetDate, activity_type: activityType } }, 201);
 });
 
+auctionSchedule.get('/:id/bid-result-entry', async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  await ensureAuctionScheduleTable(db);
+  const existing = await loadAuctionBidResultRow(db, c.req.param('id'));
+  if (!existing) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
+  if (!canManageAuctionBidResult(user, existing.user_id)) {
+    return c.json({ error: '이 입찰 결과를 입력할 권한이 없습니다.' }, 403);
+  }
+  if (existing.activity_type === '임장') {
+    const validationError = inspectionBidValidationError(parseJsonObject(existing.data));
+    if (validationError) return c.json({ error: validationError }, 400);
+  } else if (existing.activity_type !== '입찰') {
+    return c.json({ error: '입찰 또는 입찰기일이 등록된 임장 일정만 결과를 입력할 수 있습니다.' }, 400);
+  }
+  return c.json({ entry: bidResultEntryDto(existing) });
+});
+
 auctionSchedule.put('/:id', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
@@ -325,7 +534,16 @@ auctionSchedule.put('/:id', async (c) => {
   const id = c.req.param('id');
   const existing = await db.prepare('SELECT * FROM freelancer_auction_schedules WHERE id = ?').bind(id).first<any>();
   if (!existing) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
-  if (!canWrite(user, existing.user_id)) return c.json({ error: '본인의 경매 스케줄만 수정할 수 있습니다.' }, 403);
+  if (!canManageAuctionSchedule(user)) {
+    return c.json({ error: '경매 스케줄 수정 권한이 없습니다.' }, 403);
+  }
+  if (isPastAuctionScheduleDate(existing.target_date)) {
+    return c.json({ error: '자정이 지나 과거가 된 일정은 수정할 수 없습니다. 필요한 내용은 새 일정으로 추가해 주세요.' }, 409);
+  }
+  const existingData = parseJsonObject(existing.data);
+  if (existing.activity_type === '입찰' && auctionScheduleBidResult(existingData) !== 'pending') {
+    return c.json({ error: '입찰 결과가 처리된 일정은 일반 정보를 수정할 수 없습니다. 입찰 결과 전용 기능을 이용해 주세요.' }, 409);
+  }
   const linkedSale = await db.prepare('SELECT id FROM sales_records WHERE external_id = ?')
     .bind(auctionScheduleSalesExternalId(id))
     .first<{ id: string }>();
@@ -341,27 +559,22 @@ auctionSchedule.put('/:id', async (c) => {
   }>();
   const targetDate = body.target_date === undefined ? existing.target_date : String(body.target_date);
   const activityType = body.activity_type === undefined ? existing.activity_type : String(body.activity_type);
-  if (!isDate(targetDate) || !isAuctionScheduleActivityType(activityType)) {
+  if (!isValidAuctionScheduleDate(targetDate) || !isAuctionScheduleActivityType(activityType)) {
     return c.json({ error: '날짜와 활동유형(입찰·임장)을 확인해 주세요.' }, 400);
   }
-  const existingData = parseJsonObject(existing.data);
+  if (activityType !== existing.activity_type) {
+    return c.json({ error: '기존 일정의 활동유형은 변경할 수 없습니다. 필요한 활동유형으로 새 일정을 추가해 주세요.' }, 409);
+  }
+  if (isPastAuctionScheduleDate(targetDate)) {
+    return c.json({ error: '과거 일정은 새로 추가할 수만 있으며 기존 일정을 과거로 변경할 수 없습니다.' }, 409);
+  }
   const incomingData = body.data === undefined
-    ? parseJsonObject(existing.data)
-    : sanitizeAuctionScheduleData(body.data);
-  const parsedData = activityType === '입찰'
-    ? {
-      ...incomingData,
-      bidWon: existing.activity_type === '입찰' ? !!existingData.bidWon : false,
-      bidFailed: existing.activity_type === '입찰' ? !!existingData.bidFailed : false,
-      bidCancelled: existing.activity_type === '입찰' ? !!existingData.bidCancelled : false,
-      bidResultCancelled: existing.activity_type === '입찰' ? !!existingData.bidResultCancelled : false,
-      bidResultCancelledAutomatically: existing.activity_type === '입찰' ? !!existingData.bidResultCancelledAutomatically : false,
-      bidResultCancelledAt: existing.activity_type === '입찰' ? String(existingData.bidResultCancelledAt || '') : '',
-      winPrice: existing.activity_type === '입찰' ? String(existingData.winPrice || '') : '',
-    }
-    : incomingData;
+    ? existingData
+    : mergeGeneralScheduleEditData(existingData, sanitizeAuctionScheduleData(body.data));
+  const parsedData = incomingData;
   const data = JSON.stringify(parsedData);
-  const validationError = getAuctionScheduleValidationError(activityType, parsedData);
+  const validationError = getRequiredInspectionBidDateError(activityType, parsedData)
+    || getAuctionScheduleValidationError(activityType, parsedData);
   if (validationError) return c.json({ error: validationError }, 400);
   await db.prepare(`
     UPDATE freelancer_auction_schedules
@@ -382,20 +595,9 @@ auctionSchedule.put('/:id/bid-prices', async (c) => {
   const db = c.env.DB;
   await ensureAuctionScheduleTable(db);
   await ensureAuctionScheduleResultSchema(db);
-  const id = c.req.param('id');
-  const existing = await db.prepare(`
-    SELECT s.*, u.name AS user_name
-    FROM freelancer_auction_schedules s
-    JOIN users u ON u.id = s.user_id
-    WHERE s.id = ?
-  `).bind(id).first<any>();
-  if (!existing) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
-  if (!canWrite(user, existing.user_id)) return c.json({ error: '본인의 입찰가만 작성할 수 있습니다.' }, 403);
-  if (existing.activity_type !== '입찰') return c.json({ error: '입찰 일정만 입찰가를 작성할 수 있습니다.' }, 400);
-  const linkedSale = await db.prepare('SELECT id FROM sales_records WHERE external_id = ?')
-    .bind(auctionScheduleSalesExternalId(id)).first<{ id: string }>();
-  if (linkedSale) return c.json({ error: '입금신청이 연결된 낙찰 건의 입찰가는 변경할 수 없습니다.' }, 409);
-
+  const requested = await loadAuctionBidResultRow(db, c.req.param('id'));
+  if (!requested) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
+  if (!canManageAuctionBidResult(user, requested.user_id)) return c.json({ error: '이 입찰가를 작성할 권한이 없습니다.' }, 403);
   const body = await c.req.json<{ suggested_price?: number; actual_bid_price?: number; winning_price?: number }>();
   const suggestedPrice = normalizeAmount(body.suggested_price);
   const actualBidPrice = normalizeAmount(body.actual_bid_price);
@@ -403,6 +605,21 @@ auctionSchedule.put('/:id/bid-prices', async (c) => {
   if (!suggestedPrice && !actualBidPrice && !winningPrice) {
     return c.json({ error: '제안입찰가·작성입찰가·최종 낙찰가 중 하나 이상 입력해 주세요.' }, 400);
   }
+  let existing = requested;
+  if (requested.activity_type === '임장') {
+    try {
+      existing = await materializeBidFromInspection(db, requested);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : '임장 일정을 확인해 주세요.' }, 400);
+    }
+  } else if (requested.activity_type !== '입찰') {
+    return c.json({ error: '입찰 또는 입찰기일이 등록된 임장 일정만 입찰가를 작성할 수 있습니다.' }, 400);
+  }
+  const id = existing.id;
+  const linkedSale = await db.prepare('SELECT id FROM sales_records WHERE external_id = ?')
+    .bind(auctionScheduleSalesExternalId(id)).first<{ id: string }>();
+  if (linkedSale) return c.json({ error: '입금신청이 연결된 낙찰 건의 입찰가는 변경할 수 없습니다.' }, 409);
+
   const data = parseJsonObject(existing.data);
   const nextData = {
     ...data,
@@ -433,7 +650,7 @@ auctionSchedule.put('/:id/bid-prices', async (c) => {
       uploaded_by: existing.user_id,
     });
   }
-  return c.json({ success: true, missing_fields: auctionScheduleBidResultMissingFields(nextData) });
+  return c.json({ success: true, schedule_id: id, missing_fields: auctionScheduleBidResultMissingFields(nextData) });
 });
 
 auctionSchedule.post('/:id/bid-result', async (c) => {
@@ -441,17 +658,11 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
   const db = c.env.DB;
   await ensureAuctionScheduleTable(db);
   await ensureAuctionScheduleResultSchema(db);
-  const id = c.req.param('id');
-  const existing = await db.prepare(`
-    SELECT s.*, u.name AS user_name
-    FROM freelancer_auction_schedules s
-    JOIN users u ON u.id = s.user_id
-    WHERE s.id = ?
-  `).bind(id).first<any>();
-  if (!existing) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
-  if (!canWrite(user, existing.user_id)) return c.json({ error: '본인의 입찰 결과만 처리할 수 있습니다.' }, 403);
-  if (existing.activity_type !== '입찰') return c.json({ error: '입찰 일정만 결과를 처리할 수 있습니다.' }, 400);
-
+  const requested = await loadAuctionBidResultRow(db, c.req.param('id'));
+  if (!requested) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
+  if (!canManageAuctionBidResult(user, requested.user_id)) {
+    return c.json({ error: '이 입찰 결과를 처리할 권한이 없습니다.' }, 403);
+  }
   const body = await c.req.json<{
     result?: 'won' | 'failed' | 'withdrawn' | 'cancelled' | 'pending';
     suggested_price?: number;
@@ -461,6 +672,26 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
   }>();
   const result = String(body.result || '');
   if (!['won', 'failed', 'withdrawn', 'cancelled', 'pending'].includes(result)) return c.json({ error: '입찰 결과를 확인해 주세요.' }, 400);
+  if (result === 'won' || result === 'failed') {
+    const suggestedPrice = normalizeAmount(body.suggested_price);
+    const actualBidPrice = normalizeAmount(body.actual_bid_price);
+    const winningPrice = normalizeAmount(body.winning_price);
+    if (!suggestedPrice || !actualBidPrice || !winningPrice) {
+      return c.json({ error: '제안입찰가·작성입찰가·최종 낙찰가를 모두 입력해 주세요.' }, 400);
+    }
+  }
+
+  let existing = requested;
+  if (requested.activity_type === '임장') {
+    try {
+      existing = await materializeBidFromInspection(db, requested);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : '임장 일정을 확인해 주세요.' }, 400);
+    }
+  } else if (requested.activity_type !== '입찰') {
+    return c.json({ error: '입찰 또는 입찰기일이 등록된 임장 일정만 결과를 처리할 수 있습니다.' }, 400);
+  }
+  const id = existing.id;
 
   const data = parseJsonObject(existing.data);
   const externalId = auctionScheduleSalesExternalId(id);
@@ -523,7 +754,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         source_id: externalId,
         uploaded_by: existing.user_id,
       });
-      return c.json({ success: true, sales_record_id: null, sales_status: null });
+      return c.json({ success: true, schedule_id: id, sales_record_id: null, sales_status: null });
     }
     const normalized = normalizeWonSalesInput({
       actual_bid_price: winningPrice,
@@ -667,6 +898,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     }
     return c.json({
       success: true,
+      schedule_id: id,
       sales_record_id: savedSale.id,
       sales_status: savedSale.status,
       phone_required: !isValidCustomerPhone(savedSale.client_phone),
@@ -684,6 +916,16 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
   }
   if (result === 'pending' && linkedSale?.source === 'legacy') {
     return c.json({ error: '기존 입찰 내역에 연결된 입금신청은 경매 스케줄에서 취소할 수 없습니다. 업무성과에서 확인해 주세요.' }, 409);
+  }
+  if (result === 'pending' && linkedSale?.source === 'schedule') {
+    try {
+      await assertLawitgoWinningSaleDeletable(db, linkedSale.id);
+    } catch (error) {
+      if (error instanceof LawitgoWinningSaleDeleteBlockedError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      throw error;
+    }
   }
 
   const nextData = JSON.stringify({
@@ -734,7 +976,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       uploaded_by: existing.user_id,
     });
   }
-  return c.json({ success: true, sales_record_id: null, sales_status: null });
+  return c.json({ success: true, schedule_id: id, sales_record_id: null, sales_status: null });
 });
 
 auctionSchedule.delete('/:id', async (c) => {
@@ -743,9 +985,15 @@ auctionSchedule.delete('/:id', async (c) => {
   await ensureAuctionScheduleTable(db);
   await ensureAuctionScheduleResultSchema(db);
   const id = c.req.param('id');
-  const existing = await db.prepare('SELECT user_id FROM freelancer_auction_schedules WHERE id = ?').bind(id).first<{ user_id: string }>();
+  const existing = await db.prepare('SELECT user_id, target_date FROM freelancer_auction_schedules WHERE id = ?')
+    .bind(id).first<{ user_id: string; target_date: string }>();
   if (!existing) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
-  if (!canWrite(user, existing.user_id)) return c.json({ error: '본인의 경매 스케줄만 삭제할 수 있습니다.' }, 403);
+  if (!canManageAuctionSchedule(user)) {
+    return c.json({ error: '경매 스케줄 삭제 권한이 없습니다.' }, 403);
+  }
+  if (isPastAuctionScheduleDate(existing.target_date)) {
+    return c.json({ error: '자정이 지나 과거가 된 일정은 삭제할 수 없습니다.' }, 409);
+  }
   const externalId = auctionScheduleSalesExternalId(id);
   const linkedSale = await db.prepare('SELECT id FROM sales_records WHERE external_id = ?').bind(externalId).first<{ id: string }>();
   if (linkedSale) return c.json({ error: '입금신청이 연결된 일정은 삭제할 수 없습니다. 업무성과의 환불·취소 절차를 먼저 처리하세요.' }, 409);

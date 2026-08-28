@@ -19,6 +19,7 @@ import type { SignatureType } from '../components/SignaturePanel';
 import ApprovalBar from '../components/ApprovalBar';
 import { FileDown, Printer } from 'lucide-react';
 import { signatureDisplayName } from '../../shared/signature-display';
+import { EXPENSE_RECEIPT_TEMPLATE_ID } from '../../shared/expense-receipt';
 
 const OUTDOOR_PLACEHOLDER_REGEX = /<p[^>]*class="outdoor-placeholder"[^>]*>[\s\S]*?<\/p>/;
 const MANUAL_OUTDOOR_FIELDS = '<p>일시:</p><p>장소:</p><p>내용:</p>';
@@ -213,6 +214,10 @@ export default function DocumentEdit() {
       api.documents.steps(id).catch(() => ({ steps: [] })),
     ]).then(([docRes, logRes, sigRes, stepsRes]) => {
       const d = docRes.document;
+      if (d.template_id === EXPENSE_RECEIPT_TEMPLATE_ID) {
+        navigate(`/expense-receipts/${d.id}`, { replace: true });
+        return;
+      }
       // 물건분석보고서는 전용 페이지로 리다이렉트
       if (d.template_id === 'tpl-work-008') {
         navigate(`/property-report/${d.id}`, { replace: true });
@@ -239,7 +244,7 @@ export default function DocumentEdit() {
         api.documents.update(d.id, { content }).catch(() => undefined);
       }
     }).catch((err) => { console.error('문서 로딩 실패:', err); navigate('/documents'); });
-  }, [id, editor, isJournalUser, user?.id, user?.role]);
+  }, [id, editor, isJournalUser, navigate, user?.id, user?.role]);
 
   // 외근보고서일 때 일지 entry 목록 + 현재 link 조회 (일지 비작성 직책은 스킵)
   const loadLinkData = useCallback(async () => {
@@ -774,6 +779,7 @@ export default function DocumentEdit() {
           approvalSteps={approvalSteps}
           currentUserId={user?.id}
           currentUserRole={user?.role}
+          authorId={doc.author_id}
           docStatus={doc.status}
           authorName={doc.author_name}
           onSign={handleApprovalSign}
@@ -854,7 +860,7 @@ export default function DocumentEdit() {
                       const isLinked = linkedEntryIds.has(e.id);
                       const purposeColor = e.activity_type === '입찰' ? '#d93025' : e.activity_type === '임장' ? '#188038' : '#1a73e8';
                       return (
-                        <label key={e.id} style={{
+                        <label key={e.id} className="outdoor-entry-row" style={{
                           display: 'flex', alignItems: 'center', gap: 8,
                           padding: '6px 8px', borderRadius: 4,
                           background: isLinked ? '#e8f0fe' : '#fff',
@@ -864,10 +870,10 @@ export default function DocumentEdit() {
                         }}>
                           <input type="checkbox" checked={isLinked}
                             onChange={(ev) => toggleEntryLink(e.id, ev.target.checked)} />
-                          <span style={{ minWidth: 90, color: '#3c4043', fontWeight: 600 }}>{e.target_date}</span>
-                          <span style={{ minWidth: 40, color: purposeColor, fontWeight: 600 }}>{e.activity_type}</span>
-                          <span style={{ minWidth: 90, color: '#5f6368' }}>{e.time_from}{e.time_to ? `~${e.time_to}` : ''}</span>
-                          <span style={{ flex: 1, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span className="outdoor-entry-date" style={{ minWidth: 90, color: '#3c4043', fontWeight: 600 }}>{e.target_date}</span>
+                          <span className="outdoor-entry-type" style={{ minWidth: 40, color: purposeColor, fontWeight: 600 }}>{e.activity_type}</span>
+                          <span className="outdoor-entry-time" style={{ minWidth: 90, color: '#5f6368' }}>{e.time_from}{e.time_to ? `~${e.time_to}` : ''}</span>
+                          <span className="outdoor-entry-detail" style={{ flex: 1, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {e.case_no || ''} {e.property_type || ''} {e.place || e.client || ''}
                           </span>
                         </label>
@@ -917,7 +923,7 @@ export default function DocumentEdit() {
                       const purposeColor = e.activity_type === '입찰' ? '#d93025' : e.activity_type === '임장' ? '#188038' : e.activity_type === '미팅' ? '#1a73e8' : '#5f6368';
                       const reason = e.linked_to_other_doc ? '다른 활성 보고서에 이미 연결되어 있습니다.' : e.reason;
                       return (
-                        <label key={e.id} style={{
+                        <label key={e.id} className="outdoor-entry-row with-reason" style={{
                           display: 'flex', alignItems: 'center', gap: 8,
                           padding: '6px 8px', borderRadius: 4,
                           background: isLinked ? '#e8f0fe' : blocked ? '#f8f9fa' : '#fff',
@@ -933,13 +939,13 @@ export default function DocumentEdit() {
                               }
                               toggleEntryLink(e.id, ev.target.checked);
                             }} />
-                          <span style={{ minWidth: 86, color: '#3c4043', fontWeight: 600 }}>{e.target_date}</span>
-                          <span style={{ minWidth: 38, color: purposeColor, fontWeight: 600 }}>{e.activity_type}</span>
-                          <span style={{ minWidth: 84, color: '#5f6368' }}>{e.time_from}{e.time_to ? `~${e.time_to}` : ''}</span>
-                          <span style={{ flex: 1, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span className="outdoor-entry-date" style={{ minWidth: 86, color: '#3c4043', fontWeight: 600 }}>{e.target_date}</span>
+                          <span className="outdoor-entry-type" style={{ minWidth: 38, color: purposeColor, fontWeight: 600 }}>{e.activity_type}</span>
+                          <span className="outdoor-entry-time" style={{ minWidth: 84, color: '#5f6368' }}>{e.time_from}{e.time_to ? `~${e.time_to}` : ''}</span>
+                          <span className="outdoor-entry-detail" style={{ flex: 1, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {e.case_no || ''} {e.property_type || ''} {e.place || e.client || e.activity_subtype || ''}
                           </span>
-                          <span style={{ maxWidth: 210, color: e.eligible && !e.linked_to_other_doc ? '#188038' : '#9aa0a6', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span className="outdoor-entry-reason" style={{ maxWidth: 210, color: e.eligible && !e.linked_to_other_doc ? '#188038' : '#9aa0a6', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {reason}
                           </span>
                         </label>

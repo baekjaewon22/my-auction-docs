@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { signatureDisplayName } from '../../shared/signature-display';
+import { EXPENSE_RECEIPT_REPRESENTATIVE_STAMP, EXPENSE_RECEIPT_TEMPLATE_ID } from '../../shared/expense-receipt';
 
 interface Sig {
   id: string;
@@ -27,10 +28,28 @@ interface Doc {
   id: string;
   title: string;
   content: string;
+  template_id?: string | null;
   author_name?: string;
   author_branch?: string;
   author_department?: string;
   author_position?: string;
+}
+
+interface ExpenseReceiptAttachment {
+  id: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  sort_order: number;
+}
+
+interface ExpenseReceiptApprovalAction {
+  action: 'approved' | 'rejected';
+  actor_id: string;
+  actor_name: string;
+  actor_role: string;
+  comment: string;
+  created_at: string;
 }
 
 export default function Print() {
@@ -40,10 +59,22 @@ export default function Print() {
   const [doc, setDoc] = useState<Doc | null>(null);
   const [signatures, setSignatures] = useState<Sig[]>([]);
   const [steps, setSteps] = useState<Step[]>([]);
+  const [receiptAttachments, setReceiptAttachments] = useState<ExpenseReceiptAttachment[]>([]);
+  const [receiptApproval, setReceiptApproval] = useState<ExpenseReceiptApprovalAction | null>(null);
+  const [printPayloadLoaded, setPrintPayloadLoaded] = useState(false);
   const [error, setError] = useState<string>('');
 
   useEffect(() => {
-    if (!docId || !token) { setError(`param 누락 — docId=${docId}, tokenLen=${token?.length || 0}`); return; }
+    (window as any).__printReady = false;
+    (window as any).__printError = null;
+    (window as any).__printMeta = null;
+    setPrintPayloadLoaded(false);
+    if (!docId || !token) {
+      const message = `param 누락 — docId=${docId}, tokenLen=${token?.length || 0}`;
+      (window as any).__printError = message;
+      setError(message);
+      return;
+    }
     fetch(`/api/print/data/${docId}?token=${encodeURIComponent(token)}`)
       .then(async r => {
         if (r.ok) return r.json();
@@ -54,24 +85,51 @@ export default function Print() {
         setDoc(data.document);
         setSignatures(data.signatures || []);
         setSteps(data.approval_steps || []);
+        setReceiptAttachments(data.expense_receipt_attachments || []);
+        setReceiptApproval(data.expense_receipt_approval_action || null);
+        setPrintPayloadLoaded(true);
       })
-      .catch(err => setError(err.message || 'error'));
+      .catch(err => {
+        const message = err.message || 'error';
+        (window as any).__printError = message;
+        setError(message);
+      });
   }, [docId, token]);
 
   // 이미지 로딩 완료 후 Puppeteer에 신호
   useEffect(() => {
-    if (!doc) return;
+    if (!doc || !printPayloadLoaded) return;
+    (window as any).__printReady = false;
+    let cancelled = false;
     const imgs = Array.from(document.querySelectorAll('img'));
     Promise.all(imgs.map(img => {
-      if ((img as HTMLImageElement).complete) return Promise.resolve();
+      const image = img as HTMLImageElement;
+      if (image.complete) {
+        if (doc.template_id === EXPENSE_RECEIPT_TEMPLATE_ID && image.naturalWidth === 0) {
+          (window as any).__printError = `이미지를 불러오지 못했습니다: ${image.alt || image.src}`;
+        }
+        return Promise.resolve();
+      }
       return new Promise<void>(resolve => {
         img.addEventListener('load', () => resolve(), { once: true });
-        img.addEventListener('error', () => resolve(), { once: true });
+        img.addEventListener('error', () => {
+          if (doc.template_id === EXPENSE_RECEIPT_TEMPLATE_ID) {
+            (window as any).__printError = `이미지를 불러오지 못했습니다: ${image.alt || image.src}`;
+          }
+          resolve();
+        }, { once: true });
       });
     })).then(() => {
+      if (cancelled) return;
+      (window as any).__printMeta = {
+        documentId: doc.id,
+        templateId: doc.template_id || null,
+        attachmentCount: doc.template_id === EXPENSE_RECEIPT_TEMPLATE_ID ? receiptAttachments.length : 0,
+      };
       (window as any).__printReady = true;
     });
-  }, [doc]);
+    return () => { cancelled = true; };
+  }, [doc, printPayloadLoaded, receiptAttachments]);
 
   const isPropertyReport = useMemo(() => {
     if (!doc) return false;
@@ -80,6 +138,7 @@ export default function Print() {
       return parsed && typeof parsed === 'object' && 'court' in parsed;
     } catch { return false; }
   }, [doc]);
+  const isExpenseReceipt = doc?.template_id === EXPENSE_RECEIPT_TEMPLATE_ID;
 
   if (error) return <div style={{ padding: 40, color: 'red' }}>오류: {error}</div>;
   if (!doc) return <div style={{ padding: 40 }}>로딩중...</div>;
@@ -95,11 +154,13 @@ export default function Print() {
       <div style={{
         width: '210mm',
         minHeight: '297mm',
-        padding: '12mm 15mm',
+        padding: isExpenseReceipt ? 0 : '12mm 15mm',
         boxSizing: 'border-box',
         background: '#fff',
       }}>
-        {isPropertyReport
+        {isExpenseReceipt
+          ? <ExpenseReceiptPrint doc={doc} signatures={signatures} steps={steps} attachments={receiptAttachments} approval={receiptApproval} token={token} />
+          : isPropertyReport
           ? <PropertyReportPrint doc={doc} signatures={signatures} steps={steps} />
           : <GenericDocPrint doc={doc} signatures={signatures} steps={steps} />}
       </div>
@@ -108,6 +169,92 @@ export default function Print() {
 }
 
 // ━━━ 일반 문서 (tiptap HTML) ━━━
+type ExpenseReceiptContent = {
+  version?: number;
+  draft_date?: string;
+  author_name?: string;
+  department?: string;
+  position_title?: string;
+  purpose?: string;
+  expense_date?: string;
+  payment_method?: string;
+  case_number?: string;
+  client_name?: string;
+  deposit_date?: string;
+  deposit_amount?: number;
+  bank_name?: string;
+  account_number?: string;
+  account_holder?: string;
+  account_note?: string;
+  items?: Array<{ id?: string; description?: string; amount?: number; note?: string }>;
+  total_amount?: number;
+};
+
+function ExpenseReceiptPrint({ doc, signatures, steps, attachments, approval, token }: {
+  doc: Doc;
+  signatures: Sig[];
+  steps: Step[];
+  attachments: ExpenseReceiptAttachment[];
+  approval: ExpenseReceiptApprovalAction | null;
+  token: string;
+}) {
+  const content = useMemo<ExpenseReceiptContent>(() => {
+    try { return JSON.parse(doc.content || '{}'); } catch { return {}; }
+  }, [doc.content]);
+  const items = Array.isArray(content.items) ? content.items : [];
+  const authorSignature = signatures[0];
+  const representativeSignature = signatures.find((signature) => signature.signature_data === EXPENSE_RECEIPT_REPRESENTATIVE_STAMP)
+    || signatures.find((signature) => steps.some((step) => step.approver_role === 'ceo' && step.approver_id === signature.user_id));
+  const money = (value: number | undefined) => Number(value || 0).toLocaleString('ko-KR');
+  const actorRoleLabel: Record<string, string> = {
+    master: '마스터', accountant: '총무담당', accountant_asst: '총무보조', ceo: '대표이사',
+  };
+  const cell: React.CSSProperties = { border: '1px solid #9ca3af', padding: '7px 8px', fontSize: '10pt' };
+  const head: React.CSSProperties = { ...cell, background: '#f3f4f6', fontWeight: 700, textAlign: 'center', width: '17%' };
+
+  return <>
+    <section style={{ width: '210mm', minHeight: '297mm', padding: '12mm 15mm', boxSizing: 'border-box', position: 'relative', fontFamily: '"Malgun Gothic", sans-serif', color: '#111827' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <table style={{ borderCollapse: 'collapse', textAlign: 'center', fontSize: '9pt' }}>
+          <thead><tr><th style={{ ...cell, width: 70 }}>담당자</th><th style={{ ...cell, width: 70 }}>대표이사</th></tr></thead>
+          <tbody><tr>
+            <td style={{ ...cell, height: 50 }}>{authorSignature && <img alt="담당자 서명" src={authorSignature.signature_data} style={{ width: 58, height: 36, objectFit: 'contain' }} />}</td>
+            <td style={{ ...cell, height: 50 }}>{representativeSignature && <img alt="대표이사 직인" src={representativeSignature.signature_data} style={{ width: 58, height: 42, objectFit: 'contain' }} />}</td>
+          </tr></tbody>
+        </table>
+      </div>
+      <h1 style={{ textAlign: 'center', fontSize: '22pt', letterSpacing: 7, margin: '5mm 0 10mm' }}>지 출 결 의 서</h1>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 14 }}><tbody>
+        <tr><th style={head}>기안일</th><td style={cell}>{content.draft_date || ''}</td><th style={head}>기안자</th><td style={cell}>{content.author_name || doc.author_name || ''}</td></tr>
+        <tr><th style={head}>부서</th><td style={cell}>{content.department || doc.author_department || ''}</td><th style={head}>직급</th><td style={cell}>{content.position_title || doc.author_position || ''}</td></tr>
+        <tr><th style={head}>지출 목적</th><td style={{ ...cell, minHeight: 48 }} colSpan={3}>{content.purpose || ''}</td></tr>
+        <tr><th style={head}>지급 방법</th><td style={cell} colSpan={3}>{content.payment_method || ''}</td></tr>
+        <tr><th style={head}>사건번호</th><td style={cell}>{content.case_number || ''}</td><th style={head}>고객명</th><td style={cell}>{content.client_name || ''}</td></tr>
+        <tr><th style={head}>입금일</th><td style={cell}>{content.deposit_date || ''}</td><th style={head}>입금액</th><td style={cell}>{content.deposit_amount ? `${money(content.deposit_amount)}원` : ''}</td></tr>
+        <tr><th style={head}>은행명</th><td style={cell}>{content.bank_name || ''}</td><th style={head}>계좌번호</th><td style={cell}>{content.account_number || ''}</td></tr>
+        <tr><th style={head}>예금주</th><td style={cell}>{content.account_holder || ''}</td><th style={head}>비고</th><td style={cell}>{content.account_note || ''}</td></tr>
+      </tbody></table>
+      <h2 style={{ fontSize: '12pt', margin: '8mm 0 3mm' }}>지출 내역</h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr>
+        <th style={{ ...head, width: '8%' }}>번호</th><th style={{ ...head, width: '42%' }}>항목</th><th style={{ ...head, width: '22%' }}>금액</th><th style={{ ...head, width: '28%' }}>비고</th>
+      </tr></thead><tbody>
+        {items.map((item, index) => <tr key={item.id || index}><td style={{ ...cell, textAlign: 'center' }}>{index + 1}</td><td style={cell}>{item.description || ''}</td><td style={{ ...cell, textAlign: 'right' }}>{money(item.amount)}원</td><td style={cell}>{item.note || ''}</td></tr>)}
+        <tr><th style={head} colSpan={2}>합계</th><td style={{ ...cell, textAlign: 'right', fontWeight: 700 }}>{money(content.total_amount)}원</td><td style={cell}></td></tr>
+      </tbody></table>
+      <p style={{ textAlign: 'center', marginTop: '12mm', fontSize: '10pt' }}>위와 같이 지출하고자 결의하오니 승인하여 주시기 바랍니다.</p>
+      {approval?.action === 'approved' && <div style={{ position: 'absolute', left: '15mm', right: '15mm', bottom: '9mm', borderTop: '1px solid #d1d5db', paddingTop: 4, color: '#6b7280', fontSize: '8pt', textAlign: 'right' }}>
+        실제 승인자: {approval.actor_name}{approval.actor_role ? `(${actorRoleLabel[approval.actor_role] || approval.actor_role})` : ''} / 승인일시: {approval.created_at}
+      </div>}
+    </section>
+    {attachments.map((attachment, index) => <section key={attachment.id} style={{ width: '210mm', height: '297mm', padding: '12mm 15mm', boxSizing: 'border-box', pageBreakBefore: 'always', breakBefore: 'page', display: 'flex', flexDirection: 'column', fontFamily: '"Malgun Gothic", sans-serif' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #d1d5db', paddingBottom: 5, marginBottom: 8, fontSize: '9pt' }}><strong>영수증 {index + 1}</strong><span>{attachment.file_name}</span></div>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <img alt={`영수증 ${index + 1}: ${attachment.file_name}`} src={`/api/print/expense-receipts/${encodeURIComponent(doc.id)}/attachments/${encodeURIComponent(attachment.id)}?token=${encodeURIComponent(token)}`} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+      </div>
+    </section>)}
+  </>;
+}
+
 function GenericDocPrint({ doc, signatures, steps }: { doc: Doc; signatures: Sig[]; steps: Step[] }) {
   const used = new Set<string>();
   const slots: { label: string; sig?: Sig }[] = [];

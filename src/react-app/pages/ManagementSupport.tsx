@@ -2,6 +2,8 @@ import { Link } from 'react-router-dom';
 import { useAuthStore } from '../store';
 import { isRestrictedAccountingBranch } from '../lib/branchAliases';
 
+const MANAGEMENT_SUPPORT_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+
 const supportItems = [
   {
     to: '/accounting-session1',
@@ -94,14 +96,16 @@ export default function ManagementSupport() {
   const label = user?.branch || user?.department || role;
   const isAsst = role === 'accountant_asst';
   const asstRestricted = isAsst && isRestrictedAccountingAsstBranch(user?.branch);
+  const isManagementSupportExtraUser = MANAGEMENT_SUPPORT_EXTRA_IDS.includes(user?.id || '');
   const filteredItems = supportItems.filter((item) => {
     if (role === 'admin') {
-      return ['/management-support/holidays', '/phone-directory', '/admin-notes', '/archive?drive=1'].includes(item.to);
+      return ['/management-support/holidays', '/admin-notes', '/archive?drive=1'].includes(item.to)
+        || (isManagementSupportExtraUser && item.to === '/phone-directory');
     }
     if (item.to === '/finance-analytics') return ['master', 'ceo', 'accountant'].includes(role);
     if (item.to === '/management-support/holidays') return ['master', 'ceo', 'admin', 'accountant'].includes(role);
     if (item.to === '/accounting-staff') return !isAsst;
-    if (item.to === '/payroll-business-income') return ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
+    if (item.to === '/payroll-business-income') return ['master', 'ceo', 'accountant'].includes(role);
     if (item.to === '/payroll') return ['master', 'ceo', 'accountant', 'accountant_asst'].includes(role);
     if (item.to.startsWith('/accounting-session2/reports')) {
       return !asstRestricted;

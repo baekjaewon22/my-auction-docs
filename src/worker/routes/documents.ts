@@ -24,8 +24,69 @@ import {
   isFreelancerViewer,
   isMyAuctionDocument,
 } from '../lib/template-access';
+import {
+  ExpenseReceiptContentError,
+  EXPENSE_RECEIPT_REPRESENTATIVE_STAMP,
+  EXPENSE_RECEIPT_TEMPLATE_ID,
+  canonicalizeExpenseReceiptContent,
+  evaluateExpenseReceiptEditPolicy,
+  hasExpenseReceiptDraftChanged,
+  isExpenseReceiptTemplate,
+} from '../../shared/expense-receipt';
+import {
+  ExpenseReceiptApprovalError,
+  acquireExpenseReceiptMutationClaim,
+  approveExpenseReceipt,
+  revertExpenseReceiptApproval,
+  ensureExpenseReceiptApprovalSchema,
+  findExpenseReceiptRepresentative,
+  getActiveExpenseReceiptActor,
+  getExpenseReceiptDocumentRevision,
+  getLatestExpenseReceiptApprovalAction,
+  getRequestAudit,
+  listExpenseReceiptDelegates,
+  rejectExpenseReceipt,
+  releaseExpenseReceiptMutationClaim,
+  submitExpenseReceiptApproval,
+} from '../lib/expense-receipt-approval';
+import {
+  canReadExpenseReceipt,
+  countActiveExpenseReceiptAttachments,
+  deleteExpenseReceiptDocumentAndQueueArtifacts,
+  ExpenseReceiptDocumentDeleteConflictError,
+} from '../lib/expense-receipts';
+import { sendExpenseReceiptResultAlimtalk } from '../lib/expense-receipt-result-alimtalk';
+import { sendExpenseReceiptSlackNotification } from '../lib/expense-receipt-slack';
+import { renderApprovedDocumentPdf } from '../drive-backup-runner';
 
 const LEAVE_REQUEST_TEMPLATE_IDS = new Set(['tpl-att-001', 'tpl-att-002', 'tpl-att-011']);
+
+function expenseReceiptKstToday(): string {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+async function canonicalizeCompleteExpenseReceiptDraft(
+  db: D1Database,
+  authorId: string,
+  content: string,
+): Promise<string> {
+  const author = await db.prepare(`
+    SELECT name, department, position_title FROM users WHERE id = ?
+  `).bind(authorId).first<{ name: string; department: string; position_title: string }>();
+  if (!author) return content;
+  try {
+    return JSON.stringify(canonicalizeExpenseReceiptContent(
+      content,
+      author,
+      expenseReceiptKstToday(),
+    ));
+  } catch (error) {
+    // Drafts may be intentionally incomplete. They become canonical as soon as
+    // all required fields are present, before a revision-bound author signature.
+    if (error instanceof ExpenseReceiptContentError) return content;
+    throw error;
+  }
+}
 
 function parseDateString(value: string): Date | null {
   const [year, month, day] = String(value || '').slice(0, 10).split('-').map(Number);
@@ -99,9 +160,51 @@ const ASSIGNED_APPROVER_EXISTS = 'EXISTS (SELECT 1 FROM approval_steps aps WHERE
 const DOCUMENT_APPROVER_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant']);
 const DOCUMENT_REJECT_PROXY_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant']);
 const DOCUMENT_ADMIN_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin']);
+const EXPENSE_RECEIPT_NON_DRAFT_READ_ROLES = new Set(['ceo', 'accountant', 'accountant_asst']);
+
+function isServiceTokenExpenseReceipt(
+  user: { auth_type?: string },
+  doc: { template_id?: string | null },
+): boolean {
+  return user.auth_type !== 'user' && isExpenseReceiptTemplate(doc.template_id);
+}
+
+function appendExpenseReceiptListScope(
+  user: { sub: string; role: string; auth_type?: string; login_type?: string },
+  conditions: string[],
+  params: string[],
+): void {
+  if (user.auth_type !== 'user') {
+    conditions.push("COALESCE(d.template_id, '') != ?");
+    params.push(EXPENSE_RECEIPT_TEMPLATE_ID);
+    return;
+  }
+  if (user.role === 'master') return;
+  const hasNonDraftRead = user.login_type !== 'freelancer'
+    && EXPENSE_RECEIPT_NON_DRAFT_READ_ROLES.has(user.role);
+  conditions.push(hasNonDraftRead
+    ? "(COALESCE(d.template_id, '') != ? OR d.author_id = ? OR d.status != 'draft')"
+    : "(COALESCE(d.template_id, '') != ? OR d.author_id = ?)");
+  params.push(EXPENSE_RECEIPT_TEMPLATE_ID, user.sub);
+}
 
 const requireDocumentApprover: MiddlewareHandler<AuthEnv> = async (c, next) => {
   const user = c.get('user');
+  if (user.role === 'accountant_asst') {
+    if (user.auth_type !== 'user') {
+      return c.json({ error: '사용자 로그인으로만 결재할 수 있습니다.' }, 403);
+    }
+    const documentId = c.req.param('id');
+    const receipt = documentId
+      ? await c.env.DB.prepare('SELECT template_id FROM documents WHERE id = ?')
+        .bind(documentId).first<{ template_id: string | null }>()
+      : null;
+    if (!isExpenseReceiptTemplate(receipt?.template_id)) {
+      return c.json({ error: '권한이 없습니다.' }, 403);
+    }
+    await next();
+    return;
+  }
   if (!DOCUMENT_APPROVER_ROLES.has(user.role) && !isFreelancerViewer(user)) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
@@ -124,12 +227,17 @@ const requireEmployeeDocumentAdmin: MiddlewareHandler<AuthEnv> = async (c, next)
 // GET /api/documents/cancel-requests — 취소 신청 목록 (관리자용) — /:id 보다 먼저 정의
 documents.get('/cancel-requests', requireEmployeeDocumentAdmin, async (c) => {
   const db = c.env.DB;
-  const result = await db.prepare(
+  const user = c.get('user');
+  const conditions = ['d.cancel_requested = 1', 'd.cancelled = 0'];
+  const params: string[] = [];
+  appendExpenseReceiptListScope(user, conditions, params);
+  const statement = db.prepare(
     `SELECT d.*, u.name as author_name FROM documents d
      LEFT JOIN users u ON d.author_id = u.id
-     WHERE d.cancel_requested = 1 AND d.cancelled = 0
+     WHERE ${conditions.join(' AND ')}
      ORDER BY d.updated_at DESC`
-  ).all();
+  );
+  const result = params.length > 0 ? await statement.bind(...params).all() : await statement.all();
   return c.json({ documents: result.results });
 });
 
@@ -163,7 +271,13 @@ documents.get('/', async (c) => {
   const conditions: string[] = [];
   const params: string[] = [];
 
-  if (user.role === 'master' || user.role === 'ceo' || user.role === 'cc_ref') {
+  appendExpenseReceiptListScope(user, conditions, params);
+
+  if (user.role === 'master') {
+    // 마스터는 영수증 신청서 초안을 포함해 전용 보관함과 같은 범위로 조회한다.
+    conditions.push("(d.status != 'draft' OR d.author_id = ? OR d.template_id = ?)");
+    params.push(user.sub, EXPENSE_RECEIPT_TEMPLATE_ID);
+  } else if (user.role === 'ceo' || user.role === 'cc_ref') {
     // Full access — 단, 타인의 draft는 제외
     conditions.push("(d.status != 'draft' OR d.author_id = ?)");
     params.push(user.sub);
@@ -259,11 +373,89 @@ documents.get('/:id', async (c) => {
   ).bind(id).first<Document & { author_name: string }>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
 
-  if (!(await canReadDocument(db, user, doc))) {
+  if (isServiceTokenExpenseReceipt(user, doc)) {
+    return c.json({ error: '영수증 첨부 신청서는 사용자 로그인으로만 조회할 수 있습니다.' }, 403);
+  }
+
+  const canRead = isExpenseReceiptTemplate(doc.template_id)
+    ? canReadExpenseReceipt(user, doc)
+    : await canReadDocument(db, user, doc);
+  if (!canRead) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    const expenseReceiptRevision = await getExpenseReceiptDocumentRevision(db, id);
+    const approvalAction = await getLatestExpenseReceiptApprovalAction(db, id).catch(() => null);
+    const pendingStep = doc.status === 'submitted' && !doc.cancelled && !doc.cancel_requested
+      ? await db.prepare(`
+        SELECT id FROM approval_steps
+        WHERE document_id = ? AND status = 'pending'
+        ORDER BY step_order ASC LIMIT 1
+      `).bind(id).first<{ id: string }>()
+      : null;
+    const activeActor = user.auth_type === 'user' && pendingStep
+      ? await getActiveExpenseReceiptActor(db, id, pendingStep.id, user.sub, user.role).catch(() => null)
+      : null;
+    const canAct = doc.author_id !== user.sub
+      && !!activeActor
+      && doc.status === 'submitted'
+      && !doc.cancelled
+      && !doc.cancel_requested;
+    return c.json({
+      document: {
+        ...doc,
+        expense_receipt_revision: expenseReceiptRevision,
+        expense_receipt_approval_action: approvalAction,
+        can_expense_receipt_approve: canAct,
+        can_expense_receipt_reject: canAct,
+      },
+    });
+  }
+
   return c.json({ document: doc });
+});
+
+// GET /api/documents/:id/pdf — 서버 렌더 PDF 열람(구글드라이브 백업과 동일 파이프라인 재사용)
+documents.get('/:id/pdf', async (c) => {
+  const id = c.req.param('id');
+  const user = c.get('user');
+  const db = c.env.DB;
+
+  const doc = await db.prepare(
+    'SELECT d.*, u.name as author_name FROM documents d LEFT JOIN users u ON d.author_id = u.id WHERE d.id = ?'
+  ).bind(id).first<Document & { author_name: string }>();
+  if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+
+  if (isServiceTokenExpenseReceipt(user, doc)) {
+    return c.json({ error: '영수증 첨부 신청서는 사용자 로그인으로만 조회할 수 있습니다.' }, 403);
+  }
+
+  const canRead = isExpenseReceiptTemplate(doc.template_id)
+    ? canReadExpenseReceipt(user, doc)
+    : await canReadDocument(db, user, doc);
+  if (!canRead) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
+  }
+
+  try {
+    const pdf = await renderApprovedDocumentPdf(c.env, {
+      id: doc.id,
+      title: doc.title,
+      template_id: doc.template_id,
+    });
+    return new Response(pdf, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent((doc.title || 'document') + '.pdf')}`,
+        'Cache-Control': 'no-store',
+      },
+    });
+  } catch (error) {
+    console.error(`[documents pdf] render failed for ${id}`, error);
+    return c.json({ error: error instanceof Error ? error.message : 'PDF 생성에 실패했습니다.' }, 500);
+  }
 });
 
 // POST /api/documents
@@ -272,6 +464,9 @@ documents.post('/', async (c) => {
   const { title, content, template_id } = await c.req.json<{
     title: string; content?: string; template_id?: string;
   }>();
+  if (isExpenseReceiptTemplate(template_id) && user.auth_type !== 'user') {
+    return c.json({ error: '영수증 첨부 신청서는 사용자 로그인으로만 생성할 수 있습니다.' }, 403);
+  }
   if (!title) return c.json({ error: '문서 제목은 필수입니다.' }, 400);
   if (template_id && LEAVE_REQUEST_TEMPLATE_IDS.has(template_id)) {
     return c.json({ error: '연차/반차/특별휴가 신청은 연차관리에서 신청하세요.' }, 400);
@@ -347,6 +542,10 @@ documents.post('/', async (c) => {
       initialContent = html;
   }
 
+  if (isExpenseReceiptTemplate(template_id)) {
+    initialContent = await canonicalizeCompleteExpenseReceiptDraft(db, user.sub, initialContent);
+  }
+
   await db.prepare(
     'INSERT INTO documents (id, title, content, template_id, is_myauction, author_id, team_id, branch, department, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).bind(
@@ -377,6 +576,17 @@ documents.put('/:id', async (c) => {
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    await ensureExpenseReceiptApprovalSchema(db);
+    const editPolicy = evaluateExpenseReceiptEditPolicy({
+      authType: user.auth_type,
+      actorId: user.sub,
+      actorRole: user.role,
+      authorId: doc.author_id,
+      documentStatus: doc.status,
+    });
+    if (!editPolicy.allowed) return c.json({ error: editPolicy.error }, editPolicy.status);
+  }
   if (isFreelancerViewer(user) && !isMyAuctionDocument(doc)) {
     return c.json({ error: '마이옥션 문서만 이용할 수 있습니다.' }, 403);
   }
@@ -399,8 +609,37 @@ documents.put('/:id', async (c) => {
   }
 
   const { title, content } = await c.req.json<{ title?: string; content?: string }>();
+  const nextTitle = title || doc.title;
+  let nextContent = content || doc.content;
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    nextContent = await canonicalizeCompleteExpenseReceiptDraft(db, doc.author_id, nextContent);
+    if (!hasExpenseReceiptDraftChanged(
+      { title: doc.title, content: doc.content },
+      { title: nextTitle, content: nextContent },
+    )) {
+      return c.json({ success: true, author_signature_invalidated: false });
+    }
+    try {
+      await db.batch([
+        db.prepare('DELETE FROM expense_receipt_signature_attestations WHERE document_id = ?').bind(id),
+        db.prepare(`
+          DELETE FROM signatures
+          WHERE document_id = ? AND user_id = ? AND signature_data != ?
+        `).bind(id, doc.author_id, EXPENSE_RECEIPT_REPRESENTATIVE_STAMP),
+        db.prepare("UPDATE documents SET title = ?, content = ?, updated_at = datetime('now') WHERE id = ?")
+          .bind(nextTitle, nextContent, id),
+      ]);
+    } catch (error) {
+      if (/immutable|submitted expense receipt|constraint/i.test(String(error))) {
+        return c.json({ error: '이미 제출 처리된 영수증 첨부 신청서는 수정할 수 없습니다.' }, 409);
+      }
+      throw error;
+    }
+    const revision = await getExpenseReceiptDocumentRevision(db, id);
+    return c.json({ success: true, author_signature_invalidated: true, expense_receipt_revision: revision });
+  }
   await db.prepare("UPDATE documents SET title = ?, content = ?, updated_at = datetime('now') WHERE id = ?")
-    .bind(title || doc.title, content || doc.content, id).run();
+    .bind(nextTitle, nextContent, id).run();
   return c.json({ success: true });
 });
 
@@ -418,13 +657,65 @@ documents.post('/:id/submit', async (c) => {
   if (doc.author_id !== user.sub) return c.json({ error: '본인 문서만 제출할 수 있습니다.' }, 403);
   if (doc.status !== 'draft' && doc.status !== 'rejected') return c.json({ error: '작성중 또는 반려된 문서만 제출할 수 있습니다.' }, 400);
 
-  // 결재선 자동 생성
-  let chain = await buildApprovalChain(
-    db,
-    user.sub,
-    isMyAuctionDocument(doc),
-    true,
-  );
+  let expenseReceiptDelegates: Awaited<ReturnType<typeof listExpenseReceiptDelegates>> = [];
+  let expenseReceiptCanonicalContent: string | null = null;
+  let chain: string[];
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    if (user.auth_type !== 'user') {
+      return c.json({ error: '영수증 첨부 신청서는 사용자 로그인으로만 제출할 수 있습니다.' }, 403);
+    }
+    const authorProfile = await db.prepare(`
+      SELECT name, department, position_title
+      FROM users WHERE id = ? AND approved = 1 AND role != 'resigned'
+    `).bind(doc.author_id).first<{ name: string; department: string; position_title: string }>();
+    if (!authorProfile) {
+      return c.json({ error: '활성 신청자 계정을 확인할 수 없습니다.' }, 403);
+    }
+    try {
+      const canonicalContent = canonicalizeExpenseReceiptContent(
+        doc.content,
+        authorProfile,
+        expenseReceiptKstToday(),
+      );
+      expenseReceiptCanonicalContent = JSON.stringify(canonicalContent);
+    } catch (error) {
+      if (error instanceof ExpenseReceiptContentError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+    if (expenseReceiptCanonicalContent !== doc.content) {
+      return c.json({
+        error: '신청 내용 또는 신청자 정보가 갱신되었습니다. 다시 저장한 뒤 최신 내용에 서명해 주세요.',
+      }, 409);
+    }
+    const authorSignature = await db.prepare(`
+      SELECT id FROM signatures
+      WHERE document_id = ? AND user_id = ? AND signature_data != ?
+      ORDER BY signed_at DESC LIMIT 1
+    `).bind(id, doc.author_id, EXPENSE_RECEIPT_REPRESENTATIVE_STAMP).first<{ id: string }>();
+    if (!authorSignature) {
+      return c.json({ error: '신청자 서명을 완료한 후 제출해주세요.' }, 400);
+    }
+    const attachmentCount = await countActiveExpenseReceiptAttachments(db, id);
+    if (attachmentCount < 1) {
+      return c.json({ error: '영수증 이미지를 1장 이상 첨부한 후 제출해주세요.' }, 400);
+    }
+    const representative = await findExpenseReceiptRepresentative(db);
+    if (!representative) {
+      return c.json({ error: '활성 대표이사 계정을 찾을 수 없어 제출할 수 없습니다.' }, 409);
+    }
+    expenseReceiptDelegates = await listExpenseReceiptDelegates(db, doc.author_id);
+    chain = [representative.id];
+  } else {
+    // 결재선 자동 생성
+    chain = await buildApprovalChain(
+      db,
+      user.sub,
+      isMyAuctionDocument(doc),
+      true,
+    );
+  }
   if (doc.template_id === PROPERTY_REPORT_TEMPLATE_ID) {
     chain = await buildPropertyReportApprovalChain(db, doc.branch || user.branch);
     if (chain.length === 0) {
@@ -452,6 +743,60 @@ documents.post('/:id/submit', async (c) => {
     chain = chain.filter(uid => !ceoIds.includes(uid));
   }
 
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    const representativeId = chain[0];
+    if (!representativeId || expenseReceiptCanonicalContent === null) {
+      return c.json({ error: '대표이사 결재 단계 또는 신청 내용을 확정할 수 없습니다.' }, 409);
+    }
+    const representativeName = await db.prepare('SELECT name FROM users WHERE id = ?')
+      .bind(representativeId).first<{ name: string }>();
+    const details = `문서가 제출되었습니다. 결재선: ${representativeName?.name || representativeId}`;
+    try {
+      await submitExpenseReceiptApproval(db, {
+        documentId: id,
+        authorId: doc.author_id,
+        representativeId,
+        canonicalContent: expenseReceiptCanonicalContent,
+        delegates: expenseReceiptDelegates,
+        logDetails: details,
+      });
+    } catch (error) {
+      if (error instanceof ExpenseReceiptApprovalError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      throw error;
+    }
+
+    const isResubmit = doc.status === 'rejected';
+    await recreateAlertsForDoc(db, id, { isResubmit }).catch((err) => {
+      console.error('[ALERT-FAIL] expense receipt submit alert recreation failed', {
+        docId: id, isResubmit, err: String(err),
+      });
+    });
+    c.executionCtx.waitUntil(
+      dispatchApprovalAlerts(c.env as unknown as { DB: D1Database } & Record<string, unknown>)
+        .catch((err) => console.error('[immediate dispatch on expense receipt submit] error', err)),
+    );
+    // 총무 Slack 채널 알림 (알림톡·웹푸시와 병행, best-effort)
+    let slackReceiptCount = 0;
+    try { slackReceiptCount = await countActiveExpenseReceiptAttachments(db, id); } catch { /* ignore */ }
+    let slackContent: { author_name?: string; purpose?: string; total_amount?: number } = {};
+    try { slackContent = JSON.parse(expenseReceiptCanonicalContent || '{}'); } catch { /* ignore */ }
+    c.executionCtx.waitUntil(
+      sendExpenseReceiptSlackNotification(c.env as unknown as Record<string, unknown> & { DB: D1Database }, {
+        documentId: id,
+        authorName: slackContent.author_name || '',
+        branch: doc.branch || '',
+        department: doc.department || '',
+        purpose: slackContent.purpose || '',
+        totalAmount: Number(slackContent.total_amount || 0),
+        receiptCount: slackReceiptCount,
+        isResubmit,
+      }).catch((err) => console.error('[expense-receipt slack] submit notification failed', err)),
+    );
+    return c.json({ success: true, chain: 1 });
+  }
+
   // 기존 결재선 삭제 (반려 후 재제출 대응)
   await db.prepare('DELETE FROM approval_steps WHERE document_id = ?').bind(id).run();
   // 반려 후 재제출 시 이전 결재자 서명이 남으면 pending 단계가 승인처럼 보이므로 작성자 서명만 유지한다.
@@ -467,6 +812,7 @@ documents.post('/:id/submit', async (c) => {
   // 결재선 INSERT (팀장+휴가중 → 자동 승인 + saved_signature 자동 첨부)
   for (let i = 0; i < chain.length; i++) {
     const approverId = chain[i];
+    const approvalStepId = crypto.randomUUID();
     const approverInfo = await db.prepare('SELECT role, saved_signature FROM users WHERE id = ?')
       .bind(approverId).first<{ role: string; saved_signature: string | null }>();
     const isManagerOnLeave = approverInfo?.role === 'manager' && onLeaveIds.has(approverId);
@@ -475,7 +821,7 @@ documents.post('/:id/submit', async (c) => {
     const signedAt = isManagerOnLeave ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null;
     await db.prepare(
       'INSERT INTO approval_steps (id, document_id, step_order, approver_id, status, comment, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(crypto.randomUUID(), id, i + 1, approverId, status, comment, signedAt).run();
+    ).bind(approvalStepId, id, i + 1, approverId, status, comment, signedAt).run();
 
     // 휴무 자동 승인 시 본인 saved_signature 도 함께 INSERT (슬롯 시각 일관성)
     if (isManagerOnLeave && approverInfo?.saved_signature) {
@@ -529,22 +875,110 @@ documents.post('/:id/submit', async (c) => {
   return c.json({ success: true, chain: chain.length });
 });
 
+// POST /api/documents/:id/approve-revert — 영수증 지출결의: 최종승인 되돌리기 (제출/결재대기로 복귀)
+documents.post('/:id/approve-revert', async (c) => {
+  const id = c.req.param('id');
+  const user = c.get('user');
+  const db = c.env.DB;
+  if (!['master', 'ceo', 'accountant', 'accountant_asst'].includes(user.role)) {
+    return c.json({ error: '승인 되돌리기 권한이 없습니다.' }, 403);
+  }
+  if (user.auth_type !== 'user') {
+    return c.json({ error: '사용자 로그인으로만 되돌릴 수 있습니다.' }, 403);
+  }
+  const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
+  if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (!isExpenseReceiptTemplate(doc.template_id)) {
+    return c.json({ error: '영수증 첨부 신청서만 되돌릴 수 있습니다.' }, 400);
+  }
+  try {
+    const audit = getRequestAudit(c);
+    await revertExpenseReceiptApproval(db, {
+      documentId: id,
+      actorId: user.sub,
+      actorName: user.name || '',
+      actorRole: user.role,
+      ipAddress: audit.ipAddress,
+      userAgent: audit.userAgent,
+    });
+    return c.json({ success: true });
+  } catch (error) {
+    if (error instanceof ExpenseReceiptApprovalError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    throw error;
+  }
+});
+
 // POST /api/documents/:id/approve (다단계 결재)
 documents.post('/:id/approve', requireDocumentApprover, async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
-  let body: { step_id?: string } = {};
+  let body: { step_id?: string; comment?: string } = {};
   try { body = await c.req.json(); } catch { body = {}; }
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (!(await canReadDocument(db, user, doc))) {
+  const canRead = isExpenseReceiptTemplate(doc.template_id)
+    ? canReadExpenseReceipt(user, doc)
+    : await canReadDocument(db, user, doc);
+  if (!canRead) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
   if (doc.status !== 'submitted') return c.json({ error: '제출된 문서만 승인할 수 있습니다.' }, 400);
+  if (doc.cancelled) return c.json({ error: '취소된 문서는 승인할 수 없습니다.' }, 409);
 
   // 물건분석보고서는 지정된 지사 관리자 본인만 대표 직인을 사용해 결재한다.
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    if (user.auth_type !== 'user') {
+      return c.json({ error: '영수증 첨부 신청서는 사용자 로그인으로만 승인할 수 있습니다.' }, 403);
+    }
+    try {
+      const audit = getRequestAudit(c);
+      const result = await approveExpenseReceipt(db, {
+        documentId: id,
+        requestedStepId: body.step_id,
+        actorId: user.sub,
+        actorRole: user.role,
+        comment: body.comment,
+        ipAddress: audit.ipAddress,
+        userAgent: audit.userAgent,
+      });
+      const author = await db.prepare("SELECT phone FROM users WHERE id = ? AND approved = 1 AND role != 'resigned'")
+        .bind(doc.author_id).first<{ phone: string }>();
+      if (author?.phone) {
+        c.executionCtx.waitUntil(sendExpenseReceiptResultAlimtalk(
+          c.env as unknown as Record<string, unknown> & { DB: D1Database },
+          {
+            action: 'approved',
+            documentId: id,
+            approvalStepId: result.stepId,
+            decisionDate: expenseReceiptKstToday(),
+            phone: author.phone,
+          },
+        ).catch((error) => {
+          console.error('[expense-receipt] approved result alimtalk failed', { documentId: id, error: String(error) });
+        }));
+      }
+      return c.json({
+        success: true,
+        final: true,
+        expense_receipt_approval_action: {
+          action: 'approved',
+          actor_id: result.actor.id,
+          actor_name: result.actor.name,
+          actor_role: result.actor.role,
+        },
+      });
+    } catch (error) {
+      if (error instanceof ExpenseReceiptApprovalError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      throw error;
+    }
+  }
+
   if (doc.template_id === PROPERTY_REPORT_TEMPLATE_ID) {
     const assigned = await db.prepare(
       "SELECT approver_id FROM approval_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order ASC LIMIT 1"
@@ -791,7 +1225,7 @@ documents.post('/:id/approve', requireDocumentApprover, async (c) => {
       }
     }
     // 알림톡: 최종 승인 → 작성자에게 DOC_FINAL_APPROVED
-    const author = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(doc.author_id).first<{ phone: string }>();
+    const author = await db.prepare("SELECT phone FROM users WHERE id = ? AND approved = 1 AND role != 'resigned'").bind(doc.author_id).first<{ phone: string }>();
     if (author?.phone) {
       const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
       c.executionCtx.waitUntil(sendAlimtalkByTemplate(
@@ -827,17 +1261,69 @@ documents.post('/:id/approve', requireDocumentApprover, async (c) => {
 documents.post('/:id/reject', requireDocumentApprover, async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
-  const { reason } = await c.req.json<{ reason?: string }>();
+  const { reason, step_id } = await c.req.json<{ reason?: string; step_id?: string }>();
   const db = c.env.DB;
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (!(await canReadDocument(db, user, doc))) {
+  const canRead = isExpenseReceiptTemplate(doc.template_id)
+    ? canReadExpenseReceipt(user, doc)
+    : await canReadDocument(db, user, doc);
+  if (!canRead) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
   if (doc.status !== 'submitted') return c.json({ error: '제출된 문서만 반려할 수 있습니다.' }, 400);
+  if (doc.cancelled) return c.json({ error: '취소된 문서는 반려할 수 없습니다.' }, 409);
 
   // 결재선에 포함된 사용자이거나 master/ceo만 반려 가능
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    if (user.auth_type !== 'user') {
+      return c.json({ error: '영수증 첨부 신청서는 사용자 로그인으로만 반려할 수 있습니다.' }, 403);
+    }
+    try {
+      const audit = getRequestAudit(c);
+      const result = await rejectExpenseReceipt(db, {
+        documentId: id,
+        requestedStepId: step_id,
+        actorId: user.sub,
+        actorRole: user.role,
+        comment: reason,
+        ipAddress: audit.ipAddress,
+        userAgent: audit.userAgent,
+      });
+      const author = await db.prepare("SELECT phone FROM users WHERE id = ? AND approved = 1 AND role != 'resigned'")
+        .bind(doc.author_id).first<{ phone: string }>();
+      if (author?.phone) {
+        c.executionCtx.waitUntil(sendExpenseReceiptResultAlimtalk(
+          c.env as unknown as Record<string, unknown> & { DB: D1Database },
+          {
+            action: 'rejected',
+            documentId: id,
+            approvalStepId: result.stepId,
+            decisionDate: expenseReceiptKstToday(),
+            phone: author.phone,
+          },
+        ).catch((error) => {
+          console.error('[expense-receipt] rejected result alimtalk failed', { documentId: id, error: String(error) });
+        }));
+      }
+      return c.json({
+        success: true,
+        expense_receipt_approval_action: {
+          action: 'rejected',
+          actor_id: result.actor.id,
+          actor_name: result.actor.name,
+          actor_role: result.actor.role,
+        },
+      });
+    } catch (error) {
+      if (error instanceof ExpenseReceiptApprovalError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      throw error;
+    }
+  }
+
   const myStep = await db.prepare(
     "SELECT * FROM approval_steps WHERE document_id = ? AND approver_id = ? AND status = 'pending'"
   ).bind(id, user.sub).first();
@@ -859,7 +1345,7 @@ documents.post('/:id/reject', requireDocumentApprover, async (c) => {
     .bind(crypto.randomUUID(), id, user.sub, 'rejected', `문서가 반려되었습니다. 사유: ${reason || '없음'}`).run();
 
   // 알림톡: 반려 → 작성자에게 DOC_REJECTED
-  const author = await db.prepare('SELECT phone FROM users WHERE id = ?').bind(doc.author_id).first<{ phone: string }>();
+  const author = await db.prepare("SELECT phone FROM users WHERE id = ? AND approved = 1 AND role != 'resigned'").bind(doc.author_id).first<{ phone: string }>();
   if (author?.phone) {
     c.executionCtx.waitUntil(sendAlimtalkByTemplate(
       c.env as unknown as Record<string, unknown>, 'DOC_REJECTED',
@@ -883,7 +1369,29 @@ documents.delete('/:id', async (c) => {
   const db = c.env.DB;
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
+  if (doc && isServiceTokenExpenseReceipt(user, doc)) {
+    return c.json({ error: '영수증 첨부 신청서는 사용자 로그인으로만 삭제할 수 있습니다.' }, 403);
+  }
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    const isMasterActor = !isFreelancerViewer(user) && user.role === 'master';
+    if (!['draft', 'rejected'].includes(doc.status)) {
+      if (!isMasterActor) {
+        return c.json({ error: '제출된 영수증 첨부 신청서는 직접 삭제할 수 없습니다.' }, 400);
+      }
+      // 마스터 강제 삭제: 제출·승인·취소 건도 삭제 가능하도록 삭제 가능한 상태로 정규화한 뒤
+      // 기존 삭제 경로(트리거·claim 포함)를 그대로 통과시킨다.
+      await db.prepare(`UPDATE documents
+        SET status='rejected', cancelled=0, cancel_requested=0, updated_at=datetime('now')
+        WHERE id=? AND template_id=?`).bind(id, EXPENSE_RECEIPT_TEMPLATE_ID).run();
+      doc.status = 'rejected';
+      doc.cancelled = 0;
+      doc.cancel_requested = 0;
+    }
+    if (doc.author_id !== user.sub && user.role !== 'master') {
+      return c.json({ error: '영수증 첨부 신청서를 삭제할 권한이 없습니다.' }, 403);
+    }
+  }
   if (isFreelancerViewer(user) && !isMyAuctionDocument(doc)) {
     return c.json({ error: '마이옥션 문서만 이용할 수 있습니다.' }, 403);
   }
@@ -911,6 +1419,33 @@ documents.delete('/:id', async (c) => {
   }
 
   // 제출 중인 문서 삭제 시 결재선도 삭제
+  let expenseReceiptDeleteClaim: string | null = null;
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    try {
+      expenseReceiptDeleteClaim = await acquireExpenseReceiptMutationClaim(db, id);
+    } catch (error) {
+      if (error instanceof ExpenseReceiptApprovalError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      throw error;
+    }
+    try {
+      await deleteExpenseReceiptDocumentAndQueueArtifacts(c.env, id, expenseReceiptDeleteClaim);
+      return c.json({ success: true });
+    } catch (error) {
+      await releaseExpenseReceiptMutationClaim(db, id, expenseReceiptDeleteClaim).catch(() => {});
+      if (error instanceof ExpenseReceiptDocumentDeleteConflictError
+        || /submitted expense receipt|constraint/i.test(String(error))) {
+        return c.json({ error: '제출 처리된 영수증 첨부 신청서는 삭제할 수 없습니다.' }, 409);
+      }
+      console.error('[expense-receipt] atomic document delete failed; R2 objects were preserved or queued', {
+        documentId: id,
+        error: String(error),
+      });
+      return c.json({ error: '문서 삭제 처리에 실패했습니다. 잠시 후 다시 시도해주세요.' }, 503);
+    }
+  }
+
   if (doc.status === 'submitted') {
     await db.prepare('DELETE FROM approval_steps WHERE document_id = ?').bind(id).run();
   }
@@ -925,8 +1460,14 @@ documents.get('/:id/steps', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const doc = await getDocumentAccessRecord(db, id);
+  if (doc && isServiceTokenExpenseReceipt(user, doc)) {
+    return c.json({ error: '사용자 로그인으로만 조회할 수 있습니다.' }, 403);
+  }
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
+  const canRead = isExpenseReceiptTemplate(doc.template_id)
+    ? canReadExpenseReceipt(user, doc)
+    : await canReadDocument(db, user, doc);
+  if (!canRead) return c.json({ error: '권한이 없습니다.' }, 403);
   const result = await db.prepare(
     'SELECT s.*, u.name as approver_name, u.position_title as approver_title, u.role as approver_role FROM approval_steps s LEFT JOIN users u ON s.approver_id = u.id WHERE s.document_id = ? ORDER BY s.step_order'
   ).bind(id).all();
@@ -958,7 +1499,11 @@ documents.post('/steps-batch', async (c) => {
   );
   const readableIds: string[] = [];
   for (const doc of docs.results || []) {
-    if (await canReadDocument(db, user, doc, adminBranches, assignedDocumentIds)) {
+    if (isServiceTokenExpenseReceipt(user, doc)) continue;
+    const canRead = isExpenseReceiptTemplate(doc.template_id)
+      ? canReadExpenseReceipt(user, doc)
+      : await canReadDocument(db, user, doc, adminBranches, assignedDocumentIds);
+    if (canRead) {
       readableIds.push(doc.id);
     }
   }
@@ -991,8 +1536,14 @@ documents.get('/:id/logs', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const doc = await getDocumentAccessRecord(db, id);
+  if (doc && isServiceTokenExpenseReceipt(user, doc)) {
+    return c.json({ error: '사용자 로그인으로만 조회할 수 있습니다.' }, 403);
+  }
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
+  const canRead = isExpenseReceiptTemplate(doc.template_id)
+    ? canReadExpenseReceipt(user, doc)
+    : await canReadDocument(db, user, doc);
+  if (!canRead) return c.json({ error: '권한이 없습니다.' }, 403);
   const result = await db.prepare(
     'SELECT dl.*, u.name as user_name FROM document_logs dl LEFT JOIN users u ON dl.user_id = u.id WHERE dl.document_id = ? ORDER BY dl.created_at DESC'
   ).bind(id).all();
@@ -1007,6 +1558,9 @@ documents.post('/:id/cancel-request', async (c) => {
   const { reason } = await c.req.json<{ reason?: string }>();
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
+  if (doc && isServiceTokenExpenseReceipt(user, doc)) {
+    return c.json({ error: '사용자 로그인으로만 취소 요청할 수 있습니다.' }, 403);
+  }
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
   if (isFreelancerViewer(user) && !isMyAuctionDocument(doc)) {
     return c.json({ error: '마이옥션 문서만 이용할 수 있습니다.' }, 403);
@@ -1035,14 +1589,36 @@ documents.post('/:id/cancel-approve', requireEmployeeDocumentAdmin, async (c) =>
   const db = c.env.DB;
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(id).first<Document>();
+  if (doc && isServiceTokenExpenseReceipt(user, doc)) {
+    return c.json({ error: '사용자 로그인으로만 취소 승인할 수 있습니다.' }, 403);
+  }
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
+  if (isExpenseReceiptTemplate(doc.template_id) && user.role !== 'master') {
+    return c.json({ error: '영수증 첨부 신청서의 취소 승인 권한이 없습니다.' }, 403);
+  }
   if (!doc.cancel_requested) {
     return c.json({ error: '취소 신청된 문서가 아닙니다.' }, 400);
   }
 
-  await db.prepare(
-    "UPDATE documents SET cancelled = 1, cancel_requested = 0, updated_at = datetime('now') WHERE id = ?"
-  ).bind(id).run();
+  if (isExpenseReceiptTemplate(doc.template_id)) {
+    const results = await db.batch([
+      db.prepare(`UPDATE documents
+        SET cancelled = 1, cancel_requested = 0, updated_at = datetime('now')
+        WHERE id = ? AND cancel_requested = 1 AND COALESCE(cancelled, 0) = 0`).bind(id),
+      db.prepare(`UPDATE approval_steps
+        SET status = 'rejected', signed_at = NULL, comment = 'cancelled'
+        WHERE document_id = ? AND status = 'pending'
+          AND EXISTS (SELECT 1 FROM documents d WHERE d.id = ? AND COALESCE(d.cancelled, 0) = 1)`)
+        .bind(id, id),
+    ]);
+    if (Number(results[0]?.meta?.changes || 0) !== 1) {
+      return c.json({ error: '문서 상태가 변경되어 취소 승인하지 못했습니다.' }, 409);
+    }
+  } else {
+    await db.prepare(
+      "UPDATE documents SET cancelled = 1, cancel_requested = 0, updated_at = datetime('now') WHERE id = ?"
+    ).bind(id).run();
+  }
 
   // 연차/월차/반차 문서였고 승인 완료 상태였으면 휴가 복원
   if (doc.status === 'approved' && (doc.title.includes('연차') || doc.title.includes('월차') || doc.title.includes('반차'))) {

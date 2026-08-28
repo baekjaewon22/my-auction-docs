@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useId, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { ArrowRight, FileDown, HelpCircle, Printer, UploadCloud } from 'lucide-react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
@@ -301,14 +301,27 @@ function canAccessTaxMaterialsForUser(user?: { role?: string } | null) {
   return !!user && ['master', 'ceo', 'accountant'].includes(user.role || '');
 }
 
+function canAccessAccountingReportsForUser(user?: { role?: string; branch?: string } | null) {
+  return !!user && isAccountingAsstAllowedBranch(user);
+}
+
+function canAccessAccountingReportKindForUser(
+  kind: AccountingReportKind,
+  user?: { id?: string; role?: string; branch?: string } | null,
+) {
+  if (!canAccessAccountingReportsForUser(user)) return false;
+  if (kind === 'profit-loss') return canAccessProfitLossReportForUser(user);
+  if (kind === 'tax') return canAccessTaxMaterialsForUser(user);
+  return true;
+}
+
 function normalizeReportBranch(value: unknown) {
   return normalizeBranchName(value);
 }
 
 function getVisibleAccountingReportKinds(user?: { id?: string; role?: string } | null): AccountingReportKind[] {
   return (Object.keys(ACCOUNTING_REPORT_META) as AccountingReportKind[])
-    .filter((kind) => kind !== 'profit-loss' || canAccessProfitLossReportForUser(user))
-    .filter((kind) => kind !== 'tax' || canAccessTaxMaterialsForUser(user));
+    .filter((kind) => canAccessAccountingReportKindForUser(kind, user));
 }
 
 async function parseWorkbook(file: File, kind: UploadKind): Promise<ParsedUpload> {
@@ -367,13 +380,14 @@ async function parseWorkbook(file: File, kind: UploadKind): Promise<ParsedUpload
 }
 
 function AccountingWorkflowNav({ current }: { current: string }) {
+  const user = useAuthStore((state) => state.user);
   const steps = [
     { id: 'upload', title: '원천자료 업로드', path: '/accounting-session1/bank' },
     { id: 'check-card', title: '체크카드 점검', path: '/accounting-session1/check-card' },
     { id: 'engine', title: '분류엔진', path: '/accounting-session1/engine' },
     { id: 'review', title: '저장 반영', path: '/accounting-session2' },
     { id: 'reports', title: '출력물', path: '/accounting-session2/reports' },
-  ];
+  ].filter((step) => step.id !== 'reports' || canAccessAccountingReportsForUser(user));
   const index = steps.findIndex((step) => step.id === current);
   const next = steps[index + 1];
   return (
@@ -567,7 +581,7 @@ function PreviewTable({ rows, ownerOptions = [], onUpdateRow }: {
 }
 export function AccountingSessionHome() {
   const user = useAuthStore((state) => state.user);
-  const canProfit = canAccessProfitLossReportForUser(user);
+  const visibleReportKinds = getVisibleAccountingReportKinds(user);
   return (
     <div className="page accounting-session-page">
       <div className="page-header">
@@ -581,11 +595,13 @@ export function AccountingSessionHome() {
         <Link to="/accounting-session1/bank" className="accounting-flow-box input"><strong>거래내역 추가</strong><span>통장, 체크카드 원천자료 업로드</span></Link>
         <ArrowRight className="accounting-flow-arrow" />
         <Link to="/accounting-session1/engine" className="accounting-flow-box engine"><strong>분류 엔진</strong><span>계정, 지사, 증빙, 중복 검토</span></Link>
-        <div className="accounting-flow-outputs">
-          <Link to="/accounting-session2/reports/sales">실적/매출 장부</Link>
-          <Link to="/accounting-session2/reports/expense">지출/거래 원장</Link>
-          {canProfit && <Link to="/accounting-session2/reports/profit-loss">손익결산 자동 집계</Link>}
-        </div>
+        {visibleReportKinds.length > 0 && (
+          <div className="accounting-flow-outputs">
+            {visibleReportKinds.includes('sales') && <Link to="/accounting-session2/reports/sales">실적/매출 장부</Link>}
+            {visibleReportKinds.includes('expense') && <Link to="/accounting-session2/reports/expense">지출/거래 원장</Link>}
+            {visibleReportKinds.includes('profit-loss') && <Link to="/accounting-session2/reports/profit-loss">손익결산 자동 집계</Link>}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1039,17 +1055,18 @@ export function AccountingSessionRules() {
 export function AccountingSessionTwo() {
   const user = useAuthStore((state) => state.user);
   const [session] = useState(readSession);
-  const outputCards = [
-    { title: '실적/매출 장부', desc: '매출 분류 내역 출력', path: '/accounting-session2/reports/sales' },
-    { title: '지출/거래 원장', desc: '지출 원장 출력', path: '/accounting-session2/reports/expense' },
-    { title: '손익결산', desc: '월별 손익결산 출력', path: '/accounting-session2/reports/profit-loss' },
+  const outputCardCandidates: Array<{ title: string; desc: string; path: string; kind?: AccountingReportKind; restricted?: boolean }> = [
+    { title: '실적/매출 장부', desc: '매출 분류 내역 출력', path: '/accounting-session2/reports/sales', kind: 'sales' },
+    { title: '지출/거래 원장', desc: '지출 원장 출력', path: '/accounting-session2/reports/expense', kind: 'expense' },
+    { title: '손익결산', desc: '월별 손익결산 출력', path: '/accounting-session2/reports/profit-loss', kind: 'profit-loss' },
     { title: '인건비 통합', desc: '직원관리 고정급 인원 총액', path: '/accounting-session2/reports/labor-cost', restricted: true },
-    { title: '체크카드 사용내역', desc: '체크카드 원천 출력', path: '/accounting-session2/reports/check-card' },
-    { title: '세무자료', desc: '세무 대상 지출 출력', path: '/accounting-session2/reports/tax' },
-    { title: '검토로그', desc: '업로드와 중복 검토 기록', path: '/accounting-session2/reports/audit' },
-  ].filter((card) => {
-    if (card.path.includes('/profit-loss')) return canAccessProfitLossReportForUser(user);
-    if (card.path.includes('/reports/tax')) return canAccessTaxMaterialsForUser(user);
+    { title: '체크카드 사용내역', desc: '체크카드 원천 출력', path: '/accounting-session2/reports/check-card', kind: 'check-card' },
+    { title: '세무자료', desc: '세무 대상 지출 출력', path: '/accounting-session2/reports/tax', kind: 'tax' },
+    { title: '검토로그', desc: '업로드와 중복 검토 기록', path: '/accounting-session2/reports/audit', kind: 'audit' },
+  ];
+  const outputCards = outputCardCandidates.filter((card) => {
+    if (card.kind) return canAccessAccountingReportKindForUser(card.kind, user);
+    if (!canAccessAccountingReportsForUser(user)) return false;
     return !card.restricted || canAccessLaborCostReportForUser(user);
   });
   const rows = [...(session.bank?.rows || []), ...(session.checkCard?.rows || [])];
@@ -1074,6 +1091,9 @@ export function AccountingSessionTwo() {
 export function AccountingReportsHub() {
   const user = useAuthStore((state) => state.user);
   const reportKinds = getVisibleAccountingReportKinds(user);
+  if (!canAccessAccountingReportsForUser(user)) {
+    return <Navigate to="/accounting-session2" replace />;
+  }
   return (
     <div className="page accounting-session-page">
       <div className="page-header"><div><h2>출력물</h2><p className="management-support-subtitle">확정 저장된 통합회계 데이터를 출력물별로 확인합니다.</p></div></div>
@@ -1119,9 +1139,12 @@ export function AccountingForecastReport() {
 }
 
 function AccountingLedgerReportPage({ reportType }: { reportType: AccountingReportKind }) {
-  const meta = ACCOUNTING_REPORT_META[reportType];
   const user = useAuthStore((state) => state.user);
-  const canEditLedgerRows = reportType === 'expense' && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(user?.role || '');
+  const visibleReportKinds = getVisibleAccountingReportKinds(user);
+  const canAccessRequestedReport = visibleReportKinds.includes(reportType);
+  const fallbackReportType = visibleReportKinds[0];
+  const meta = ACCOUNTING_REPORT_META[reportType];
+  const canEditLedgerRows = canAccessRequestedReport && reportType === 'expense' && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(user?.role || '');
   const isScopedAsst = user?.role === 'accountant_asst';
   const asstBranch = isScopedAsst && isAccountingAsstAllowedBranch(user) ? (user?.branch || '') : '';
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1149,6 +1172,13 @@ function AccountingLedgerReportPage({ reportType }: { reportType: AccountingRepo
   }, [asstBranch, branch, isScopedAsst, month, setSearchParams]);
 
   useEffect(() => {
+    if (!canAccessRequestedReport) {
+      setData({ rows: [], summary: {}, months: [] });
+      setEditableRows([]);
+      setLoading(false);
+      setError('');
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError('');
@@ -1163,9 +1193,9 @@ function AccountingLedgerReportPage({ reportType }: { reportType: AccountingRepo
       .catch((err: any) => { if (!cancelled) setError(err?.message || '출력물을 불러오지 못했습니다.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [branch, month, reportType, reloadKey]);
+  }, [branch, canAccessRequestedReport, month, reportType, reloadKey]);
 
-  const columns = useMemo(() => getReportColumns(reportType), [reportType]);
+  const columns = useMemo(() => canAccessRequestedReport ? getReportColumns(reportType) : [], [canAccessRequestedReport, reportType]);
   const summary = data.summary || {};
   const displayRows = canEditLedgerRows ? editableRows : (data.rows || []);
   const patchLedgerRow = (id: string, patch: Record<string, unknown>) => {
@@ -1351,14 +1381,11 @@ function AccountingLedgerReportPage({ reportType }: { reportType: AccountingRepo
     }
     return <input className={inputClassName} value={getReportCellText(row, column)} onChange={(event) => update(event.target.value)} onBlur={() => setEditingLedgerCell('')} />;
   };
-  if (isScopedAsst && !asstBranch) {
-    return (
-      <div className="page accounting-session-page accounting-report-page">
-        <div className="page-header">
-          <div><h2>{meta.title}</h2><p className="management-support-subtitle">총무보조는 의정부 본사 및 종합 지표를 열람할 수 없습니다.</p></div>
-        </div>
-      </div>
-    );
+  if (!canAccessRequestedReport) {
+    const fallbackPath = fallbackReportType
+      ? ACCOUNTING_REPORT_META[fallbackReportType].path
+      : '/accounting-session2';
+    return <Navigate to={fallbackPath} replace />;
   }
   return (
     <div className={`page accounting-session-page accounting-report-page accounting-report-${reportType}`}>
@@ -1377,10 +1404,10 @@ function AccountingLedgerReportPage({ reportType }: { reportType: AccountingRepo
         </div>
       )}
       <div className="accounting-report-tabs">
-        {Object.entries(ACCOUNTING_REPORT_META)
-          .filter(([kind]) => kind !== 'profit-loss' || canAccessProfitLossReportForUser(user))
-          .filter(([kind]) => kind !== 'tax' || canAccessTaxMaterialsForUser(user))
-          .map(([kind, item]) => <Link key={kind} to={item.path} className={kind === reportType ? 'active' : ''}>{item.title}</Link>)}
+        {visibleReportKinds.map((kind) => {
+          const item = ACCOUNTING_REPORT_META[kind];
+          return <Link key={kind} to={item.path} className={kind === reportType ? 'active' : ''}>{item.title}</Link>;
+        })}
       </div>
       <div className="accounting-report-filters">
         <select value={month} onChange={(event) => setMonth(event.target.value)}>

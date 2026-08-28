@@ -157,7 +157,7 @@ export async function uploadPdfBuffer(
   folderId: string,
   filename: string,
   buffer: ArrayBuffer,
-): Promise<{ id: string; size: number }> {
+): Promise<{ id: string; size: number; md5Checksum: string }> {
   const metadata = { name: filename, mimeType: 'application/pdf', parents: [folderId] };
   const boundary = 'maBoundary' + Math.random().toString(36).slice(2);
   const preamble = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: application/pdf\r\n\r\n`;
@@ -169,7 +169,7 @@ export async function uploadPdfBuffer(
   body.set(new Uint8Array(buffer), preBytes.length);
   body.set(endBytes, preBytes.length + buffer.byteLength);
 
-  const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,size`, {
+  const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,size,md5Checksum`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -182,7 +182,11 @@ export async function uploadPdfBuffer(
     throw new Error(`Drive upload ${res.status}: ${text.slice(0, 500)}`);
   }
   const data = await res.json<any>();
-  return { id: data.id, size: Number(data.size) || buffer.byteLength };
+  return {
+    id: data.id,
+    size: Number(data.size) || buffer.byteLength,
+    md5Checksum: typeof data.md5Checksum === 'string' ? data.md5Checksum.toLowerCase() : '',
+  };
 }
 
 /** 원본 파일 Buffer 업로드 (브리핑자료 등 바이너리 보존용) */

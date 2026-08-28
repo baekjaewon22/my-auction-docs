@@ -19,6 +19,8 @@ export default function PropertyReport() {
   const [saving, setSaving] = useState(false);
   const [docId, setDocId] = useState(id || '');
   const [status, setStatus] = useState('draft');
+  const [documentAuthorId, setDocumentAuthorId] = useState('');
+  const [documentAuthorName, setDocumentAuthorName] = useState('');
   const [rejectReason, setRejectReason] = useState('');
   const [savedRejectReason, setSavedRejectReason] = useState('');
   const [showReject, setShowReject] = useState(false);
@@ -60,6 +62,8 @@ export default function PropertyReport() {
       const res = await api.documents.get(docIdToLoad);
       const doc = res.document;
       setStatus(doc.status);
+      setDocumentAuthorId(doc.author_id);
+      setDocumentAuthorName(doc.author_name || '');
       setSavedRejectReason((doc as any).reject_reason || '');
       try {
         const saved = JSON.parse(doc.content);
@@ -155,6 +159,8 @@ export default function PropertyReport() {
         const res = await api.documents.create({ title: '물건분석보고서', content: JSON.stringify(fields), template_id: 'tpl-work-008' });
         if (res.document?.id) {
           setDocId(res.document.id);
+          setDocumentAuthorId(user?.id || '');
+          setDocumentAuthorName(user?.name || '');
           window.history.replaceState(null, '', `/property-report/${res.document.id}`);
         }
       }
@@ -284,37 +290,40 @@ export default function PropertyReport() {
     }, 1500);
   };
 
-  const isEditable = status === 'draft' || status === 'rejected';
+  const isDocumentAuthor = !docId || documentAuthorId === user?.id;
+  const isEditable = (status === 'draft' || status === 'rejected') &&
+    (isDocumentAuthor || user?.role === 'master');
+  const canSubmit = (status === 'draft' || status === 'rejected') && isDocumentAuthor;
   const page1Ref = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [overflowWarn, setOverflowWarn] = useState(false);
   const [mobileScale, setMobileScale] = useState(1);
   const mySigned = signatures.some(s => s.user_id === user?.id);
 
-  // 반려 가능 판정 (승인 권한자와 동일)
+  // 물건분석보고서는 서버가 지정한 실제 pending 결재자만 결재·반려 UI를 사용한다.
   const myPendingStep = approvalSteps.find(s => s.approver_id === user?.id && s.status === 'pending');
   const prevAllApproved = myPendingStep
     ? approvalSteps.filter(s => s.step_order < myPendingStep.step_order).every(s => s.status === 'approved')
     : false;
-  const canReject = status === 'submitted' && (
-    (myPendingStep && prevAllApproved) ||
-    ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '')
-  );
+  const canReject = status === 'submitted' && Boolean(myPendingStep && prevAllApproved);
 
-  // 모바일 스케일 자동 계산
+  // A4 미리보기를 실제 콘텐츠 영역(사이드바 제외)에 맞춰 자동 축소한다.
   useEffect(() => {
     const calcScale = () => {
-      const vw = window.innerWidth;
       const a4w = 794; // 210mm in px
-      if (vw < a4w + 40) {
-        setMobileScale(Math.max((vw - 16) / a4w, 0.3));
-      } else {
-        setMobileScale(1);
-      }
+      const availableWidth = Math.max((wrapRef.current?.clientWidth ?? window.innerWidth) - 8, 0);
+      setMobileScale(Math.min(1, Math.max(availableWidth / a4w, 0.3)));
     };
     calcScale();
+    const resizeObserver = typeof ResizeObserver !== 'undefined' && wrapRef.current
+      ? new ResizeObserver(calcScale)
+      : null;
+    if (resizeObserver && wrapRef.current) resizeObserver.observe(wrapRef.current);
     window.addEventListener('resize', calcScale);
-    return () => window.removeEventListener('resize', calcScale);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', calcScale);
+    };
   }, []);
 
   // 1페이지 높이 초과 감지
@@ -384,7 +393,7 @@ export default function PropertyReport() {
           <div style={{ flex: 1 }} />
           {(saving || approving) && <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>{approving ? '승인중...' : '저장중...'}</span>}
           {isEditable && <button className="btn btn-sm btn-primary" onClick={handleSave}><Save size={14} /></button>}
-          {isEditable && (
+          {canSubmit && (
             <button className="btn btn-sm" style={{ background: '#188038', color: '#fff', opacity: mySigned ? 1 : 0.5 }} onClick={handleSubmit} title={status === 'rejected' ? '재제출' : '최종 제출'}>
               <Send size={14} />
             </button>
@@ -406,7 +415,7 @@ export default function PropertyReport() {
       {/* 반려 모달 */}
       {showReject && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowReject(false)}>
-          <div style={{ background: '#fff', borderRadius: 8, padding: 20, minWidth: 360, maxWidth: 500, width: '90%' }} onClick={(e) => e.stopPropagation()}>
+          <div className="property-report-reject-dialog" style={{ background: '#fff', borderRadius: 8, padding: 20, maxWidth: 500, width: '90%' }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
               <h3 style={{ margin: 0, fontSize: '1rem' }}>문서 반려</h3>
               <button className="btn btn-sm" onClick={() => setShowReject(false)}><XIcon size={14} /></button>
@@ -436,9 +445,11 @@ export default function PropertyReport() {
             approvalSteps={approvalSteps}
             currentUserId={user?.id}
             currentUserRole={user?.role}
+            authorId={documentAuthorId}
             docStatus={status}
-            authorName={user?.name}
+            authorName={documentAuthorName || (isDocumentAuthor ? user?.name : undefined)}
             representativeStampStepIds={approvalSteps.length === 1 ? [approvalSteps[0].id] : []}
+            allowProxyApproval={false}
             onSign={handleSignRequest}
           />
         </div>

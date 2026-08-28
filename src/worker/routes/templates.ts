@@ -6,6 +6,7 @@ import {
   isEmployeeTemplateAdmin,
   isFreelancerViewer,
 } from '../lib/template-access';
+import { isExpenseReceiptTemplate } from '../../shared/expense-receipt';
 
 const templates = new Hono<AuthEnv>();
 templates.use('*', authMiddleware);
@@ -82,6 +83,9 @@ templates.post('/', requireTemplateAdmin, async (c) => {
 // PUT /api/templates/:id (admin+)
 templates.put('/:id', requireTemplateAdmin, async (c) => {
   const id = c.req.param('id');
+  if (isExpenseReceiptTemplate(id)) {
+    return c.json({ error: '영수증 지출결의 전용 템플릿은 일반 템플릿 관리에서 수정할 수 없습니다.' }, 409);
+  }
   const { title, description, content, category, is_active, is_myauction } = await c.req.json<{
     title?: string;
     description?: string;
@@ -127,6 +131,9 @@ templates.put('/:id', requireTemplateAdmin, async (c) => {
 // DELETE /api/templates/:id (admin+ - soft delete)
 templates.delete('/:id', requireTemplateAdmin, async (c) => {
   const id = c.req.param('id');
+  if (isExpenseReceiptTemplate(id)) {
+    return c.json({ error: '영수증 지출결의 전용 템플릿은 비활성화하거나 삭제할 수 없습니다.' }, 409);
+  }
   const db = c.env.DB;
   await ensureTemplateAccessSchema(db);
 

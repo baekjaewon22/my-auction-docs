@@ -1,16 +1,25 @@
 import { Hono } from 'hono';
-import type { AuthEnv } from '../types';
-import { authMiddleware, requireRole } from '../middleware/auth';
+import type { AuthEnv } from '../types.ts';
+import { authMiddleware, requireRole } from '../middleware/auth.ts';
 import {
   GOOGLE_CLIENT_ID, DRIVE_SCOPES,
   resolveRedirectUri, decryptToken,
   refreshAccessToken,
   findOrCreateFolder,
-} from '../drive-oauth';
-import { cleanupOldDocuments } from '../lib/document-retention';
-import { ensureBriefingMaterialSchema } from '../lib/briefing-materials';
-import { cleanupBackedUpBriefingMaterials } from '../lib/briefing-material-retention';
-import { createDriveOAuthState, DRIVE_OAUTH_ADMIN_ROLES } from '../lib/drive-oauth-state';
+} from '../drive-oauth.ts';
+import { cleanupOldDocuments } from '../lib/document-retention.ts';
+import { ensureBriefingMaterialSchema } from '../lib/briefing-materials.ts';
+import { cleanupBackedUpBriefingMaterials } from '../lib/briefing-material-retention.ts';
+import { createDriveOAuthState, DRIVE_OAUTH_ADMIN_ROLES } from '../lib/drive-oauth-state.ts';
+import {
+  EXPENSE_RECEIPT_TEMPLATE_ID,
+  countActiveExpenseReceiptAttachments,
+  ensureExpenseReceiptSchema,
+} from '../lib/expense-receipts.ts';
+import {
+  canAccessDriveDocument,
+  driveDocumentAccessSql,
+} from '../lib/drive-document-access.ts';
 
 const drive = new Hono<AuthEnv>();
 
@@ -52,11 +61,15 @@ drive.use('/*', authMiddleware);
 // GET /api/drive/settings — 현재 설정 + 통계 반환
 drive.get('/settings', requireRole(...DRIVE_ROLES), async (c) => {
   const db = c.env.DB;
+  const access = driveDocumentAccessSql(c.get('user'));
   await ensureBriefingMaterialSchema(db);
   const s = await db.prepare("SELECT * FROM drive_settings WHERE id = 'default'").first<any>();
-  const lastLog = await db.prepare(
-    "SELECT run_at, status FROM drive_backup_logs WHERE status = 'success' ORDER BY run_at DESC LIMIT 1"
-  ).first<any>();
+  const lastLog = await db.prepare(`
+    SELECT b.run_at, b.status FROM drive_backup_logs b
+    LEFT JOIN documents d ON d.id = b.document_id
+    WHERE b.status = 'success' AND ${access.clause}
+    ORDER BY b.run_at DESC LIMIT 1
+  `).bind(...access.bindings).first<any>();
   const pending = await db.prepare(`
     SELECT COUNT(*) as cnt FROM documents d
     WHERE d.status = 'approved' AND d.cancelled = 0
@@ -66,10 +79,14 @@ drive.get('/settings', requireRole(...DRIVE_ROLES), async (c) => {
       AND NOT EXISTS (
         SELECT 1 FROM drive_backup_logs b WHERE b.document_id = d.id AND b.status = 'success'
       )
-  `).first<{ cnt: number }>();
+      AND ${access.clause}
+  `).bind(...access.bindings).first<{ cnt: number }>();
   const failed = await db.prepare(`
-    SELECT COUNT(*) as cnt FROM drive_backup_logs WHERE status = 'failed' AND run_at > datetime('now', '-7 days')
-  `).first<{ cnt: number }>();
+    SELECT COUNT(*) as cnt FROM drive_backup_logs b
+    LEFT JOIN documents d ON d.id = b.document_id
+    WHERE b.status = 'failed' AND b.run_at > datetime('now', '-7 days')
+      AND ${access.clause}
+  `).bind(...access.bindings).first<{ cnt: number }>();
   const briefingPending = await db.prepare(`SELECT COUNT(*) AS cnt FROM briefing_materials
     WHERE archived_at IS NULL AND drive_status != 'success' AND drive_attempt_count < 5`).first<{ cnt: number }>();
   return c.json({
@@ -132,6 +149,7 @@ drive.post('/disconnect', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
 // GET /api/drive/pending — 백업 대상 문서 (UI 표시용)
 drive.get('/pending', requireRole(...DRIVE_ROLES), async (c) => {
   const db = c.env.DB;
+  const access = driveDocumentAccessSql(c.get('user'));
   const result = await db.prepare(`
     SELECT d.id, d.title, d.template_id, d.branch, d.department, d.created_at, d.updated_at,
       u.name as author_name, u.branch as author_branch, u.department as author_department,
@@ -149,25 +167,37 @@ drive.get('/pending', requireRole(...DRIVE_ROLES), async (c) => {
       AND NOT EXISTS (
         SELECT 1 FROM drive_backup_logs b WHERE b.document_id = d.id AND b.status = 'success'
       )
+      AND ${access.clause}
     ORDER BY approved_at ASC
     LIMIT 500
-  `).all();
+  `).bind(...access.bindings).all();
   return c.json({ documents: result.results || [] });
 });
 
 // POST /api/drive/retry-failed — 5회 이상 실패로 제외된 문서들의 실패 로그를 삭제하여 재시도 허용
 drive.post('/retry-failed', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
   const db = c.env.DB;
+  const access = driveDocumentAccessSql(c.get('user'));
+  const accessGuard = `NOT EXISTS (
+    SELECT 1 FROM documents d
+    WHERE d.id = drive_backup_logs.document_id AND NOT (${access.clause})
+  )`;
   const body = await c.req.json<{ document_ids?: string[]; all?: boolean }>().catch(() => ({} as { document_ids?: string[]; all?: boolean }));
   if (body.all) {
-    const r = await db.prepare(`DELETE FROM drive_backup_logs WHERE status = 'failed'`).run();
+    const r = await db.prepare(`DELETE FROM drive_backup_logs
+      WHERE status = 'failed'
+        AND COALESCE(error_message, '') NOT LIKE '%drive-compensation-pending:%'
+        AND ${accessGuard}`).bind(...access.bindings).run();
     return c.json({ success: true, deleted: r.meta?.changes || 0 });
   }
   if (body.document_ids && body.document_ids.length > 0) {
     const placeholders = body.document_ids.map(() => '?').join(',');
     const r = await db.prepare(
-      `DELETE FROM drive_backup_logs WHERE status = 'failed' AND document_id IN (${placeholders})`,
-    ).bind(...body.document_ids).run();
+      `DELETE FROM drive_backup_logs
+       WHERE status = 'failed' AND document_id IN (${placeholders})
+         AND COALESCE(error_message, '') NOT LIKE '%drive-compensation-pending:%'
+         AND ${accessGuard}`,
+    ).bind(...body.document_ids, ...access.bindings).run();
     return c.json({ success: true, deleted: r.meta?.changes || 0 });
   }
   return c.json({ error: 'document_ids 또는 all=true 필요' }, 400);
@@ -176,6 +206,7 @@ drive.post('/retry-failed', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
 // GET /api/drive/error-summary — 최근 실패 로그를 에러 패턴별로 집계
 drive.get('/error-summary', requireRole(...DRIVE_ROLES), async (c) => {
   const db = c.env.DB;
+  const access = driveDocumentAccessSql(c.get('user'));
   const result = await db.prepare(`
     SELECT
       CASE
@@ -189,11 +220,13 @@ drive.get('/error-summary', requireRole(...DRIVE_ROLES), async (c) => {
       END as category,
       COUNT(*) as cnt,
       MAX(error_message) as sample_message
-    FROM drive_backup_logs
-    WHERE status = 'failed' AND run_at > datetime('now', '-7 days')
+    FROM drive_backup_logs b
+    LEFT JOIN documents d ON d.id = b.document_id
+    WHERE b.status = 'failed' AND b.run_at > datetime('now', '-7 days')
+      AND ${access.clause}
     GROUP BY category
     ORDER BY cnt DESC
-  `).all();
+  `).bind(...access.bindings).all();
   return c.json({ summary: result.results || [] });
 });
 
@@ -222,15 +255,17 @@ drive.post('/briefing-material-retention/run', requireRole(...DRIVE_ADMIN_ROLES)
 
 drive.get('/logs', requireRole(...DRIVE_ROLES), async (c) => {
   const db = c.env.DB;
+  const access = driveDocumentAccessSql(c.get('user'));
   const limit = Math.min(100, Number(c.req.query('limit') || 30));
   const result = await db.prepare(`
     SELECT b.*, d.title as document_title, u.name as triggered_by_name
     FROM drive_backup_logs b
     LEFT JOIN documents d ON d.id = b.document_id
     LEFT JOIN users u ON u.id = b.triggered_by
+    WHERE ${access.clause}
     ORDER BY b.run_at DESC
     LIMIT ?
-  `).bind(limit).all();
+  `).bind(...access.bindings, limit).all();
   return c.json({ logs: result.results || [] });
 });
 
@@ -241,15 +276,20 @@ drive.post('/run-now', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
   const { runBackupBatch } = await import('../drive-backup-runner');
   const env = c.env as any;
   const user = c.get('user');
+  const access = driveDocumentAccessSql(user);
   const limitRaw = parseInt(c.req.query('limit') || '5', 10);
   const limit = Math.min(50, Math.max(1, isNaN(limitRaw) ? 5 : limitRaw));
-  const result = await runBackupBatch(env, { triggered_by: user.sub, limit });
+  const result = await runBackupBatch(env, {
+    triggered_by: user.sub,
+    limit,
+    document_access_sql: access,
+    document_access_filter: (document) => canAccessDriveDocument(user, document),
+  });
   return c.json(result);
 });
 
 // POST /api/drive/test-send — 특정 문서(들)만 테스트 백업 (재백업 허용)
 drive.post('/test-send', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
-  const { runBackupBatch } = await import('../drive-backup-runner');
   const body = await c.req.json<{ document_ids: string[] }>();
   if (!body.document_ids || body.document_ids.length === 0) {
     return c.json({ error: 'document_ids 누락' }, 400);
@@ -259,9 +299,36 @@ drive.post('/test-send', requireRole(...DRIVE_ADMIN_ROLES), async (c) => {
   }
   const env = c.env as any;
   const user = c.get('user');
+  const access = driveDocumentAccessSql(user);
+  await ensureExpenseReceiptSchema(c.env.DB);
+  for (const documentId of body.document_ids) {
+    const receipt = await c.env.DB.prepare(`SELECT d.id, d.template_id, d.author_id, d.status, p.purged_at
+      FROM documents d
+      LEFT JOIN expense_receipt_pdf_artifacts p ON p.document_id = d.id
+      WHERE d.id = ? AND d.template_id = ?`)
+      .bind(documentId, EXPENSE_RECEIPT_TEMPLATE_ID)
+      .first<{
+        id: string;
+        template_id: string;
+        author_id: string;
+        status: string;
+        purged_at: string | null;
+      }>();
+    if (receipt && !canAccessDriveDocument(user, receipt)) {
+      return c.json({ error: '이 영수증 지출결의서를 전송할 권한이 없습니다.' }, 403);
+    }
+    if (receipt && (receipt.purged_at || await countActiveExpenseReceiptAttachments(c.env.DB, documentId) < 1)) {
+      return c.json({
+        error: '사이트 원본 보존기간이 끝난 영수증 지출결의서는 다시 전송할 수 없습니다. 기존 Drive 보관본을 이용해 주세요.',
+      }, 409);
+    }
+  }
+  const { runBackupBatch } = await import('../drive-backup-runner');
   const result = await runBackupBatch(env, {
     triggered_by: user.sub,
     document_ids: body.document_ids,
+    document_access_sql: access,
+    document_access_filter: (document) => canAccessDriveDocument(user, document),
   });
   return c.json(result);
 });

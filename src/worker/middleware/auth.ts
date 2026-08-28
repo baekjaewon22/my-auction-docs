@@ -194,10 +194,10 @@ export function requireHumanMaster() {
     const user = c.get('user');
     const machineCredentialHeader = c.req.header('X-Service-Token') || c.req.header('X-AFO-Device-Key');
     if (machineCredentialHeader || !user || user.auth_type !== 'user' || user.role !== 'master' || user.sub.startsWith('service-token:')) {
-      return c.json({ error: '마스터 사용자 계정만 접근할 수 있습니다.' }, 403);
+      return c.json({ error: '접근 권한이 없습니다.' }, 403);
     }
     const exists = await c.env.DB.prepare("SELECT id FROM users WHERE id = ? AND approved = 1 AND role = 'master' LIMIT 1").bind(user.sub).first();
-    if (!exists) return c.json({ error: '마스터 사용자 계정을 확인할 수 없습니다.' }, 403);
+    if (!exists) return c.json({ error: '계정 정보를 확인할 수 없습니다.' }, 403);
     await next();
   };
 }

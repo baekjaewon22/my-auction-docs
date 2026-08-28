@@ -33,8 +33,11 @@ export async function ensureBriefingMaterialSchema(db: D1Database): Promise<void
 }
 
 export function safeBriefingFileName(value: string): string {
-  return String(value || 'briefing-material')
-    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+  return Array.from(
+    String(value || 'briefing-material'),
+    (character) => character.charCodeAt(0) <= 0x1f ? '_' : character,
+  ).join('')
+    .replace(/[\\/:*?"<>|]/g, '_')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 180) || 'briefing-material';

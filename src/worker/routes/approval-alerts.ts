@@ -4,7 +4,12 @@
 
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
-import { authMiddleware, requireRole } from '../middleware/auth';
+import { authMiddleware, requireHumanMaster } from '../middleware/auth';
+import {
+  EXPENSE_RECEIPT_TEMPLATE_ID,
+  canReceiveExpenseReceiptApprovalAlert,
+  expenseReceiptApprovalAlertTemplateScope,
+} from '../../shared/expense-receipt';
 
 const approvalAlerts = new Hono<AuthEnv>();
 approvalAlerts.use('*', authMiddleware);
@@ -13,11 +18,25 @@ approvalAlerts.use('*', authMiddleware);
 approvalAlerts.get('/', async (c) => {
   const db = c.env.DB;
   const user = c.get('user');
-  const result = await db.prepare(`
-    SELECT * FROM alert_approval_pending
-    WHERE approver_id = ? AND status = 'open'
-    ORDER BY my_status DESC, document_submitted_at ASC
-  `).bind(user.sub).all();
+  const templateId = expenseReceiptApprovalAlertTemplateScope(user.role, c.req.query('template_id'));
+  const conditions = ["a.approver_id = ?", "a.status = 'open'"];
+  const params: Array<string | number> = [user.sub];
+  const canonicalTemplate = "COALESCE(d.template_id, a.document_template_id, '')";
+  if (!canReceiveExpenseReceiptApprovalAlert(user)) {
+    conditions.push(`${canonicalTemplate} != ?`);
+    params.push(EXPENSE_RECEIPT_TEMPLATE_ID);
+  }
+  if (templateId) {
+    conditions.push(`${canonicalTemplate} = ?`);
+    params.push(templateId);
+  }
+  const statement = db.prepare(`
+    SELECT a.* FROM alert_approval_pending a
+    LEFT JOIN documents d ON d.id = a.document_id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY a.my_status DESC, a.document_submitted_at ASC
+  `);
+  const result = await statement.bind(...params).all();
   return c.json({ alerts: result.results || [] });
 });
 
@@ -26,17 +45,24 @@ approvalAlerts.post('/:id/dismiss', async (c) => {
   const db = c.env.DB;
   const user = c.get('user');
   const id = c.req.param('id');
-  const alert = await db.prepare(
-    'SELECT approver_id FROM alert_approval_pending WHERE id = ?'
-  ).bind(id).first<{ approver_id: string }>();
+  const alert = await db.prepare(`SELECT a.approver_id,
+      COALESCE(d.template_id, a.document_template_id, '') AS document_template_id
+    FROM alert_approval_pending a
+    LEFT JOIN documents d ON d.id = a.document_id
+    WHERE a.id = ?`)
+    .bind(id).first<{ approver_id: string; document_template_id: string }>();
   if (!alert) return c.json({ error: 'alert을 찾을 수 없습니다.' }, 404);
-  if (alert.approver_id !== user.sub && !['master', 'ceo', 'cc_ref'].includes(user.role)) {
+  if (alert.document_template_id === EXPENSE_RECEIPT_TEMPLATE_ID) {
+    return c.json({ error: '영수증 지출결의 승인 알림은 승인·반려 또는 문서 취소 전까지 숨길 수 없습니다.' }, 409);
+  }
+  const allowed = alert.approver_id === user.sub || ['master', 'ceo', 'cc_ref'].includes(user.role);
+  if (!allowed) {
     return c.json({ error: '권한이 없습니다.' }, 403);
   }
   await db.prepare(`
     UPDATE alert_approval_pending
     SET status = 'cancelled', acted_at = datetime('now'), acted_action = 'dismissed'
-    WHERE id = ?
+    WHERE id = ? AND status = 'open'
   `).bind(id).run();
   return c.json({ success: true });
 });
@@ -44,7 +70,7 @@ approvalAlerts.post('/:id/dismiss', async (c) => {
 // POST /api/approval-alerts/backfill — 기존 submitted 문서 일괄 알림 적재 (master 전용)
 // dryRun: true (기본) — 실제 INSERT 안 함
 // notification_sent=1 로 생성하여 알림 발송 X (조용한 backfill)
-approvalAlerts.post('/backfill', requireRole('master'), async (c) => {
+approvalAlerts.post('/backfill', requireHumanMaster(), async (c) => {
   const db = c.env.DB;
   const body = await c.req.json<{ dryRun?: boolean }>().catch(() => ({} as { dryRun?: boolean }));
   const dryRun = body.dryRun ?? true;
@@ -55,8 +81,9 @@ approvalAlerts.post('/backfill', requireRole('master'), async (c) => {
     FROM documents d
     LEFT JOIN users u ON u.id = d.author_id
     WHERE d.status = 'submitted' AND COALESCE(d.cancelled, 0) = 0
+      AND COALESCE(d.template_id, '') != ?
     ORDER BY d.created_at ASC
-  `).all<any>();
+  `).bind(EXPENSE_RECEIPT_TEMPLATE_ID).all<any>();
   const docs = docsRes.results || [];
 
   let docsProcessed = 0;

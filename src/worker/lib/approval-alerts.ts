@@ -5,6 +5,22 @@
 
 type DB = D1Database;
 
+import { isExpenseReceiptTemplate } from '../../shared/expense-receipt.ts';
+import { normalizeBranchName, sameBranchName } from './branchAliases.ts';
+
+// 지출증빙 제출 알림톡은 신청자 지사를 구독한 총무(담당/보조)에게만 발송한다.
+// 사용자관리 > 알림톡 수신 설정(users.alimtalk_branches)을 그대로 재사용한다.
+function delegateSubscribesToBranch(
+  settings: string | null | undefined,
+  branch: string | null | undefined,
+): boolean {
+  let normalized = normalizeBranchName(branch);
+  // 본사관리(기획팀 등 HQ 관리 지사)의 지출결의는 의정부본사 구독 총무가 알림을 받는다.
+  if (normalized === '본사관리') normalized = '의정부본사';
+  if (!settings || !normalized) return false;
+  return settings.split(',').some((value) => sameBranchName(value, normalized));
+}
+
 interface ApprovalStep {
   id: string;
   document_id: string;
@@ -84,6 +100,47 @@ export async function recreateAlertsForDoc(
 
   const stmts: any[] = [];
   let created = 0;
+
+  if (isExpenseReceiptTemplate(doc.template_id) && firstPending && prevAllApproved) {
+    const delegates = await db.prepare(`
+      SELECT d.user_id AS id, d.role_snapshot AS role,
+        COALESCE(u.alimtalk_branches, '') AS alimtalk_branches
+      FROM expense_receipt_approval_delegates d
+      JOIN users u ON u.id = d.user_id
+      WHERE d.document_id = ?
+        AND d.approval_step_id = ?
+        AND u.approved = 1
+        AND u.role = d.role_snapshot
+        AND COALESCE(u.login_type, 'employee') != 'freelancer'
+      ORDER BY CASE d.role_snapshot WHEN 'accountant' THEN 0 ELSE 1 END, d.created_at ASC
+    `).bind(documentId, firstPending.id).all<{ id: string; role: string; alimtalk_branches: string }>();
+
+    for (const delegate of delegates.results || []) {
+      // 알림톡: 신청자 지사를 구독한 총무(담당/보조)에게만. 그 외 총무는 웹 결재함 알림만.
+      const notificationSent = opts.skipNotification
+        || !delegateSubscribesToBranch(delegate.alimtalk_branches, docMeta.branch)
+        ? 1
+        : 0;
+      stmts.push(db.prepare(`
+        INSERT OR IGNORE INTO alert_approval_pending
+          (id, document_id, approver_id, cycle_no, step_order, my_status,
+           document_title, document_template_id, document_author_id, document_author_name,
+           document_branch, document_department, document_submitted_at,
+           notification_sent, metadata)
+        VALUES (?, ?, ?, ?, ?, 'need_approve', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        crypto.randomUUID(), documentId, delegate.id, currentCycle, firstPending.step_order,
+        docMeta.title, docMeta.template_id, docMeta.author_id, docMeta.author_name,
+        docMeta.branch, docMeta.department, docMeta.submitted_at,
+        notificationSent,
+        JSON.stringify({ expense_receipt_delegate_role: delegate.role, approval_step_id: firstPending.id }),
+      ));
+      created++;
+    }
+
+    if (stmts.length > 0) await db.batch(stmts);
+    return { created, cycle_no: currentCycle };
+  }
 
   // 6. 'need_approve' alert (현재 차례 approver)
   if (firstPending && prevAllApproved) {

@@ -1,15 +1,27 @@
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import net from 'node:net';
-import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureUrl = pathToFileURL(path.join(root, 'tests', 'fixtures', 'personal-calendar-layout-audit.html')).href;
 const chromePath = process.env.MOBILE_AUDIT_CHROME || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const widths = [320, 360, 390, 430, 600, 768, 900, 1024, 1280, 1366, 1440, 1920, 2560];
-const viewportHeight = (width) => width === 320 ? 568 : width === 360 ? 640 : width <= 430 ? 780 : width <= 600 ? 800 : width <= 768 ? 1024 : 900;
+const viewports = [
+  { width: 320, height: 568, touch: true },
+  { width: 360, height: 640, touch: true },
+  { width: 390, height: 780, touch: true },
+  { width: 430, height: 780, touch: true },
+  { width: 600, height: 800, touch: true },
+  { width: 667, height: 375, touch: true },
+  { width: 736, height: 414, touch: true },
+  { width: 768, height: 1024, touch: true },
+  { width: 812, height: 375, touch: true },
+  { width: 844, height: 390, touch: true },
+  { width: 896, height: 414, touch: true },
+  { width: 932, height: 430, touch: true },
+  ...[900, 1024, 1280, 1366, 1440, 1920, 2560].map((width) => ({ width, height: 900, touch: false })),
+];
 
 const getFreePort = () => new Promise((resolve, reject) => {
   const server = net.createServer();
@@ -22,7 +34,7 @@ const getFreePort = () => new Promise((resolve, reject) => {
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const port = await getFreePort();
-const chromeProfile = mkdtempSync(path.join(os.tmpdir(), 'personal-calendar-audit-'));
+const chromeProfile = mkdtempSync(path.join(root, '.tmp-personal-calendar-audit-'));
 const chrome = spawn(chromePath, [
   '--headless=new',
   '--disable-gpu',
@@ -72,13 +84,13 @@ try {
   await send('Page.enable');
   await send('Runtime.enable');
   const results = [];
-  for (const width of widths) {
-    const height = viewportHeight(width);
+  for (const { width, height, touch } of viewports) {
+    await send('Emulation.setTouchEmulationEnabled', { enabled: touch, ...(touch ? { maxTouchPoints: 5 } : {}) });
     await send('Emulation.setDeviceMetricsOverride', {
       width,
       height,
       deviceScaleFactor: 1,
-      mobile: width <= 600,
+      mobile: touch,
       screenWidth: width,
       screenHeight: height,
     });
@@ -88,6 +100,9 @@ try {
       returnByValue: true,
       expression: `(() => {
         const grid = document.querySelector('.personal-calendar-grid');
+        const viewport = document.querySelector('.personal-calendar-grid-scroll');
+        const stage = document.querySelector('.personal-calendar-grid-stage');
+        const canvas = document.querySelector('.personal-calendar-grid-canvas');
         const days = [...document.querySelectorAll('.personal-calendar-day')];
         const columns = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length;
         const rowHeights = Array.from({ length: 6 }, (_, row) =>
@@ -106,6 +121,37 @@ try {
         const viewSliderRect = viewSlider.getBoundingClientRect();
         const detail = document.querySelector('#calendar-detail-audit');
         const detailRect = detail.getBoundingClientRect();
+        const initialStageWidth = stage.getBoundingClientRect().width;
+        const initialCanvasWidth = canvas.getBoundingClientRect().width;
+        const initialWeekdayHeight = document.querySelector('.personal-calendar-weekdays span').getBoundingClientRect().height;
+        const initialScale = new DOMMatrixReadOnly(getComputedStyle(canvas).transform).a;
+        const touchCalendar = matchMedia('(max-width: 600px), (pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+        const initialFit = !touchCalendar || (
+          Math.abs(initialStageWidth - viewport.clientWidth) <= 1
+          && Math.abs(initialCanvasWidth - viewport.clientWidth) <= 1
+          && viewport.scrollWidth <= viewport.clientWidth + 1
+        );
+        let zoomRestoresReadability = true;
+        let fitResetWorks = true;
+        let zoomDiagnostics = null;
+        if (touchCalendar) {
+          const targetZoom = Math.min(1.8, Math.max(1, initialScale + 0.4));
+          window.setCalendarAuditZoom(targetZoom);
+          const zoomedWeekdayHeight = document.querySelector('.personal-calendar-weekdays span').getBoundingClientRect().height;
+          const zoomedAuctionHeight = auctionChip.getBoundingClientRect().height;
+          const zoomedScale = new DOMMatrixReadOnly(getComputedStyle(canvas).transform).a;
+          const zoomCreatedPanArea = viewport.scrollWidth > viewport.clientWidth;
+          zoomDiagnostics = { targetZoom, zoomedWeekdayHeight, zoomedAuctionHeight, zoomedScale, zoomCreatedPanArea };
+          zoomRestoresReadability = Math.abs(zoomedScale - targetZoom) < 0.001
+            && zoomedScale > initialScale
+            && zoomedWeekdayHeight > initialWeekdayHeight
+            && zoomedAuctionHeight >= 24
+            && zoomCreatedPanArea;
+          viewport.scrollLeft = 100;
+          const movedBeforeFit = viewport.scrollLeft > 0;
+          window.fitCalendarAudit();
+          fitResetWorks = movedBeforeFit && viewport.scrollLeft === 0;
+        }
         return {
           documentWidth: document.documentElement.scrollWidth,
           columns,
@@ -114,18 +160,22 @@ try {
           toolbarFits: toolbar.scrollWidth <= toolbar.clientWidth,
           viewSliderFits: viewSlider.scrollWidth <= viewSlider.clientWidth && viewSliderRect.left >= 0 && viewSliderRect.right <= innerWidth,
           eventMode: innerWidth <= 600 && chipRect ? (chipRect.width <= 8 && chipRect.height <= 8 ? 'dot' : 'invalid') : 'label',
-          auctionLabelVisible: innerWidth > 600 || (auctionChipRect && auctionChipRect.height >= 24 && getComputedStyle(auctionChip).color !== 'rgba(0, 0, 0, 0)'),
+          auctionLabelVisible: auctionChipRect && auctionChipRect.height > 0 && getComputedStyle(auctionChip).color !== 'rgba(0, 0, 0, 0)',
           auctionChipFits: auctionChip.scrollWidth <= auctionChip.clientWidth,
-          inspectionVisible: innerWidth > 600
-            ? inspectionChipRect && getComputedStyle(inspectionChip).color !== 'rgba(0, 0, 0, 0)'
-            : inspectionChipRect && inspectionChipRect.height >= 24 && getComputedStyle(inspectionChip).color !== 'rgba(0, 0, 0, 0)',
+          inspectionVisible: inspectionChipRect && inspectionChipRect.height > 0 && getComputedStyle(inspectionChip).color !== 'rgba(0, 0, 0, 0)',
           detailFitsViewport: detailRect.top >= 0 && detailRect.bottom <= innerHeight && detail.scrollWidth <= detail.clientWidth,
+          initialFit,
+          initialScale,
+          touchCalendar,
+          zoomRestoresReadability,
+          zoomDiagnostics,
+          fitResetWorks,
           gridWidth: Math.round(grid.getBoundingClientRect().width),
           rowHeights: rowHeights.map((row) => row[0]),
         };
       })()`,
     });
-    results.push({ width, height, ...evaluation.result.value });
+    results.push({ width, height, touch, ...evaluation.result.value });
   }
   socket.close();
   console.log(JSON.stringify(results, null, 2));
@@ -142,6 +192,9 @@ try {
     || !result.auctionChipFits
     || !result.inspectionVisible
     || !result.detailFitsViewport
+    || !result.initialFit
+    || !result.zoomRestoresReadability
+    || !result.fitResetWorks
   ));
   if (failures.length > 0) {
     console.error(`Personal calendar layout audit failed at: ${failures.map((item) => item.width).join(', ')}`);

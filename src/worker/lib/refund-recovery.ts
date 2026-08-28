@@ -20,7 +20,7 @@ export async function resolveRefundRecovery(
   }
 
   const record = await db.prepare(`
-    SELECT sr.id, sr.user_id, sr.status, sr.amount, sr.refund_approved_at,
+    SELECT sr.id, sr.user_id, sr.status, sr.amount, sr.refund_amount, sr.refund_approved_at,
            ua.pay_type, ua.commission_rate,
            COALESCE(cro.commission_rate, ua.commission_rate) AS effective_commission_rate
     FROM sales_records sr
@@ -33,6 +33,7 @@ export async function resolveRefundRecovery(
     user_id: string;
     status: string;
     amount: number;
+    refund_amount: number | null;
     refund_approved_at: string | null;
     pay_type: string | null;
     commission_rate: number | null;
@@ -41,8 +42,8 @@ export async function resolveRefundRecovery(
   if (!record) {
     return { success: false, status: 404, code: 'REFUND_NOT_FOUND', error: '환불 내역을 찾을 수 없습니다.' };
   }
-  if (record.status !== 'refunded') {
-    return { success: false, status: 409, code: 'REFUND_NOT_APPROVED', error: '환불 승인된 내역만 회수 완료 처리할 수 있습니다.' };
+  if ((Number(record.refund_amount) || 0) <= 0) {
+    return { success: false, status: 409, code: 'REFUND_NOT_APPROVED', error: '환불(부분/전액) 처리된 내역만 회수 완료할 수 있습니다.' };
   }
   if (refundApprovalMonth(record.refund_approved_at) !== input.payrollMonth) {
     return { success: false, status: 400, code: 'REFUND_MONTH_MISMATCH', error: '환불 승인월과 급여 정산월이 일치하지 않습니다.' };
@@ -61,10 +62,17 @@ export async function resolveRefundRecovery(
     };
   }
 
+  // 2026-01/02 특례: 해당 월 급여는 모두 비율제(기본 50%)로 처리되므로, 원천 pay_type이 salary여도 공제를 산정한다.
+  const isJanFeb2026 = input.payrollMonth === '2026-01' || input.payrollMonth === '2026-02';
+  const effectivePayType = isJanFeb2026 ? 'commission' : record.pay_type;
+  const effectiveRate = isJanFeb2026
+    ? (record.effective_commission_rate ?? 50)
+    : record.effective_commission_rate;
+  // 공제 기준액 = 환불액(refund_amount). 전액환불이면 refund_amount = amount, 부분환불이면 환불된 부분만.
   const recoveryAmount = calculateRefundRecoveryAmount({
-    amount: record.amount,
-    payType: record.pay_type,
-    commissionRate: record.effective_commission_rate,
+    amount: Number(record.refund_amount) || 0,
+    payType: effectivePayType,
+    commissionRate: effectiveRate,
     payrollMonth: input.payrollMonth,
   });
   const payrollSave = await db.prepare(`
@@ -78,7 +86,7 @@ export async function resolveRefundRecovery(
       error: '해당 직원의 환불 승인월 급여정산을 먼저 저장하고 확정해 주세요.',
     };
   }
-  if (record.pay_type === 'commission' && recoveryAmount > 0) {
+  if (effectivePayType === 'commission' && recoveryAmount > 0) {
     let savedData: { commDeductions?: Array<{ sourceId?: string; amount?: string | number }> } = {};
     try {
       savedData = JSON.parse(payrollSave.data || '{}');

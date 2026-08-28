@@ -35,7 +35,7 @@ function requireReferenceManager(c: any) {
   const user = c.get('user');
   const role = String(user?.role || '').toLowerCase();
   if (!['master', 'ceo'].includes(role) && !AUCTION_REFERENCE_MANAGER_IDS.includes(String(user?.sub || ''))) {
-    return c.json({ error: '경매 참조 문구 관리는 정민호 지사장, 대표, 마스터만 사용할 수 있습니다.' }, 403);
+    return c.json({ error: '경매 참조 문구 관리 권한이 없습니다.' }, 403);
   }
   return null;
 }

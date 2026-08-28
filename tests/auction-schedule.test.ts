@@ -106,6 +106,11 @@ test('8월 3일이 포함된 주는 달력 행 기준 8월 둘째 주다', () =>
   assert.equal(getKoreanWeekLabel(monday), '8월 둘째 주');
 });
 
+test('달을 걸친 주(8/31~9/6)는 다수가 속한 9월 기준으로 9월 첫째 주로 표기한다', () => {
+  const monday = new Date(2026, 7, 31); // 2026-08-31 (월)
+  assert.equal(getKoreanWeekLabel(monday), '9월 첫째 주');
+});
+
 test('경매 스케줄은 입찰·임장만 허용하고 미팅은 제거한다', () => {
   assert.equal(isAuctionScheduleActivityType('입찰'), true);
   assert.equal(isAuctionScheduleActivityType('임장'), true);
@@ -212,7 +217,8 @@ test('프리랜서 스케줄은 정규직 일지와 별도 테이블·라우트�
   assert.match(route, /normalizeWonSalesInput/);
   assert.match(route, /입금신청이 연결된 일정은 삭제할 수 없습니다/);
   assert.match(route, /ADMIN_VIEW_ROLES = new Set\(\['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'\]\)/);
-  assert.match(route, /user\.role === 'master' \|\| \(user\.login_type === 'freelancer' && user\.sub === ownerId\)/);
+  assert.match(route, /canManageAuctionSchedule\(user\)/);
+  assert.match(route, /isPastAuctionScheduleDate\(existing\.target_date\)/);
   assert.match(route, /get\('\/create-options'/);
   assert.match(route, /get\('\/inspection-suggestions'/);
   assert.match(suggestionLib, /activity_type = '임장'/);
@@ -257,13 +263,17 @@ test('화면은 주말과 공휴일을 포함한 7일이며 카드 텍스트를 
     layout.indexOf('title="경매 스케줄"') < layout.indexOf('title="회의록"'),
     '마이페이지에서 경매 스케줄이 회의록보다 먼저 배치되어야 한다',
   );
-  assert.match(page, /const canCreate = user\?\.role === 'master' \|\| \(user as any\)\?\.login_type === 'freelancer'/);
+  assert.match(page, /const canCreate = canCreateAuctionSchedule\(/);
   assert.match(page, /const canChooseCreateAssignee = user\?\.role === 'master'/);
   assert.match(page, /auctionSchedule\.createOptions\(\)/);
   assert.match(page, /assignableMembers=\{createAssignees\}/);
   assert.match(page, /canChooseAssignee=\{canChooseCreateAssignee\}/);
   assert.match(page, /user_id: payload\.user_id/);
-  assert.match(page, /\(user as any\)\?\.login_type === 'freelancer' && selected\.user_id === user\?\.id/);
+  assert.match(page, /canManageAuctionBidResult\([\s\S]*?selected\.user_id/);
+  assert.match(page, /canManageAuctionSchedule\(\{ role: user\?\.role \}\)/);
+  assert.match(page, /!selectedIsPast/);
+  assert.match(page, /const canEditSelected = canMutateSelected && !editLockedByBidResult/);
+  assert.match(page, /const canDeleteSelected = canMutateSelected/);
   assert.match(page, /auction-schedule-team-group/);
   assert.match(page, /auction-schedule-team-label/);
   assert.match(css, /\.auction-schedule-team-group \+ \.auction-schedule-team-group[\s\S]*?border-top/);
@@ -294,12 +304,16 @@ test('임장 입찰기일과 같은 담당자의 기존 정보 자동채우기 U
   assert.match(form, /기존 임장 정보 자동채우기/);
   assert.match(form, /계약자명 또는 사건번호 검색/);
   assert.match(form, /inspectionSuggestions\(inspectionSearch, canChooseAssignee \? assigneeId : undefined\)/);
-  assert.match(form, /bidDate: `\$\{inspBidYear\}-\$\{inspBidMonth\}-\$\{inspBidDay\}`/);
+  assert.match(form, /bidDate: inspectionBidDate/);
   assert.match(form, /입찰기일/);
+  assert.match(form, /입찰기일 \* <span>필수 입력/);
+  assert.match(form, /getRequiredInspectionBidDateError/);
   assert.match(form, /<select[\s\S]*?aria-label="입찰기일 연도"/);
   assert.match(form, /<select[\s\S]*?aria-label="입찰기일 월"/);
   assert.match(form, /<select[\s\S]*?aria-label="입찰기일 일자"/);
-  assert.match(form, /<option value="">일자<\/option>/);
+  assert.match(form, /<option value="">일자 선택<\/option>/);
+  assert.match(form, /onInvalid=\{\(\) => setInspBidDateError/);
+  assert.match(form, /className="auction-inspection-bid-date-error" role="alert"/);
   assert.match(form, /setBidCaseNo\(parsedCase\.serial\)/);
   assert.match(form, /setBidBidder\(suggestion\.client/);
   assert.match(form, /setBidCourt\(suggestion\.court/);

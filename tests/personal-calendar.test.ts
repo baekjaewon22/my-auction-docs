@@ -7,8 +7,15 @@ import {
   buildPersonalCalendarInspectionEvents,
   loadPersonalCalendarAuctionRows,
   loadPersonalCalendarInspectionRows,
+  toPublicPersonalCalendarAuctionEvent,
   type CalendarAuctionScheduleRow,
 } from '../src/worker/lib/personal-calendar-auction-events.ts';
+import {
+  clampPersonalCalendarZoom,
+  getPersonalCalendarCanvasWidth,
+  getPersonalCalendarFitZoom,
+  getPersonalCalendarScrollForZoom,
+} from '../src/react-app/lib/personal-calendar-zoom.ts';
 
 function d1FromSqlite(db: Database.Database): D1Database {
   return {
@@ -61,17 +68,61 @@ test('캘린더 API는 인증 후 지사와 직책에 관계없이 모든 일정
 
 test('임장 입찰기일 또는 입찰 일정 중 하나만 있어도 캘린더 입찰로 표시한다', () => {
   const inspection = buildPersonalCalendarAuctionEvents([auctionRow({
-    data: JSON.stringify({ bidDate: '2026-09-15', caseNo: '2026타경123', court: '의정부지방법원', propertyCategory: '주거시설' }),
+    data: JSON.stringify({ bidDate: '2026-09-15', caseNo: '2026타경123', court: '의정부지방법원', propertyCategory: '주거시설', propertyType: '아파트' }),
   })]);
   const bid = buildPersonalCalendarAuctionEvents([auctionRow({
     id: 'bid-1', source_kind: 'bid',
     data: JSON.stringify({ caseNo: '2026타경456', court: '서울중앙지방법원', propertyCategory: '상업·업무시설' }),
   })]);
   assert.equal(inspection.length, 1);
-  assert.equal(inspection[0].title, '[김민수] 주거시설');
+  assert.equal(inspection[0].title, '[김민수] [주거시설]>[아파트]');
   assert.equal(inspection[0].activity_type, '입찰');
+  assert.equal(inspection[0].source_id, 'schedule-1');
+  assert.equal(inspection[0].source_kind, 'inspection');
   assert.equal(bid.length, 1);
-  assert.equal(bid[0].title, '[김민수] 상업·업무시설');
+  assert.equal(bid[0].title, '[김민수] [상업·업무시설]');
+});
+
+test('캘린더 물건 분류는 대분류와 세부분류를 구분하고 빈 값과 중복을 안정적으로 처리한다', () => {
+  const events = buildPersonalCalendarAuctionEvents([
+    auctionRow({
+      id: 'both',
+      event_date: '2026-09-01',
+      data: JSON.stringify({ propertyCategory: ' 주거시설 ', propertyType: ' 아파트 ' }),
+    }),
+    auctionRow({
+      id: 'category-only',
+      event_date: '2026-09-02',
+      data: JSON.stringify({ propertyCategory: ' 주거시설 ', propertyType: '   ' }),
+    }),
+    auctionRow({
+      id: 'type-only',
+      event_date: '2026-09-03',
+      data: JSON.stringify({ propertyCategory: '', propertyType: ' 아파트 ' }),
+    }),
+    auctionRow({
+      id: 'same',
+      event_date: '2026-09-04',
+      data: JSON.stringify({ propertyCategory: '아파트', propertyType: ' 아 파 트 ' }),
+    }),
+    auctionRow({ id: 'empty', event_date: '2026-09-05', data: '{}' }),
+  ]);
+  const titles = new Map(events.map(event => [event.source_id, event.title]));
+  assert.equal(titles.get('both'), '[김민수] [주거시설]>[아파트]');
+  assert.equal(titles.get('category-only'), '[김민수] [주거시설]');
+  assert.equal(titles.get('type-only'), '[김민수] [아파트]');
+  assert.equal(titles.get('same'), '[김민수] [아파트]');
+  assert.equal(titles.get('empty'), '[김민수] 입찰');
+  const both = events.find(event => event.source_id === 'both');
+  assert.equal(both?.property_category, ' 주거시설 ');
+  assert.equal(both?.property_type, ' 아파트 ');
+
+  const inspections = buildPersonalCalendarInspectionEvents([
+    auctionRow({ id: 'inspection-both', data: JSON.stringify({ propertyCategory: '주거시설', propertyType: '아파트' }) }),
+    auctionRow({ id: 'inspection-empty', data: '{}' }),
+  ]);
+  assert.equal(inspections[0].title, '[김민수] 임장 · [주거시설]>[아파트]');
+  assert.equal(inspections[1].title, '[김민수] 임장 · 미분류');
 });
 
 test('같은 담당자·날짜·법원·사건·물건의 임장과 입찰은 실제 입찰 하나로 합친다', () => {
@@ -90,6 +141,119 @@ test('같은 담당자·날짜·법원·사건·물건의 임장과 입찰은 �
   assert.equal(events[0].source_id, 'bid-1');
   assert.equal(events[0].bid_result, 'won');
   assert.equal(events[0].court, '의정부지방법원 고양지원');
+  assert.equal(events[0].owner_id, 'user-1');
+  assert.equal(events[0].source_kind, 'bid');
+});
+
+test('공용 캘린더 입찰 결과 수정 권한은 소유자와 지정 관리자에게만 표시한다', () => {
+  const [internalEvent] = buildPersonalCalendarAuctionEvents([auctionRow({
+    id: 'bid-owned-by-user-1',
+    source_kind: 'bid',
+    data: JSON.stringify({
+      caseNo: '2026타경123',
+      court: '의정부지방법원',
+      suggestedPrice: '100000000',
+      bidPrice: '99000000',
+      winPrice: '101000000',
+      clientPhone: '010-1234-5678',
+    }),
+  })]);
+
+  const owner = toPublicPersonalCalendarAuctionEvent(internalEvent, { id: 'user-1', role: 'member' });
+  const master = toPublicPersonalCalendarAuctionEvent(internalEvent, { id: 'master-user', role: 'master' });
+  const accountant = toPublicPersonalCalendarAuctionEvent(internalEvent, { id: 'accountant-user', role: 'accountant' });
+  const minho = toPublicPersonalCalendarAuctionEvent(internalEvent, {
+    id: '2b6b3606-e425-4361-a115-9283cfef842f',
+    role: 'admin',
+  });
+  const unrelated = toPublicPersonalCalendarAuctionEvent(internalEvent, { id: 'other-user', role: 'member' });
+
+  assert.equal(owner.can_edit_bid_result, 1);
+  assert.equal(master.can_edit_bid_result, 1);
+  assert.equal(accountant.can_edit_bid_result, 1);
+  assert.equal(minho.can_edit_bid_result, 1);
+  assert.equal(unrelated.can_edit_bid_result, 0);
+
+  const json = JSON.stringify(owner);
+  assert.doesNotMatch(json, /owner_id|source_kind|inspection_bid_materialization_ready|suggestedPrice|bidPrice|winPrice|clientPhone|010-1234-5678/);
+  assert.equal(owner.source_id, 'bid-owned-by-user-1');
+  assert.equal(owner.bid_result, 'pending');
+});
+
+test('임장 기반 입찰은 실제 입찰 생성 필수정보가 모두 있어야 결과 편집을 허용한다', () => {
+  const completeData = {
+    bidDate: '2026-09-15',
+    caseNo: '2026타경123',
+    court: '의정부지방법원',
+    client: '홍길동',
+    propertyType: '아파트',
+  };
+  const viewer = { id: 'master-user', role: 'master' };
+  const [completeEvent] = buildPersonalCalendarAuctionEvents([auctionRow({
+    source_kind: 'inspection',
+    event_date: '2026-09-15',
+    data: JSON.stringify(completeData),
+  })]);
+  const editable = toPublicPersonalCalendarAuctionEvent(completeEvent, viewer);
+  assert.equal(editable.can_edit_bid_result, 1);
+  assert.equal(editable.bid_result_block_reason, undefined);
+
+  const missingCases = [
+    { label: '유효 입찰일', eventDate: '2026-02-30', data: { ...completeData, bidDate: '2026-02-30' } },
+    { label: '사건번호', eventDate: '2026-09-15', data: { ...completeData, caseNo: '' } },
+    { label: '법원', eventDate: '2026-09-15', data: { ...completeData, court: '' } },
+    { label: '고객명', eventDate: '2026-09-15', data: { ...completeData, client: '', bidder: '' } },
+    { label: '물건종류', eventDate: '2026-09-15', data: { ...completeData, propertyType: '', propertyCategory: '주거시설' } },
+    { label: '동행 임장 boolean', eventDate: '2026-09-15', data: { ...completeData, companion: true } },
+    { label: '동행 임장 number', eventDate: '2026-09-15', data: { ...completeData, companion: 1 } },
+    { label: '동행 임장 string', eventDate: '2026-09-15', data: { ...completeData, companion: 'true' } },
+  ];
+
+  for (const missing of missingCases) {
+    const [internalEvent] = buildPersonalCalendarAuctionEvents([auctionRow({
+      id: `inspection-missing-${missing.label}`,
+      source_kind: 'inspection',
+      event_date: missing.eventDate,
+      data: JSON.stringify(missing.data),
+    })]);
+    const authorized = toPublicPersonalCalendarAuctionEvent(internalEvent, viewer);
+    const unauthorized = toPublicPersonalCalendarAuctionEvent(internalEvent, { id: 'other-user', role: 'member' });
+    assert.equal(authorized.can_edit_bid_result, 0, `${missing.label} 누락은 편집을 차단해야 한다`);
+    assert.equal(
+      authorized.bid_result_block_reason,
+      '경매 스케줄에서 고객명 등 입찰 필수정보를 먼저 보완해 주세요.',
+    );
+    assert.equal(unauthorized.can_edit_bid_result, 0);
+    assert.equal('bid_result_block_reason' in unauthorized, false, '비권한자에게 보완 사유를 노출하면 안 된다');
+  }
+
+  const [bidderEvent] = buildPersonalCalendarAuctionEvents([auctionRow({
+    id: 'inspection-with-bidder',
+    source_kind: 'inspection',
+    data: JSON.stringify({ ...completeData, client: '', bidder: '입찰자' }),
+  })]);
+  assert.equal(toPublicPersonalCalendarAuctionEvent(bidderEvent, viewer).can_edit_bid_result, 1);
+
+  const [directBid] = buildPersonalCalendarAuctionEvents([auctionRow({
+    id: 'direct-bid-with-missing-fields',
+    source_kind: 'bid',
+    data: '{}',
+  })]);
+  const directBidPublic = toPublicPersonalCalendarAuctionEvent(directBid, viewer);
+  assert.equal(directBidPublic.can_edit_bid_result, 1, '실제 입찰 일정은 기존 편집권을 유지해야 한다');
+  assert.equal(directBidPublic.bid_result_block_reason, undefined);
+});
+
+test('필수정보가 부족한 임장 기반 입찰은 캘린더 상세에 서버 안내만 작게 표시한다', () => {
+  assert.match(page, /selectedEvent\.source_type === 'auction_bid' && selectedEvent\.bid_result_block_reason/);
+  assert.match(page, /<small className="personal-calendar-bid-result-block-reason" role="note">/);
+  assert.match(page, /\{selectedEvent\.bid_result_block_reason\}/);
+});
+
+test('today-bids 응답은 기존 사건 표시 필드 외 수정 권한이나 내부 식별자를 추가하지 않는다', () => {
+  assert.match(route, /const bids = buildPersonalCalendarAuctionEvents\(rows\)\.map\(event => \(\{[\s\S]*?id: event\.id,[\s\S]*?bid_result: event\.bid_result,[\s\S]*?\}\)\);/);
+  const todayBidsBlock = route.match(/personalCalendar\.get\('\/today-bids'[\s\S]*?return c\.json\(\{ date: today, bids \}\);/)?.[0] || '';
+  assert.doesNotMatch(todayBidsBlock, /source_id|owner_id|source_kind|inspection_bid_materialization_ready|can_edit_bid_result|bid_result_block_reason|suggestedPrice|bidPrice|winPrice|clientPhone/);
 });
 
 test('물건번호가 다른 입찰은 같은 사건이라도 별도 일정으로 유지한다', () => {
@@ -115,15 +279,40 @@ test('캘린더는 모바일에서도 경매 일정 제목과 클릭 영역을 �
   assert.match(css, /\.personal-calendar-event-chip\.auction[\s\S]*?white-space:\s*normal/);
 });
 
-test('캘린더만 80~140% 줌과 내부 가로 이동을 제공해 모바일 글자 눌림을 막는다', () => {
+test('모바일 캘린더는 첫 화면 맞춤과 핀치 확대·이동을 제공한다', () => {
   assert.match(page, /useState\(1\)/);
-  assert.match(page, /Math\.min\(1\.4, Math\.max\(0\.8,/);
+  assert.match(page, /getPersonalCalendarFitZoom\(calendarViewportWidth\)/);
+  assert.match(page, /navigator\.maxTouchPoints > 0/);
+  assert.match(page, /onPointerDown=\{handleCalendarPointerDown\}/);
+  assert.match(page, /onPointerMove=\{handleCalendarPointerMove\}/);
+  assert.match(page, /onPointerCancel=\{finishCalendarPointer\}/);
+  assert.match(page, /onLostPointerCapture=\{finishCalendarPointer\}/);
   assert.match(page, /aria-label="캘린더 축소"/);
   assert.match(page, /aria-label="캘린더 확대"/);
+  assert.match(page, /aria-label="캘린더를 화면 너비에 맞춤"/);
+  assert.match(page, /두 손가락으로 확대·축소/);
   assert.match(page, /personal-calendar-grid-scroll/);
-  assert.match(page, /minWidth: `\$\{Math\.round\(700 \* calendarZoom\)\}px`/);
+  assert.match(page, /personal-calendar-grid-stage/);
+  assert.match(page, /calendarRenderScale = isTouchCalendar \? effectiveCalendarZoom : 1/);
+  assert.match(page, /transform: `scale\(\$\{calendarRenderScale\}\)`/);
   assert.match(css, /\.personal-calendar-grid-scroll[\s\S]*?overflow-x:\s*auto/);
-  assert.match(css, /\.personal-calendar-grid-canvas[\s\S]*?min-width:\s*700px/);
+  assert.match(css, /\.personal-calendar-page\.calendar-touch-enabled \.personal-calendar-grid-scroll[\s\S]*?touch-action:\s*pan-x pan-y/);
+  assert.match(css, /\.personal-calendar-grid-canvas[\s\S]*?transform-origin:\s*top left/);
+});
+
+test('모바일 맞춤 배율은 세로·가로 280~932px에서 7열 논리 캔버스를 viewport 안에 맞춘다', () => {
+  for (const viewportWidth of [280, 320, 360, 390, 430, 600, 667, 736, 812, 844, 896, 932]) {
+    const fitZoom = getPersonalCalendarFitZoom(viewportWidth);
+    assert.equal(getPersonalCalendarCanvasWidth(viewportWidth, fitZoom), viewportWidth);
+  }
+  assert.equal(getPersonalCalendarFitZoom(700), 1);
+  assert.equal(clampPersonalCalendarZoom(2.4, getPersonalCalendarFitZoom(320), 1.8), 1.8);
+});
+
+test('핀치 확대는 손가락 중점 아래의 캘린더 위치를 유지한다', () => {
+  const nextScroll = getPersonalCalendarScrollForZoom(120, 140, 0.8, 1.6);
+  assert.equal(nextScroll, 380);
+  assert.equal((120 + 140) / 0.8, (nextScroll + 140) / 1.6);
 });
 
 test('우측 선택 날짜 박스 없이 모든 일정을 달력 칸 안에 채운다', () => {

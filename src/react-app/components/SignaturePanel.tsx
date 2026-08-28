@@ -9,6 +9,7 @@ interface Props {
   documentId: string;
   signatureType: SignatureType;
   stepId?: string;
+  expenseReceiptRevision?: number;
   onClose: () => void;
   onSign: (signatureData: string, type: SignatureType) => void;
 }
@@ -21,10 +22,16 @@ export function hasSavedSignature(): boolean {
 }
 
 /** 저장된 서명으로 즉시 서명 처리 */
-export async function quickSign(documentId: string, signatureType: SignatureType, onSign: (data: string, type: SignatureType) => void, stepId?: string) {
+export async function quickSign(
+  documentId: string,
+  signatureType: SignatureType,
+  onSign: (data: string, type: SignatureType) => void,
+  stepId?: string,
+  expenseReceiptRevision?: number,
+) {
   const saved = localStorage.getItem(SIG_CACHE_KEY);
   if (!saved) return false;
-  await api.signatures.sign(documentId, saved, signatureType, stepId);
+  await api.signatures.sign(documentId, saved, signatureType, stepId, expenseReceiptRevision);
   onSign(saved, signatureType);
   return true;
 }
@@ -46,7 +53,7 @@ export async function syncSignatureFromServer() {
   } catch { /* */ }
 }
 
-export default function SignaturePanel({ documentId, signatureType, stepId, onClose, onSign }: Props) {
+export default function SignaturePanel({ documentId, signatureType, stepId, expenseReceiptRevision, onClose, onSign }: Props) {
   const { user } = useAuthStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -131,7 +138,7 @@ export default function SignaturePanel({ documentId, signatureType, stepId, onCl
       // 새로 그린 서명이면 서버+로컬 저장
       if (!usingSaved) await saveToServer(signatureData);
 
-      await api.signatures.sign(documentId, signatureData, signatureType, stepId);
+      await api.signatures.sign(documentId, signatureData, signatureType, stepId, expenseReceiptRevision);
       onSign(signatureData, signatureType);
     } catch (err: any) { setError(err.message); }
     finally { setSubmitting(false); }

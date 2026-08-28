@@ -27,6 +27,7 @@ import cooperationRoute from './routes/cooperation';
 import roomsRoute from './routes/rooms';
 import personalCalendarRoute from './routes/personal-calendar';
 import driveRoute from './routes/drive';
+import expenseReceiptsRoute from './routes/expense-receipts';
 import briefingMaterialsRoute from './routes/briefing-materials';
 import linksRoute from './routes/links';
 import approvalAlertsRoute from './routes/approval-alerts';
@@ -43,14 +44,23 @@ import webPushRoute from './routes/web-push';
 import lawitgoProgressRoute from './routes/lawitgo-progress';
 import lawitgoSettlementLedgerRoute from './routes/lawitgo-settlement-ledger';
 import lawitgoWinningAdminRoute from './routes/lawitgo-winning-admin';
-import { verifyPrintToken, runBackupBatch } from './drive-backup-runner';
+import { createDriveFileVerifier, verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
 import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
 import { cleanupExpiredArticlePdfs } from './lib/article-pdfs';
 import { cleanupOldDocuments } from './lib/document-retention';
 import { cleanupBackedUpBriefingMaterials } from './lib/briefing-material-retention';
+import {
+  EXPENSE_RECEIPT_TEMPLATE_ID,
+  cleanupBackedUpExpenseReceipts,
+  ensureExpenseReceiptSchema,
+  listActiveExpenseReceiptAttachments,
+  retryExpenseReceiptR2Cleanup,
+} from './lib/expense-receipts';
 import { consumeDriveOAuthState, DRIVE_OAUTH_ADMIN_ROLES, verifyDriveOAuthState } from './lib/drive-oauth-state';
 import { escapeHtml } from '../shared/html';
+import { cleanupExpiredPrintRenderSessions } from './lib/print-render-session';
+import { authMiddleware, requireHumanMaster } from './middleware/auth';
 
 const app = new Hono<{ Bindings: Env }>();
 const EMBED_PAGES = ['/users', '/accounting', '/payroll', '/alimtalk-logs', '/org'];
@@ -82,6 +92,18 @@ app.use('*', async (c, next) => {
 });
 
 app.use('/api/*', cors());
+
+// Deploying Worker code does not apply D1 migrations automatically. Ensure the
+// receipt template and its storage tables exist before the generic template UI
+// or document-create endpoint can be reached for the first time.
+app.use('/api/*', async (c, next) => {
+  const path = c.req.path;
+  if (path === '/api/templates' || path.startsWith('/api/templates/')
+    || path === '/api/documents' || path.startsWith('/api/documents/')) {
+    await ensureExpenseReceiptSchema(c.env.DB);
+  }
+  await next();
+});
 
 // Global error handler - always return JSON
 app.onError((err, c) => {
@@ -116,6 +138,7 @@ app.route('/api/cooperation', cooperationRoute);
 app.route('/api/rooms', roomsRoute);
 app.route('/api/personal-calendar', personalCalendarRoute);
 app.route('/api/drive', driveRoute);
+app.route('/api/expense-receipts', expenseReceiptsRoute);
 app.route('/api/briefing-materials', briefingMaterialsRoute);
 app.route('/api/links', linksRoute);
 app.route('/api/approval-alerts', approvalAlertsRoute);
@@ -215,7 +238,7 @@ app.get('/oauth/drive/callback', async (c) => {
       <body style="font-family: sans-serif; padding: 40px; text-align: center;">
         <h2 style="color:#188038;">✓ Google Drive 연결 완료</h2>
         <p>연결 계정: <strong>${escapeHtml(email)}</strong></p>
-        <p>이제 매주 토요일 03:00 KST에 자동으로 문서가 백업됩니다.</p>
+        <p>이제 30분마다 승인 완료 문서가 자동으로 백업됩니다.</p>
         <p><a href="/archive?drive=1" style="color:#1a73e8;">지금 문서보관함으로 이동</a></p>
       </body></html>
     `);
@@ -232,7 +255,7 @@ app.get('/oauth/drive/callback', async (c) => {
 // /api/print/verify — Browser Rendering이 토큰 유효성 체크용으로 호출 가능
 app.get('/api/print/verify', async (c) => {
   const token = c.req.query('token') || '';
-  const result = await verifyPrintToken(token);
+  const result = await verifyPrintToken(token, c.env);
   if (!result) return c.json({ valid: false }, 401);
   return c.json({ valid: true, docId: result.docId });
 });
@@ -241,7 +264,7 @@ app.get('/api/print/verify', async (c) => {
 app.get('/api/print/data/:docId', async (c) => {
   const docId = c.req.param('docId');
   const token = c.req.query('token') || '';
-  const verified = await verifyPrintToken(token);
+  const verified = await verifyPrintToken(token, c.env);
   if (!verified || verified.docId !== docId) {
     return c.json({ error: 'invalid token' }, 401);
   }
@@ -261,11 +284,57 @@ app.get('/api/print/data/:docId', async (c) => {
     FROM approval_steps s LEFT JOIN users u ON u.id = s.approver_id
     WHERE s.document_id = ? ORDER BY s.step_order
   `).bind(docId).all<any>();
+  let expenseReceiptAttachments: Array<{
+    id: string;
+    file_name: string;
+    file_type: string;
+    file_size: number;
+    sort_order: number;
+  }> = [];
+  let expenseReceiptApprovalAction: Record<string, unknown> | null = null;
+  if (doc.template_id === EXPENSE_RECEIPT_TEMPLATE_ID) {
+    await ensureExpenseReceiptSchema(db);
+    expenseReceiptAttachments = (await listActiveExpenseReceiptAttachments(db, docId)).map((attachment) => ({
+      id: attachment.id,
+      file_name: attachment.file_name,
+      file_type: attachment.file_type,
+      file_size: attachment.file_size,
+      sort_order: attachment.sort_order,
+    }));
+    expenseReceiptApprovalAction = await db.prepare(`SELECT action,
+        actual_actor_id AS actor_id, actual_actor_name AS actor_name, actual_actor_role AS actor_role,
+        comment, created_at
+      FROM expense_receipt_approval_actions WHERE document_id=?
+      ORDER BY created_at DESC LIMIT 1`).bind(docId).first<Record<string, unknown>>().catch(() => null);
+  }
   return c.json({
     document: doc,
     signatures: sigs.results || [],
     approval_steps: steps.results || [],
+    expense_receipt_attachments: expenseReceiptAttachments,
+    expense_receipt_approval_action: expenseReceiptApprovalAction,
   });
+});
+
+// Browser Rendering 전용 영수증 원본. 같은 문서의 살아 있는 render-session만 허용한다.
+app.get('/api/print/expense-receipts/:docId/attachments/:attachmentId', async (c) => {
+  const docId = c.req.param('docId');
+  const verified = await verifyPrintToken(c.req.query('token') || '', c.env);
+  if (!verified || verified.docId !== docId) return c.json({ error: 'invalid token' }, 401);
+  await ensureExpenseReceiptSchema(c.env.DB);
+  const attachment = await c.env.DB.prepare(`SELECT object_key, file_type
+    FROM expense_receipt_attachments
+    WHERE id=? AND document_id=? AND deleted_at IS NULL AND purged_at IS NULL AND object_key IS NOT NULL`)
+    .bind(c.req.param('attachmentId'), docId).first<{ object_key: string; file_type: string }>();
+  if (!attachment) return c.json({ error: 'receipt attachment not found' }, 404);
+  const object = await c.env.ARTICLE_BUCKET.get(attachment.object_key);
+  if (!object?.body) return c.json({ error: 'receipt object not found' }, 404);
+  return new Response(object.body, { headers: {
+    'Content-Type': attachment.file_type,
+    'Content-Length': String(object.size),
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff',
+  } });
 });
 
 // Health check
@@ -382,16 +451,25 @@ app.get('/api/_manual-alimtalk-templates', async (c) => {
   return c.json({ success: true, templates });
 });
 
-// 임시: 모든 알림톡 템플릿 테스트 발송 (인증 없이, 토큰 보호)
-app.post('/api/_test-alimtalk-all', async (c) => {
-  const token = c.req.query('token');
-  if (token !== 'alimtalk-test-2026') return c.json({ error: '권한 없음' }, 403);
+// 모든 알림톡 템플릿 실발송 점검 — 활성 사람 마스터만 허용한다.
+app.post('/api/_test-alimtalk-all', authMiddleware, requireHumanMaster(), async (c) => {
   const targetPhone = c.req.query('phone') || '01029440141';
 
   const LINK = 'https://my-docs.kr/dashboard';
   const sampleVars: Record<string, Record<string, string>> = {
     SIGNUP_VERIFY: { verify_code: '123456' },
     DOC_SUBMITTED: { author_name: '홍길동', doc_title: '외근 보고서', department: '경매사업부1팀', submit_date: '2026-04-17', link: LINK },
+    EXPENSE_RECEIPT_SUBMITTED: {
+      applicant_name: '홍길동',
+      doc_title: '영수증 첨부 지출결의서',
+      branch: '의정부본사',
+      department: '경영지원팀',
+      receipt_count: '2',
+      submit_date: '2026-04-17',
+      link: LINK,
+    },
+    EXPENSE_RECEIPT_APPROVED: { approve_date: '2026-04-17', link: LINK },
+    EXPENSE_RECEIPT_REJECTED: { reject_date: '2026-04-17', link: LINK },
     DOC_STEP_APPROVED: { approver_name: '팀장', doc_title: '외근 보고서', author_name: '홍길동', department: '경매사업부1팀', link: LINK },
     DOC_FINAL_APPROVED: { doc_title: '외근 보고서', approver_name: '대표이사', approve_date: '2026-04-17' },
     DOC_REJECTED: { doc_title: '외근 보고서', rejector_name: '팀장', reject_reason: '재제출 요망', link: LINK },
@@ -534,6 +612,24 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
     ctx.waitUntil(cleanupBackedUpBriefingMaterials(env, 100).then(
       (r) => { if (r.archived > 0) console.log('[cron briefing-material-retention] done', r); },
       (err) => console.error('[cron briefing-material-retention] error', err),
+    ));
+    ctx.waitUntil(createDriveFileVerifier(env)
+      .then((verifyDriveFile) => cleanupBackedUpExpenseReceipts(env, 100, verifyDriveFile))
+      .then(
+        (r) => {
+          if (r.purged_documents > 0 || r.drive_unverified > 0 || r.failed_documents > 0) {
+            console.log('[cron expense-receipt-retention] done', r);
+          }
+        },
+        (err) => console.error('[cron expense-receipt-retention] Drive verification unavailable; site originals retained', err),
+      ));
+    ctx.waitUntil(cleanupExpiredPrintRenderSessions(env.DB).then(
+      (deleted) => { if (deleted > 0) console.log('[cron print-render-session-cleanup] done', { deleted }); },
+      (err) => console.error('[cron print-render-session-cleanup] error', err),
+    ));
+    ctx.waitUntil(retryExpenseReceiptR2Cleanup(env, 100).then(
+      (r) => { if (r.scanned > 0) console.log('[cron expense-receipt-r2-cleanup] done', r); },
+      (err) => console.error('[cron expense-receipt-r2-cleanup] error', err),
     ));
   } else if (cron === '30 15 1 * *') {
     ctx.waitUntil(import('./analytics-cron').then(({ runMonthlyAggregation }) =>

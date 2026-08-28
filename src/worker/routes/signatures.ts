@@ -2,8 +2,27 @@ import { Hono } from 'hono';
 import type { AuthEnv, Document, Signature } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { canReadDocument } from '../lib/document-access';
-import { canProxyApproval, evaluateSignaturePolicy, type PendingSignatureStep } from '../../shared/signature-policy';
+import {
+  canProxyApproval,
+  evaluateSignaturePolicy,
+  standaloneExpenseReceiptApproverSignatureDecision,
+  type PendingSignatureStep,
+} from '../../shared/signature-policy';
 import { ensureTemplateAccessSchema, isFreelancerViewer } from '../lib/template-access';
+import {
+  EXPENSE_RECEIPT_TEMPLATE_ID,
+  isExpenseReceiptTemplate,
+} from '../../shared/expense-receipt';
+import {
+  ExpenseReceiptApprovalError,
+  isActiveExpenseReceiptDelegate,
+  signExpenseReceiptAuthorAtRevision,
+} from '../lib/expense-receipt-approval';
+import { canReadExpenseReceipt } from '../lib/expense-receipts';
+import {
+  canRunSignatureBackfill,
+  SIGNATURE_BACKFILL_CANDIDATES_SQL,
+} from '../lib/signature-backfill';
 
 const signatures = new Hono<AuthEnv>();
 signatures.use('*', authMiddleware);
@@ -15,11 +34,12 @@ signatures.use('*', async (c, next) => {
 // POST /api/signatures - sign a document
 signatures.post('/', async (c) => {
   const user = c.get('user');
-  const { document_id, signature_data, signature_type, step_id } = await c.req.json<{
+  const { document_id, signature_data, signature_type, step_id, expense_receipt_revision } = await c.req.json<{
     document_id: string;
     signature_data: string;
     signature_type: 'author' | 'approver';
     step_id?: string;
+    expense_receipt_revision?: number;
   }>();
 
   if (!document_id || !signature_data || !['author', 'approver'].includes(signature_type)) {
@@ -34,9 +54,15 @@ signatures.post('/', async (c) => {
   const db = c.env.DB;
 
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(document_id).first<Document>();
+  if (doc && isExpenseReceiptTemplate(doc.template_id) && user.auth_type !== 'user') {
+    return c.json({ error: '영수증 첨부 신청서의 서명과 직인은 사용자 로그인으로만 처리할 수 있습니다.' }, 403);
+  }
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
 
-  if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
+  const canRead = isExpenseReceiptTemplate(doc.template_id)
+    ? canReadExpenseReceipt(user, doc)
+    : await canReadDocument(db, user, doc);
+  if (!canRead) return c.json({ error: '권한이 없습니다.' }, 403);
 
   let pendingSteps: PendingSignatureStep[] = [];
   let totalStepCount = 0;
@@ -55,6 +81,24 @@ signatures.post('/', async (c) => {
       ).bind(document_id).first<{ cnt: number }>();
       totalStepCount = stepCount?.cnt || 0;
     }
+    if (isExpenseReceiptTemplate(doc.template_id)) {
+      const targetStep = step_id
+        ? pendingSteps.find((step) => step.id === step_id)
+        : pendingSteps[0];
+      if (!targetStep || !(await isActiveExpenseReceiptDelegate(
+        db,
+        document_id,
+        targetStep.id,
+        user.sub,
+        user.role,
+      ))) {
+        return c.json({ error: '제출 시 지정된 총무 결재자만 대표 직인을 사용할 수 있습니다.' }, 403);
+      }
+      const standaloneDecision = standaloneExpenseReceiptApproverSignatureDecision(doc.template_id);
+      if (standaloneDecision && !standaloneDecision.allowed) {
+        return c.json({ error: standaloneDecision.error }, standaloneDecision.status);
+      }
+    }
   }
 
   const signatureRole = isFreelancerViewer(user) ? 'member' : user.role;
@@ -68,6 +112,7 @@ signatures.post('/', async (c) => {
     stepId: step_id,
     pendingSteps,
     totalStepCount,
+    documentTemplateId: doc.template_id,
   });
   if (!policy.allowed) return c.json({ error: policy.error }, policy.status);
 
@@ -82,8 +127,44 @@ signatures.post('/', async (c) => {
   }
 
   const id = crypto.randomUUID();
-  const ip = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown';
-  const userAgent = c.req.header('User-Agent') || 'unknown';
+  const ip = (c.req.header('CF-Connecting-IP')
+    || c.req.header('X-Forwarded-For')?.split(',')[0]?.trim()
+    || 'unknown').slice(0, 200);
+  const requestUserAgent = (c.req.header('User-Agent') || 'unknown').slice(0, 1000);
+  const userAgent = requestUserAgent;
+
+  if (isExpenseReceiptTemplate(doc.template_id) && signature_type === 'author') {
+    try {
+      const signed = await signExpenseReceiptAuthorAtRevision(db, {
+        documentId: document_id,
+        authorId: user.sub,
+        signatureData: signature_data,
+        expectedRevision: Number(expense_receipt_revision),
+        ipAddress: ip,
+        userAgent,
+      });
+      await db.prepare(
+        'INSERT INTO document_logs (id, document_id, user_id, action, details) VALUES (?, ?, ?, ?, ?)'
+      ).bind(
+        crypto.randomUUID(), document_id, user.sub, 'signed',
+        `영수증 첨부 신청서 작성자 서명이 완료되었습니다. revision=${signed.revision}; IP=${ip}`,
+      ).run();
+      return c.json({
+        signature: {
+          id: signed.signatureId,
+          document_id,
+          user_id: user.sub,
+          signed_at: new Date().toISOString(),
+          expense_receipt_revision: signed.revision,
+        },
+      }, 201);
+    } catch (error) {
+      if (error instanceof ExpenseReceiptApprovalError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      throw error;
+    }
+  }
 
   await db.prepare(
     'INSERT INTO signatures (id, document_id, user_id, signature_data, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?)'
@@ -105,8 +186,14 @@ signatures.get('/document/:documentId', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
   const doc = await db.prepare('SELECT * FROM documents WHERE id = ?').bind(documentId).first<Document>();
+  if (doc && isExpenseReceiptTemplate(doc.template_id) && user.auth_type !== 'user') {
+    return c.json({ error: '영수증 첨부 신청서 서명은 사용자 로그인으로만 조회할 수 있습니다.' }, 403);
+  }
   if (!doc) return c.json({ error: '문서를 찾을 수 없습니다.' }, 404);
-  if (!(await canReadDocument(db, user, doc))) return c.json({ error: '권한이 없습니다.' }, 403);
+  const canRead = isExpenseReceiptTemplate(doc.template_id)
+    ? canReadExpenseReceipt(user, doc)
+    : await canReadDocument(db, user, doc);
+  if (!canRead) return c.json({ error: '권한이 없습니다.' }, 403);
 
   const result = await db.prepare(
     "SELECT s.*, COALESCE(NULLIF(TRIM(u.name), ''), '탈퇴 사용자') as user_name FROM signatures s LEFT JOIN users u ON s.user_id = u.id WHERE s.document_id = ? ORDER BY s.signed_at ASC"
@@ -118,22 +205,16 @@ signatures.get('/document/:documentId', async (c) => {
 // POST /api/signatures/backfill - 승인 완료했지만 서명 없는 건에 서명 강제 삽입 (master only)
 signatures.post('/backfill', async (c) => {
   const user = c.get('user');
-  if (isFreelancerViewer(user) || user.role !== 'master') {
-    return c.json({ error: '마스터만 가능합니다.' }, 403);
+  if (!canRunSignatureBackfill(user, isFreelancerViewer(user))) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
   }
 
   const db = c.env.DB;
 
   // 승인된 step 중 서명이 없는 건 찾기
-  const missing = await db.prepare(
-    `SELECT DISTINCT s.approver_id, s.document_id
-     FROM approval_steps s
-     WHERE s.status = 'approved'
-       AND NOT EXISTS (
-         SELECT 1 FROM signatures sig
-         WHERE sig.document_id = s.document_id AND sig.user_id = s.approver_id
-       )`
-  ).all<{ approver_id: string; document_id: string }>();
+  const missing = await db.prepare(SIGNATURE_BACKFILL_CANDIDATES_SQL)
+    .bind(EXPENSE_RECEIPT_TEMPLATE_ID)
+    .all<{ approver_id: string; document_id: string }>();
 
   let count = 0;
   for (const row of missing.results) {

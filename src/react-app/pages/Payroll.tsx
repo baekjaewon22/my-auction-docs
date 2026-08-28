@@ -122,6 +122,10 @@ const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 
 export default function Payroll({ initialTab = 'payroll', requireBranchSelection = false }: { initialTab?: PayrollTab; requireBranchSelection?: boolean }) {
   const { user: currentUser } = useAuthStore();
+  const canAccessBusinessIncome = !!currentUser && ['master', 'ceo', 'accountant'].includes(currentUser.role);
+  const canEditPayroll = !!currentUser && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(currentUser.role);
+  const canUnlockPayroll = !!currentUser && ['master', 'accountant'].includes(currentUser.role);
+  const canResolveRefundRecovery = canUnlockPayroll;
   const [searchParams, setSearchParams] = useSearchParams();
   const { branches: BRANCHES } = useBranches();
   const [users, setUsers] = useState<User[]>([]);
@@ -130,7 +134,9 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const [filterBranch, setFilterBranch] = useState('');
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<PayrollTab>(initialTab);
+  const [tab, setTab] = useState<PayrollTab>(
+    initialTab === 'business_income' && !canAccessBusinessIncome ? 'payroll' : initialTab,
+  );
 
   // 회계 수동 입력 필드
   const [deduction, setDeduction] = useState('0');
@@ -154,6 +160,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const [branchData, setBranchData] = useState<any[]>([]);
   const [branchLoading, setBranchLoading] = useState(false);
 
+  const commissionNetRef = useRef(0);
   const printRef = useRef<HTMLDivElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
   const branchRef = useRef<HTMLDivElement>(null);
@@ -163,8 +170,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   }, []);
 
   useEffect(() => {
-    setTab(initialTab);
-  }, [initialTab]);
+    setTab(initialTab === 'business_income' && !canAccessBusinessIncome ? 'payroll' : initialTab);
+  }, [canAccessBusinessIncome, initialTab]);
 
   useEffect(() => {
     if (!requireBranchSelection) return;
@@ -247,6 +254,16 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
               sourceId: refundRecoveryId,
             }]);
       }
+      // 전월 이월 공제: 실지급이 음수여서 익월로 넘어온 미회수분을 세후공제로 자동 반영
+      if (res.carryover_deduction && Number(res.carryover_deduction.amount) > 0) {
+        setCommDeductions(prev => prev.some(item => item.sourceId === 'carryover')
+          ? prev
+          : [...prev, {
+              label: `전월 이월 공제 (${res.carryover_deduction.origin_month})`,
+              amount: String(Number(res.carryover_deduction.amount)),
+              sourceId: 'carryover',
+            }]);
+      }
 
       // 안건 수당 — 짝수월에만 (예: 4월 → 3~4월 합계)
       try {
@@ -279,7 +296,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   };
 
   const handleSavePayroll = async () => {
-    if (!data || !selectedUserId) return;
+    if (!canEditPayroll || !data || !selectedUserId) return;
     setSaving(true);
     try {
       const period = data.period_label || selectedMonth;
@@ -293,7 +310,9 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           ...(item.memo.trim() ? { memo: item.memo.trim() } : {}),
         }];
       });
-      const manualData = { deduction, extraPay, extraLabel, extraDeduction, extraDeductionLabel, commExtras, commDeductions, withholdingSettlements, caseAllowance };
+      const isCommissionPay = (data?.accounting?.pay_type || 'salary') === 'commission';
+      const netPayForSettle = isCommissionPay ? commissionNetRef.current : salaryNetPay;
+      const manualData = { deduction, extraPay, extraLabel, extraDeduction, extraDeductionLabel, commExtras, commDeductions, withholdingSettlements, caseAllowance, net_pay: netPayForSettle, settle_month: selectedMonth };
       await api.payroll.save({
         user_id: selectedUserId,
         period,
@@ -317,7 +336,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   };
 
   const handleLockPayroll = async () => {
-    if (!data || !selectedUserId) return;
+    if (!canEditPayroll || !data || !selectedUserId) return;
     const period = data.period_label || selectedMonth;
     if (!confirm('이 급여정산을 확정하시겠습니까? 확정 후에는 수정할 수 없습니다.')) return;
     try {
@@ -329,7 +348,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   };
 
   const handleUnlockPayroll = async () => {
-    if (!data || !selectedUserId) return;
+    if (!canUnlockPayroll || !data || !selectedUserId) return;
     const period = data.period_label || selectedMonth;
     if (!confirm('이 급여정산의 확정을 취소하시겠습니까?')) return;
     try {
@@ -341,7 +360,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   };
 
   const handleCompleteRefundRecovery = async () => {
-    if (!refundRecoveryId || !refundRecoveryMonth) return;
+    if (!canResolveRefundRecovery || !refundRecoveryId || !refundRecoveryMonth) return;
     if (!confirm('환불 회수 공제 또는 성과금 재계산이 정산표에 반영되었는지 마지막으로 확인해 주세요.\n\n이 급여정산을 환불 회수 처리완료로 기록하시겠습니까?')) return;
     try {
       await api.sales.resolveRefundRecovery(refundRecoveryId, refundRecoveryMonth);
@@ -491,7 +510,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           <div style={{ fontSize: '0.82rem', lineHeight: 1.5 }}>
             대시보드에서 연결된 환불 건입니다. 공제 또는 성과금 재계산을 반영한 뒤 `정산 저장 → 확정 → 처리완료` 순서로 진행해 주세요.
           </div>
-          {!refundRecoveryResolved && ['master', 'accountant'].includes(currentUser?.role || '') && (
+          {!refundRecoveryResolved && canResolveRefundRecovery && (
             <button
               className="btn btn-sm btn-success"
               style={{ marginTop: 10 }}
@@ -539,9 +558,11 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         {<button className={`filter-btn ${tab === 'branch' ? 'active' : ''}`} onClick={() => setTab('branch')}>
           지사별 합산
         </button>}
-        {<button className={`filter-btn ${tab === 'business_income' ? 'active' : ''}`} onClick={() => setTab('business_income')}>
-          사업소득신고
-        </button>}
+        {canAccessBusinessIncome && (
+          <button className={`filter-btn ${tab === 'business_income' ? 'active' : ''}`} onClick={() => setTab('business_income')}>
+            사업소득신고
+          </button>
+        )}
         <button className={`filter-btn ${tab === 'employee_bonus' ? 'active' : ''}`} onClick={() => setTab('employee_bonus')}>
           정직원 성과금내역
         </button>
@@ -592,6 +613,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 </div>
 
                 {/* 매출 목록 */}
+                <div className="payroll-table-scroll">
                 <table className="payroll-table">
                   <thead>
                     <tr>
@@ -628,11 +650,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                     )}
                   </tbody>
                 </table>
+                </div>
 
                 {/* 환불 내역 */}
                 {data.refunded_records?.length > 0 && (
                   <>
                     <div className="payroll-section-title refund">환불 내역</div>
+                    <div className="payroll-table-scroll">
                     <table className="payroll-table refund">
                       <tbody>
                         {data.refunded_records.map((r: any) => (
@@ -645,6 +669,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   </>
                 )}
 
@@ -652,6 +677,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 {data.refund_recoveries?.length > 0 && (
                   <>
                     <div className="payroll-section-title" style={{ color: '#e65100' }}>이전 기간 환불 회수</div>
+                    <div className="payroll-table-scroll">
                     <table className="payroll-table refund">
                       <tbody>
                         {data.refund_recoveries.map((r: any) => (
@@ -659,12 +685,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                             <td style={{ width: '12%' }}>{r.contract_date?.slice(5)}</td>
                             <td style={{ width: '22%' }}>{r.client_name}</td>
                             <td style={{ width: '14%' }}>{r.type}</td>
-                            <td className="num" style={{ width: '18%', color: '#e65100' }}>-{fmtWon(r.amount)}</td>
+                            <td className="num" style={{ width: '18%', color: '#e65100' }}>-{fmtWon(r.refund_amount ?? r.amount)}{Number(r.refund_amount) > 0 && Number(r.refund_amount) < Number(r.amount) ? <span style={{ fontSize: '0.7rem', color: '#9aa0a6' }}> (부분/매출 {fmtWon(r.amount)})</span> : null}</td>
                             <td className="num" style={{ width: '16%', color: '#e65100', fontSize: '0.75rem' }}>회수: {fmtWon(r.recovery_amount)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   </>
                 )}
 
@@ -712,6 +739,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                   const tax33 = truncMoney(taxableIncome * 0.033);
                   // 실지급 = 소득 - 세전공제 - 원천세 - 세후공제
                   const finalPay = totalIncome - preTaxDeductions - tax33 - otherDeductions;
+                  commissionNetRef.current = finalPay;
                   return (
                     <>
                       <div className="payroll-section-title">수익 정산</div>
@@ -800,7 +828,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
                         <div className="payroll-bonus-row grand-total" style={{ marginTop: 8 }}>
                           <span>실 지급액</span>
-                          <span className="num">{fmtWon(finalPay)}</span>
+                          <span className="num">{finalPay < 0 ? <>{fmtWon(0)}<span style={{ fontSize: '0.72rem', color: '#e65100', marginLeft: 4 }}>(이월 {fmtWon(-finalPay)} 익월청구)</span></> : fmtWon(finalPay)}</span>
                         </div>
                       </div>
 
@@ -921,6 +949,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
             {/* 매출 목록 테이블 — 본사관리 제외 */}
             {!data.is_hq && (
             <>
+            <div className="payroll-table-scroll">
             <table className="payroll-table">
               <thead>
                 <tr>
@@ -967,11 +996,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 )}
               </tbody>
             </table>
+            </div>
 
             {/* 환불 내역 */}
             {data.refunded_records?.length > 0 && (
               <>
                 <div className="payroll-section-title refund">환불 내역</div>
+                <div className="payroll-table-scroll">
                 <table className="payroll-table refund">
                   <tbody>
                     {data.refunded_records.map((r: any) => (
@@ -984,6 +1015,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                     ))}
                   </tbody>
                 </table>
+                </div>
               </>
             )}
 
@@ -994,6 +1026,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
             {data.refund_recoveries?.length > 0 && (
               <>
                 <div className="payroll-section-title" style={{ color: '#e65100' }}>이전 기간 환불 회수</div>
+                <div className="payroll-table-scroll">
                 <table className="payroll-table refund">
                   <tbody>
                     {data.refund_recoveries.map((r: any) => (
@@ -1006,6 +1039,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                     ))}
                   </tbody>
                 </table>
+                </div>
                 <div style={{ padding: '8px 12px', background: '#fff3e0', borderRadius: 6, fontSize: '0.78rem', color: '#e65100', marginBottom: 8 }}>
                   ⚠ 이전 기간 환불 건이 있습니다. 성과금 재계산 및 공제 여부를 확인하세요.
                 </div>
@@ -1246,7 +1280,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
               ))}
               <div className="payroll-bonus-row grand-total">
                 <span>당월 급여 실지급 (A)</span>
-                <span className="num">{fmtWon(salaryNetPay)}</span>
+                <span className="num">{salaryNetPay < 0 ? <>{fmtWon(0)}<span style={{ fontSize: '0.72rem', color: '#e65100', marginLeft: 4 }}>(이월 {fmtWon(-salaryNetPay)} 익월청구)</span></> : fmtWon(salaryNetPay)}</span>
               </div>
             </div>
             <WithholdingSettlementBlock items={withholdingSettlementItems} payrollNetPay={salaryNetPay} />
@@ -1313,9 +1347,10 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
           })()}
 
           {/* 수동 입력 (PNG 영역 밖) */}
-          <div className="card" style={{ marginTop: 20, padding: 20, maxWidth: 800 }}>
+          {canEditPayroll && (
+            <div className="card" style={{ marginTop: 20, padding: 20, maxWidth: 800 }}>
             <h3 style={{ margin: '0 0 14px', fontSize: '0.95rem', color: '#3c4043' }}>회계 입력란</h3>
-            {isLocked && ['master', 'accountant'].includes(currentUser?.role || '') && (
+            {isLocked && canUnlockPayroll && (
               <div style={{ marginBottom: 10, textAlign: 'center' }}>
                 <button className="btn btn-sm" onClick={handleUnlockPayroll}>확정취소</button>
               </div>
@@ -1551,7 +1586,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 </div>
               </>
             )}
-          </div>
+            </div>
+          )}
         </>
       )}
 
@@ -1736,7 +1772,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
         <div className="empty-state">담당자를 선택하면 급여정산 내역이 표시됩니다.</div>
       )}
 
-      {tab === 'business_income' && <BusinessIncomeTab month={selectedMonth} />}
+      {tab === 'business_income' && canAccessBusinessIncome && <BusinessIncomeTab month={selectedMonth} />}
       {tab === 'employee_bonus' && <EmployeeBonusTab month={selectedMonth} users={filteredUsers} />}
       {tab === 'employee_payroll_list' && isAllBranchView && canViewAllEmployeePayroll && <EmployeePayrollListTab month={selectedMonth} users={filteredUsers} />}
     </div>

@@ -1,3 +1,5 @@
+import { EXPENSE_RECEIPT_TEMPLATE_ID } from '../../shared/expense-receipt.ts';
+
 export type DocumentRetentionResult = {
   retention_months: number;
   cutoff: string;
@@ -20,7 +22,9 @@ type RunResult = { meta?: { changes?: number } };
 const RETENTION_MONTHS = 2;
 const CUTOFF_SQL = "datetime('now', '-2 months')";
 
-const TARGET_DOCS_SQL = `SELECT id FROM documents WHERE updated_at < ${CUTOFF_SQL}`;
+const TARGET_DOCS_SQL = `SELECT id FROM documents
+  WHERE updated_at < ${CUTOFF_SQL}
+    AND COALESCE(template_id, '') != '${EXPENSE_RECEIPT_TEMPLATE_ID}'`;
 
 async function count(db: D1Database, sql: string): Promise<number> {
   const row = await db.prepare(sql).first<CountRow>();
@@ -39,7 +43,7 @@ export async function cleanupOldDocuments(db: D1Database, opts: { dryRun?: boole
     retention_months: RETENTION_MONTHS,
     cutoff: cutoffRow?.cutoff || '',
     dry_run: dryRun,
-    documents: await count(db, `SELECT COUNT(*) AS cnt FROM documents WHERE updated_at < ${CUTOFF_SQL}`),
+    documents: await count(db, `SELECT COUNT(*) AS cnt FROM (${TARGET_DOCS_SQL})`),
     approval_steps: await count(db, `SELECT COUNT(*) AS cnt FROM approval_steps WHERE document_id IN (${TARGET_DOCS_SQL})`),
     signatures: await count(db, `SELECT COUNT(*) AS cnt FROM signatures WHERE document_id IN (${TARGET_DOCS_SQL})`),
     document_logs: await count(db, `SELECT COUNT(*) AS cnt FROM document_logs WHERE document_id IN (${TARGET_DOCS_SQL})`),
@@ -61,7 +65,7 @@ export async function cleanupOldDocuments(db: D1Database, opts: { dryRun?: boole
   result.approval_steps = await runDelete(db, `DELETE FROM approval_steps WHERE document_id IN (${TARGET_DOCS_SQL})`);
   result.signatures = await runDelete(db, `DELETE FROM signatures WHERE document_id IN (${TARGET_DOCS_SQL})`);
   result.document_logs = await runDelete(db, `DELETE FROM document_logs WHERE document_id IN (${TARGET_DOCS_SQL})`);
-  result.documents = await runDelete(db, `DELETE FROM documents WHERE updated_at < ${CUTOFF_SQL}`);
+  result.documents = await runDelete(db, `DELETE FROM documents WHERE id IN (${TARGET_DOCS_SQL})`);
   result.orphan_drive_backup_logs = await runDelete(db, `DELETE FROM drive_backup_logs WHERE document_id NOT IN (SELECT id FROM documents)`);
   result.dry_run = false;
   return result;

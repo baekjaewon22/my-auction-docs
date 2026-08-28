@@ -126,8 +126,15 @@ export function getCalendarRowWeekNumber(date: Date): number {
   return Math.ceil((date.getDate() + new Date(date.getFullYear(), date.getMonth(), 1).getDay()) / 7);
 }
 
-export function getKoreanWeekLabel(date: Date): string {
+export function getKoreanWeekLabel(weekStartMonday: Date): string {
   const names = ['첫째', '둘째', '셋째', '넷째', '다섯째', '여섯째'];
-  const week = getCalendarRowWeekNumber(date);
-  return `${date.getMonth() + 1}월 ${names[week - 1] || `${week}째`} 주`;
+  // 월~일 주에서 대표일(목요일 = 시작+3)이 속한 달·주차로 표기한다.
+  // 달을 걸친 주(예: 8/31~9/6)는 다수가 속한 달(9월) 기준으로 '9월 첫째 주'가 된다.
+  const anchor = new Date(
+    weekStartMonday.getFullYear(),
+    weekStartMonday.getMonth(),
+    weekStartMonday.getDate() + 3,
+  );
+  const week = getCalendarRowWeekNumber(anchor);
+  return `${anchor.getMonth() + 1}월 ${names[week - 1] || `${week}째`} 주`;
 }

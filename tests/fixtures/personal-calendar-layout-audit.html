@@ -24,14 +24,17 @@
           <div class="personal-calendar-month-title"><strong>2026년 8월</strong><span>불러오는 중...</span></div>
           <button class="calendar-icon-button" type="button">›</button>
           <button class="calendar-today-button" type="button">오늘</button>
-          <div class="personal-calendar-zoom-controls"><button type="button">−</button><output>100%</output><button type="button">＋</button></div>
+          <div class="personal-calendar-zoom-controls"><button type="button">−</button><output>100%</output><button type="button">＋</button><button type="button" class="personal-calendar-fit-button" aria-pressed="true">맞춤</button></div>
+          <p class="personal-calendar-gesture-hint">두 손가락으로 확대·축소 · 확대 후 한 손가락으로 좌우 이동</p>
         </header>
         <div class="personal-calendar-grid-scroll">
-          <div class="personal-calendar-grid-canvas" style="width:100%;min-width:700px">
-            <div class="personal-calendar-weekdays">
-              <span class="sunday">일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span class="saturday">토</span>
+          <div class="personal-calendar-grid-stage">
+            <div class="personal-calendar-grid-canvas">
+              <div class="personal-calendar-weekdays">
+                <span class="sunday">일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span class="saturday">토</span>
+              </div>
+              <div class="personal-calendar-grid" id="calendar-grid"></div>
             </div>
-            <div class="personal-calendar-grid" id="calendar-grid"></div>
           </div>
         </div>
       </section>
@@ -64,9 +67,9 @@
           event.className = `personal-calendar-event-chip${eventIndex <= 1 ? ' auction' : ''}${eventIndex === 1 ? ' inspection' : ''}`;
           event.style.setProperty('--event-color', ['#4f6bed', '#dd5a5a', '#32a071'][eventIndex % 3]);
           if (eventIndex === 0) {
-            event.innerHTML = '<span class="personal-calendar-event-title">[김민수] 주거시설</span><span class="personal-calendar-event-result won">낙찰</span>';
+            event.innerHTML = '<span class="personal-calendar-event-title">[김민수] [주거시설]&gt;[아파트]</span><span class="personal-calendar-event-result won">낙찰</span>';
           } else if (eventIndex === 1) {
-            event.innerHTML = '<span class="personal-calendar-event-title">[이서초] 임장 · 상업·업무시설</span>';
+            event.innerHTML = '<span class="personal-calendar-event-title">[이서초] 임장 · [상업·업무시설]&gt;[근린상가]</span>';
           } else {
             event.textContent = `일정 ${eventIndex + 1} - 긴 일정 제목 반응형 확인`;
           }
@@ -75,6 +78,36 @@
       }
       grid.appendChild(day);
     }
+
+    const viewport = document.querySelector('.personal-calendar-grid-scroll');
+    const stage = document.querySelector('.personal-calendar-grid-stage');
+    const canvas = document.querySelector('.personal-calendar-grid-canvas');
+    const zoomOutput = document.querySelector('.personal-calendar-zoom-controls output');
+    const fitButton = document.querySelector('.personal-calendar-fit-button');
+    const applyCalendarAuditZoom = (zoom, fit = false) => {
+      const touchCalendar = matchMedia('(max-width: 600px), (pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+      document.querySelector('.personal-calendar-page').classList.toggle('calendar-touch-enabled', touchCalendar);
+      const touchLogicalWidth = Math.max(700, viewport.clientWidth);
+      const logicalWidth = touchCalendar ? touchLogicalWidth : Math.max(700, viewport.clientWidth) * zoom;
+      const renderScale = touchCalendar ? zoom : 1;
+      const stageWidth = touchCalendar ? Math.max(viewport.clientWidth, Math.round(touchLogicalWidth * zoom)) : Math.round(logicalWidth);
+      canvas.style.width = `${logicalWidth}px`;
+      canvas.style.minWidth = `${logicalWidth}px`;
+      canvas.style.transform = `scale(${renderScale})`;
+      stage.style.width = `${stageWidth}px`;
+      stage.style.minWidth = `${stageWidth}px`;
+      stage.style.height = `${Math.ceil(canvas.offsetHeight * renderScale)}px`;
+      zoomOutput.textContent = `${Math.round(zoom * 100)}%`;
+      fitButton.setAttribute('aria-pressed', String(fit));
+      if (fit) viewport.scrollLeft = 0;
+    };
+    window.setCalendarAuditZoom = (zoom) => applyCalendarAuditZoom(zoom, false);
+    window.fitCalendarAudit = () => {
+      const touchCalendar = matchMedia('(max-width: 600px), (pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+      const logicalWidth = Math.max(700, viewport.clientWidth);
+      applyCalendarAuditZoom(touchCalendar ? Math.min(1, viewport.clientWidth / logicalWidth) : 1, true);
+    };
+    window.fitCalendarAudit();
   </script>
 </body>
 </html>

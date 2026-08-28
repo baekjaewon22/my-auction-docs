@@ -8,6 +8,7 @@ import {
   kstDateKey,
   loadPersonalCalendarAuctionRows,
   loadPersonalCalendarInspectionRows,
+  toPublicPersonalCalendarAuctionEvent,
 } from '../lib/personal-calendar-auction-events';
 import { branchAliases, normalizeBranchName } from '../lib/branchAliases';
 import { auctionStoryAnomalyBranches, AUCTION_STORY_BRANCHES } from '../../shared/auction-story-anomaly-access';
@@ -65,6 +66,7 @@ function parseDate(value: string): number | null {
 // GET /api/personal-calendar/events?from=YYYY-MM-DD&to=YYYY-MM-DD
 // 모든 인증 사용자가 동일한 회사 공용 일정을 조회한다.
 personalCalendar.get('/events', async (c) => {
+  const user = c.get('user');
   const from = String(c.req.query('from') || '').trim();
   const to = String(c.req.query('to') || '').trim();
   const fromTime = parseDate(from);
@@ -102,7 +104,8 @@ personalCalendar.get('/events', async (c) => {
     loadPersonalCalendarAuctionRows(db, from, to, { mode: 'all' }),
     loadPersonalCalendarInspectionRows(db, from, to),
   ]);
-  const auctionEvents = buildPersonalCalendarAuctionEvents(auctionRows);
+  const auctionEvents = buildPersonalCalendarAuctionEvents(auctionRows)
+    .map(event => toPublicPersonalCalendarAuctionEvent(event, { id: user.sub, role: user.role }));
   const inspectionEvents = buildPersonalCalendarInspectionEvents(inspectionRows);
   const personalEvents = (result.results || []).map(event => ({ ...event, source_type: 'personal' }));
 

@@ -59,7 +59,11 @@ export async function ensureAutomationJobQueueSchema(db: D1Database): Promise<vo
 }
 
 export function safeAutomationFileName(value: string): string {
-  return String(value || 'result.bin').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 180) || 'result.bin';
+  const withoutControlCharacters = Array.from(
+    String(value || 'result.bin'),
+    (character) => character.charCodeAt(0) <= 0x1f ? '_' : character,
+  ).join('');
+  return withoutControlCharacters.replace(/[\\/:*?"<>|]/g, '_').slice(0, 180) || 'result.bin';
 }
 
 export function automationArtifactContentType(format: string): string {

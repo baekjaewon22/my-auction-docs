@@ -142,7 +142,7 @@ function formatDate(iso: string) {
 }
 
 function getVisibilityLabel(v: string): string {
-  if (v === EVICTION_QUOTE_VISIBILITY) return '명도팀 · 정민호 지사장 · 마스터';
+  if (v === EVICTION_QUOTE_VISIBILITY) return '명도팀 · 정민호 지사장 · 관리자';
   if (v === 'all') return '전체';
   if (v === 'branch') return '지사';
   if (v === 'department') return '팀';
@@ -467,6 +467,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const isBidHistoryMode = mode === 'bid_history';
   const { user } = useAuthStore();
   const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
+  const canUseCooperation = !isFreelancer;
   const { departments } = useDepartments();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -487,7 +488,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const [activeCategory, setActiveCategory] = useState<NoteCategory>(() => {
     if (isBidHistoryMode) return 'community';
     const tab = searchParams.get('tab');
-    return tab === 'eviction_quote' || tab === 'legal_support' || tab === 'cooperation' ? tab : 'community';
+    return tab === 'eviction_quote' || tab === 'legal_support' || (tab === 'cooperation' && canUseCooperation) ? tab : 'community';
   });
   const [communitySection, setCommunitySection] = useState<CommunitySection>(() =>
     isBidHistoryMode ? 'briefing_schedule' :
@@ -665,7 +666,11 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       return;
     }
     const tab = searchParams.get('tab');
-    const next = tab === 'eviction_quote' || tab === 'legal_support' || tab === 'cooperation' ? tab : 'community';
+    if (tab === 'cooperation' && !canUseCooperation) {
+      setSearchParams({}, { replace: true });
+      return;
+    }
+    const next = tab === 'eviction_quote' || tab === 'legal_support' || (tab === 'cooperation' && canUseCooperation) ? tab : 'community';
     const requestedSection = searchParams.get('section');
     if (next === 'community' && requestedSection === 'briefing_schedule') {
       navigate('/bid-history', { replace: true });
@@ -696,7 +701,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       setDetail(null);
       resetForm();
     }
-  }, [searchParams, isBidHistoryMode, activeCategory, communitySection, navigate]);
+  }, [searchParams, isBidHistoryMode, activeCategory, communitySection, navigate, canUseCooperation, setSearchParams]);
 
   useEffect(() => { load(); }, [activeCategory, activeLegalSubcategory, communitySection]);
 
@@ -1187,7 +1192,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
             {detail.source_type === 'minutes' && (
               <span className="admin-note-source-badge"><BookOpen size={11} /> 회의록</span>
             )}
-            <span className="admin-note-visibility-badge">{detail.category === 'eviction_quote' ? '명도팀 · 정민호 지사장 · 마스터' : getVisibilityLabel(detail.visibility)}</span>
+            <span className="admin-note-visibility-badge">{detail.category === 'eviction_quote' ? '명도팀 · 정민호 지사장 · 관리자' : getVisibilityLabel(detail.visibility)}</span>
           </div>
           {(detail.category === 'eviction_quote' || detail.category === 'briefing_schedule') && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 0' }}>
@@ -1326,7 +1331,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       </div>
 
       {!isBidHistoryMode && <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        {CATEGORIES.map(({ key, label, icon: Icon }) => (
+        {CATEGORIES.filter(({ key }) => key !== 'cooperation' || canUseCooperation).map(({ key, label, icon: Icon }) => (
           <button
             key={key}
             className={`btn btn-sm ${activeCategory === key ? 'btn-primary' : ''}`}
@@ -1782,7 +1787,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                   <label style={{ fontSize: '0.8rem', marginBottom: 4, display: 'block' }}>{activeCategory === 'eviction_quote' ? '공유 범위' : '공유 범위 / 1:1 수신자'}</label>
                   {activeCategory === 'eviction_quote' ? (
                     <div className="form-input" style={{ padding: '7px 10px', fontSize: '0.82rem', minWidth: 260, background: '#f8f9fa' }}>
-                      명도팀 · 정민호 지사장 · 마스터
+                      명도팀 · 정민호 지사장 · 관리자
                     </div>
                   ) : (
                     <select className="form-input" value={formVisibility} onChange={(e) => setFormVisibility(e.target.value)}
@@ -1863,7 +1868,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                 <div className="admin-notes-card-meta">
                   <span>{authorLabel(note)}</span>
                   <span>{formatDate(note.created_at)}</span>
-                  <span className="admin-note-visibility-badge">{note.category === 'eviction_quote' ? '명도팀 · 정민호 지사장 · 마스터' : getVisibilityLabel(note.visibility)}</span>
+                  <span className="admin-note-visibility-badge">{note.category === 'eviction_quote' ? '명도팀 · 정민호 지사장 · 관리자' : getVisibilityLabel(note.visibility)}</span>
                   {note.comment_count > 0 && !isLegalTerms(note) && (
                     <span className="comment-badge"><MessageSquare size={11} /> {note.comment_count}</span>
                   )}

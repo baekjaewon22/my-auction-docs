@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS users (
   branch TEXT NOT NULL DEFAULT '',
   department TEXT NOT NULL DEFAULT '',
   position_title TEXT NOT NULL DEFAULT '',
+  login_type TEXT NOT NULL DEFAULT 'employee'
+    CHECK (login_type IN ('employee', 'freelancer')),
   myauction_id TEXT NOT NULL DEFAULT '',
   myauction_pw TEXT NOT NULL DEFAULT '',
   report_permission TEXT NOT NULL DEFAULT 'basic',
@@ -57,12 +59,105 @@ CREATE TABLE IF NOT EXISTS documents (
   department TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'submitted', 'approved', 'rejected')),
   reject_reason TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  cancel_reason TEXT DEFAULT '',
+  cancelled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (template_id) REFERENCES templates(id),
   FOREIGN KEY (author_id) REFERENCES users(id),
   FOREIGN KEY (team_id) REFERENCES teams(id)
 );
+
+-- Ordered document approval chain. This belongs in the canonical base schema
+-- because receipt-approval invariants attach triggers to this table.
+CREATE TABLE IF NOT EXISTS approval_steps (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  step_order INTEGER NOT NULL,
+  approver_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  comment TEXT,
+  signed_at TEXT,
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (approver_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_approval_steps_document ON approval_steps(document_id);
+CREATE INDEX IF NOT EXISTS idx_approval_steps_approver ON approval_steps(approver_id);
+
+-- Persistent approval queue. Receipt approval updates this table atomically,
+-- so it is part of the canonical schema as well as the legacy migration.
+CREATE TABLE IF NOT EXISTS alert_approval_pending (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  approver_id TEXT NOT NULL,
+  cycle_no INTEGER NOT NULL DEFAULT 1,
+  step_order INTEGER NOT NULL,
+  my_status TEXT NOT NULL,
+  document_title TEXT,
+  document_template_id TEXT,
+  document_author_id TEXT,
+  document_author_name TEXT,
+  document_branch TEXT,
+  document_department TEXT,
+  document_submitted_at TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_checked_at TEXT NOT NULL DEFAULT (datetime('now')),
+  acted_at TEXT,
+  acted_action TEXT,
+  notification_sent INTEGER NOT NULL DEFAULT 0,
+  notification_sent_at TEXT,
+  notification_error TEXT,
+  metadata TEXT,
+  UNIQUE(document_id, approver_id, cycle_no),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_aap_approver_status
+  ON alert_approval_pending(approver_id, status);
+CREATE INDEX IF NOT EXISTS idx_aap_doc_status
+  ON alert_approval_pending(document_id, status);
+CREATE INDEX IF NOT EXISTS idx_aap_status_detected
+  ON alert_approval_pending(status, detected_at);
+CREATE INDEX IF NOT EXISTS idx_aap_notify
+  ON alert_approval_pending(notification_sent, status, my_status);
+
+-- Google Drive document backup settings and immutable run history.
+CREATE TABLE IF NOT EXISTS drive_settings (
+  id TEXT PRIMARY KEY DEFAULT 'default',
+  root_folder_id TEXT NOT NULL DEFAULT '',
+  root_folder_name TEXT NOT NULL DEFAULT '',
+  folder_pattern TEXT NOT NULL DEFAULT '{yyyy-mm}/{branch}',
+  filename_pattern TEXT NOT NULL DEFAULT '[{yyyy-mm-dd}] {client_name} {title}',
+  connected_email TEXT NOT NULL DEFAULT '',
+  connected_by TEXT,
+  connected_at TEXT,
+  refresh_token_encrypted TEXT DEFAULT '',
+  token_iv TEXT DEFAULT '',
+  auto_enabled INTEGER NOT NULL DEFAULT 0,
+  last_cron_run_at TEXT,
+  last_cron_status TEXT,
+  last_cron_summary TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO drive_settings (id) VALUES ('default');
+
+CREATE TABLE IF NOT EXISTS drive_backup_logs (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  run_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+  drive_file_id TEXT,
+  drive_folder_path TEXT,
+  file_size INTEGER,
+  triggered_by TEXT,
+  error_message TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_drive_backup_doc
+  ON drive_backup_logs(document_id, status);
+CREATE INDEX IF NOT EXISTS idx_drive_backup_run
+  ON drive_backup_logs(run_at DESC);
 
 -- Signatures table
 CREATE TABLE IF NOT EXISTS signatures (
@@ -174,6 +269,25 @@ CREATE TABLE IF NOT EXISTS lawitgo_progress_cache_runs (
   error_message TEXT NOT NULL DEFAULT ''
 );
 
+-- Permanent, master-reviewed case-information repair snapshot. Financial
+-- values are deliberately not duplicated here.
+CREATE TABLE IF NOT EXISTS lawitgo_winning_overrides (
+  sales_record_id TEXT PRIMARY KEY,
+  customer_name TEXT NOT NULL,
+  customer_phone TEXT NOT NULL,
+  court TEXT NOT NULL,
+  case_number TEXT NOT NULL,
+  property_type TEXT NOT NULL,
+  winning_date TEXT NOT NULL,
+  assignee_user_id TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  FOREIGN KEY (sales_record_id) REFERENCES sales_records(id) ON DELETE CASCADE,
+  FOREIGN KEY (assignee_user_id) REFERENCES users(id),
+  FOREIGN KEY (updated_by) REFERENCES users(id)
+);
+
 -- Outbound winning-case delivery queue. Financial values are eligibility-only and are not stored in the payload.
 CREATE TABLE IF NOT EXISTS lawitgo_winning_outbox (
   id TEXT PRIMARY KEY,
@@ -195,6 +309,10 @@ CREATE TABLE IF NOT EXISTS lawitgo_winning_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_lawitgo_winning_outbox_due
 ON lawitgo_winning_outbox(status, next_attempt_at, created_at);
+-- sales_records is installed by d1/migrate-sales.sql rather than this base
+-- schema. Install the audit-preservation trigger afterwards with
+-- d1/migrate-lawitgo-winning-audit-delete-guard.sql so a fresh base-schema
+-- bootstrap never tries to create a trigger on a table that does not exist.
 
 CREATE TABLE IF NOT EXISTS lawitgo_winning_delivery_runs (
   id TEXT PRIMARY KEY,
@@ -534,3 +652,389 @@ CREATE TABLE IF NOT EXISTS sales_customer_cases (
   updated_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
   UNIQUE (customer_id, court, case_number, item_number)
 );
+
+-- 영수증 첨부 지출결의서 원본, Drive 합본 PDF, 1회용 인쇄 세션
+CREATE TABLE IF NOT EXISTS expense_receipt_submission_claims (
+  document_id TEXT PRIMARY KEY,
+  claim_token TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS expense_receipt_document_revisions (
+  document_id TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS expense_receipt_attachments (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  object_key TEXT UNIQUE,
+  file_name TEXT NOT NULL,
+  file_type TEXT NOT NULL,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  image_width INTEGER NOT NULL DEFAULT 0,
+  image_height INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  deleted_at TEXT,
+  purged_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_attachments_document
+  ON expense_receipt_attachments(document_id, deleted_at, sort_order);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_attachments_sha
+  ON expense_receipt_attachments(document_id, sha256, deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_expense_receipt_attachments_active_sha
+  ON expense_receipt_attachments(document_id, sha256)
+  WHERE deleted_at IS NULL AND purged_at IS NULL AND sha256 != '';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_expense_receipt_attachments_active_order
+  ON expense_receipt_attachments(document_id, sort_order)
+  WHERE deleted_at IS NULL AND purged_at IS NULL;
+DROP TRIGGER IF EXISTS trg_expense_receipt_attachment_insert_editable;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_insert_editable
+  BEFORE INSERT ON expense_receipt_attachments
+  WHEN NOT EXISTS (
+    SELECT 1 FROM documents
+    WHERE id=NEW.document_id
+      AND template_id='tpl-exp-receipt-001'
+      AND status IN ('draft','rejected')
+  )
+  OR EXISTS (
+    SELECT 1 FROM expense_receipt_submission_claims
+    WHERE document_id=NEW.document_id
+      AND claim_token NOT LIKE 'attachment:%'
+  )
+  BEGIN SELECT RAISE(ABORT, 'expense receipt document is not editable'); END;
+DROP TRIGGER IF EXISTS trg_expense_receipt_attachment_order_editable;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_order_editable
+  BEFORE UPDATE OF sort_order ON expense_receipt_attachments
+  WHEN NOT EXISTS (
+    SELECT 1 FROM documents
+    WHERE id=NEW.document_id
+      AND template_id='tpl-exp-receipt-001'
+      AND status IN ('draft','rejected')
+  )
+  OR EXISTS (
+    SELECT 1 FROM expense_receipt_submission_claims
+    WHERE document_id=NEW.document_id
+      AND claim_token NOT LIKE 'attachment:%'
+  )
+  BEGIN SELECT RAISE(ABORT, 'expense receipt document is not editable'); END;
+DROP TRIGGER IF EXISTS trg_expense_receipt_attachment_delete_editable;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_delete_editable
+  BEFORE UPDATE OF deleted_at ON expense_receipt_attachments
+  WHEN NOT EXISTS (
+    SELECT 1 FROM documents
+    WHERE id=NEW.document_id
+      AND template_id='tpl-exp-receipt-001'
+      AND status IN ('draft','rejected')
+  )
+  OR EXISTS (
+    SELECT 1 FROM expense_receipt_submission_claims
+    WHERE document_id=NEW.document_id
+      AND claim_token NOT LIKE 'attachment:%'
+  )
+  BEGIN SELECT RAISE(ABORT, 'expense receipt document is not editable'); END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_revision_insert
+  AFTER INSERT ON expense_receipt_attachments
+  BEGIN
+    INSERT INTO expense_receipt_document_revisions (document_id, revision, updated_at)
+    VALUES (NEW.document_id, 1, datetime('now'))
+    ON CONFLICT(document_id) DO UPDATE SET revision=revision+1, updated_at=datetime('now');
+  END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_revision_update
+  AFTER UPDATE OF object_key, file_name, file_type, file_size, sha256, sort_order, deleted_at, purged_at
+  ON expense_receipt_attachments
+  BEGIN
+    INSERT INTO expense_receipt_document_revisions (document_id, revision, updated_at)
+    VALUES (NEW.document_id, 1, datetime('now'))
+    ON CONFLICT(document_id) DO UPDATE SET revision=revision+1, updated_at=datetime('now');
+  END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_revision_delete
+  AFTER DELETE ON expense_receipt_attachments
+  BEGIN
+    INSERT INTO expense_receipt_document_revisions (document_id, revision, updated_at)
+    VALUES (OLD.document_id, 1, datetime('now'))
+    ON CONFLICT(document_id) DO UPDATE SET revision=revision+1, updated_at=datetime('now');
+  END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_limit
+  BEFORE INSERT ON expense_receipt_attachments
+  WHEN (SELECT COUNT(*) FROM expense_receipt_attachments
+    WHERE document_id=NEW.document_id AND deleted_at IS NULL AND purged_at IS NULL) >= 10
+  BEGIN SELECT RAISE(ABORT, 'expense receipt attachment count limit exceeded'); END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_total_bytes
+  BEFORE INSERT ON expense_receipt_attachments
+  WHEN COALESCE((SELECT SUM(file_size) FROM expense_receipt_attachments
+    WHERE document_id=NEW.document_id AND deleted_at IS NULL AND purged_at IS NULL), 0) + NEW.file_size > 41943040
+  BEGIN SELECT RAISE(ABORT, 'expense receipt attachment byte limit exceeded'); END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_total_pixels
+  BEFORE INSERT ON expense_receipt_attachments
+  WHEN COALESCE((SELECT SUM(image_width * image_height) FROM expense_receipt_attachments
+    WHERE document_id=NEW.document_id AND deleted_at IS NULL AND purged_at IS NULL), 0)
+    + (NEW.image_width * NEW.image_height) > 60000000
+  BEGIN SELECT RAISE(ABORT, 'expense receipt attachment pixel limit exceeded'); END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_reactivate_limit
+  BEFORE UPDATE OF deleted_at, purged_at ON expense_receipt_attachments
+  WHEN NEW.deleted_at IS NULL AND NEW.purged_at IS NULL
+    AND (OLD.deleted_at IS NOT NULL OR OLD.purged_at IS NOT NULL)
+    AND (SELECT COUNT(*) FROM expense_receipt_attachments
+      WHERE document_id=NEW.document_id AND id!=NEW.id
+        AND deleted_at IS NULL AND purged_at IS NULL) >= 10
+  BEGIN SELECT RAISE(ABORT, 'expense receipt attachment count limit exceeded'); END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_update_total_bytes
+  BEFORE UPDATE OF deleted_at, purged_at, file_size ON expense_receipt_attachments
+  WHEN NEW.deleted_at IS NULL AND NEW.purged_at IS NULL
+    AND (OLD.deleted_at IS NOT NULL OR OLD.purged_at IS NOT NULL OR NEW.file_size != OLD.file_size)
+    AND COALESCE((SELECT SUM(file_size) FROM expense_receipt_attachments
+      WHERE document_id=NEW.document_id AND id!=NEW.id
+        AND deleted_at IS NULL AND purged_at IS NULL), 0) + NEW.file_size > 41943040
+  BEGIN SELECT RAISE(ABORT, 'expense receipt attachment byte limit exceeded'); END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_attachment_update_total_pixels
+  BEFORE UPDATE OF deleted_at, purged_at, image_width, image_height ON expense_receipt_attachments
+  WHEN NEW.deleted_at IS NULL AND NEW.purged_at IS NULL
+    AND (OLD.deleted_at IS NOT NULL OR OLD.purged_at IS NOT NULL
+      OR NEW.image_width != OLD.image_width OR NEW.image_height != OLD.image_height)
+    AND COALESCE((SELECT SUM(image_width * image_height) FROM expense_receipt_attachments
+      WHERE document_id=NEW.document_id AND id!=NEW.id
+        AND deleted_at IS NULL AND purged_at IS NULL), 0)
+      + (NEW.image_width * NEW.image_height) > 60000000
+  BEGIN SELECT RAISE(ABORT, 'expense receipt attachment pixel limit exceeded'); END;
+
+CREATE TABLE IF NOT EXISTS expense_receipt_pdf_artifacts (
+  document_id TEXT PRIMARY KEY,
+  object_key TEXT UNIQUE,
+  file_name TEXT NOT NULL,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT NOT NULL DEFAULT '',
+  drive_file_id TEXT NOT NULL DEFAULT '',
+  drive_md5_checksum TEXT NOT NULL DEFAULT '',
+  drive_folder_path TEXT NOT NULL DEFAULT '',
+  drive_backed_up_at TEXT,
+  purged_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_pdf_artifacts_retention
+  ON expense_receipt_pdf_artifacts(drive_backed_up_at, purged_at);
+
+CREATE TABLE IF NOT EXISTS expense_receipt_retention_attempts (
+  document_id TEXT PRIMARY KEY,
+  last_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_result TEXT NOT NULL DEFAULT 'checking',
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_retention_attempts_time
+  ON expense_receipt_retention_attempts(last_attempt_at, document_id);
+
+CREATE TABLE IF NOT EXISTS expense_receipt_r2_cleanup_queue (
+  object_key TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at TEXT,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_r2_cleanup_queue_attempt
+  ON expense_receipt_r2_cleanup_queue(last_attempt_at, created_at, object_key);
+
+CREATE TABLE IF NOT EXISTS print_render_sessions (
+  jti TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_print_render_sessions_expiry
+  ON print_render_sessions(expires_at, consumed_at);
+
+CREATE TABLE IF NOT EXISTS expense_receipt_drive_claims (
+  document_id TEXT PRIMARY KEY,
+  claim_token TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_drive_claims_expiry
+  ON expense_receipt_drive_claims(expires_at);
+
+-- 대리 결재 감사 및 제출 시점 총무 담당자 스냅샷
+CREATE TABLE IF NOT EXISTS expense_receipt_approval_actions (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  approval_step_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('approved', 'rejected')),
+  actual_actor_id TEXT NOT NULL,
+  actual_actor_name TEXT NOT NULL,
+  actual_actor_role TEXT NOT NULL,
+  representative_user_id TEXT,
+  used_representative_stamp INTEGER NOT NULL DEFAULT 0 CHECK (used_representative_stamp IN (0, 1)),
+  comment TEXT NOT NULL DEFAULT '',
+  ip_address TEXT NOT NULL DEFAULT '',
+  user_agent TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (approval_step_id),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (actual_actor_id) REFERENCES users(id),
+  FOREIGN KEY (representative_user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_approval_actions_document
+  ON expense_receipt_approval_actions(document_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_approval_actions_actor
+  ON expense_receipt_approval_actions(actual_actor_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS expense_receipt_approval_delegates (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  approval_step_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role_snapshot TEXT NOT NULL CHECK (role_snapshot IN ('accountant', 'accountant_asst')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (approval_step_id, user_id),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE TABLE IF NOT EXISTS expense_receipt_submission_claims (
+  document_id TEXT PRIMARY KEY,
+  claim_token TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS expense_receipt_signature_attestations (
+  document_id TEXT PRIMARY KEY,
+  signature_id TEXT NOT NULL UNIQUE,
+  author_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (signature_id) REFERENCES signatures(id) ON DELETE CASCADE,
+  FOREIGN KEY (author_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_approval_delegates_document
+  ON expense_receipt_approval_delegates(document_id, approval_step_id);
+CREATE INDEX IF NOT EXISTS idx_expense_receipt_approval_delegates_user
+  ON expense_receipt_approval_delegates(user_id, document_id);
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_submit_requirements_v2
+BEFORE UPDATE OF status ON documents
+WHEN OLD.status IN ('draft', 'rejected')
+  AND NEW.status = 'submitted'
+  AND NEW.template_id = 'tpl-exp-receipt-001'
+  AND (
+    NEW.content != OLD.content
+    OR NOT EXISTS (
+      SELECT 1 FROM signatures s
+      JOIN expense_receipt_signature_attestations sa
+        ON sa.signature_id = s.id AND sa.document_id = s.document_id
+      JOIN expense_receipt_document_revisions r ON r.document_id = s.document_id
+      WHERE s.document_id = NEW.id AND s.user_id = NEW.author_id
+        AND s.signature_data != '/LNCstemp.png'
+        AND sa.author_id = NEW.author_id AND sa.revision = r.revision
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM expense_receipt_attachments a
+      WHERE a.document_id = NEW.id
+        AND a.deleted_at IS NULL AND a.purged_at IS NULL
+        AND a.object_key IS NOT NULL
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'expense receipt submission requirements missing');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_content_lock
+BEFORE UPDATE OF title, content ON documents
+WHEN OLD.template_id = 'tpl-exp-receipt-001'
+  AND OLD.status NOT IN ('draft', 'rejected')
+BEGIN
+  SELECT RAISE(ABORT, 'submitted expense receipt content is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_delete_lock
+BEFORE DELETE ON documents
+WHEN OLD.template_id = 'tpl-exp-receipt-001'
+  AND OLD.status NOT IN ('draft', 'rejected')
+BEGIN
+  SELECT RAISE(ABORT, 'submitted expense receipt cannot be deleted');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_approval_step_guard
+BEFORE UPDATE OF status ON approval_steps
+WHEN OLD.status = 'pending' AND NEW.status IN ('approved', 'rejected')
+  AND EXISTS (
+    SELECT 1 FROM documents d
+    WHERE d.id = OLD.document_id AND d.template_id = 'tpl-exp-receipt-001'
+      AND (d.status != 'submitted' OR COALESCE(d.cancelled, 0) != 0
+        OR COALESCE(d.cancel_requested, 0) != 0)
+  )
+  AND NOT (
+    NEW.status = 'rejected' AND COALESCE(NEW.comment, '') = 'cancelled'
+    AND EXISTS (SELECT 1 FROM documents d
+      WHERE d.id = OLD.document_id AND d.template_id = 'tpl-exp-receipt-001'
+        AND COALESCE(d.cancelled, 0) = 1)
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'cancelled expense receipt cannot be acted on');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_approval_action_guard
+BEFORE INSERT ON expense_receipt_approval_actions
+WHEN NOT EXISTS (
+    SELECT 1 FROM documents d
+    WHERE d.id = NEW.document_id AND d.template_id = 'tpl-exp-receipt-001'
+      AND d.status = 'submitted' AND COALESCE(d.cancelled, 0) = 0
+      AND COALESCE(d.cancel_requested, 0) = 0
+      AND d.author_id != NEW.actual_actor_id
+  )
+  OR NOT EXISTS (
+    SELECT 1 FROM approval_steps s
+    JOIN users u ON u.id = s.approver_id
+    WHERE s.id = NEW.approval_step_id AND s.document_id = NEW.document_id
+      AND ((NEW.action = 'approved' AND s.status = 'approved')
+        OR (NEW.action = 'rejected' AND s.status = 'rejected'))
+      AND u.role = 'ceo' AND u.approved = 1
+      AND COALESCE(u.login_type, 'employee') != 'freelancer'
+      AND (NEW.used_representative_stamp = 0 OR NEW.representative_user_id = s.approver_id)
+  )
+  OR NOT EXISTS (
+    SELECT 1 FROM users actor
+    WHERE actor.id = NEW.actual_actor_id
+      AND actor.role = NEW.actual_actor_role
+      AND actor.approved = 1
+      AND COALESCE(actor.login_type, 'employee') != 'freelancer'
+      AND (
+        actor.role = 'master'
+        OR (
+          actor.role = 'ceo'
+          AND EXISTS (
+            SELECT 1 FROM approval_steps representative_step
+            WHERE representative_step.id = NEW.approval_step_id
+              AND representative_step.document_id = NEW.document_id
+              AND representative_step.approver_id = actor.id
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM expense_receipt_approval_delegates delegate
+          WHERE delegate.document_id = NEW.document_id
+            AND delegate.approval_step_id = NEW.approval_step_id
+            AND delegate.user_id = actor.id
+            AND delegate.role_snapshot = actor.role
+        )
+      )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'cancelled expense receipt cannot be acted on');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_expense_receipt_document_revision
+AFTER UPDATE OF title, content ON documents
+WHEN NEW.template_id = 'tpl-exp-receipt-001'
+  AND NEW.status IN ('draft', 'rejected')
+BEGIN
+  INSERT INTO expense_receipt_document_revisions (document_id, revision, updated_at)
+  VALUES (NEW.id, 1, datetime('now'))
+  ON CONFLICT(document_id) DO UPDATE SET
+    revision = revision + 1, updated_at = datetime('now');
+END;

@@ -86,6 +86,8 @@ try {
         const bidDateSelects = [...bidDateGrid.querySelectorAll('select')];
         const bidDate = document.querySelector('#bid-date-audit');
         const bidDay = document.querySelector('#bid-day-audit');
+        const bidDateError = document.querySelector('#bid-date-error-audit');
+        const manageActions = document.querySelector('#schedule-manage-actions-audit');
         formBody.scrollTop = formBody.scrollHeight;
         bidDay.value = '31';
         bidDay.dispatchEvent(new Event('change', { bubbles: true }));
@@ -109,6 +111,9 @@ try {
           bidDateVisibleAfterScroll: bidDateRect.top >= formBodyRect.top && bidDateRect.bottom <= Math.min(formBodyRect.bottom, innerHeight),
           dayOptionCount: bidDay.options.length,
           lastDaySelectable: bidDay.value === '31',
+          bidDateErrorFits: bidDateError.scrollWidth <= bidDateError.clientWidth,
+          manageActionsFit: manageActions.scrollWidth <= manageActions.clientWidth,
+          minManageButtonHeight: Math.round(Math.min(...[...manageActions.querySelectorAll('button')].map(button => button.getBoundingClientRect().height))),
         };
       })()`,
     });
@@ -133,6 +138,9 @@ try {
     || !result.bidDateVisibleAfterScroll
     || result.dayOptionCount !== 32
     || !result.lastDaySelectable
+    || !result.bidDateErrorFits
+    || !result.manageActionsFit
+    || (result.width <= 768 && result.minManageButtonHeight < 44)
   ));
   if (failures.length) {
     console.error(`Auction schedule layout audit failed at: ${failures.map(item => item.width).join(', ')}`);

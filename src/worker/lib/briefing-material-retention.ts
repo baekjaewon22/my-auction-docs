@@ -1,4 +1,4 @@
-import { ensureBriefingMaterialSchema } from './briefing-materials';
+import { ensureBriefingMaterialSchema } from './briefing-materials.ts';
 
 export type BriefingMaterialRetentionResult = {
   retention_months: number;

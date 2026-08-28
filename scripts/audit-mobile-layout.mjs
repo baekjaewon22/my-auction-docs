@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 const root = path.resolve(import.meta.dirname, '..');
 const fixtureUrl = pathToFileURL(path.join(root, 'tests', 'fixtures', 'mobile-layout-audit.html')).href;
 const chromePath = process.env.MOBILE_AUDIT_CHROME || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const widths = [360, 390, 430];
+const widths = [320, 360, 390, 430, 480, 600, 768, 769, 900, 1024, 1025, 1280, 1440, 1920, 2560];
 
 const getFreePort = () => new Promise((resolve, reject) => {
   const server = net.createServer();
@@ -84,10 +84,31 @@ try {
       returnByValue: true,
       expression: `(() => {
         const result = document.querySelector('#audit-result');
+        const selectorFor = (node) => node.id ? '#' + node.id : '.' + [...node.classList].join('.');
+        const rectFailures = [...document.querySelectorAll('[data-dialog], [data-popup]')].filter((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.left < -1 || rect.right > innerWidth + 1;
+        }).map((node) => {
+          const rect = node.getBoundingClientRect();
+          return { selector: selectorFor(node), left: Math.round(rect.left), right: Math.round(rect.right) };
+        });
+        const clipped = [...document.querySelectorAll('[data-audit]')]
+          .filter((node) => node.scrollWidth > node.clientWidth + 1)
+          .map((node) => ({ selector: selectorFor(node), clientWidth: node.clientWidth, scrollWidth: node.scrollWidth }));
+        const fitFailureDetails = [...document.querySelectorAll('[data-fit]')]
+          .filter((node) => node.scrollWidth > node.clientWidth + 1)
+          .map((node) => ({ selector: selectorFor(node), clientWidth: node.clientWidth, scrollWidth: node.scrollWidth }));
         return {
           viewport: [innerWidth, innerHeight],
           documentWidth: document.documentElement.scrollWidth,
           failures: Number(result?.dataset.failures || -1),
+          fitFailures: Number(result?.dataset.fitFailures || -1),
+          textFitFailures: Number(result?.dataset.textFitFailures || -1),
+          rectFailures: Number(result?.dataset.rectFailures || -1),
+          shellFailure: result?.dataset.shellFailure === 'true',
+          rectFailureDetails: rectFailures,
+          fitFailureDetails,
+          clippedDetails: clipped,
           tableScroll: result?.dataset.tableScroll === 'true',
           titleHeight: document.querySelector('.page-header h1')?.getBoundingClientRect().height || 0,
         };
@@ -100,7 +121,10 @@ try {
   }
   socket.close();
   console.log(JSON.stringify(results, null, 2));
-  if (results.some((result) => result.failures !== 0 || result.documentWidth > result.width || !result.tableScroll)) {
+  if (results.some((result) => result.failures !== 0
+    || result.documentWidth > result.width
+    || (result.width <= 1280 && !result.tableScroll)
+    || result.shellFailure)) {
     process.exitCode = 1;
   }
 } finally {

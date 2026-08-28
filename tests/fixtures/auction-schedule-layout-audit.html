@@ -41,12 +41,17 @@
         </div>
         <div style="height: 680px; flex: 0 0 680px" aria-hidden="true"></div>
         <div class="form-group auction-inspection-bid-date" id="bid-date-audit">
-          <label>입찰기일 <span>선택사항</span></label>
+          <label>입찰기일 * <span>필수 입력</span></label>
           <div class="auction-inspection-bid-date-selects">
             <select aria-label="입찰기일 연도"><option>2026년</option></select>
             <select aria-label="입찰기일 월"><option>9월</option></select>
-            <select aria-label="입찰기일 일자" id="bid-day-audit"><option value="">일자</option></select>
+            <select aria-label="입찰기일 일자" aria-invalid="true" id="bid-day-audit"><option value="">일자 선택</option></select>
           </div>
+          <p class="auction-inspection-bid-date-error" id="bid-date-error-audit">임장 일정에는 입찰기일을 반드시 입력해 주세요.</p>
+        </div>
+        <div class="auction-schedule-manage-actions" id="schedule-manage-actions-audit">
+          <button type="button" class="btn btn-secondary">일정 수정</button>
+          <button type="button" class="btn btn-danger">일정 삭제</button>
         </div>
       </form>
     </section>

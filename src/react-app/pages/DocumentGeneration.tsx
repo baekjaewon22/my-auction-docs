@@ -244,7 +244,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
 
   const selectWork = (next: OutputType) => {
     if (next === 'rights_certificate' && !canUseRights) {
-      setError('권리분석 보증서는 master 또는 special 권한만 생성할 수 있습니다.');
+      setError('권리분석 보증서 생성 권한이 없습니다.');
       return;
     }
     setError('');
@@ -313,7 +313,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   const validateInput = () => {
     if (!user?.has_myauction_credentials) return '내 정보 수정에서 마이옥션 아이디와 비밀번호를 먼저 저장해 주세요.';
     if (!user?.name?.trim() || !user?.position_title?.trim() || !user?.phone?.trim()) return '내 정보 수정에서 이름, 직책, 전화번호를 먼저 저장해 주세요.';
-    if (isRights && !canUseRights) return '권리분석 보증서는 master 또는 special 권한만 생성할 수 있습니다.';
+    if (isRights && !canUseRights) return '권리분석 보증서 생성 권한이 없습니다.';
     if (isRights && rightsUrls.length === 0) return '권리분석 보증서 URL을 1개 이상 입력하세요.';
     if (!isRights && !briefingUrl.trim()) return '브리핑자료 사건 URL을 입력하세요.';
     return '';

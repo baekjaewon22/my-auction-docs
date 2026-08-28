@@ -79,6 +79,7 @@ export default function Journal() {
     const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
     return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
   });
+  const [currentKstYear] = useState(() => String(new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCFullYear()));
 
   const today = getToday(holidayDates);
   const tomorrow = getTomorrow(holidayDates);
@@ -87,7 +88,7 @@ export default function Journal() {
   const canDelegateJournal = isCeoPlus || user?.role === 'admin';
 
   const holidayYearsKey = [...new Set([
-    String(new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCFullYear()),
+    currentKstYear,
     historyMonth.slice(0, 4),
   ])].sort().join(',');
 

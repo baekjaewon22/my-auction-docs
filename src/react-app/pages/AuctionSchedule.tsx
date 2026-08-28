@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Plus, Trash2, Trophy, X } from 'lucide-react';
+import { Calendar, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Pencil, Plus, Trash2, Trophy, X } from 'lucide-react';
 import DatePicker, { registerLocale } from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { ko } from 'date-fns/locale';
@@ -12,6 +12,8 @@ import { auctionScheduleBidResult, getKoreanWeekLabel, type AuctionScheduleActiv
 import AuctionBidResultEditor from '../components/AuctionBidResultEditor';
 import { useSearchParams } from 'react-router-dom';
 import { AUCTION_SCHEDULE_BRANCH_OPTIONS, canSelectAuctionScheduleBranch, defaultAuctionScheduleBranch } from '../../shared/auction-schedule-branch';
+import { canManageAuctionBidResult } from '../../shared/auction-bid-result-access';
+import { auctionScheduleKstDateKey, canCreateAuctionSchedule, canManageAuctionSchedule, isPastAuctionScheduleDate } from '../../shared/auction-schedule-write-access';
 
 registerLocale('ko-auction-schedule', ko);
 
@@ -46,6 +48,18 @@ function mondayOf(date: Date): Date {
 
 function dateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+function millisecondsUntilNextKstDate(now: Date = new Date()): number {
+  const kstNow = new Date(now.getTime() + KST_OFFSET_MS);
+  const nextMidnight = Date.UTC(
+    kstNow.getUTCFullYear(),
+    kstNow.getUTCMonth(),
+    kstNow.getUTCDate() + 1,
+  );
+  return Math.max(1_000, nextMidnight - kstNow.getTime() + 100);
 }
 
 function parseData(entry: ScheduleEntry): Record<string, unknown> {
@@ -94,9 +108,11 @@ export default function AuctionSchedule() {
   const [loading, setLoading] = useState(true);
   const [formDate, setFormDate] = useState<string | null>(null);
   const [selected, setSelected] = useState<ScheduleEntry | null>(null);
+  const [editingEntry, setEditingEntry] = useState<ScheduleEntry | null>(null);
   const [priceEditorEntry, setPriceEditorEntry] = useState<ScheduleEntry | null>(null);
   const [processingResult, setProcessingResult] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [todayKey, setTodayKey] = useState(() => auctionScheduleKstDateKey());
   const [createAssignees, setCreateAssignees] = useState<Array<{
     id: string; name: string; role: string; branch: string; department: string; position_title?: string;
   }>>([]);
@@ -105,11 +121,36 @@ export default function AuctionSchedule() {
   const weekDays = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
   const start = dateKey(weekDays[0]);
   const end = dateKey(weekDays[6]);
-  const canCreate = user?.role === 'master' || (user as any)?.login_type === 'freelancer';
+  const canCreate = canCreateAuctionSchedule(user ? { role: user.role, login_type: (user as any)?.login_type } : null);
   const canChooseCreateAssignee = user?.role === 'master';
   const canSelectBranch = canSelectAuctionScheduleBranch(user);
-  const todayKey = dateKey(new Date());
   const defaultCreateDate = todayKey >= start && todayKey <= end ? todayKey : start;
+  const kstTodayReference = useMemo(() => new Date(`${todayKey}T00:00:00+09:00`), [todayKey]);
+
+  useEffect(() => {
+    let midnightTimer = 0;
+    const refreshKstDate = () => {
+      setTodayKey(auctionScheduleKstDateKey());
+      window.clearTimeout(midnightTimer);
+      midnightTimer = window.setTimeout(refreshKstDate, millisecondsUntilNextKstDate());
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshKstDate();
+    };
+    refreshKstDate();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearTimeout(midnightTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (editingEntry && isPastAuctionScheduleDate(editingEntry.target_date, kstTodayReference)) {
+      setEditingEntry(null);
+      setSelected(editingEntry);
+    }
+  }, [editingEntry, kstTodayReference]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -139,7 +180,7 @@ export default function AuctionSchedule() {
     if (!canChooseCreateAssignee) return;
     api.auctionSchedule.createOptions()
       .then(result => setCreateAssignees(result.assignees || []))
-      .catch(error => alert(error instanceof Error ? error.message : '담당자 목록을 불러오지 못했습니다.'));
+      .catch(() => alert('담당자 목록을 불러오지 못했습니다.'));
   }, [canChooseCreateAssignee]);
 
   const remove = async (entry: ScheduleEntry) => {
@@ -208,11 +249,22 @@ export default function AuctionSchedule() {
 
   const selectedData = selected ? parseData(selected) : {};
   const selectedBidResult = auctionScheduleBidResult(selectedData);
-  const canWriteSelected = Boolean(selected && !selected.read_only && (
-    user?.role === 'master'
-    || ((user as any)?.login_type === 'freelancer' && selected.user_id === user?.id)
+  const canWriteSelected = Boolean(selected && !selected.read_only && canManageAuctionBidResult(
+    { id: user?.id, role: user?.role },
+    selected.user_id,
   ));
-  const canDeleteSelected = canWriteSelected;
+  const selectedIsPast = Boolean(selected && isPastAuctionScheduleDate(selected.target_date, kstTodayReference));
+  const canMutateSelected = Boolean(
+    selected
+    && !selected.read_only
+    && !selectedIsPast
+    && canManageAuctionSchedule({ role: user?.role }),
+  );
+  const editLockedByBidResult = Boolean(
+    selected?.activity_type === '입찰' && selectedBidResult !== 'pending',
+  );
+  const canEditSelected = canMutateSelected && !editLockedByBidResult;
+  const canDeleteSelected = canMutateSelected;
 
   const handleCalendarSelect = (date: Date | null) => {
     if (!date) return;
@@ -288,6 +340,7 @@ export default function AuctionSchedule() {
             const key = dateKey(day);
             const isWeekend = day.getDay() === 0 || day.getDay() === 6;
             const isHoliday = holidayDates.has(key);
+            const isToday = key === todayKey;
             const dayEntries = entries.filter(entry => entry.target_date === key);
             const groupedEntries = dayEntries.reduce<Record<string, ScheduleEntry[]>>((groups, entry) => {
               const groupKey = `${entry.branch || '미지정'}\u0000${entry.department || '미지정'}`;
@@ -296,7 +349,7 @@ export default function AuctionSchedule() {
             }, {});
             return (
               <section
-                className={`auction-schedule-day${isWeekend ? ' weekend' : ''}${isHoliday ? ' holiday' : ''}`}
+                className={`auction-schedule-day${isWeekend ? ' weekend' : ''}${isHoliday ? ' holiday' : ''}${isToday ? ' today' : ''}`}
                 key={key}
               >
                 <header className="auction-schedule-day-header">
@@ -390,6 +443,16 @@ export default function AuctionSchedule() {
                 return <div className="auction-schedule-detail-row" key={key}><span>{label}</span><strong>{String(value)}</strong></div>;
               })}
             </div>
+            {selectedIsPast && !selected.read_only && (
+              <p className="auction-schedule-past-lock" role="note">
+                자정이 지나 잠긴 과거 일정입니다. 일정 기본정보는 수정·삭제할 수 없지만 입찰가와 낙찰·실패·취소 등 결과는 계속 입력할 수 있습니다. 새 일정 추가도 가능합니다.
+              </p>
+            )}
+            {canMutateSelected && editLockedByBidResult && (
+              <p className="auction-schedule-past-lock" role="note">
+                결과가 입력된 입찰 일정은 기본정보를 수정할 수 없습니다. 결과 전용 버튼으로 결과를 해제한 뒤 수정해 주세요.
+              </p>
+            )}
             {selected.activity_type === '입찰' && canWriteSelected && (
               <div className="auction-schedule-bid-actions">
                 <button
@@ -433,9 +496,45 @@ export default function AuctionSchedule() {
                 입찰가 작성
               </button>
             )}
-            {canDeleteSelected && <button className="btn btn-danger" onClick={() => remove(selected)}><Trash2 size={15} /> 일정 삭제</button>}
+            {(canEditSelected || canDeleteSelected) && (
+              <div className="auction-schedule-manage-actions">
+                {canEditSelected && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setEditingEntry(selected);
+                      setSelected(null);
+                    }}
+                  >
+                    <Pencil size={15} /> 일정 수정
+                  </button>
+                )}
+                {canDeleteSelected && <button className="btn btn-danger" onClick={() => remove(selected)}><Trash2 size={15} /> 일정 삭제</button>}
+              </div>
+            )}
           </div>
         </div>
+      )}
+
+      {editingEntry && (
+        <JournalForm
+          key={`edit-${editingEntry.id}`}
+          mode="auction-schedule"
+          targetDate={editingEntry.target_date}
+          initialEntry={{
+            activity_type: editingEntry.activity_type,
+            activity_subtype: editingEntry.activity_subtype,
+            data: parseData(editingEntry),
+          }}
+          updateEntry={payload => api.auctionSchedule.update(editingEntry.id, payload)}
+          onClose={() => setEditingEntry(null)}
+          onCreated={async () => {
+            setEditingEntry(null);
+            await load();
+          }}
+          checkInspectionDuplicate={api.auctionSchedule.checkCaseNo}
+        />
       )}
 
       {priceEditorEntry && (

@@ -1570,7 +1570,7 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
 
           {/* 지사별 합산 카드 */}
           {cardSummary.by_branch.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(cardSummary.by_branch.length + 1, 4)}, 1fr)`, gap: 10, marginBottom: 16 }}>
+            <div className="acc-branch-summary-grid">
               {cardSummary.by_branch.map((b: any) => {
                 const active = cardFilterBranch === (b.branch || '기타');
                 return (

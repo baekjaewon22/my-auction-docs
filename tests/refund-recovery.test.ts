@@ -44,6 +44,7 @@ function createDb() {
       user_id TEXT NOT NULL,
       status TEXT NOT NULL,
       amount INTEGER NOT NULL,
+      refund_amount INTEGER NOT NULL DEFAULT 0,
       refund_approved_at TEXT,
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
@@ -69,7 +70,7 @@ function createDb() {
   `);
   db.exec(readFileSync('d1/migrate-refund-recovery-resolutions.sql', 'utf8'));
   db.exec(`
-    INSERT INTO sales_records VALUES ('refund-1', 'consultant-1', 'refunded', 1100000, '2026-07-16 10:00:00');
+    INSERT INTO sales_records VALUES ('refund-1', 'consultant-1', 'refunded', 1100000, 1100000, '2026-07-16 10:00:00');
     INSERT INTO user_accounting VALUES ('consultant-1', 'commission', 50);
   `);
   return db;
@@ -93,7 +94,7 @@ test('환불 회수 링크는 담당자와 환불 승인월을 급여정산에 �
 
 test('10원 절사와 월별 수수료율 예외를 급여 표시와 회수 완료에서 동일하게 적용한다', async () => {
   const db = createDb();
-  db.prepare('UPDATE sales_records SET amount = 500000 WHERE id = ?').run('refund-1');
+  db.prepare('UPDATE sales_records SET amount = 500000, refund_amount = 500000 WHERE id = ?').run('refund-1');
   db.prepare('INSERT INTO commission_rate_overrides VALUES (?, ?, ?)').run('consultant-1', '2026-07', 40);
   const recoveryAmount = calculateRefundRecoveryAmount({
     amount: 500000,
@@ -147,5 +148,40 @@ test('확정된 급여정산은 담당자·월·회수금액과 함께 한 번�
     db.prepare('SELECT sales_record_id, user_id, payroll_month, recovery_amount, resolved_by FROM refund_recovery_resolutions').get(),
     { sales_record_id: 'refund-1', user_id: 'consultant-1', payroll_month: '2026-07', recovery_amount: 483500, resolved_by: 'accountant-1' },
   );
+  db.close();
+});
+
+test('부분환불은 환불액에 비례해 회수한다 (매출은 confirmed 유지)', async () => {
+  const db = createDb();
+  // 총 매출 1,100,000 중 500,000만 부분환불 → status는 confirmed 유지, refund_amount=500000
+  db.prepare("UPDATE sales_records SET status = 'confirmed', refund_amount = 500000 WHERE id = ?").run('refund-1');
+  const expected = calculateRefundRecoveryAmount({ amount: 500000, payType: 'commission', commissionRate: 50, payrollMonth: '2026-07' });
+  db.prepare('INSERT INTO payroll_saves VALUES (?, ?, ?, ?, ?)').run('payroll-partial', 'consultant-1', '2026년 7월', JSON.stringify({
+    commDeductions: [{ label: '환불 회수', amount: String(expected), sourceId: 'refund-1' }],
+  }), 1);
+  const result = await resolveRefundRecovery(d1Adapter(db) as D1Database, {
+    salesRecordId: 'refund-1', payrollMonth: '2026-07', resolvedBy: 'accountant-1',
+  });
+  assert.deepEqual(result, { success: true, alreadyResolved: false, recoveryAmount: expected, payrollPeriod: '2026년 7월' });
+  // 전액(1,100,000) 기준이 아니라 환불액(500,000) 기준이어야 한다
+  assert.notEqual(expected, calculateRefundRecoveryAmount({ amount: 1100000, payType: 'commission', commissionRate: 50, payrollMonth: '2026-07' }));
+  db.close();
+});
+
+test('2026-01/02 특례: 원천 pay_type이 salary여도 비율제로 공제를 산정한다', async () => {
+  const db = createDb();
+  db.prepare("UPDATE user_accounting SET pay_type = 'salary' WHERE user_id = ?").run('consultant-1');
+  db.prepare("UPDATE sales_records SET refund_approved_at = '2026-01-20 10:00:00' WHERE id = ?").run('refund-1');
+  const expected = calculateRefundRecoveryAmount({ amount: 1100000, payType: 'commission', commissionRate: 50, payrollMonth: '2026-01' });
+  assert.ok(expected > 0);
+  db.prepare('INSERT INTO payroll_saves VALUES (?, ?, ?, ?, ?)').run('payroll-janfeb', 'consultant-1', '2026년 1월', JSON.stringify({
+    commDeductions: [{ label: '환불 회수', amount: String(expected), sourceId: 'refund-1' }],
+  }), 1);
+  const result = await resolveRefundRecovery(d1Adapter(db) as D1Database, {
+    salesRecordId: 'refund-1', payrollMonth: '2026-01', resolvedBy: 'accountant-1',
+  });
+  // 버그 수정 전: recovery=0으로 검증 없이 통과. 수정 후: 비율제로 산정되어 공제가 반영된다.
+  assert.equal(result.success, true);
+  if (result.success) assert.equal(result.recoveryAmount, expected);
   db.close();
 });

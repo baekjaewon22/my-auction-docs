@@ -5,18 +5,21 @@ interface Props {
   approvalSteps: ApprovalStep[];
   currentUserId?: string;
   currentUserRole?: string;
+  authorId?: string;
   docStatus: string;
   authorName?: string;
   representativeStampStepIds?: string[];
+  allowProxyApproval?: boolean;
   onSign: (type: 'author' | 'approver', approverRole?: string, stepId?: string) => void;
 }
 
-export default function ApprovalBar({ signatures, approvalSteps, currentUserId, currentUserRole, docStatus, authorName, representativeStampStepIds = [], onSign }: Props) {
+export default function ApprovalBar({ signatures, approvalSteps, currentUserId, currentUserRole, authorId, docStatus, authorName, representativeStampStepIds = [], allowProxyApproval = true, onSign }: Props) {
   // 빈 signature_data는 서명으로 간주하지 않음 (백필된 placeholder 포함)
   const authorSigRaw = signatures[0] || null;
   const authorSig = authorSigRaw?.signature_data ? authorSigRaw : null;
-  const isAuthor = docStatus === 'draft' || docStatus === 'rejected';
-  const authorSigned = signatures.some(s => s.user_id === currentUserId && s.signature_data);
+  const isAuthor = Boolean(currentUserId) && currentUserId === authorId &&
+    (docStatus === 'draft' || docStatus === 'rejected');
+  const authorSigned = signatures.some(s => s.user_id === authorId && s.signature_data);
 
   // 동적 결재선: 작성자 + approval_steps
   const slots: { label: string; name?: string; status: 'empty' | 'signed' | 'approved' | 'rejected' | 'pending'; signature?: Signature; canSign: boolean; approverRole?: string; stepId?: string }[] = [];
@@ -57,7 +60,8 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
         step.approver_id === currentUserId && docStatus === 'submitted';
 
       // 권한자는 순서 무관 대리 서명 가능
-      const isSuperApprover = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUserRole || '') &&
+      const isSuperApprover = allowProxyApproval &&
+        ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUserRole || '') &&
         step.status === 'pending' && prevAllApproved && docStatus === 'submitted';
 
       slots.push({
@@ -72,7 +76,7 @@ export default function ApprovalBar({ signatures, approvalSteps, currentUserId, 
     }
   } else if (docStatus !== 'draft') {
     // 결재선 없는 레거시 문서: 기존 고정 슬롯 표시
-    const isApprover = (docStatus === 'submitted' || docStatus === 'approved') &&
+    const isApprover = allowProxyApproval && (docStatus === 'submitted' || docStatus === 'approved') &&
       ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(currentUserRole || '');
     const alreadyApproved = signatures.find(s => s.user_id === currentUserId && signatures.indexOf(s) >= 1);
 

@@ -1,3 +1,8 @@
+import {
+  canActOnExpenseReceipt,
+  isExpenseReceiptTemplate,
+} from './expense-receipt.ts';
+
 export type SignatureKind = 'author' | 'approver';
 
 export interface PendingSignatureStep {
@@ -7,7 +12,7 @@ export interface PendingSignatureStep {
   approver_role: string;
 }
 
-interface SignaturePolicyInput {
+export interface SignaturePolicyInput {
   userId: string;
   userRole: string;
   documentAuthorId: string;
@@ -17,6 +22,7 @@ interface SignaturePolicyInput {
   stepId?: string;
   pendingSteps: PendingSignatureStep[];
   totalStepCount: number;
+  documentTemplateId?: string | null;
 }
 
 type SignaturePolicyDecision =
@@ -28,6 +34,17 @@ const LEGACY_APPROVER_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin', 'mana
 
 export function canProxyApproval(role: string): boolean {
   return PROXY_ROLES.has(role);
+}
+
+export function standaloneExpenseReceiptApproverSignatureDecision(
+  documentTemplateId: string | null | undefined,
+): SignaturePolicyDecision | null {
+  if (!isExpenseReceiptTemplate(documentTemplateId)) return null;
+  return {
+    allowed: false,
+    status: 409,
+    error: '대표 직인은 승인 API에서 실제 승인자 감사 기록과 함께 자동 처리됩니다.',
+  };
 }
 
 export function evaluateSignaturePolicy(input: SignaturePolicyInput): SignaturePolicyDecision {
@@ -42,6 +59,30 @@ export function evaluateSignaturePolicy(input: SignaturePolicyInput): SignatureP
 
   if (input.documentStatus !== 'submitted') {
     return { allowed: false, status: 400, error: '제출된 문서만 결재 서명할 수 있습니다.' };
+  }
+
+  if (isExpenseReceiptTemplate(input.documentTemplateId)) {
+    if (!canActOnExpenseReceipt(input.userRole)) {
+      return { allowed: false, status: 403, error: '영수증 첨부 신청서는 총무담당, 총무보조 또는 대표만 대표 직인으로 결재할 수 있습니다.' };
+    }
+    if (!input.isCeoStamp) {
+      return { allowed: false, status: 400, error: '영수증 첨부 신청서 결재에는 대표 직인을 사용해야 합니다.' };
+    }
+    const targetStep = input.stepId
+      ? input.pendingSteps.find((step) => step.id === input.stepId)
+      : input.pendingSteps[0];
+    if (!targetStep) {
+      return input.totalStepCount > 0
+        ? { allowed: false, status: 409, error: '승인 대기 중인 결재 단계가 없습니다.' }
+        : { allowed: false, status: 404, error: '대표이사 결재 단계를 찾을 수 없습니다.' };
+    }
+    if (input.pendingSteps[0]?.id !== targetStep.id || targetStep.approver_role !== 'ceo') {
+      return { allowed: false, status: 403, error: '대표이사 결재 단계에만 대표 직인을 사용할 수 있습니다.' };
+    }
+    if (input.userRole === 'ceo' && targetStep.approver_id !== input.userId) {
+      return { allowed: false, status: 403, error: '현재 대표이사 결재 단계의 대표 본인만 직접 결재할 수 있습니다.' };
+    }
+    return { allowed: true };
   }
 
   if (input.pendingSteps.length > 0) {

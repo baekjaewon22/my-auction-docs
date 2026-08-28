@@ -18,6 +18,9 @@ import PersonalCalendar from './pages/PersonalCalendar';
 import AuctionStoryAnomalies from './pages/AuctionStoryAnomalies';
 import Journal from './pages/Journal';
 import ArchivePage from './pages/Archive';
+import ExpenseReceiptApplication from './pages/ExpenseReceiptApplication';
+import ExpenseReceiptArchive from './pages/ExpenseReceiptArchive';
+import ExpenseReceiptApprovalManage from './pages/ExpenseReceiptApprovalManage';
 import Statistics from './pages/Statistics';
 import Cases from './pages/Cases';
 import OrgChart from './pages/OrgChart';
@@ -163,7 +166,8 @@ function openAnnouncementWindow(popup: any): boolean {
 function ContractTrackerRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
-  if (!user || (!allowed.includes(user.role) && !CONTRACT_TRACKER_EXTRA_IDS.includes(user.id))) {
+  const isRestrictedFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
+  if (!user || isRestrictedFreelancer || (!allowed.includes(user.role) && !CONTRACT_TRACKER_EXTRA_IDS.includes(user.id))) {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -186,14 +190,14 @@ function MasterRoute({ children }: { children: React.ReactNode }) {
 
 function TopRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  if (!user || !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 function MissingDocumentsRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant', 'accountant_asst'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -225,7 +229,7 @@ function BidListAdminRoute({ children }: { children: React.ReactNode }) {
 
 function AccountingOrApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant', 'accountant_asst'];
+  const allowed = ['master', 'ceo', 'admin', 'manager', 'accountant', 'accountant_asst'];
   if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
@@ -233,14 +237,14 @@ function AccountingOrApproverRoute({ children }: { children: React.ReactNode }) 
 function StatsRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'admin'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -248,7 +252,7 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 function OrgRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -256,14 +260,14 @@ function OrgRoute({ children }: { children: React.ReactNode }) {
 function AccountingRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 function PayrollRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
-  if (!user || (!allowed.includes(user.role) && !PAYROLL_EXTRA_IDS.includes(user.id))) {
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || (!allowed.includes(user.role) && !PAYROLL_EXTRA_IDS.includes(user.id))) {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -272,7 +276,7 @@ function PayrollRoute({ children }: { children: React.ReactNode }) {
 function ManagementSupportRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
-  if (!user || (!allowed.includes(user.role) && !PAYROLL_EXTRA_IDS.includes(user.id))) {
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || (!allowed.includes(user.role) && !PAYROLL_EXTRA_IDS.includes(user.id))) {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -281,7 +285,7 @@ function ManagementSupportRoute({ children }: { children: React.ReactNode }) {
 function ManagementSupportHomeRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'admin', 'accountant', 'accountant_asst'];
-  if (!user || (!allowed.includes(user.role) && !PAYROLL_EXTRA_IDS.includes(user.id))) {
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || (!allowed.includes(user.role) && !PAYROLL_EXTRA_IDS.includes(user.id))) {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -290,35 +294,35 @@ function ManagementSupportHomeRoute({ children }: { children: React.ReactNode })
 function HolidaySettingsRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'admin', 'accountant'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 function ProfitLossReportRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant', 'accountant_asst'];
-  if (!user || (!allowed.includes(user.role) && !PROFIT_LOSS_EXTRA_IDS.includes(user.id))) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || (!allowed.includes(user.role) && !PROFIT_LOSS_EXTRA_IDS.includes(user.id))) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 function ForecastReportRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant'];
-  if (!user || (!allowed.includes(user.role) && !PROFIT_LOSS_EXTRA_IDS.includes(user.id))) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || (!allowed.includes(user.role) && !PROFIT_LOSS_EXTRA_IDS.includes(user.id))) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 function LaborCostReportRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant'];
-  if (!user || (!allowed.includes(user.role) && !LABOR_COST_EXTRA_IDS.includes(user.id))) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || (!allowed.includes(user.role) && !LABOR_COST_EXTRA_IDS.includes(user.id))) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 function TaxMaterialsRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'accountant'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -340,7 +344,16 @@ function FinanceAnalyticsRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   // 회계분석은 cc_ref·총무보조 제외
   const allowed = ['master', 'ceo', 'admin', 'accountant'];
-  if (!user || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function LinkReviewRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const allowed = ['master', 'accountant', 'admin'];
+  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) {
+    return <Navigate to="/dashboard" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -535,6 +548,10 @@ export default function App() {
           <Route path="journal" element={<ConsultantJournalRoute><Journal /></ConsultantJournalRoute>} />
           <Route path="case-progress" element={<LawitgoProgress />} />
           <Route path="archive" element={<EmployeeOnlyRoute><ArchivePage /></EmployeeOnlyRoute>} />
+          <Route path="expense-receipts" element={<ExpenseReceiptArchive />} />
+          <Route path="expense-receipts/new" element={<ExpenseReceiptApplication />} />
+          <Route path="expense-receipts/manage" element={<ExpenseReceiptApprovalManage />} />
+          <Route path="expense-receipts/:id" element={<ExpenseReceiptApplication />} />
           <Route
             path="statistics"
             element={
@@ -911,9 +928,9 @@ export default function App() {
           <Route
             path="link-review"
             element={
-              <PrivateRoute>
+              <LinkReviewRoute>
                 <LinkReview />
-              </PrivateRoute>
+              </LinkReviewRoute>
             }
           />
         </Route>

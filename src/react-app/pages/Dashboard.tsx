@@ -5,7 +5,7 @@ import { api } from '../api';
 import type { TodayBidDashboardEntry, WebPushSetupStatus } from '../api';
 import type { Document } from '../types';
 import type { JournalEntry } from '../journal/types';
-import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, BellOff, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale, Phone, Gavel } from 'lucide-react';
+import { FileText, FilePlus, FileCheck, FileX, Files, AlertTriangle, ExternalLink, Bell, BellOff, DollarSign, TrendingDown, ArrowDownCircle, Clock, RotateCcw, X, MapPin, Newspaper, Scale, Phone, Gavel, CalendarDays } from 'lucide-react';
 import type { SalesEvaluation, SalesRecord, DepositNotice } from '../types';
 import type { ApprovalStep } from '../types';
 import { sameBranchName } from '../lib/branchAliases';
@@ -13,7 +13,9 @@ import { isCurrentEmployeeDashboardEntry, isDashboardPhoneAlertDate } from '../l
 import { refundApprovalMonth, refundRecoveryPayrollUrl } from '../../shared/refund-recovery';
 import { isNonWorkingDate } from '../../shared/work-calendar';
 import { canDismissDashboardAlertItems } from '../../shared/dashboard-alert-dismiss';
+import { salesMissingAlertScopeTitle } from '../../shared/sales-record-scope';
 import type { AuctionBidResultEntry } from '../components/AuctionBidResultEditor';
+import { EXPENSE_RECEIPT_TEMPLATE_ID } from '../lib/expense-receipt';
 
 const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
 
@@ -93,6 +95,13 @@ function TodayBidList() {
         <Gavel size={18} /> 오늘의 입찰
         {todayDate && <span className="dashboard-today-bids-date">{todayDate.replace(/-/g, '.')}</span>}
         {todayBids && <span className="missing-alert-count">{todayBids.length}명</span>}
+        <Link
+          to={`/personal-calendar${todayDate ? `?date=${todayDate}` : ''}`}
+          className="dashboard-calendar-shortcut"
+          aria-label="캘린더 바로가기"
+        >
+          <CalendarDays size={14} /> 캘린더
+        </Link>
       </h3>
       {todayBids === null ? (
         <div className="dashboard-today-bids-empty">오늘 입찰을 확인하는 중입니다.</div>
@@ -130,6 +139,7 @@ function FreelancerDashboard() {
   const isSupervisor = user?.role === 'manager';
   const [mySales, setMySales] = useState<SalesRecord[]>([]);
   const [todayNews, setTodayNews] = useState<any[]>([]);
+  const [notices, setNotices] = useState<any[]>([]);
   const [legalFacts, setLegalFacts] = useState<any[]>([]);
   const [bidResultRequirements, setBidResultRequirements] = useState<AuctionBidResultEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -140,8 +150,10 @@ function FreelancerDashboard() {
       api.sales.list({}).catch(() => null),
       api.adminNotes.list({ category: 'article_news' }).catch(() => null),
       api.adminNotes.list({ category: 'legal_support', legal_subcategory: 'legal_terms' }).catch(() => null),
-    ]).then(([bidResultRes, salesRes, newsRes, legalFactsRes]) => {
+      api.adminNotes.list({ category: 'notice' }).catch(() => null),
+    ]).then(([bidResultRes, salesRes, newsRes, legalFactsRes, noticeRes]) => {
       if (bidResultRes) setBidResultRequirements(bidResultRes.entries || []);
+      if (noticeRes) setNotices(noticeRes.notes || []);
       if (salesRes) {
         const visibleSales = salesRes.records || [];
         setMySales(isSupervisor ? visibleSales : visibleSales.filter((r: SalesRecord) => r.user_id === user?.id));
@@ -228,6 +240,26 @@ function FreelancerDashboard() {
         </section>
       )}
 
+      <section className="section dashboard-notice-section">
+        <div className="dashboard-notice-panel">
+          <div className="dashboard-today-news-header">
+            <span><Bell size={16} /> 공지사항</span>
+            <Link to="/admin-notes?section=notice" className="dashboard-today-news-more">전체보기</Link>
+          </div>
+          {notices.length === 0 ? (
+            <div className="dashboard-today-news-empty">등록된 공지사항이 없습니다.</div>
+          ) : (
+            notices.slice(0, 3).map((notice: any) => (
+              <Link key={notice.id} to={`/admin-notes?section=notice&note=${notice.id}`} className="dashboard-notice-item">
+                <div className="dashboard-notice-line">
+                  <strong>{notice.title}</strong>
+                </div>
+              </Link>
+            ))
+          )}
+        </div>
+      </section>
+
       <section className="section dashboard-news-row">
         <div className="dashboard-today-news-panel">
           <div className="dashboard-today-news-header">
@@ -276,7 +308,7 @@ function FreelancerDashboard() {
       {myMissingDocs.length > 0 && (
         <section className="section">
           <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <AlertTriangle size={18} color="#d93025" /> {isSupervisor ? '팀 미작성 알림' : '본인 미작성 알림'}
+            <AlertTriangle size={18} color="#d93025" /> {isSupervisor ? '팀·본인 미작성 알림' : '본인 미작성 알림'}
             <span className="missing-alert-count" style={{ background: '#fce4ec', color: '#d93025' }}>{myMissingDocs.length}건</span>
           </h3>
           <div className="missing-alert-list">
@@ -344,6 +376,7 @@ export default function Dashboard() {
   const [refundRequests, setRefundRequests] = useState<SalesRecord[]>([]);
   const [depositNotices, setDepositNotices] = useState<DepositNotice[]>([]);
   const [refundImpacts, setRefundImpacts] = useState<any[]>([]);
+  const [myRejectedReceipts, setMyRejectedReceipts] = useState<{ document_id: string; title: string; updated_at: string }[]>([]);
   const [resolvingRefundId, setResolvingRefundId] = useState('');
   const [scheduleGaps, setScheduleGaps] = useState<ScheduleGapAlert[]>([]);
   const [exemptionSubmitting, setExemptionSubmitting] = useState(false);
@@ -363,6 +396,8 @@ export default function Dashboard() {
   const [pushSetupStatus, setPushSetupStatus] = useState<WebPushSetupStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(user?.role || '');
+  const isExpenseReceiptAssistant = user?.role === 'accountant_asst'
+    && (user as any)?.login_type !== 'freelancer';
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
   const canSeeAccountingAlerts = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '')
     || ACCOUNTING_ALERT_EXTRA_USER_IDS.includes(user?.id || '');
@@ -510,6 +545,15 @@ export default function Dashboard() {
       promises.push(api.documents.cancelRequests());
     }
 
+    // 내 반려된 지출결의서 — 신청자 본인용 알림 카드 (수정 후 재제출 유도)
+    api.expenseReceipts.list({ status: 'rejected', page_size: 50 })
+      .then((res) => setMyRejectedReceipts(
+        (res.items || [])
+          .filter((item) => item.author_id === user?.id)
+          .map((item) => ({ document_id: item.document_id, title: item.title, updated_at: item.updated_at })),
+      ))
+      .catch(() => setMyRejectedReceipts([]));
+
     Promise.all(promises)
       .then(async ([myDocsRes, alertDocsRes, journalRes, submittedRes, cancelRes]) => {
         const myDocs = (myDocsRes.documents as Document[]) || [];
@@ -588,7 +632,11 @@ export default function Dashboard() {
             ? api.documents.stepsBatch(submittedDocsForSteps.map(d => d.id)).catch(() => null)
             : Promise.resolve(null),
           // 일반 결재자: 본인의 결재 대기 alert만 조회 (인덱스 hit, 매우 빠름)
-          (!isTopRoleForApproval && canApprove) ? api.approvalAlerts.list().catch(() => null) : Promise.resolve(null),
+          (!isTopRoleForApproval && (canApprove || isExpenseReceiptAssistant))
+            ? api.approvalAlerts.list(isExpenseReceiptAssistant
+              ? { template_id: EXPENSE_RECEIPT_TEMPLATE_ID }
+              : undefined).catch(() => null)
+            : Promise.resolve(null),
           canSeeAccountingAlerts ? api.accounting.alerts().catch(() => null) : Promise.resolve(null),
           canSeeAccountingAlerts ? api.sales.dashboardPending().catch(() => null) : Promise.resolve(null),
           canSeeAccountingAlerts ? api.sales.dashboardRefundRequests().catch(() => null) : Promise.resolve(null),
@@ -756,7 +804,7 @@ export default function Dashboard() {
   const newsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const newsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
   const NoticePanel = () => {
-    const notice = noticeItems[0];
+    const topNotices = noticeItems.slice(0, 3);
     return (
       <section className="section dashboard-notice-section">
         <div className="dashboard-notice-panel">
@@ -764,15 +812,16 @@ export default function Dashboard() {
             <span><Bell size={16} /> 공지사항</span>
               <Link to="/admin-notes?section=notice" className="dashboard-today-news-more">전체보기</Link>
           </div>
-          {!notice ? (
+          {topNotices.length === 0 ? (
             <div className="dashboard-today-news-empty">등록된 공지사항이 없습니다.</div>
           ) : (
-            <Link to={`/admin-notes?section=notice&note=${notice.id}`} className="dashboard-notice-item">
-              <div className="dashboard-notice-line">
-                <strong>{notice.title}</strong>
-                <time>{newsDate(notice.updated_at || notice.created_at)}</time>
-              </div>
-            </Link>
+            topNotices.map((notice: any) => (
+              <Link key={notice.id} to={`/admin-notes?section=notice&note=${notice.id}`} className="dashboard-notice-item">
+                <div className="dashboard-notice-line">
+                  <strong>{notice.title}</strong>
+                </div>
+              </Link>
+            ))
           )}
         </div>
       </section>
@@ -906,6 +955,32 @@ export default function Dashboard() {
         <div className="stat-card stat-approved"><FileCheck size={28} className="stat-icon" /><div className="stat-number">{stats.approved}</div><div className="stat-label">승인</div></div>
         <div className="stat-card stat-rejected"><FileX size={28} className="stat-icon" /><div className="stat-number">{stats.rejected}</div><div className="stat-label">반려</div></div>
       </div>
+
+      {/* 내 반려된 지출결의서 — 신청자 본인용, 클릭 시 수정 후 재제출 화면으로 */}
+      {myRejectedReceipts.length > 0 && (
+        <section className="section">
+          <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <FileX size={18} color="#d93025" /> 반려된 지출결의서
+            <span style={{ background: '#d93025', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{myRejectedReceipts.length}건</span>
+          </h3>
+          <div className="doc-list">
+            {myRejectedReceipts.map((r) => (
+              <Link key={r.document_id} to={`/expense-receipts/${r.document_id}`} className="doc-item" style={{ borderLeft: '3px solid #d93025', textDecoration: 'none' }}>
+                <div className="doc-info">
+                  <FileX size={16} style={{ color: '#d93025', marginRight: 8, flexShrink: 0 }} />
+                  <div>
+                    <div className="doc-title">{r.title || '영수증 첨부 지출결의서'}</div>
+                    <div className="doc-meta">
+                      <span style={{ color: '#d93025', fontWeight: 600 }}>반려 · 수정 후 재제출 필요</span>
+                      {r.updated_at && <span>{r.updated_at.slice(0, 10)}</span>}
+                    </div>
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Drive 백업 지연 경고 (7일 이상) — 총무·관리자급만 */}
       {canSeeAccountingAlerts && driveStatus && (() => {
@@ -1083,11 +1158,7 @@ export default function Dashboard() {
       {/* 계약서/보고서 미작성 경고 (역할별 범위) */}
       {myMissingDocs.length > 0 && (() => {
         const role = user?.role || '';
-        const scopeTitle = role === 'manager' ? '팀 미작성 알림'
-          : role === 'admin' ? '지사 미작성 알림'
-          : role === 'director' ? '관할지사 미작성 알림'
-          : ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(role) ? '전체 미작성 알림'
-          : '본인 미작성 알림';
+        const scopeTitle = salesMissingAlertScopeTitle(user || {});
         const showOwner = ['manager', 'admin', 'director', 'master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(role);
         return (
         <section className="section">

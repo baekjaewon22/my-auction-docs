@@ -7,6 +7,7 @@ import {
   CalendarDays, UserRound, Wallet, NotebookPen, FileSpreadsheet,
   Plus, Pencil, Trash2, Star, BadgeCheck
 } from 'lucide-react';
+import { EXPENSE_RECEIPT_TEMPLATE_ID } from '../lib/expense-receipt';
 
 const CATEGORY_ICONS: Record<string, typeof CalendarDays> = {
   '근태/휴가': CalendarDays,
@@ -133,6 +134,10 @@ export default function TemplateList() {
   const myAuctionTemplates = templates.filter((t) => t.is_myauction === 1);
 
   const handleNewDoc = async (templateId: string) => {
+    if (templateId === EXPENSE_RECEIPT_TEMPLATE_ID) {
+      navigate('/expense-receipts/new');
+      return;
+    }
     // 물건분석보고서는 전용 페이지로 이동
     if (templateId === 'tpl-work-008') {
       navigate('/property-report');

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const css = readFileSync(new URL('../src/react-app/index.css', import.meta.url), 'utf8');
+const layout = readFileSync(new URL('../src/react-app/components/Layout.tsx', import.meta.url), 'utf8');
 
 test('mobile layout keeps the viewport bounded and uses the dynamic viewport height', () => {
   assert.match(css, /html,\s*body,\s*#root\s*{[\s\S]*?overflow-x:\s*hidden/);
@@ -35,4 +36,38 @@ test('dense inline grids expose mobile stacking hooks', () => {
   assert.ok(sources.some((source) => source.includes('mobile-stack-grid')));
   assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*?\.mobile-stack-grid\s*{[\s\S]*?grid-template-columns:\s*1fr\s*!important/);
   assert.match(css, /@media \(max-width:\s*480px\)[\s\S]*?\.dashboard-page \.stats-grid\s*{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+});
+
+test('tablet shell keeps the sidebar in a drawer until content has safe desktop width', () => {
+  assert.match(layout, /matchMedia\('\(max-width: 1024px\)'\)/);
+  assert.match(css, /@media \(max-width:\s*1024px\)\s*{[\s\S]*?\.mobile-header\s*{\s*display:\s*flex/);
+  assert.match(css, /@media \(max-width:\s*1024px\)\s*{[\s\S]*?\.sidebar\s*{[\s\S]*?position:\s*fixed/);
+  assert.match(css, /@media \(max-width:\s*1024px\)\s*{[\s\S]*?\.diagnosis-floating-box,[\s\S]*?display:\s*none/);
+});
+
+test('money summaries and external delivery cards use responsive tracks', () => {
+  const accounting = readFileSync(new URL('../src/react-app/pages/Accounting.tsx', import.meta.url), 'utf8');
+  assert.match(css, /\.stats-grid\s*{[\s\S]*?repeat\(auto-fit,\s*minmax\(140px,\s*1fr\)\)/);
+  assert.match(css, /\.acc-kpi-grid\s*{[\s\S]*?repeat\(auto-fit,\s*minmax\(min\(100%,\s*220px\),\s*1fr\)\)/);
+  assert.match(css, /\.lawitgo-winning-summary\s*{[^}]*repeat\(auto-fit,\s*minmax\(120px,\s*1fr\)\)/);
+  assert.match(css, /\.accounting-session2-kpis\s*{[\s\S]*?repeat\(auto-fit,\s*minmax\(150px,\s*1fr\)\)/);
+  assert.match(accounting, /className="acc-branch-summary-grid"/);
+  assert.doesNotMatch(accounting, /gridTemplateColumns:\s*`repeat\(\$\{Math\.min\(cardSummary\.by_branch/);
+});
+
+test('mobile dialogs, popovers, payroll tables, and outdoor rows remain recoverable', () => {
+  const propertyReport = readFileSync(new URL('../src/react-app/pages/PropertyReport.tsx', import.meta.url), 'utf8');
+  const payroll = readFileSync(new URL('../src/react-app/pages/Payroll.tsx', import.meta.url), 'utf8');
+  const linkReview = readFileSync(new URL('../src/react-app/pages/LinkReview.tsx', import.meta.url), 'utf8');
+  const documentEdit = readFileSync(new URL('../src/react-app/pages/DocumentEdit.tsx', import.meta.url), 'utf8');
+
+  assert.match(propertyReport, /className="property-report-reject-dialog"/);
+  assert.doesNotMatch(propertyReport, /minWidth:\s*360/);
+  assert.match(propertyReport, /wrapRef\.current\?\.clientWidth/);
+  assert.match(propertyReport, /new ResizeObserver\(calcScale\)/);
+  assert.ok((payroll.match(/className="payroll-table-scroll"/g) || []).length >= 6);
+  assert.match(css, /\.payroll-table-scroll[\s\S]*?overflow-x:\s*auto/);
+  assert.match(linkReview, /className="outdoor-entry-row"/);
+  assert.match(documentEdit, /className="outdoor-entry-row/);
+  assert.match(css, /\.bi-addmenu\s*{[\s\S]*?position:\s*fixed[\s\S]*?bottom:\s*max\(10px,\s*env\(safe-area-inset-bottom\)\)/);
 });

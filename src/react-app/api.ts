@@ -87,6 +87,110 @@ export interface LawitgoProgressItem {
   caseType: string;
 }
 
+export interface LawitgoWinningRepairItem {
+  sales_record_id: string;
+  status: 'pending' | 'blocked' | 'sending' | 'sent' | 'failed';
+  customer_name: string;
+  customer_phone: string;
+  court: string;
+  case_number: string;
+  property_type: string;
+  winning_date: string;
+  assignee_user_id: string;
+  assignee_name: string;
+  assignee_branch: string;
+  lawitgo_consultant_id: string;
+  missing_fields: string[];
+}
+
+export interface LawitgoWinningRepairAssignee {
+  id: string;
+  name: string;
+  branch: string;
+  consultant_id: string;
+}
+
+export type LawitgoWinningRepairPayload = Pick<
+  LawitgoWinningRepairItem,
+  'customer_name' | 'customer_phone' | 'court' | 'case_number' | 'property_type' | 'winning_date' | 'assignee_user_id'
+>;
+
+export interface LawitgoWinningRepairResponse {
+  item: LawitgoWinningRepairItem;
+  assignees: LawitgoWinningRepairAssignee[];
+}
+
+export interface ExpenseReceiptAttachment {
+  id: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  sha256: string;
+  sort_order: number;
+  created_at: string;
+  preview_url: string;
+}
+
+export interface ExpenseReceiptArtifact {
+  file_name: string;
+  file_size: number;
+  drive_file_id: string;
+  drive_folder_path: string;
+  drive_backed_up_at: string | null;
+  purged_at: string | null;
+  download_url: string;
+}
+
+export interface ExpenseReceiptDetail {
+  document_id: string;
+  status: 'draft' | 'submitted' | 'approved' | 'rejected';
+  cancel_requested: number;
+  cancel_reason: string;
+  cancelled: number;
+  attachments: ExpenseReceiptAttachment[];
+  artifact: ExpenseReceiptArtifact | null;
+  drive_status: 'pending' | 'failed' | 'success';
+  drive_error: string;
+  approved_at: string | null;
+  actual_approver_id: string | null;
+  actual_approver_name: string;
+  actual_approver_role: string;
+  site_purged: boolean;
+  retention_eligible_at: string | null;
+}
+
+export interface ExpenseReceiptArchiveItem {
+  document_id: string;
+  title: string;
+  status: 'draft' | 'submitted' | 'approved' | 'rejected';
+  cancel_requested: number;
+  cancel_reason: string;
+  cancelled: number;
+  author_id: string;
+  author_name: string;
+  branch: string;
+  department: string;
+  created_at: string;
+  updated_at: string;
+  attachment_count: number;
+  total_file_size: number;
+  approved_at: string | null;
+  actual_approver_id: string | null;
+  actual_approver_name: string;
+  actual_approver_role: string;
+  drive_status: 'pending' | 'failed' | 'success';
+  drive_file_id: string | null;
+  drive_backed_up_at: string | null;
+  pdf_available: boolean;
+  site_purged: boolean;
+  reject_reason: string;
+  last_action: '' | 'approved' | 'rejected';
+  last_actor_name: string;
+  last_actor_role: string;
+  last_action_comment: string;
+  last_action_at: string | null;
+}
+
 export interface PersonalCalendarEvent {
   id: string;
   event_date: string;
@@ -111,6 +215,33 @@ export interface PersonalCalendarEvent {
   property_type?: string;
   bid_result?: 'pending' | 'won' | 'failed' | 'cancelled' | 'withdrawn';
   automatic_cancel?: number;
+  can_edit_bid_result?: 0 | 1;
+  bid_result_block_reason?: string;
+}
+
+export interface AuctionBidResultEntry {
+  id: string;
+  user_id: string;
+  user_name: string;
+  target_date: string;
+  activity_subtype: string;
+  data: string;
+  missing_fields?: string[];
+}
+
+export interface AuctionBidScheduleSaveResponse {
+  success: boolean;
+  schedule_id: string;
+}
+
+export interface AuctionBidResultSaveResponse extends AuctionBidScheduleSaveResponse {
+  sales_record_id?: string | null;
+  sales_status?: string | null;
+  phone_required?: boolean;
+}
+
+export interface AuctionBidPriceSaveResponse extends AuctionBidScheduleSaveResponse {
+  missing_fields: string[];
 }
 
 export interface TodayBidDashboardEntry {
@@ -219,6 +350,16 @@ async function authenticatedDownload(path: string, fallbackFileName: string): Pr
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+async function authenticatedBlobUrl(path: string): Promise<string> {
+  const token = getToken();
+  const res = await fetch(`${BASE}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || '이미지를 불러오지 못했습니다.');
+  }
+  return URL.createObjectURL(await res.blob());
 }
 
 // Auth
@@ -439,6 +580,7 @@ export const api = {
       return request<{ documents: import('./types').Document[] }>('/documents' + qs);
     },
     get: (id: string) => request<{ document: import('./types').Document }>('/documents/' + id),
+    viewPdfUrl: (id: string) => authenticatedBlobUrl('/documents/' + encodeURIComponent(id) + '/pdf'),
     create: (data: { title: string; content?: string; template_id?: string }) =>
       request<{ document: import('./types').Document }>('/documents', {
         method: 'POST',
@@ -448,15 +590,16 @@ export const api = {
       request('/documents/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request('/documents/' + id, { method: 'DELETE' }),
     submit: (id: string) => request('/documents/' + id + '/submit', { method: 'POST' }),
-    approve: (id: string, data?: { step_id?: string }) =>
+    approveRevert: (id: string) => request('/documents/' + id + '/approve-revert', { method: 'POST' }),
+    approve: (id: string, data?: { step_id?: string; comment?: string }) =>
       request('/documents/' + id + '/approve', {
         method: 'POST',
         body: data ? JSON.stringify(data) : undefined,
       }),
-    reject: (id: string, reason?: string) =>
+    reject: (id: string, reasonOrData?: string | { step_id?: string; reason?: string }) =>
       request('/documents/' + id + '/reject', {
         method: 'POST',
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify(typeof reasonOrData === 'string' ? { reason: reasonOrData } : (reasonOrData || {})),
       }),
     logs: (id: string) => request<{ logs: import('./types').DocumentLog[] }>('/documents/' + id + '/logs'),
     steps: (id: string) => request<{ steps: import('./types').ApprovalStep[] }>('/documents/' + id + '/steps'),
@@ -472,11 +615,79 @@ export const api = {
       request<{ documents: import('./types').Document[] }>('/documents/cancel-requests'),
   },
 
+  expenseReceipts: {
+    get: (documentId: string) => request<ExpenseReceiptDetail>(
+      `/expense-receipts/${encodeURIComponent(documentId)}`,
+    ),
+    list: (params: {
+      page?: number;
+      page_size?: number;
+      status?: string;
+      month?: string;
+      branch?: string;
+      author?: string;
+      search?: string;
+    } = {}) => {
+      const query = new URLSearchParams();
+      if (params.page) query.set('page', String(params.page));
+      if (params.page_size) query.set('page_size', String(params.page_size));
+      if (params.status) query.set('status', params.status);
+      if (params.month) query.set('month', params.month);
+      if (params.branch) query.set('branch', params.branch);
+      if (params.author) query.set('author', params.author);
+      if (params.search) query.set('search', params.search);
+      const suffix = query.toString();
+      return request<{ items: ExpenseReceiptArchiveItem[]; total: number; page: number; page_size: number }>(
+        `/expense-receipts${suffix ? `?${suffix}` : ''}`,
+      );
+    },
+    upload: (documentId: string, files: File[]) => {
+      const form = new FormData();
+      files.forEach((file) => form.append('files', file));
+      return formRequest<{ attachments: ExpenseReceiptAttachment[] }>(
+        `/expense-receipts/${encodeURIComponent(documentId)}/attachments`,
+        form,
+      );
+    },
+    reorder: (documentId: string, attachmentIds: string[]) => request<{
+      success: boolean;
+      attachments: ExpenseReceiptAttachment[];
+    }>(`/expense-receipts/${encodeURIComponent(documentId)}/attachments/order`, {
+      method: 'PUT',
+      body: JSON.stringify({ attachment_ids: attachmentIds }),
+    }),
+    deleteAttachment: (documentId: string, attachmentId: string) => request<{
+      success: boolean;
+      attachments: ExpenseReceiptAttachment[];
+    }>(`/expense-receipts/${encodeURIComponent(documentId)}/attachments/${encodeURIComponent(attachmentId)}`, {
+      method: 'DELETE',
+    }),
+    attachmentPreview: (documentId: string, attachmentId: string) => authenticatedBlobUrl(
+      `/expense-receipts/${encodeURIComponent(documentId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+    ),
+    downloadPdf: (documentId: string, fileName = '영수증-첨부-지출결의서.pdf') => authenticatedDownload(
+      `/expense-receipts/${encodeURIComponent(documentId)}/pdf`,
+      fileName,
+    ),
+  },
+
   signatures: {
-    sign: (documentId: string, signatureData: string, signatureType: 'author' | 'approver', stepId?: string) =>
+    sign: (
+      documentId: string,
+      signatureData: string,
+      signatureType: 'author' | 'approver',
+      stepId?: string,
+      expenseReceiptRevision?: number,
+    ) =>
       request<{ signature: import('./types').Signature }>('/signatures', {
         method: 'POST',
-        body: JSON.stringify({ document_id: documentId, signature_data: signatureData, signature_type: signatureType, step_id: stepId }),
+        body: JSON.stringify({
+          document_id: documentId,
+          signature_data: signatureData,
+          signature_type: signatureType,
+          step_id: stepId,
+          expense_receipt_revision: expenseReceiptRevision,
+        }),
       }),
     getByDocument: (documentId: string) =>
       request<{ signatures: import('./types').Signature[] }>('/signatures/document/' + documentId),
@@ -625,6 +836,18 @@ export const api = {
   lawitgoWinningAdmin: {
     get: () => request<any>('/lawitgo-winning-admin'),
     refresh: () => request<any>('/lawitgo-winning-admin/refresh', { method: 'POST' }),
+    getRepair: (salesRecordId: string) => request<LawitgoWinningRepairResponse>(
+      `/lawitgo-winning-admin/${encodeURIComponent(salesRecordId)}/repair`,
+    ),
+    updateRepair: (salesRecordId: string, payload: LawitgoWinningRepairPayload) => request<{
+      success: boolean;
+      status: 'pending';
+      missing_fields: string[];
+      item: LawitgoWinningRepairItem;
+    }>(`/lawitgo-winning-admin/${encodeURIComponent(salesRecordId)}/repair`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
     send: (ids: string[]) => request<any>('/lawitgo-winning-admin/send', {
       method: 'POST',
       body: JSON.stringify({ ids, confirmation: 'SEND_TO_LAWITGO' }),
@@ -806,7 +1029,7 @@ export const api = {
         cases: Array<{ court: string; case_number: string; item_number: string; status: string }>;
       }> }>('/sales/customer-search?' + query.toString());
     },
-    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string; user_id?: string; customer_id?: string }) =>
+    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string; user_id?: string; customer_id?: string; court?: string; case_number?: string; property_type?: string }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; deposit_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
@@ -828,6 +1051,8 @@ export const api = {
       request('/sales/' + id + '/refund-request', { method: 'POST' }),
     refundApprove: (id: string) =>
       request('/sales/' + id + '/refund-approve', { method: 'POST' }),
+    partialRefund: (id: string, refund_amount: number) =>
+      request<{ success: boolean; refund_amount: number; is_full: boolean }>('/sales/' + id + '/partial-refund', { method: 'POST', body: JSON.stringify({ refund_amount }) }),
     updateMemo: (id: string, memo: string) =>
       request('/sales/' + id + '/memo', { method: 'PUT', body: JSON.stringify({ memo }) }),
     dashboardPending: () =>
@@ -873,7 +1098,7 @@ export const api = {
     deposits: () => request<{ deposits: import('./types').DepositNotice[] }>('/sales/deposits'),
     createDeposit: (data: { depositor: string; amount: number; deposit_date: string }) =>
       request<{ success: boolean; id: string }>('/sales/deposits', { method: 'POST', body: JSON.stringify(data) }),
-    claimDeposit: (id: string, data: { type: string; type_detail?: string; client_name: string; contract_date?: string }) =>
+    claimDeposit: (id: string, data: { type: string; type_detail?: string; client_name: string; client_phone?: string; contract_date?: string; court?: string; case_number?: string; property_type?: string }) =>
       request('/sales/deposits/' + id + '/claim', { method: 'POST', body: JSON.stringify(data) }),
     approveDeposit: (id: string) =>
       request('/sales/deposits/' + id + '/approve', { method: 'POST' }),
@@ -1020,14 +1245,18 @@ export const api = {
   },
 
   approvalAlerts: {
-    list: () =>
-      request<{ alerts: Array<{
+    list: (filters?: { template_id?: string }) => {
+      const query = new URLSearchParams();
+      if (filters?.template_id) query.set('template_id', filters.template_id);
+      const suffix = query.toString();
+      return request<{ alerts: Array<{
         id: string; document_id: string; approver_id: string; cycle_no: number; step_order: number;
         my_status: 'need_approve' | 'waiting_final';
         document_title: string; document_template_id: string; document_author_id: string; document_author_name: string;
         document_branch: string; document_department: string; document_submitted_at: string;
         status: string; detected_at: string;
-      }> }>('/approval-alerts'),
+      }> }>(`/approval-alerts${suffix ? `?${suffix}` : ''}`);
+    },
     dismiss: (id: string) =>
       request<{ success: boolean }>('/approval-alerts/' + id + '/dismiss', { method: 'POST' }),
     backfill: (dryRun: boolean) =>
@@ -1394,6 +1623,9 @@ export const api = {
       data: string;
       missing_fields: string[];
     }> }>('/auction-schedule/my-bid-result-requirements'),
+    bidResultEntry: (id: string) => request<{ entry: AuctionBidResultEntry }>(
+      '/auction-schedule/' + encodeURIComponent(id) + '/bid-result-entry',
+    ),
     list: (params: { start: string; end: string; branch?: string }) => {
       const q = new URLSearchParams(params);
       return request<{ entries: Array<{
@@ -1427,14 +1659,14 @@ export const api = {
     update: (id: string, data: Record<string, unknown>) =>
       request<{ success: boolean }>('/auction-schedule/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     updateBidPrices: (id: string, data: { suggested_price?: number; actual_bid_price?: number; winning_price?: number }) =>
-      request<{ success: boolean; missing_fields: string[] }>('/auction-schedule/' + id + '/bid-prices', { method: 'PUT', body: JSON.stringify(data) }),
+      request<AuctionBidPriceSaveResponse>('/auction-schedule/' + id + '/bid-prices', { method: 'PUT', body: JSON.stringify(data) }),
     setBidResult: (id: string, data: {
       result: 'won' | 'failed' | 'withdrawn' | 'cancelled' | 'pending';
       suggested_price?: number;
       actual_bid_price?: number;
       winning_price?: number;
       client_phone?: string;
-    }) => request<{ success: boolean; sales_record_id?: string | null; sales_status?: string | null; phone_required?: boolean }>(
+    }) => request<AuctionBidResultSaveResponse>(
       '/auction-schedule/' + id + '/bid-result',
       { method: 'POST', body: JSON.stringify(data) },
     ),

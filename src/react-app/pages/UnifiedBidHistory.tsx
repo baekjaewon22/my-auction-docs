@@ -46,6 +46,8 @@ export default function UnifiedBidHistory() {
   const [error, setError] = useState('');
   const [branchFilter, setBranchFilter] = useState('');
   const [assigneeFilter, setAssigneeFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 10;
   const [filterOptions, setFilterOptions] = useState<{
     branches: Array<{ branch: string }>;
     assignees: Array<{ id: string; name: string; branch: string }>;
@@ -63,6 +65,7 @@ export default function UnifiedBidHistory() {
     let active = true;
     setLoading(true);
     setError('');
+    setPage(1);
     api.freelancerBids.list({ branch: branchFilter, assignee: assigneeFilter })
       .then((response) => {
         if (!active) return;
@@ -73,6 +76,17 @@ export default function UnifiedBidHistory() {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [branchFilter, assigneeFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pagedRows = rows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const pageNumbers = Array.from({ length: totalPages }, (_, i) => i + 1)
+    .filter((p) => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 2)
+    .reduce<(number | string)[]>((acc, p, idx, arr) => {
+      if (idx > 0 && p - (arr[idx - 1] as number) > 1) acc.push('…');
+      acc.push(p);
+      return acc;
+    }, []);
 
   return (
     <div className="page-container freelancer-bid-page unified-bid-history-page">
@@ -115,6 +129,7 @@ export default function UnifiedBidHistory() {
       {loading ? <div className="empty-state">불러오는 중입니다.</div> : rows.length === 0 ? (
         <div className="empty-state">조회할 입찰 내역이 없습니다.</div>
       ) : (
+        <>
         <div className="freelancer-bid-table-wrap">
           <table className="freelancer-bid-table">
             <thead>
@@ -135,7 +150,7 @@ export default function UnifiedBidHistory() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {pagedRows.map((row) => (
                 <tr key={row.id}>
                   <td>{row.bid_date}</td>
                   <td>{row.owner_branch || '-'}</td>
@@ -168,6 +183,17 @@ export default function UnifiedBidHistory() {
             </tbody>
           </table>
         </div>
+        <div className="unified-bid-pagination">
+          <span className="unified-bid-page-info">전체 {rows.length}건 · {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, rows.length)}</span>
+          <button type="button" className="btn btn-sm" disabled={currentPage <= 1} onClick={() => setPage(1)}>«</button>
+          <button type="button" className="btn btn-sm" disabled={currentPage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>‹</button>
+          {pageNumbers.map((p, i) => typeof p === 'string'
+            ? <span key={`ellipsis-${i}`} className="unified-bid-page-ellipsis">…</span>
+            : <button type="button" key={p} className={`btn btn-sm ${p === currentPage ? 'btn-primary' : ''}`} onClick={() => setPage(p)}>{p}</button>)}
+          <button type="button" className="btn btn-sm" disabled={currentPage >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>›</button>
+          <button type="button" className="btn btn-sm" disabled={currentPage >= totalPages} onClick={() => setPage(totalPages)}>»</button>
+        </div>
+        </>
       )}
     </div>
   );

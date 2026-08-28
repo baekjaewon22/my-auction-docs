@@ -11,14 +11,19 @@ const worker = readFileSync(new URL('../src/worker/index.ts', import.meta.url), 
 test('Lawitgo winning administration is master-only in menu, route, and API', () => {
   assert.match(layout, /role === 'master'[\s\S]*?to="\/lawitgo-winning-admin"/);
   assert.match(app, /path="lawitgo-winning-admin" element=\{<MasterRoute><LawitgoWinningAdmin \/><\/MasterRoute>\}/);
-  assert.match(route, /route\.use\('\*', requireRole\('master'\)\)/);
+  assert.match(route, /route\.use\('\*', requireHumanMaster\(\)\)/);
+  assert.doesNotMatch(route, /requireRole\('master'\)/);
   assert.match(worker, /app\.route\('\/api\/lawitgo-winning-admin', lawitgoWinningAdminRoute\)/);
 });
 
-test('manual send requires an explicit confirmation and never exposes a raw phone number', () => {
+test('manual send requires confirmation and raw phone is limited to master-only repair detail', () => {
+  const listPayload = route.slice(route.indexOf('async function adminPayload'), route.indexOf('async function repairPayload'));
+  const repairPayload = route.slice(route.indexOf('async function repairPayload'), route.indexOf("route.get('/'"));
   assert.match(route, /body\.confirmation !== 'SEND_TO_LAWITGO'/);
-  assert.match(route, /customer_phone_masked: maskPhone/);
-  assert.doesNotMatch(route, /customer_phone:\s*item/);
+  assert.match(listPayload, /customer_phone_masked: maskPhone/);
+  assert.doesNotMatch(listPayload, /customer_phone:\s*item/);
+  assert.match(repairPayload, /customer_phone:\s*item\.customerPhone/);
+  assert.match(route, /route\.use\('\*', requireHumanMaster\(\)\)/);
   assert.match(page, /고객명·전화번호·법원·사건번호가 외부로 전송됩니다/);
   assert.match(page, /대기 전체 발송/);
   assert.match(page, /선택 발송/);

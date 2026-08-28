@@ -422,7 +422,11 @@ function buildLeaveArchiveContent(req: any, reqUser: any, approverName: string):
 
 async function createLeaveArchiveDocument(db: D1Database, req: any, approver: any): Promise<string | null> {
   const existing = await db.prepare(
-    "SELECT id FROM documents WHERE instr(content, ?) > 0 LIMIT 1"
+    `SELECT id FROM documents
+     WHERE template_id IS NULL
+       AND instr(content, 'data-source="leave_request"') > 0
+       AND instr(content, ?) > 0
+     LIMIT 1`
   ).bind(`leave_request_id:${req.id}`).first<{ id: string }>();
   if (existing?.id) return existing.id;
 
@@ -445,7 +449,12 @@ async function createLeaveArchiveDocument(db: D1Database, req: any, approver: an
 
 async function cancelLeaveArchiveDocument(db: D1Database, req: any, actor: any, reason: string): Promise<void> {
   const existing = await db.prepare(
-    "SELECT id FROM documents WHERE instr(content, ?) > 0 AND cancelled = 0 LIMIT 1"
+    `SELECT id FROM documents
+     WHERE template_id IS NULL
+       AND instr(content, 'data-source="leave_request"') > 0
+       AND instr(content, ?) > 0
+       AND cancelled = 0
+     LIMIT 1`
   ).bind(`leave_request_id:${req.id}`).first<{ id: string }>();
   if (!existing?.id) return;
   await db.prepare(
@@ -998,7 +1007,7 @@ leave.post('/request/summer', async (c) => {
 
   const targetUserId = user.role === 'master' && body.user_id ? body.user_id : user.sub;
   if (body.user_id && body.user_id !== user.sub && user.role !== 'master') {
-    return c.json({ error: '다른 직원의 휴가는 마스터만 대신 신청할 수 있습니다.' }, 403);
+    return c.json({ error: '다른 직원의 휴가를 대신 신청할 권한이 없습니다.' }, 403);
   }
   const targetUser = await db.prepare(
     'SELECT id, name, branch, department FROM users WHERE id = ? AND approved = 1'
@@ -1121,7 +1130,7 @@ leave.post('/request', async (c) => {
   }
   const targetUserId = user.role === 'master' && body.user_id ? body.user_id : user.sub;
   if (body.user_id && body.user_id !== user.sub && user.role !== 'master') {
-    return c.json({ error: '다른 직원의 휴가는 마스터만 대신 신청할 수 있습니다.' }, 403);
+    return c.json({ error: '다른 직원의 휴가를 대신 신청할 권한이 없습니다.' }, 403);
   }
   const targetUser = await db.prepare('SELECT id, name, branch, department, hire_date, created_at FROM users WHERE id = ? AND approved = 1')
     .bind(targetUserId).first<any>();

@@ -15,6 +15,7 @@ import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { canAssignSalesToAnotherUser } from '../../shared/sales-assignment';
 import { dashboardFocusKey, shouldPrepareDashboardFocus } from '../../shared/dashboard-focus';
+import { salesDirectorManagedBranch } from '../../shared/sales-record-scope';
 import {
   findContractByCustomerIdentity,
   isValidCustomerPhone,
@@ -49,7 +50,8 @@ function formatPhone(v: string): string {
 }
 
 function getDateLabel(type: string): string {
-  if (type === '낙찰' || type === '중개') return '발생일';
+  if (type === '낙찰') return '낙찰일';
+  if (type === '중개') return '발생일';
   return '계약일';
 }
 
@@ -338,11 +340,8 @@ export default function Sales() {
   const [filterType, setFilterType] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [showBranchSummary, setShowBranchSummary] = useState(false);
-  const [filterBranch, setFilterBranch] = useState(() => {
-    // 총괄이사는 대전 디폴트
-    if (currentUser?.role === 'director') return '대전지사';
-    return '';
-  });
+  // 빈값이면 서버가 허용한 전체 범위이며, director도 관할 지사 + 본인 매출을 함께 본다.
+  const [filterBranch, setFilterBranch] = useState('');
   const [branchDefaultApplied, setBranchDefaultApplied] = useState(false);
 
   // 총무 담당/보조: 알림톡 설정(담당 지사)의 첫 번째 지사를 기본 필터로 적용
@@ -439,6 +438,9 @@ export default function Sales() {
   const [formAmount, setFormAmount] = useState('');
   const [formContractDate, setFormContractDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [formPhone, setFormPhone] = useState('');
+  const [formWinningCourt, setFormWinningCourt] = useState('');
+  const [formWinningCaseNumber, setFormWinningCaseNumber] = useState('');
+  const [formWinningPropertyType, setFormWinningPropertyType] = useState('');
   // [6-1] 수수료 계산 (계약 타입만) - 감정가%, 낙찰가%
   const [formAppraisalRate, setFormAppraisalRate] = useState('');
   const [formWinningRate, setFormWinningRate] = useState('');
@@ -505,6 +507,11 @@ export default function Sales() {
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const [claimType, setClaimType] = useState('계약');
   const [claimClient, setClaimClient] = useState('');
+  const [claimPhone, setClaimPhone] = useState('');
+  const [claimWinningDate, setClaimWinningDate] = useState('');
+  const [claimWinningCourt, setClaimWinningCourt] = useState('');
+  const [claimWinningCaseNumber, setClaimWinningCaseNumber] = useState('');
+  const [claimWinningPropertyType, setClaimWinningPropertyType] = useState('');
 
   // [6-3] 활동내역
   const [salesTab, setSalesTab] = useState<'list' | 'activity' | 'managerPerformance' | 'myungdo' | 'upload' | 'auditlog'>('list');
@@ -536,6 +543,7 @@ export default function Sales() {
   const canViewAuditLog = role === 'master' || role === 'accountant'; // 활동 로그 조회 (총무보조 제외)
   // const canViewAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 열람 (현재 미사용)
   const isDirector = role === 'director';
+  const directorManagedBranch = salesDirectorManagedBranch(currentUser || {});
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
   const isManager = role === 'manager';
   const canViewManagerPerformance = role === 'master' || role === 'admin' || role === 'manager';
@@ -699,6 +707,7 @@ export default function Sales() {
     setFormAmount(''); setFormContractDate(new Date().toISOString().slice(0, 10));
     setFormAppraisalRate(''); setFormWinningRate('');
     setFormPhone('');
+    setFormWinningCourt(''); setFormWinningCaseNumber(''); setFormWinningPropertyType('');
     setSelectedCustomerId('');
     setSelectedCustomerPhones([]);
     setCustomerSuggestions([]);
@@ -707,6 +716,17 @@ export default function Sales() {
     setFormPaymentType('이체'); setFormReceiptType(''); setFormReceiptPhone('');
     setFormAssigneeId(currentUser?.id || '');
     setShowAddForm(false);
+  };
+
+  const resetClaimForm = () => {
+    setClaimingId(null);
+    setClaimType('계약');
+    setClaimClient('');
+    setClaimPhone('');
+    setClaimWinningDate('');
+    setClaimWinningCourt('');
+    setClaimWinningCaseNumber('');
+    setClaimWinningPropertyType('');
   };
 
   const handleAdd = async () => {
@@ -741,6 +761,18 @@ export default function Sales() {
     if (formType === '계약' || formType === '낙찰') {
       if (!isValidCustomerPhone(formPhone)) {
         alert(`${formType} 고객 전화번호를 입력하세요. (동명이인 방지용 필수)`);
+        return;
+      }
+    }
+    if (formType === '낙찰') {
+      const missingWinningFields = [
+        !formContractDate ? '낙찰일' : '',
+        !formWinningCourt.trim() ? '관할법원' : '',
+        !formWinningCaseNumber.trim() ? '사건번호' : '',
+        !formWinningPropertyType.trim() ? '물건종류' : '',
+      ].filter(Boolean);
+      if (missingWinningFields.length > 0) {
+        alert(`Lawitgo 낙찰 전송에 필요한 ${missingWinningFields.join(', ')}을(를) 입력하세요.`);
         return;
       }
     }
@@ -793,6 +825,11 @@ export default function Sales() {
         proxy_cost: proxyCost,
         ...((formType === '계약' || formType === '낙찰') ? { client_phone: formPhone } : {}),
         ...((formType === '계약' || formType === '낙찰') && selectedCustomerId ? { customer_id: selectedCustomerId } : {}),
+        ...(formType === '낙찰' ? {
+          court: formWinningCourt.trim(),
+          case_number: formWinningCaseNumber.trim(),
+          property_type: formWinningPropertyType.trim(),
+        } : {}),
         ...(formType === '계약' ? {
           appraisal_rate: Number(formAppraisalRate),
           winning_rate: Number(formWinningRate),
@@ -819,9 +856,38 @@ export default function Sales() {
 
   const handleClaim = async (depositId: string) => {
     if (!claimClient) { alert('계약자명을 입력하세요.'); return; }
+    if (claimType === '낙찰') {
+      if (!claimWinningDate) {
+        alert('낙찰일을 입력하세요. 입금일은 낙찰일로 대신 사용할 수 없습니다.');
+        return;
+      }
+      if (!isValidCustomerPhone(claimPhone)) {
+        alert('낙찰 고객 전화번호를 입력하세요.');
+        return;
+      }
+      const missingWinningFields = [
+        !claimWinningCourt.trim() ? '관할법원' : '',
+        !claimWinningCaseNumber.trim() ? '사건번호' : '',
+        !claimWinningPropertyType.trim() ? '물건종류' : '',
+      ].filter(Boolean);
+      if (missingWinningFields.length > 0) {
+        alert(`Lawitgo 낙찰 전송에 필요한 ${missingWinningFields.join(', ')}을(를) 입력하세요.`);
+        return;
+      }
+    }
     try {
-      await api.sales.claimDeposit(depositId, { type: claimType, client_name: claimClient });
-      setClaimingId(null); setClaimClient(''); load();
+      await api.sales.claimDeposit(depositId, {
+        type: claimType,
+        client_name: claimClient,
+        ...(claimType === '낙찰' ? {
+          client_phone: claimPhone,
+          contract_date: claimWinningDate,
+          court: claimWinningCourt.trim(),
+          case_number: claimWinningCaseNumber.trim(),
+          property_type: claimWinningPropertyType.trim(),
+        } : {}),
+      });
+      resetClaimForm(); load();
     } catch (err: any) { alert(err.message); }
   };
 
@@ -875,7 +941,10 @@ export default function Sales() {
   }, [salesTab, auditMonth, auditAction, auditActor, canViewAuditLog]);
 
   const resignedWithSales = new Set(records.filter(r => r.user_id).map(r => r.user_id));
-  const filteredMembers = (filterBranch ? members.filter(m => sameBranchName(m.branch, filterBranch)) : members)
+  const scopeMembers = isDirector
+    ? members.filter(m => m.id === currentUser?.id || sameBranchName(m.branch, directorManagedBranch))
+    : members;
+  const filteredMembers = (filterBranch ? scopeMembers.filter(m => sameBranchName(m.branch, filterBranch)) : scopeMembers)
     .filter(m => m.role !== 'master')
     .filter(m => (m.role as string) !== 'resigned' || resignedWithSales.has(m.id));
   const memberOpts = groupUserOptions(filteredMembers, m => ` (${m.department || ''})`);
@@ -894,7 +963,9 @@ export default function Sales() {
   // 지사 + 유형 + 담당자 + 상태 필터 적용된 records
   // 지사 집계는 attribution_branch(매출 귀속 지사)가 있으면 그걸 우선 사용
   const effectiveBranch = (r: SalesRecord) => r.attribution_branch || r.branch;
-  let branchRecords = filterBranch ? records.filter(r => sameBranchName(effectiveBranch(r), filterBranch)) : records;
+  let branchRecords = filterBranch
+    ? records.filter(r => sameBranchName(effectiveBranch(r), filterBranch) || (isDirector && r.user_id === currentUser?.id))
+    : records;
   if (filterUser) branchRecords = branchRecords.filter(r => r.user_id === filterUser);
   if (filterType) branchRecords = branchRecords.filter(r => r.type === filterType);
   if (filterStatus === 'confirm_waiting') branchRecords = branchRecords.filter(r => CONFIRM_WAITING_STATUSES.includes(r.status));
@@ -980,14 +1051,15 @@ export default function Sales() {
         const branchSet = [...new Set(allRecs.map(r => effectiveBranch(r)).filter(Boolean))].sort();
         if (branchSet.length <= 1) return null;
         return (
-          <div className="card" style={{ padding: 0, marginBottom: 20, overflow: 'hidden' }}>
+          <div className="card sales-branch-summary-card" style={{ padding: 0, marginBottom: 20, overflow: 'hidden' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', cursor: 'pointer', background: '#f8f9fa' }}
               onClick={() => setShowBranchSummary(!showBranchSummary)}>
               <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#3c4043' }}>지사별 현황</span>
               {showBranchSummary ? <ChevronUp size={16} color="#5f6368" /> : <ChevronDown size={16} color="#5f6368" />}
             </div>
             {showBranchSummary && (
-              <table style={{ width: '100%', fontSize: '0.78rem', borderCollapse: 'collapse' }}>
+              <div className="sales-branch-summary-scroll">
+              <table className="sales-branch-summary-table" style={{ width: '100%', fontSize: '0.78rem', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #e8eaed', color: '#5f6368' }}>
                     <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 600 }}>지사</th>
@@ -1013,6 +1085,7 @@ export default function Sales() {
                   })}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         );
@@ -1132,12 +1205,12 @@ export default function Sales() {
               onChange={(o: any) => { setFilterBranch(o?.value || ''); setFilterUser(''); }} placeholder="지사" isClearable />
           </div>
         )}
-        {/* 총괄이사: 대전/부산만 선택 */}
+        {/* 총괄이사: 본인 관할 지사 + 본인 매출 */}
         {isDirector && (
           <div style={{ minWidth: 120 }}>
-            <Select size="sm" options={[{ value: '', label: '대전/부산' }, { value: '대전지사', label: '대전지사' }, { value: '부산지사', label: '부산지사' }]}
-              value={[{ value: '대전지사', label: '대전지사' }, { value: '부산지사', label: '부산지사' }].find(o => o.value === filterBranch) || { value: '', label: '대전/부산' }}
-              onChange={(o: any) => { setFilterBranch(o?.value || ''); setFilterUser(''); }} placeholder="지사" isClearable />
+            <Select size="sm" options={[{ value: '', label: '관할지사·본인' }, ...(directorManagedBranch ? [{ value: directorManagedBranch, label: directorManagedBranch }] : [])]}
+              value={filterBranch ? { value: filterBranch, label: filterBranch } : { value: '', label: '관할지사·본인' }}
+              onChange={(o: any) => { setFilterBranch(o?.value || ''); setFilterUser(''); }} placeholder="관할지사" isClearable />
           </div>
         )}
         {/* 담당자 필터: 관리자/총무/총괄이사/팀장 */}
@@ -1251,20 +1324,20 @@ export default function Sales() {
           return (
             <div>
               <button className="btn btn-sm" onClick={() => setSelectedClient(null)} style={{ marginBottom: 12 }}>← 목록으로</button>
-              <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                <div style={{ padding: '16px 20px', background: '#f8f9fa', borderBottom: '1px solid #e8eaed' }}>
+              <div className="card sales-customer-timeline-card" style={{ padding: 0, overflow: 'hidden' }}>
+                <div className="sales-customer-timeline-head" style={{ padding: '16px 20px', background: '#f8f9fa', borderBottom: '1px solid #e8eaed' }}>
                   <strong style={{ fontSize: '1.1rem' }}>{selectedClient}</strong>
                   <span style={{ marginLeft: 12, fontSize: '0.82rem', color: '#9aa0a6' }}>총 {timeline.length}건</span>
                   {totalAmount > 0 && <span style={{ marginLeft: 12, fontWeight: 700, color: '#1a73e8' }}>확정매출 {formatCurrency(totalAmount)}</span>}
                 </div>
-                <div style={{ padding: '8px 20px' }}>
+                <div className="sales-customer-timeline-list" style={{ padding: '8px 20px' }}>
                   {timeline.length === 0 && <div className="empty-state">활동 기록이 없습니다.</div>}
                   {timeline.map((item, i) => {
                     if (item.kind === 'sale') {
                       const r = item.data as SalesRecord;
                       return (
-                        <div key={'s' + r.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderBottom: i < timeline.length - 1 ? '1px solid #f3f4f6' : 'none', fontSize: '0.82rem' }}>
-                          <span style={{ color: '#9aa0a6', minWidth: 80, fontSize: '0.78rem' }}>{r.contract_date}</span>
+                        <div key={'s' + r.id} className="sales-customer-timeline-item sale" style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderBottom: i < timeline.length - 1 ? '1px solid #f3f4f6' : 'none', fontSize: '0.82rem' }}>
+                          <span className="sales-customer-timeline-date" style={{ color: '#9aa0a6', minWidth: 80, fontSize: '0.78rem' }}>{r.contract_date}</span>
                           <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>매출</span>
                           <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: '#f3f4f6', color: '#5f6368' }}>{r.type}</span>
                           <span style={{ fontWeight: 600 }}>{formatCurrency(r.amount)}</span>
@@ -1276,10 +1349,10 @@ export default function Sales() {
                     const e = item.data as JournalEntry;
                     const d = (() => { try { return JSON.parse(e.data); } catch { return {} as any; } })();
                     return (
-                      <div key={'j' + e.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 0', borderBottom: i < timeline.length - 1 ? '1px solid #f3f4f6' : 'none', fontSize: '0.82rem' }}>
-                        <span style={{ color: '#9aa0a6', minWidth: 80, fontSize: '0.78rem' }}>{e.target_date}</span>
+                      <div key={'j' + e.id} className="sales-customer-timeline-item journal" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 0', borderBottom: i < timeline.length - 1 ? '1px solid #f3f4f6' : 'none', fontSize: '0.82rem' }}>
+                        <span className="sales-customer-timeline-date" style={{ color: '#9aa0a6', minWidth: 80, fontSize: '0.78rem' }}>{e.target_date}</span>
                         <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: (COLORS[e.activity_type] || '#999') + '18', color: COLORS[e.activity_type] || '#999' }}>{e.activity_type}</span>
-                        <div style={{ flex: 1 }}>
+                        <div className="sales-customer-timeline-detail" style={{ flex: 1 }}>
                           {e.activity_subtype && <span style={{ color: '#3c4043' }}>{e.activity_subtype}</span>}
                           {d.timeFrom && <span style={{ color: '#9aa0a6', marginLeft: 6 }}>{d.timeFrom}~{d.timeTo}</span>}
                           {d.caseNo && <span style={{ color: '#9aa0a6', marginLeft: 6 }}>사건: {d.caseNo}</span>}
@@ -1291,7 +1364,7 @@ export default function Sales() {
                           {d.bidProxy && <span style={{ marginLeft: 6, color: '#7b1fa2', fontSize: '0.75rem' }}>(대리)</span>}
                           {d.meetingType && <span style={{ color: '#9aa0a6', marginLeft: 6 }}>({d.meetingType})</span>}
                         </div>
-                        {e.user_name && <span style={{ color: '#9aa0a6', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{e.user_name}</span>}
+                        {e.user_name && <span className="sales-customer-timeline-owner" style={{ color: '#9aa0a6', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{e.user_name}</span>}
                       </div>
                     );
                   })}
@@ -1504,7 +1577,7 @@ export default function Sales() {
 
           {/* 양식 안내 */}
           <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: '0.85rem', color: '#3c4043', fontWeight: 600, marginBottom: 8 }}>열 구성 (A~S)</div>
+            <div style={{ fontSize: '0.85rem', color: '#3c4043', fontWeight: 600, marginBottom: 8 }}>열 구성 (A~V)</div>
             <div className="table-wrapper" style={{ fontSize: '0.75rem' }}>
               <table className="data-table" style={{ fontSize: '0.75rem' }}>
                 <thead>
@@ -1520,7 +1593,7 @@ export default function Sales() {
                   <tr><td>E</td><td>전화번호</td><td>고객 전화번호</td></tr>
                   <tr><td>F</td><td>무시</td><td>—</td></tr>
                   <tr><td>G</td><td>계약유형</td><td>컨설팅계약→계약, 낙찰수수료→낙찰, 권리분석의뢰→권리분석보증서, 매수신청대리, 중개수수료→중개, 그 외→기타</td></tr>
-                  <tr><td>H</td><td>계약일</td><td>contract_date (없으면 L열 입금일로 대체)</td></tr>
+                  <tr><td>H</td><td>계약일/낙찰일</td><td><strong>낙찰수수료는 필수</strong> (그 외 유형만 없으면 L열 입금일로 대체)</td></tr>
                   <tr><td>I</td><td>매출액(VAT포함)</td><td style={{ color: '#d93025' }}>음수면 전달 환불 공제로 처리</td></tr>
                   <tr><td>J</td><td>실수익</td><td>무시</td></tr>
                   <tr><td>K</td><td>결제일</td><td>카드 결제건의 고객 결제일 (참고용)</td></tr>
@@ -1528,6 +1601,9 @@ export default function Sales() {
                   <tr><td>M</td><td>증빙</td><td>"현금영수증" 포함 시 receipt_type 자동 설정</td></tr>
                   <tr><td>N</td><td>결제방식</td><td>카드/이체</td></tr>
                   <tr><td>S</td><td>비고</td><td>010-****-**** → 현금영수증 번호</td></tr>
+                  <tr><td>T</td><td>관할법원</td><td rowSpan={3}><strong>낙찰수수료 행 필수</strong><br />Lawitgo 전송 원본으로 별도 저장</td></tr>
+                  <tr><td>U</td><td>사건번호</td></tr>
+                  <tr><td>V</td><td>물건종류</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1539,6 +1615,7 @@ export default function Sales() {
               <br />
               <strong style={{ color: '#1a73e8' }}>환불 매칭:</strong> 기존 매출에서 <strong>고객명 + 금액 + 결제방식</strong> 일치건을 찾아 status=환불완료로 업데이트. 매칭 실패 또는 다건 매칭 시 스킵됩니다.<br />
               <strong style={{ color: '#d93025' }}>※ 알림톡은 일괄 업로드 시 발송되지 않습니다.</strong>
+              <br /><strong style={{ color: '#d93025' }}>※ 낙찰수수료 행은 C열 등록 담당자, E열 전화번호, H열 실제 낙찰일과 T~V열이 모두 있어야 등록됩니다. 누락 행은 보완 필요로 제외됩니다.</strong>
             </div>
           </div>
 
@@ -1611,6 +1688,9 @@ export default function Sales() {
                 const evidM = String(getCellValue('M', rowNo) || '').trim();
                 const payN = String(getCellValue('N', rowNo) || '').trim();
                 const memoS = String(getCellValue('S', rowNo) || '').trim();
+                const courtT = String(getCellValue('T', rowNo) || '').trim();
+                const caseNumberU = String(getCellValue('U', rowNo) || '').trim();
+                const propertyTypeV = String(getCellValue('V', rowNo) || '').trim();
 
                 // 완전 빈 행 스킵 (고객명·금액·담당자 모두 없음)
                 if (!clientD && !amountI && !nameC) continue;
@@ -1643,6 +1723,9 @@ export default function Sales() {
                   evidence_raw: evidM,
                   payment_raw: payN,
                   memo_s: memoS,
+                  court: courtT,
+                  case_number: caseNumberU,
+                  property_type: propertyTypeV,
                   refund_mark: refundMark,
                   has_red_color: hasRed,
                 });
@@ -1651,11 +1734,19 @@ export default function Sales() {
               if (payloadRecords.length === 0) { alert('업로드할 행이 없습니다.'); return; }
 
               const refundRows = payloadRecords.filter(r => r.refund_mark || r.has_red_color || r.amount < 0);
-              const normalRows = payloadRecords.length - refundRows.length;
+              const winningRepairRows = payloadRecords.filter(r =>
+                !r.refund_mark && !r.has_red_color && r.amount >= 0 &&
+                /낙찰/.test(String(r.type_raw || '')) &&
+                (!r.user_name || !isValidCustomerPhone(r.client_phone) || !r.court || !r.case_number || !r.property_type)
+              );
+              const normalRows = payloadRecords.length - refundRows.length - winningRepairRows.length;
 
               let msg = `총 ${payloadRecords.length}개 행 분석 완료\n`;
               msg += `• 일반 매출: ${normalRows}건\n`;
               msg += `• 환불/취소 의심 건: ${refundRows.length}건\n\n`;
+              if (winningRepairRows.length > 0) {
+                msg += `• 낙찰정보 보완 필요(등록 제외): ${winningRepairRows.length}건\n\n`;
+              }
               msg += '업로드하시겠습니까?';
               if (!confirm(msg)) return;
 
@@ -1670,6 +1761,7 @@ export default function Sales() {
                 if (sc.duplicate) detail.push(`중복: ${sc.duplicate}`);
                 if (sc.no_origin) detail.push(`환불 원본 없음: ${sc.no_origin}`);
                 if (sc.multi_match) detail.push(`다건매칭: ${sc.multi_match}`);
+                if (sc.lawitgo_repair_required) detail.push(`낙찰정보 보완 필요: ${sc.lawitgo_repair_required}`);
                 if (detail.length) resultMsg += `\n▶ 스킵 유형별: ${detail.join(' / ')}`;
               }
               if (res.skipped?.length > 0) {
@@ -1827,7 +1919,13 @@ export default function Sales() {
             )}
             <div>
               <label className="form-label">유형</label>
-              <select className="form-input" value={formType} onChange={(e) => { setFormType(e.target.value); setFormPhone(''); setSelectedCustomerId(''); setSelectedCustomerPhones([]); }} style={{ width: '100%' }}>
+              <select className="form-input" value={formType} onChange={(e) => {
+                const nextType = e.target.value;
+                setFormType(nextType);
+                if (nextType === '낙찰') setFormContractDate('');
+                else if (!formContractDate) setFormContractDate(new Date().toISOString().slice(0, 10));
+                setFormPhone(''); setSelectedCustomerId(''); setSelectedCustomerPhones([]);
+              }} style={{ width: '100%' }}>
                 {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
@@ -1920,9 +2018,37 @@ export default function Sales() {
             </div>
             <div><label className="form-label">금액 (부가세 포함)</label>
               <input className="form-input" value={toMoneyDisplay(formAmount)} onChange={(e) => setFormAmount(fromMoneyDisplay(e.target.value))} style={{ width: '100%' }} placeholder="금액" /></div>
-            <div><label className="form-label">{getDateLabel(formType)}</label>
-              <input className="form-input" type="date" value={formContractDate} onChange={(e) => setFormContractDate(e.target.value)} style={{ width: '100%' }} /></div>
+            <div><label className="form-label">{getDateLabel(formType)}{formType === '낙찰' ? ' *' : ''}</label>
+              <input className="form-input" type="date" value={formContractDate} onChange={(e) => setFormContractDate(e.target.value)}
+                required={formType === '낙찰'} style={{ width: '100%' }} /></div>
           </div>
+
+          {formType === '낙찰' && (
+            <div style={{ marginTop: 14, padding: 16, background: '#fff8e1', borderRadius: 8, border: '1px solid #f4d03f' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: 4, color: '#7b5e00' }}>Lawitgo 낙찰정보</div>
+              <div style={{ fontSize: '0.74rem', color: '#5f6368', marginBottom: 10 }}>
+                누락 없이 실제 전송될 원본 정보입니다. 수수료 변동 사유와 분리하여 저장되며,
+                등록 후 전송정보 정정은 담당 관리자에게 요청하세요.
+              </div>
+              <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+                <div>
+                  <label className="form-label">관할법원 <span style={{ color: '#d93025' }}>*</span></label>
+                  <input className="form-input" value={formWinningCourt} onChange={(e) => setFormWinningCourt(e.target.value)}
+                    style={{ width: '100%' }} placeholder="예: 의정부지방법원" required />
+                </div>
+                <div>
+                  <label className="form-label">사건번호 <span style={{ color: '#d93025' }}>*</span></label>
+                  <input className="form-input" value={formWinningCaseNumber} onChange={(e) => setFormWinningCaseNumber(e.target.value)}
+                    style={{ width: '100%' }} placeholder="예: 2026타경12345" required />
+                </div>
+                <div>
+                  <label className="form-label">물건종류 <span style={{ color: '#d93025' }}>*</span></label>
+                  <input className="form-input" value={formWinningPropertyType} onChange={(e) => setFormWinningPropertyType(e.target.value)}
+                    style={{ width: '100%' }} placeholder="예: 아파트" required />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* 매수신청대리 비용 */}
           {formType === '매수신청대리' && (() => {
@@ -2069,7 +2195,7 @@ export default function Sales() {
                     </div>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       {dep.status === 'pending' && (
-                        <button className="btn btn-sm btn-primary" onClick={() => { setClaimingId(dep.id); setClaimType('계약'); setClaimClient(''); }}>내 건 등록</button>
+                        <button className="btn btn-sm btn-primary" onClick={() => { resetClaimForm(); setClaimingId(dep.id); }}>내 건 등록</button>
                       )}
                       {dep.status === 'claimed' && (
                         <>
@@ -2089,15 +2215,38 @@ export default function Sales() {
                     </div>
                   </div>
                   {isClaiming && (
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #e5e7eb', display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                    <div className="sales-claim-form" style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #e5e7eb', display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
                       <div><label className="form-label" style={{ fontSize: '0.75rem' }}>유형</label>
-                        <select className="form-input" value={claimType} onChange={(e) => setClaimType(e.target.value)} style={{ width: 100 }}>
+                        <select className="form-input" value={claimType} onChange={(e) => {
+                          setClaimType(e.target.value);
+                          setClaimPhone('');
+                          setClaimWinningDate('');
+                          setClaimWinningCourt('');
+                          setClaimWinningCaseNumber('');
+                          setClaimWinningPropertyType('');
+                        }} style={{ width: 100 }}>
                           {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                         </select></div>
                       <div><label className="form-label" style={{ fontSize: '0.75rem' }}>계약자명</label>
                         <input className="form-input" value={claimClient} onChange={(e) => setClaimClient(e.target.value)} placeholder="계약자명" /></div>
+                      {claimType === '낙찰' && (
+                        <>
+                          <div><label className="form-label" style={{ fontSize: '0.75rem' }}>낙찰일 *</label>
+                            <input className="form-input" type="date" value={claimWinningDate}
+                              onChange={(e) => setClaimWinningDate(e.target.value)} required /></div>
+                          <div><label className="form-label" style={{ fontSize: '0.75rem' }}>전화번호 *</label>
+                            <input className="form-input" value={claimPhone} inputMode="tel" onChange={(e) => setClaimPhone(formatPhone(e.target.value))}
+                              placeholder="010-0000-0000" maxLength={13} /></div>
+                          <div><label className="form-label" style={{ fontSize: '0.75rem' }}>관할법원 *</label>
+                            <input className="form-input" value={claimWinningCourt} onChange={(e) => setClaimWinningCourt(e.target.value)} placeholder="관할법원" /></div>
+                          <div><label className="form-label" style={{ fontSize: '0.75rem' }}>사건번호 *</label>
+                            <input className="form-input" value={claimWinningCaseNumber} onChange={(e) => setClaimWinningCaseNumber(e.target.value)} placeholder="2026타경12345" /></div>
+                          <div><label className="form-label" style={{ fontSize: '0.75rem' }}>물건종류 *</label>
+                            <input className="form-input" value={claimWinningPropertyType} onChange={(e) => setClaimWinningPropertyType(e.target.value)} placeholder="예: 아파트" /></div>
+                        </>
+                      )}
                       <button className="btn btn-sm btn-primary" onClick={() => handleClaim(dep.id)}>확인</button>
-                      <button className="btn btn-sm" onClick={() => setClaimingId(null)}>취소</button>
+                      <button className="btn btn-sm" onClick={resetClaimForm}>취소</button>
                     </div>
                   )}
                 </div>
@@ -2572,6 +2721,9 @@ export default function Sales() {
                 </div>
                 <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>담당자</span><div>{detailRecord.user_name}</div></div>
                 <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>금액</span><div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{formatCurrency(detailRecord.amount)}</div></div>
+                {Number(detailRecord.refund_amount || 0) > 0 && detailRecord.status !== 'refunded' && (
+                  <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>부분환불</span><div style={{ fontWeight: 700, color: '#e65100' }}>-{formatCurrency(Number(detailRecord.refund_amount || 0))}<span style={{ fontSize: '0.72rem', color: '#9aa0a6', fontWeight: 400 }}> · 순액 {formatCurrency(Number(detailRecord.amount || 0) - Number(detailRecord.refund_amount || 0))}</span></div></div>
+                )}
                 <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>일자</span><div>{detailRecord.contract_date}</div></div>
                 {/* 중복 계약: 계약 미포함 체크박스 (계약 타입만) */}
                 {detailRecord.type === '계약' && isDuplicate(detailRecord) && canModifyAccounting && (
@@ -2882,6 +3034,24 @@ export default function Sales() {
                     catch (err: any) { alert(err.message); }
                   }}>
                   <RotateCcw size={12} /> 환불신청
+                </button>
+              )}
+              {/* 부분환불 (회계) — 환불액 입력, 매출은 유지(집계 원금) + 프리랜서 공제는 환불액 비례 */}
+              {(detailRecord.status === 'confirmed' || detailRecord.status === 'card_pending') && canApproveAccounting && (
+                <button className="btn btn-sm" style={{ fontSize: '0.78rem', marginBottom: 12, color: '#e65100', border: '1px solid #e65100' }}
+                  onClick={async () => {
+                    const alreadyRefunded = Number(detailRecord.refund_amount || 0);
+                    const total = Number(detailRecord.amount || 0);
+                    const raw = prompt(`부분환불 금액(원)을 입력하세요.\n총 매출: ${total.toLocaleString()}원${alreadyRefunded > 0 ? `\n기존 환불: ${alreadyRefunded.toLocaleString()}원` : ''}\n\n매출 전액과 같으면 전액환불로 처리됩니다.`, '');
+                    if (raw === null) return;
+                    const refundAmount = Number(String(raw).replace(/[^\d]/g, ''));
+                    if (!Number.isFinite(refundAmount) || refundAmount <= 0) { alert('환불액을 1원 이상 숫자로 입력하세요.'); return; }
+                    if (refundAmount > total) { alert('환불액이 매출 총액을 초과할 수 없습니다.'); return; }
+                    if (!confirm(`${refundAmount.toLocaleString()}원을 환불 처리합니다.\n프리랜서(비율제) 공제는 이 금액에 비례해 환불 승인월 급여정산에 반영됩니다.\n\n계속할까요?`)) return;
+                    try { await api.sales.partialRefund(detailRecord.id, refundAmount); setDetailRecord(null); load(); }
+                    catch (err: any) { alert(err.message); }
+                  }}>
+                  <RotateCcw size={12} /> 부분환불
                 </button>
               )}
               {/* 환불승인 버튼 (환불신청 상태 + 관리자/회계) — 회계장부와 동일 동작 */}

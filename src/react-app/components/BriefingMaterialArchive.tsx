@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Archive, Cloud, Download, FileText, Presentation, Search } from 'lucide-react';
+import { Archive, Cloud, Download, FileText, Presentation, Receipt, Search } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 
@@ -41,6 +41,7 @@ export default function BriefingMaterialArchive() {
     <nav className="archive-category-tabs" aria-label="문서보관함 하위 카테고리">
       <button type="button" onClick={() => setSearchParams({})}><FileText size={16} /> 결재문서</button>
       <button type="button" className="active"><Presentation size={16} /> 브리핑자료</button>
+      <button type="button" onClick={() => setSearchParams({ category: 'expense-receipts' })}><Receipt size={16} /> 영수증 지출결의</button>
     </nav>
     <div className="page-header briefing-archive-header">
       <div><h2><Archive size={24} /> 브리핑자료</h2><p>경매분석에서 제출한 원본과 Google Drive 백업 상태입니다.</p></div>

@@ -79,6 +79,17 @@ export interface Document {
   cancel_requested: number;
   cancel_reason: string;
   cancelled: number;
+  expense_receipt_approval_action?: {
+    action: 'approved' | 'rejected';
+    actor_id: string;
+    actor_name: string;
+    actor_role: string;
+    comment: string;
+    created_at: string;
+  } | null;
+  can_expense_receipt_approve?: boolean;
+  can_expense_receipt_reject?: boolean;
+  expense_receipt_revision?: number;
   created_at: string;
   updated_at: string;
 }
@@ -176,6 +187,7 @@ export interface SalesRecord {
   refund_requested_at: string | null;
   refund_approved_at: string | null;
   refund_approved_by: string | null;
+  refund_amount?: number;
   refund_approved_by_name?: string;
   direction: 'income' | 'expense';
   payment_method: string;

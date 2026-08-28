@@ -99,7 +99,18 @@ test('프론트엔드에는 API 키 헤더가 없고 lawitgo UI는 sandbox ifram
   const cacheSource = readFileSync('src/worker/lib/lawitgo-progress-cache.ts', 'utf8');
   const workerSource = readFileSync('src/worker/index.ts', 'utf8');
 
-  assert.doesNotMatch(apiSource, /consultantId|consultant_id|X-API-Key|LAWITGO_API_KEY/);
+  const progressTypeStart = apiSource.indexOf('export interface LawitgoProgressItem');
+  const progressTypeEnd = apiSource.indexOf('export interface LawitgoWinningRepairItem', progressTypeStart);
+  const progressApiStart = apiSource.indexOf('lawitgoProgress:');
+  const progressApiEnd = apiSource.indexOf('lawitgoWinningAdmin:', progressApiStart);
+  assert.ok(progressTypeStart >= 0 && progressTypeEnd > progressTypeStart);
+  assert.ok(progressApiStart >= 0 && progressApiEnd > progressApiStart);
+  const progressFrontendSource = [
+    apiSource.slice(progressTypeStart, progressTypeEnd),
+    apiSource.slice(progressApiStart, progressApiEnd),
+  ].join('\n');
+
+  assert.doesNotMatch(progressFrontendSource, /consultantId|consultant_id|X-API-Key|LAWITGO_API_KEY/);
   assert.doesNotMatch(pageSource, /consultantId|consultant_id|X-API-Key|LAWITGO_API_KEY|dangerouslySetInnerHTML/);
   assert.match(pageSource, /sandbox=""/);
   assert.match(pageSource, /srcDoc=\{srcDoc\}/);

@@ -4,6 +4,7 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
+import { resolveSalesRecordSqlScope } from '../lib/sales-record-scope';
 import { calculateRefundRecoveryAmount, refundApprovalMonth } from '../../shared/refund-recovery';
 import { resolveRefundRecovery } from '../lib/refund-recovery';
 import { accountingEntryInitialStatus, effectiveSalesStatus, normalizeSalesRecognition } from '../../shared/sales-recognition';
@@ -12,6 +13,18 @@ import { canUseRequestedSalesOwner } from '../../shared/sales-assignment';
 import { isValidCustomerPhone, normalizeCustomerName, normalizeCustomerPhone } from '../../shared/sales-customer-identity';
 import { resolveSalesCustomer, searchSalesCustomers } from '../lib/sales-customer-master';
 import { resolveSalesAttributionBranch } from '../lib/sales-attribution';
+import {
+  assertLawitgoWinningSaleDeletable,
+  LawitgoWinningOverrideError,
+  LawitgoWinningSaleDeleteBlockedError,
+  type LawitgoWinningOverrideInput,
+  type LawitgoWinningOverrideContext,
+  type ValidatedLawitgoWinningOverride,
+  prepareLawitgoWinningOverrideContext,
+  upsertLawitgoWinningOverride,
+  upsertValidatedLawitgoWinningOverride,
+  validateLawitgoWinningOverrideInput,
+} from '../lib/lawitgo-winning-delivery';
 import {
   ensureEmploymentTypeHistoryTable,
   resolveEmploymentTypeFromHistory,
@@ -147,6 +160,73 @@ function monthRangeBetween(startMonth: string, endMonth: string): string[] | nul
   return months;
 }
 
+type SalesWinningSourceRequest = {
+  client_name?: unknown;
+  client_phone?: unknown;
+  contract_date?: unknown;
+  court?: unknown;
+  case_number?: unknown;
+  property_type?: unknown;
+};
+
+function winningSourceText(value: unknown): string {
+  return String(value || '').trim();
+}
+
+function parseWinningSourceData(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(String(value || '{}'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function buildSalesWinningOverrideInput(
+  request: SalesWinningSourceRequest,
+  assigneeUserId: string,
+  linkedSource: unknown = {},
+): LawitgoWinningOverrideInput {
+  const source = parseWinningSourceData(linkedSource);
+  return {
+    customerName: winningSourceText(request.client_name),
+    customerPhone: winningSourceText(request.client_phone),
+    court: winningSourceText(request.court) || winningSourceText(source.court),
+    caseNumber: winningSourceText(request.case_number) || winningSourceText(source.caseNo),
+    propertyType: winningSourceText(request.property_type) || winningSourceText(source.propertyType),
+    winningDate: winningSourceText(request.contract_date).slice(0, 10),
+    assigneeUserId: winningSourceText(assigneeUserId),
+  };
+}
+
+async function cleanupFailedWinningSale(db: D1Database, salesRecordId: string): Promise<void> {
+  try {
+    await assertLawitgoWinningSaleDeletable(db, salesRecordId);
+  } catch (error) {
+    console.error('[sales] preserved a Lawitgo sending/sent sale during failed-create cleanup', error);
+    return;
+  }
+
+  try {
+    await db.batch([
+      db.prepare("DELETE FROM lawitgo_winning_outbox WHERE sales_record_id = ? AND status NOT IN ('sending', 'sent')").bind(salesRecordId),
+      db.prepare('DELETE FROM lawitgo_winning_overrides WHERE sales_record_id = ?').bind(salesRecordId),
+    ]);
+  } catch (error) {
+    console.error('[sales] failed to clean up incomplete Lawitgo winning metadata', error);
+  }
+
+  // The metadata tables may not exist yet on an older database. Always attempt
+  // the source sale deletion separately so a failed snapshot can never leave a
+  // half-created winning record behind.
+  try {
+    await db.prepare('DELETE FROM sales_records WHERE id = ?').bind(salesRecordId).run();
+  } catch (error) {
+    console.error('[sales] failed to clean up incomplete Lawitgo winning sale', error);
+  }
+}
+
 const SALES_DIFF_FIELDS = [
   { key: 'type', label: '유형' },
   { key: 'type_detail', label: '사건내용' },
@@ -183,35 +263,10 @@ sales.get('/', async (c) => {
   const params: any[] = [];
   conditions.push(excludeCaseAllowanceSalesSql('sr'));
 
-  const role = user.role;
-  const isAccountant = role === 'accountant' || role === 'accountant_asst';
-  const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-
-  if (role === 'director') {
-    // 총괄이사: 본인 건 + 대전/부산 (담당자 지사 또는 매출귀속 지사 기준)
-    conditions.push(`(sr.user_id = ? OR sr.branch IN ('대전', '대전지사', '부산', '부산지사') OR sr.attribution_branch IN ('대전', '대전지사', '부산', '부산지사'))`);
-    params.push(user.sub);
-  } else if (!isAdmin && !isAccountant) {
-    if (role === 'manager') {
-      // 팀장: 본인 팀 전체
-      conditions.push('(sr.user_id = ? OR (u.branch = ? AND u.department = ?))');
-      params.push(user.sub, user.branch, user.department);
-    } else {
-      // 팀원: 본인만
-      conditions.push('sr.user_id = ?');
-      params.push(user.sub);
-    }
-  } else if (role === 'admin' && !isHeadOfficeBranch(user.branch)) {
-    // 일반 관리자: 본인 지사 (+ 예외 사용자에겐 추가 지사 허용)
-    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
-    if (allBranches.length > 1) {
-      const placeholders = allBranches.map(() => '?').join(',');
-      conditions.push(`(sr.branch IN (${placeholders}) OR sr.attribution_branch IN (${placeholders}))`);
-      params.push(...allBranches, ...allBranches);
-    } else {
-      conditions.push('sr.branch = ?');
-      params.push(allBranches[0] || user.branch);
-    }
+  const salesScope = await resolveSalesRecordSqlScope(db, user);
+  if (salesScope.sql) {
+    conditions.push(salesScope.sql);
+    params.push(...salesScope.params);
   }
 
   // 담당자 필터
@@ -420,22 +475,10 @@ sales.get('/missing-documents', async (c) => {
     params.push(`${month}-01`, `${month}-${new Date(y, m, 0).getDate()}`);
   }
 
-  if (role === 'manager') {
-    query += ' AND (sr.user_id = ? OR (u.branch = ? AND u.department = ?))';
-    params.push(user.sub, user.branch, user.department);
-  } else if (role === 'director') {
-    query += " AND (sr.user_id = ? OR sr.branch IN ('대전', '대전지사', '부산', '부산지사') OR sr.attribution_branch IN ('대전', '대전지사', '부산', '부산지사'))";
-    params.push(user.sub);
-  } else if (role === 'admin' && !isHeadOfficeBranch(user.branch)) {
-    const allBranches = await getAdminVisibleBranches(db, user, ADMIN_EXTRA_BRANCHES[user.sub] || []);
-    if (allBranches.length > 1) {
-      const placeholders = allBranches.map(() => '?').join(',');
-      query += ` AND (sr.branch IN (${placeholders}) OR sr.attribution_branch IN (${placeholders}))`;
-      params.push(...allBranches, ...allBranches);
-    } else {
-      query += ' AND sr.branch = ?';
-      params.push(allBranches[0] || user.branch);
-    }
+  const salesScope = await resolveSalesRecordSqlScope(db, user);
+  if (salesScope.sql) {
+    query += ` AND ${salesScope.sql}`;
+    params.push(...salesScope.params);
   }
   query += ' ORDER BY u.branch, u.department, u.name, sr.contract_date DESC';
 
@@ -591,6 +634,9 @@ sales.post('/', async (c) => {
     proxy_cost?: number;
     user_id?: string;
     customer_id?: string;
+    court?: string;
+    case_number?: string;
+    property_type?: string;
   }>();
 
   if (!['계약', '낙찰', '중개', '권리분석보증서', '매수신청대리', '기타'].includes(body.type)) {
@@ -602,6 +648,7 @@ sales.post('/', async (c) => {
   let ownerName = user.name || '';
   let ownerBranch = user.branch;
   let ownerDepartment = user.department;
+  let linkedWinningSource: Record<string, unknown> = {};
 
   const requestedOwnerId = String(body.user_id || '').trim();
   if (!canUseRequestedSalesOwner(user.role, user.sub, requestedOwnerId)) {
@@ -634,7 +681,7 @@ sales.post('/', async (c) => {
 
   if (body.journal_entry_id) {
     const linkedEntry = await db.prepare(`
-      SELECT j.user_id, j.branch, j.department, u.name as user_name
+      SELECT j.user_id, j.branch, j.department, j.data, u.name as user_name
       FROM journal_entries j
       LEFT JOIN users u ON u.id = j.user_id
       WHERE j.id = ?
@@ -642,6 +689,7 @@ sales.post('/', async (c) => {
       user_id: string;
       branch: string;
       department: string;
+      data: string;
       user_name: string;
     }>();
 
@@ -660,6 +708,7 @@ sales.post('/', async (c) => {
     ownerName = linkedEntry.user_name || ownerName;
     ownerBranch = linkedEntry.branch || ownerBranch;
     ownerDepartment = linkedEntry.department || ownerDepartment;
+    linkedWinningSource = parseWinningSourceData(linkedEntry.data);
   }
 
   let clientPhone = String(body.client_phone || '').trim();
@@ -690,6 +739,26 @@ sales.post('/', async (c) => {
     }, 400);
   }
 
+  if (body.type === '낙찰' && !String(body.contract_date || '').trim()) {
+    return c.json({ error: '낙찰일을 입력해 주세요.' }, 400);
+  }
+  const effectiveContractDate = body.contract_date || new Date().toISOString().slice(0, 10);
+  const winningOverrideInput = body.type === '낙찰'
+    ? buildSalesWinningOverrideInput({
+        ...body,
+        client_phone: clientPhone,
+        contract_date: effectiveContractDate,
+      }, ownerId, linkedWinningSource)
+    : null;
+  if (winningOverrideInput) {
+    try {
+      await validateLawitgoWinningOverrideInput(db, winningOverrideInput);
+    } catch (error) {
+      if (error instanceof LawitgoWinningOverrideError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
+  }
+
   let customerId: string | null = null;
   if (body.type === '계약' || body.type === '낙찰') {
     try {
@@ -706,23 +775,34 @@ sales.post('/', async (c) => {
   }
 
   const id = crypto.randomUUID();
-  await db.prepare(`
-    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, attribution_branch, payment_type, receipt_type, receipt_phone, proxy_cost, customer_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    id, ownerId, body.type, body.type_detail || '', body.client_name,
-    body.depositor_name || '', body.depositor_different ? 1 : 0,
-    body.amount || 0, body.contract_date || new Date().toISOString().slice(0, 10),
-    body.journal_entry_id || null, direction, ownerBranch, ownerDepartment,
-    resolveSalesAttributionBranch(ownerName),
-    body.payment_type || '', body.receipt_type || '', body.receipt_phone || '',
-    body.proxy_cost || 0, customerId
-  ).run();
+  let inserted = false;
+  try {
+    await db.prepare(`
+      INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, attribution_branch, payment_type, receipt_type, receipt_phone, proxy_cost, customer_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id, ownerId, body.type, body.type_detail || '', body.client_name,
+      body.depositor_name || '', body.depositor_different ? 1 : 0,
+      body.amount || 0, effectiveContractDate,
+      body.journal_entry_id || null, direction, ownerBranch, ownerDepartment,
+      resolveSalesAttributionBranch(ownerName),
+      body.payment_type || '', body.receipt_type || '', body.receipt_phone || '',
+      body.proxy_cost || 0, customerId
+    ).run();
+    inserted = true;
 
-  // 계약조건 기록 (별도 UPDATE — 컬럼 호환성)
-  if (body.appraisal_rate || body.winning_rate || clientPhone) {
-    await db.prepare("UPDATE sales_records SET appraisal_rate = ?, winning_rate = ?, client_phone = ? WHERE id = ?")
-      .bind(body.appraisal_rate || 0, body.winning_rate || 0, clientPhone, id).run();
+    // 계약조건 기록 (별도 UPDATE — 컬럼 호환성)
+    if (body.appraisal_rate || body.winning_rate || clientPhone) {
+      await db.prepare("UPDATE sales_records SET appraisal_rate = ?, winning_rate = ?, client_phone = ? WHERE id = ?")
+        .bind(body.appraisal_rate || 0, body.winning_rate || 0, clientPhone, id).run();
+    }
+    if (winningOverrideInput) {
+      await upsertLawitgoWinningOverride(db, id, winningOverrideInput, user.sub);
+    }
+  } catch (error) {
+    if (winningOverrideInput && inserted) await cleanupFailedWinningSale(db, id);
+    if (error instanceof LawitgoWinningOverrideError) return c.json({ error: error.message }, error.status);
+    throw error;
   }
 
   // 알림톡: 매출 등록(입금대기) → 해당 지사 알림톡 ON한 총무에게 DEPOSIT_CLAIM
@@ -800,6 +880,17 @@ sales.put('/:id', async (c) => {
     body.tax_invoice_type !== undefined
   )) {
     return c.json({ error: '증빙/정산 정보는 총무만 수정할 수 있습니다.' }, 403);
+  }
+  if (body.type && body.type !== record.type && (body.type === '낙찰' || record.type === '낙찰')) {
+    return c.json({
+      error: '낙찰 매출의 유형은 일반 수정에서 변경할 수 없습니다. 신규 낙찰은 Lawitgo 필수정보와 함께 등록하고, 기존 낙찰정보는 발송관리에서 정정하세요.',
+    }, 400);
+  }
+  // 확정 매출의 금액 축소는 부분환불 기능으로만. 직접 축소하면 프리랜서 공제(clawback)가 누락된다.
+  if (body.amount !== undefined
+    && Number(body.amount) < Number(record.amount)
+    && (record.status === 'confirmed' || record.status === 'card_pending')) {
+    return c.json({ error: '확정 매출의 금액을 낮추려면 "부분환불" 기능(환불액 입력)을 사용하세요. 직접 축소하면 프리랜서 공제가 누락됩니다.' }, 400);
   }
 
   // 카드의 확정 여부는 상품 유형이나 이전 상태가 아니라 정산일로만 결정한다.
@@ -999,7 +1090,7 @@ sales.post('/:id/refund-approve', requireRole(...EDIT_ACCOUNTING_ROLES), async (
   if (record.status !== 'refund_requested') return c.json({ error: '환불 신청된 건만 승인할 수 있습니다.' }, 400);
 
   await db.prepare(`
-    UPDATE sales_records SET status = 'refunded', refund_approved_at = datetime('now', '+9 hours'), refund_approved_by = ?, updated_at = datetime('now', '+9 hours')
+    UPDATE sales_records SET status = 'refunded', refund_amount = amount, refund_approved_at = datetime('now', '+9 hours'), refund_approved_by = ?, updated_at = datetime('now', '+9 hours')
     WHERE id = ?
   `).bind(user.sub, id).run();
 
@@ -1031,6 +1122,44 @@ sales.post('/:id/refund-approve', requireRole(...EDIT_ACCOUNTING_ROLES), async (
   }
 
   return c.json({ success: true });
+});
+
+// POST /api/sales/:id/partial-refund — 부분환불 (회계): 환불액만 기록, 매출은 유지(집계 원금), 프리랜서 공제는 환불액 비례
+sales.post('/:id/partial-refund', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
+  const id = c.req.param('id');
+  const user = c.get('user');
+  const db = c.env.DB;
+  const body = await c.req.json<{ refund_amount?: number }>().catch(() => ({} as { refund_amount?: number }));
+  const refundAmount = Math.floor(Number(body.refund_amount) || 0);
+
+  const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
+  if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
+  if (record.status !== 'confirmed' && record.status !== 'card_pending') {
+    return c.json({ error: '확정된 매출만 부분환불할 수 있습니다.' }, 400);
+  }
+  const total = Number(record.amount) || 0;
+  if (refundAmount <= 0) return c.json({ error: '환불액을 1원 이상 입력하세요.' }, 400);
+  if (refundAmount > total) return c.json({ error: '환불액이 매출 총액을 초과할 수 없습니다.' }, 400);
+
+  const isFull = refundAmount >= total;
+  await db.prepare(`
+    UPDATE sales_records
+    SET refund_amount = ?, refund_approved_at = datetime('now', '+9 hours'), refund_approved_by = ?,
+        status = CASE WHEN ? = 1 THEN 'refunded' ELSE status END,
+        updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+  `).bind(refundAmount, user.sub, isFull ? 1 : 0, id).run();
+
+  await logActivity(db, user as LogUser, {
+    action: 'refund_approve', target_id: id, target_label: recordLabel(record),
+    diff_summary: isFull
+      ? `전액환불(부분환불 입력) ${refundAmount.toLocaleString('ko-KR')}원`
+      : `부분환불 ${refundAmount.toLocaleString('ko-KR')}원 / 총 ${total.toLocaleString('ko-KR')}원 (매출 유지, 공제 비례)`,
+    before: { status: record.status, refund_amount: Number(record.refund_amount) || 0 },
+    after: { status: isFull ? 'refunded' : record.status, refund_amount: refundAmount },
+  }, getSourcePage(c));
+
+  return c.json({ success: true, refund_amount: refundAmount, is_full: isFull });
 });
 
 // ━━━ [6-2] 계약서 제출/미제출 ━━━
@@ -1086,6 +1215,19 @@ sales.put('/:id/memo', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
 sales.delete('/by-entry/:entryId', async (c) => {
   const entryId = c.req.param('entryId');
   const db = c.env.DB;
+  const candidates = await db.prepare(
+    "SELECT id FROM sales_records WHERE journal_entry_id = ? AND status = 'pending'",
+  ).bind(entryId).all<{ id: string }>();
+  try {
+    for (const candidate of candidates.results || []) {
+      await assertLawitgoWinningSaleDeletable(db, candidate.id);
+    }
+  } catch (error) {
+    if (error instanceof LawitgoWinningSaleDeleteBlockedError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    throw error;
+  }
   await db.prepare("DELETE FROM sales_records WHERE journal_entry_id = ? AND status = 'pending'").bind(entryId).run();
   return c.json({ success: true });
 });
@@ -1148,7 +1290,7 @@ sales.get('/dashboard/refund-impacts', async (c) => {
     FROM sales_records sr
     JOIN users u ON u.id = sr.user_id
     LEFT JOIN user_accounting ua ON ua.user_id = sr.user_id
-    WHERE sr.status = 'refunded'
+    WHERE COALESCE(sr.refund_amount, 0) > 0
       AND sr.refund_approved_at >= datetime('now', '-60 days')
       AND NOT EXISTS (
         SELECT 1 FROM refund_recovery_resolutions rrr
@@ -1178,9 +1320,9 @@ sales.get('/dashboard/refund-impacts', async (c) => {
     const affectsBonus = r.pay_type === 'salary' && !isSamePeriod;
     const affectsCommission = r.pay_type === 'commission';
 
-    // 회수 금액 계산
+    // 회수 금액 계산 — 부분환불이면 환불액(refund_amount) 비례, 전액환불이면 refund_amount = amount
     const recoveryAmount = calculateRefundRecoveryAmount({
-      amount: r.amount,
+      amount: r.refund_amount,
       payType: r.pay_type,
       commissionRate: r.commission_rate,
       payrollMonth: refundApprovalMonth(r.refund_approved_at),
@@ -1194,6 +1336,7 @@ sales.get('/dashboard/refund-impacts', async (c) => {
       type: r.type,
       client_name: r.client_name,
       amount: r.amount,
+      refund_amount: r.refund_amount,
       settle_date: settleDate,
       refund_approved_at: r.refund_approved_at,
       bonus_period_label: bonusPeriodLabel,
@@ -1604,30 +1747,67 @@ sales.post('/deposits/:id/claim', async (c) => {
   const id = c.req.param('id');
   const user = c.get('user');
   const db = c.env.DB;
-  const { type, type_detail, client_name, contract_date } = await c.req.json<{
+  const body = await c.req.json<{
     type: string; type_detail?: string; client_name: string; contract_date?: string;
+    client_phone?: string; court?: string; case_number?: string; property_type?: string;
   }>();
+  const { type, type_detail, client_name, contract_date } = body;
+
+  if (!['계약', '낙찰', '중개', '권리분석보증서', '매수신청대리', '기타'].includes(type)) {
+    return c.json({ error: '유효하지 않은 매출 유형입니다.' }, 400);
+  }
 
   const notice = await db.prepare('SELECT * FROM deposit_notices WHERE id = ?').bind(id).first<any>();
   if (!notice) return c.json({ error: '입금 내역을 찾을 수 없습니다.' }, 404);
   if (notice.status !== 'pending') return c.json({ error: '이미 처리된 건입니다.' }, 400);
 
+  if (type === '낙찰' && !String(contract_date || '').trim()) {
+    return c.json({ error: '낙찰일을 입력해 주세요. 입금일은 낙찰일로 대신 사용할 수 없습니다.' }, 400);
+  }
+  const effectiveContractDate = type === '낙찰' ? String(contract_date).trim() : (contract_date || notice.deposit_date);
+  const winningOverrideInput = type === '낙찰'
+    ? buildSalesWinningOverrideInput({ ...body, contract_date: effectiveContractDate }, user.sub)
+    : null;
+  if (winningOverrideInput) {
+    try {
+      await validateLawitgoWinningOverrideInput(db, winningOverrideInput);
+    } catch (error) {
+      if (error instanceof LawitgoWinningOverrideError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
+  }
+
   // 매출 내역 생성 (입금등록 클레임 → 기본 이체로 기록)
   const salesId = crypto.randomUUID();
-  await db.prepare(`
-    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, status, confirmed_at, confirmed_by, branch, department, attribution_branch, payment_type)
-    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'pending', NULL, NULL, ?, ?, ?, '이체')
-  `).bind(
-    salesId, user.sub, type, type_detail || '', client_name,
-    notice.depositor, notice.amount, contract_date || notice.deposit_date,
-    user.branch, user.department, resolveSalesAttributionBranch(user.name)
-  ).run();
+  let inserted = false;
+  try {
+    await db.prepare(`
+      INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, client_phone, amount, contract_date, status, confirmed_at, confirmed_by, branch, department, attribution_branch, payment_type)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'pending', NULL, NULL, ?, ?, ?, '이체')
+    `).bind(
+      salesId, user.sub, type, type_detail || '', client_name,
+      notice.depositor, body.client_phone || '', notice.amount, effectiveContractDate,
+      user.branch, user.department, resolveSalesAttributionBranch(user.name)
+    ).run();
+    inserted = true;
 
-  // 입금 등록 업데이트
-  await db.prepare(`
-    UPDATE deposit_notices SET claimed_by = ?, claimed_at = datetime('now', '+9 hours'), sales_record_id = ?, status = 'claimed', updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(user.sub, salesId, id).run();
+    if (winningOverrideInput) {
+      await upsertLawitgoWinningOverride(db, salesId, winningOverrideInput, user.sub);
+    }
+
+    // A concurrent claim must not leave a duplicate sale or an orphan snapshot.
+    const claimResult = await db.prepare(`
+      UPDATE deposit_notices SET claimed_by = ?, claimed_at = datetime('now', '+9 hours'), sales_record_id = ?, status = 'claimed', updated_at = datetime('now', '+9 hours')
+      WHERE id = ? AND status = 'pending'
+    `).bind(user.sub, salesId, id).run();
+    if ((claimResult.meta?.changes || 0) !== 1) {
+      throw new LawitgoWinningOverrideError('이미 처리된 입금 내역입니다.', 409);
+    }
+  } catch (error) {
+    if (inserted) await cleanupFailedWinningSale(db, salesId);
+    if (error instanceof LawitgoWinningOverrideError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
 
   // 알림톡: 입금 매칭 신청 → 해당 지사 알림톡 ON한 총무에게 DEPOSIT_CLAIM
   const claimerBranch = user.branch || '';
@@ -1743,6 +1923,24 @@ sales.delete('/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant
   `).bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
 
+  let forcedLawitgoUnlock = false;
+  try {
+    await assertLawitgoWinningSaleDeletable(db, id);
+  } catch (error) {
+    if (error instanceof LawitgoWinningSaleDeleteBlockedError) {
+      if (!['master', 'accountant'].includes(user.role)) {
+        return c.json({ error: error.message }, error.status);
+      }
+      // 마스터·총무담당 강제 삭제: Lawitgo 감사 잠금은 outbox('sending'/'sent') 행에 의존하므로,
+      // 그 행을 먼저 제거하면 앱 검사와 DB 트리거(trg_sales_records_preserve_lawitgo_audit)를 함께 통과한다.
+      console.warn(`[sales] force-deleting Lawitgo-locked sale ${id} by ${user.sub} (${user.role})`);
+      await db.prepare('DELETE FROM lawitgo_winning_outbox WHERE sales_record_id = ?').bind(id).run();
+      forcedLawitgoUnlock = true;
+    } else {
+      throw error;
+    }
+  }
+
   // FK 참조 해제: deposit_notices의 sales_record_id를 NULL로, 클레임 상태 pending 복원
   await db.prepare(
     "UPDATE deposit_notices SET sales_record_id = NULL, claimed_by = NULL, claimed_at = NULL, status = 'pending' WHERE sales_record_id = ?"
@@ -1753,7 +1951,7 @@ sales.delete('/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant
   await logActivity(db, user as LogUser, {
     action: 'delete', target_id: id,
     target_label: `[${record.user_name || '?'}] ${recordLabel(record)}`,
-    diff_summary: `매출 삭제 (유형: ${record.type || ''}, 상태: ${record.status || ''})`,
+    diff_summary: `매출 삭제 (유형: ${record.type || ''}, 상태: ${record.status || ''})${forcedLawitgoUnlock ? ' · Lawitgo 발송건 강제삭제' : ''}`,
     before: record,
   }, getSourcePage(c));
 
@@ -1851,7 +2049,7 @@ sales.put('/:id/payment-method', requireRole(...EDIT_ACCOUNTING_ROLES), async (c
   return c.json({ success: true });
 });
 
-// [6-4] 엑셀 일괄 업로드 (회계 전용) — 새 양식 (A~S열 포지셔널)
+// [6-4] 엑셀 일괄 업로드 (회계 전용) — 새 양식 (A~V열 포지셔널)
 sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
@@ -1870,6 +2068,9 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
     evidence_raw?: string;         // M열 증빙
     payment_raw?: string;          // N열 결제방식
     memo_s?: string;               // S열 비고
+    court?: string;                // T열 관할법원 (낙찰 필수)
+    case_number?: string;          // U열 사건번호 (낙찰 필수)
+    property_type?: string;        // V열 물건종류 (낙찰 필수)
     // 환불 감지 플래그
     refund_mark?: 'refund' | 'card_cancel' | '';  // L/M열 텍스트에서 추출
     has_red_color?: boolean;       // 셀 빨간색 표시
@@ -1935,13 +2136,28 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   let count = 0;
   let refundCount = 0;
   const skipped: string[] = [];
-  const skipCounts = { no_client: 0, zero_amount: 0, duplicate: 0, no_origin: 0, multi_match: 0 };
+  const skipCounts = {
+    no_client: 0,
+    zero_amount: 0,
+    duplicate: 0,
+    no_origin: 0,
+    multi_match: 0,
+    lawitgo_repair_required: 0,
+  };
 
   // 사전 로드 1: 모든 사용자 (이름으로 조회)
-  const allUsers = await db.prepare('SELECT id, name, branch, department FROM users WHERE name != ""').all();
+  const allUsers = await db.prepare('SELECT id, name, branch, department, approved, role FROM users WHERE name != ""').all();
   const usersByName = new Map<string, any>();
+  const activeUsersByName = new Map<string, any[]>();
   (allUsers.results as any[]).forEach(u => {
-    if (u.name) usersByName.set(u.name.trim(), u);
+    if (!u.name) return;
+    const name = u.name.trim();
+    usersByName.set(name, u);
+    if (u.approved === 1 && u.role !== 'resigned') {
+      const matches = activeUsersByName.get(name) || [];
+      matches.push(u);
+      activeUsersByName.set(name, matches);
+    }
   });
 
   // 사전 로드 2: 기존 매출 (client+amount 인덱스 — 중복 체크 및 환불 매칭용)
@@ -1967,6 +2183,7 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   const localDupSet = new Set<string>();
   // 배치 처리용
   const batchStatements: any[] = [];
+  let winningOverrideContext: LawitgoWinningOverrideContext | null = null;
 
   for (const r of body.records) {
     const rowNo = r.row_no || 0;
@@ -2031,8 +2248,24 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
     const u = userName ? usersByName.get(userName) : null;
 
     const { type, type_detail } = mapType(r.type_raw || '');
+    const winningUserCandidates = type === '낙찰' ? (activeUsersByName.get(userName) || []) : [];
+    if (type === '낙찰' && winningUserCandidates.length !== 1) {
+      skipCounts.lawitgo_repair_required++;
+      const reason = winningUserCandidates.length > 1
+        ? `동명이인 담당자가 ${winningUserCandidates.length}명입니다.`
+        : '등록된 활성 담당자를 확인하세요.';
+      skipped.push(`행${rowNo}: 낙찰정보 보완 필요 — ${reason}`);
+      continue;
+    }
+    const resolvedUser = type === '낙찰' ? winningUserCandidates[0] : u;
     const depL = normDate(r.card_approve_date);  // L열 입금일
-    const contractDate = normDate(r.contract_date) || depL || normDate(r.pay_date) || normDate(r.date_a);
+    const explicitContractDate = normDate(r.contract_date); // H열 계약일/낙찰일
+    if (type === '낙찰' && !explicitContractDate) {
+      skipCounts.lawitgo_repair_required++;
+      skipped.push(`행${rowNo}: 낙찰정보 보완 필요 — H열 낙찰일을 입력하세요. 입금일·결제일은 대신 사용할 수 없습니다.`);
+      continue;
+    }
+    const contractDate = explicitContractDate || depL || normDate(r.pay_date) || normDate(r.date_a);
 
     // 중복 체크 (메모리)
     const dkey = dupKey(clientName, amount, contractDate);
@@ -2041,13 +2274,11 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
       skipped.push(`행${rowNo}: ${clientName} ${amount.toLocaleString()}원 — 중복 (${contractDate})`);
       continue;
     }
-    localDupSet.add(dkey);
-
-    const userId = u?.id || user.sub;
+    const userId = resolvedUser?.id || user.sub;
     const branchFromExcel = mapBranch(r.branch_raw || '');
-    const branch = branchFromExcel || u?.branch || user.branch || '';
-    const department = u?.department || user.department || '';
-    const finalTypeDetail = !u && userName
+    const branch = branchFromExcel || resolvedUser?.branch || user.branch || '';
+    const department = resolvedUser?.department || user.department || '';
+    const finalTypeDetail = !resolvedUser && userName
       ? `[담당: ${userName}] ${type_detail}`.trim()
       : type_detail;
 
@@ -2059,13 +2290,47 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
     const receiptPhone = receiptType ? extractPhone(r.memo_s || '') : '';
 
     const memoParts: string[] = [];
-    if (!u && userName) memoParts.push(`미가입 담당자: ${userName}`);
+    if (!resolvedUser && userName) memoParts.push(`미가입 담당자: ${userName}`);
     if (r.memo_s && !receiptPhone) memoParts.push(String(r.memo_s).slice(0, 200));
 
     const importedStatus = paymentType === '카드' && !cardDepDate ? 'card_pending' : 'confirmed';
     const id = crypto.randomUUID();
-    batchStatements.push(
-      db.prepare(`
+    let winningOverrideInput: LawitgoWinningOverrideInput | null = null;
+    let validatedWinningOverride: ValidatedLawitgoWinningOverride | null = null;
+    if (type === '낙찰') {
+      // Never substitute the uploader for an unknown spreadsheet assignee.
+      // Lawitgo must receive the actual consultant identity and mapping.
+      if (!resolvedUser) {
+        skipCounts.lawitgo_repair_required++;
+        skipped.push(`행${rowNo}: 낙찰정보 보완 필요 — 등록된 담당자를 확인하세요.`);
+        continue;
+      }
+      winningOverrideInput = buildSalesWinningOverrideInput({
+        client_name: clientName,
+        client_phone: r.client_phone,
+        contract_date: contractDate,
+        court: r.court,
+        case_number: r.case_number,
+        property_type: r.property_type,
+      }, resolvedUser.id);
+      try {
+        if (!winningOverrideContext) {
+          winningOverrideContext = await prepareLawitgoWinningOverrideContext(db);
+        }
+        validatedWinningOverride = await validateLawitgoWinningOverrideInput(
+          db,
+          winningOverrideInput,
+          winningOverrideContext,
+        );
+      } catch (error) {
+        skipCounts.lawitgo_repair_required++;
+        const reason = error instanceof Error ? error.message : '필수정보를 확인하세요.';
+        skipped.push(`행${rowNo}: 낙찰정보 보완 필요 — ${reason}`);
+        continue;
+      }
+    }
+
+    const insertStatement = db.prepare(`
         INSERT INTO sales_records
           (id, user_id, type, type_detail, client_name, depositor_name, client_phone,
            amount, contract_date, deposit_date, card_deposit_date, status,
@@ -2075,17 +2340,46 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
       `).bind(
         id, userId, type, finalTypeDetail, clientName, clientName, r.client_phone || '',
         amount, contractDate, depositDate, cardDepDate, importedStatus, user.sub,
-        branch, department, resolveSalesAttributionBranch(u?.name || userName), memoParts.join(' | '),
+        branch, department, resolveSalesAttributionBranch(resolvedUser?.name || userName), memoParts.join(' | '),
         paymentType, receiptType, receiptPhone,
-      )
-    );
+      );
+
+    if (winningOverrideInput) {
+      if (!validatedWinningOverride || !winningOverrideContext) {
+        skipCounts.lawitgo_repair_required++;
+        skipped.push(`행${rowNo}: 낙찰정보 보완 필요 — 검증 결과를 확인할 수 없습니다.`);
+        continue;
+      }
+      let inserted = false;
+      try {
+        await insertStatement.run();
+        inserted = true;
+        await upsertValidatedLawitgoWinningOverride(
+          db,
+          id,
+          validatedWinningOverride,
+          user.sub,
+          winningOverrideContext,
+        );
+      } catch (error) {
+        if (inserted) await cleanupFailedWinningSale(db, id);
+        skipCounts.lawitgo_repair_required++;
+        const reason = error instanceof Error ? error.message : '스냅샷 저장에 실패했습니다.';
+        skipped.push(`행${rowNo}: 낙찰정보 보완 필요 — ${reason}`);
+        continue;
+      }
+    } else {
+      batchStatements.push(insertStatement);
+    }
+
+    localDupSet.add(dkey);
     // in-memory 매칭 캐시에 추가 (같은 업로드 내 환불과 매칭 가능하게)
     existingList.push({
       id, user_id: userId, client_name: clientName, depositor_name: clientName,
       amount, contract_date: contractDate, payment_type: paymentType, status: importedStatus, branch
     });
     count++;
-    if (!u && userName) skipped.push(`행${rowNo}: ${userName} 미가입 (총무 명의로 등록됨)`);
+    if (!resolvedUser && userName) skipped.push(`행${rowNo}: ${userName} 미가입 (총무 명의로 등록됨)`);
   }
 
   // D1 batch 실행 (subrequest 1번으로 다건 처리)

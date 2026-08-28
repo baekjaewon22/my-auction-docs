@@ -113,8 +113,8 @@ export default function LinkReview() {
   const purposeColor = (a: string) => a === '입찰' ? '#d93025' : a === '임장' ? '#188038' : '#1a73e8';
 
   return (
-    <div style={{ padding: 20, maxWidth: 1100, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+    <div className="page link-review-page">
+      <div className="link-review-heading" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
         <Link2 size={24} color="#1a73e8" />
         <h2 style={{ margin: 0, fontSize: '1.3rem' }}>외근보고서 link 검수</h2>
       </div>
@@ -123,7 +123,7 @@ export default function LinkReview() {
         선택 후 "연결" 버튼, 매칭 entry가 없으면 "매칭 안 됨"으로 처리합니다.
       </p>
 
-      <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
+      <div className="link-review-tabs" style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
         {(['pending', 'resolved', 'skipped'] as const).map((t) => (
           <button key={t}
             className={`btn btn-sm ${tab === t ? 'btn-primary' : ''}`}
@@ -150,7 +150,7 @@ export default function LinkReview() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {exemptions.map((ex) => (
-                  <div key={ex.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid #f1e4b8', borderRadius: 6, background: '#fff' }}>
+                  <div key={ex.id} className="link-review-exemption-row" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid #f1e4b8', borderRadius: 6, background: '#fff' }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: '0.82rem', fontWeight: 700 }}>
                         {ex.user_name || '-'} · {ex.target_date} · {ex.activity_type}
@@ -179,9 +179,9 @@ export default function LinkReview() {
               border: '1px solid #e8eaed', borderRadius: 8, padding: 14,
               background: '#fff'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, gap: 12 }}>
+              <div className="link-review-item-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, gap: 12 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <div className="link-review-item-title" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                     <span style={{
                       fontSize: '0.7rem', padding: '2px 8px', borderRadius: 4,
                       background: tierColor(it.match_tier) + '22', color: tierColor(it.match_tier), fontWeight: 600
@@ -205,7 +205,7 @@ export default function LinkReview() {
                   </div>
                 </div>
                 {tab === 'pending' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div className="link-review-item-actions" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <button className="btn btn-sm btn-primary" onClick={() => handleResolve(it.id)}>
                       <Check size={13} /> 연결 ({(selected[it.id]?.size || 0)}건)
                     </button>
@@ -231,7 +231,7 @@ export default function LinkReview() {
                     const isSelected = selected[it.id]?.has(c.id) || false;
                     const matchesBody = it.body_outing_parsed === c.target_date;
                     return (
-                      <label key={c.id} style={{
+                      <label key={c.id} className="outdoor-entry-row" style={{
                         display: 'flex', alignItems: 'center', gap: 8,
                         padding: '6px 8px', borderRadius: 4,
                         background: isSelected ? '#e8f0fe' : (matchesBody ? '#fef7e0' : '#fafafa'),
@@ -242,14 +242,14 @@ export default function LinkReview() {
                           <input type="checkbox" checked={isSelected}
                             onChange={() => toggleEntry(it.id, c.id)} />
                         )}
-                        <span style={{ minWidth: 90, color: '#3c4043', fontWeight: 600 }}>{c.target_date}</span>
-                        <span style={{ minWidth: 40, color: purposeColor(c.activity_type), fontWeight: 600 }}>{c.activity_type}</span>
-                        <span style={{ minWidth: 90, color: '#5f6368' }}>{c.time_from}{c.time_to ? `~${c.time_to}` : ''}</span>
-                        <span style={{ flex: 1, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span className="outdoor-entry-date" style={{ minWidth: 90, color: '#3c4043', fontWeight: 600 }}>{c.target_date}</span>
+                        <span className="outdoor-entry-type" style={{ minWidth: 40, color: purposeColor(c.activity_type), fontWeight: 600 }}>{c.activity_type}</span>
+                        <span className="outdoor-entry-time" style={{ minWidth: 90, color: '#5f6368' }}>{c.time_from}{c.time_to ? `~${c.time_to}` : ''}</span>
+                        <span className="outdoor-entry-detail" style={{ flex: 1, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {c.case_no || ''} {c.place || c.client || ''}
                         </span>
                         {matchesBody && (
-                          <span style={{ fontSize: '0.66rem', color: '#188038', padding: '1px 6px', background: '#e8f5e9', borderRadius: 4, fontWeight: 600 }}>
+                          <span className="outdoor-entry-badge" style={{ fontSize: '0.66rem', color: '#188038', padding: '1px 6px', background: '#e8f5e9', borderRadius: 4, fontWeight: 600 }}>
                             본문 일자 일치
                           </span>
                         )}

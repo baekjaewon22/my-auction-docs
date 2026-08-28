@@ -80,6 +80,7 @@
 		"test": "npm run test:unit && npm run test:automation-python",
 		"test:unit": "node --experimental-strip-types --test tests/*.test.ts",
 		"test:mobile-layout": "node scripts/audit-mobile-layout.mjs",
+		"test:mobile-routes": "node scripts/audit-live-mobile-routes.mjs",
     "test:personal-calendar-layout": "node scripts/audit-personal-calendar-layout.mjs",
     "test:auction-schedule-layout": "node scripts/audit-auction-schedule-layout.mjs",
 		"test:auction-story-layout": "node scripts/audit-auction-story-anomaly-layout.mjs",

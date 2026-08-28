@@ -92,7 +92,7 @@ function canUseRightsCertificate(authUser: any, user: any) {
 function requireMaster(c: any) {
   const authUser = c.get('user');
   if (String(authUser?.role || '').toLowerCase() !== 'master') {
-    return c.json({ error: '자료 생성 기능은 마스터 권한만 사용할 수 있습니다.' }, 403);
+    return c.json({ error: '자료 생성 권한이 없습니다.' }, 403);
   }
   return null;
 }
@@ -191,7 +191,7 @@ async function enqueueAutomationJob(c: any, body: any, isBatch: boolean) {
   const outputType = String(body.output_type || 'auction_report');
   if (!['auction_report', 'rights_certificate'].includes(outputType)) return c.json({ error: '지원하지 않는 자료 유형입니다.' }, 400);
   if (outputType === 'rights_certificate' && !canUseRightsCertificate(authUser, user)) {
-    return c.json({ error: '권리분석 보증서는 master 또는 special 권한만 생성할 수 있습니다.' }, 403);
+    return c.json({ error: '권리분석 보증서 생성 권한이 없습니다.' }, 403);
   }
   const urls = isBatch ? (Array.isArray(body.urls) ? body.urls.map((value: unknown) => String(value || '').trim()).filter(Boolean) : []) : [];
   if (isBatch && urls.length === 0) return c.json({ error: '처리할 경매 물건 URL이 없습니다.' }, 400);

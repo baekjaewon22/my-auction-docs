@@ -16,7 +16,12 @@ const FILENAME_PRESETS: { label: string; pattern: string }[] = [
   { label: '제목만', pattern: '{title}' },
 ];
 
-export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
+type DriveBackupModalProps = {
+  canManage: boolean;
+  onClose: () => void;
+};
+
+export default function DriveBackupModal({ canManage, onClose }: DriveBackupModalProps) {
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<any>(null);
   const [pendingCount, setPendingCount] = useState(0);
@@ -49,9 +54,9 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
     Promise.all([
       api.drive.settings().catch(() => null),
       api.drive.logs(30).catch(() => ({ logs: [] })),
-      api.drive.pending().catch(() => ({ documents: [] })),
-      api.drive.errorSummary().catch(() => ({ summary: [] })),
-      api.drive.documentRetention().catch(() => null),
+      canManage ? api.drive.pending().catch(() => ({ documents: [] })) : Promise.resolve({ documents: [] }),
+      canManage ? api.drive.errorSummary().catch(() => ({ summary: [] })) : Promise.resolve({ summary: [] }),
+      canManage ? api.drive.documentRetention().catch(() => null) : Promise.resolve(null),
     ]).then(([s, l, p, es, rt]: any) => {
       setPendingDocs(p?.documents || []);
       setSettings(s);
@@ -234,18 +239,20 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
                   </div>
                   <div style={{ fontSize: 12, color: '#5f6368', marginTop: 2 }}>
                     {connected
-                      ? autoEnabled ? '매주 토요일 새벽 자동 백업 활성' : '자동 백업 비활성 (토글 OFF)'
+                      ? autoEnabled ? '30분마다 자동 백업 활성' : '자동 백업 비활성 (토글 OFF)'
                       : 'Google 계정을 한 번 연결하면 이후 자동으로 백업됩니다'}
                   </div>
                 </div>
-                {connected ? (
-                  <button className="btn btn-sm" onClick={handleDisconnect} style={{ color: '#d93025', borderColor: '#d93025' }}>
-                    <Unlink size={14} /> 연결 해제
-                  </button>
-                ) : (
-                  <button className="btn btn-primary btn-sm" onClick={handleConnect}>
-                    <LinkIcon size={14} /> Google 계정 연결
-                  </button>
+                {canManage && (
+                  connected ? (
+                    <button className="btn btn-sm" onClick={handleDisconnect} style={{ color: '#d93025', borderColor: '#d93025' }}>
+                      <Unlink size={14} /> 연결 해제
+                    </button>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" onClick={handleConnect}>
+                      <LinkIcon size={14} /> Google 계정 연결
+                    </button>
+                  )
                 )}
               </div>
             </div>
@@ -269,6 +276,9 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
                   />
                 </div>
 
+                {/* Drive 관리자 전용 관리 동작 */}
+                {canManage && (
+                  <>
                 {/* 자동 백업 토글 + 즉시 실행 */}
                 <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
@@ -479,8 +489,13 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
                   </div>
                 </details>
 
-                {/* 로그 */}
-                <details open={logsOpen} onToggle={(e: any) => setLogsOpen(e.target.open)} style={{ marginTop: 8 }}>
+                  </>
+                )}
+              </>
+            )}
+
+            {/* 모든 Drive 열람 역할에 공개: 최근 로그 */}
+            <details open={logsOpen} onToggle={(e: any) => setLogsOpen(e.target.open)} style={{ marginTop: 8 }}>
                   <summary style={{ cursor: 'pointer', fontWeight: 600, padding: '6px 0', display: 'flex', alignItems: 'center', gap: 6 }}>
                     <History size={16} /> 최근 백업 로그 ({logs.length})
                   </summary>
@@ -516,9 +531,7 @@ export default function DriveBackupModal({ onClose }: { onClose: () => void }) {
                       </table>
                     )}
                   </div>
-                </details>
-              </>
-            )}
+            </details>
           </div>
         )}
       </div>

@@ -250,6 +250,22 @@ export async function sendCommunityCommentAlimtalk(
     return { sent: !!result, templateKey: 'COMMUNITY_LEGAL_SUPPORT_ANSWERED', phones: 1 };
   }
 
+  if (category === 'community') {
+    const result = await sendAlimtalkByTemplate(
+      env,
+      'COMMUNITY_REPLY',
+      {
+        receiver_name: note.receiver_name || '담당자',
+        title: note.title,
+        responder_name: comment.isAnonymous ? '익명' : comment.authorName,
+        link: `${APP_URL}/admin-notes`,
+      },
+      [note.receiver_phone],
+      { db, relatedType: 'admin_note_comment', relatedId: comment.id, force: options.force },
+    );
+    return { sent: !!result, templateKey: 'COMMUNITY_REPLY', phones: 1 };
+  }
+
   return { sent: false, phones: 0, reason: 'not a community answer notification category' };
 }
 

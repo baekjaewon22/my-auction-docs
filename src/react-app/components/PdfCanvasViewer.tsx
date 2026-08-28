@@ -54,6 +54,8 @@ export default function PdfCanvasViewer({ url, title }: { url: string; title: st
   const [containerWidth, setContainerWidth] = useState(0);
   const [zoom, setZoom] = useState(1);
   const [error, setError] = useState('');
+  const zoomRef = useRef(zoom);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -63,6 +65,52 @@ export default function PdfCanvasViewer({ url, title }: { url: string; title: st
     const observer = new ResizeObserver(updateWidth);
     observer.observe(viewport);
     return () => observer.disconnect();
+  }, []);
+
+  // 모바일 제스처 줌: 두 손가락 핀치 + 한 손가락 더블탭. touch-action이 네이티브 핀치를
+  // 막아 두 손가락 이벤트가 우리 핸들러로 들어오므로, 여기서 zoom 상태를 직접 구동한다
+  // (pdf.js가 새 배율로 재렌더 → 선명한 확대). 회의록·오늘의 뉴스 두 화면 공용.
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    let startDist = 0;
+    let startZoom = 1;
+    let lastTap = 0;
+    const distance = (touches: TouchList) => Math.hypot(
+      touches[0].clientX - touches[1].clientX,
+      touches[0].clientY - touches[1].clientY,
+    );
+    const clamp = (value: number) => Math.min(2.5, Math.max(0.5, value));
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length === 2) {
+        startDist = distance(event.touches);
+        startZoom = zoomRef.current;
+      } else if (event.touches.length === 1) {
+        const now = Date.now();
+        if (now - lastTap < 300) {
+          event.preventDefault();
+          setZoom((current) => (current > 1 ? 1 : 2));
+        }
+        lastTap = now;
+      }
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length === 2 && startDist > 0) {
+        event.preventDefault();
+        setZoom(clamp(startZoom * (distance(event.touches) / startDist)));
+      }
+    };
+    const onTouchEnd = (event: TouchEvent) => {
+      if (event.touches.length < 2) startDist = 0;
+    };
+    el.addEventListener('touchstart', onTouchStart, { passive: false });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd);
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+    };
   }, []);
 
   useEffect(() => {

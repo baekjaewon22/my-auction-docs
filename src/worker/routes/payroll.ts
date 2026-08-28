@@ -6,6 +6,7 @@ import { reinitUserLeave } from './leave';
 import { normalizeBranchName } from '../lib/branchAliases';
 import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotForMonth, payTypeAtMonthSql, resolvePayTypeFromHistory } from '../lib/pay-type-history';
 import { calculateRefundRecoveryAmount } from '../../shared/refund-recovery';
+import { nextPayrollMonth } from '../../shared/payroll-carryover';
 import { confirmedSalesSql, payrollRecognizedOrRefundedSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 import { buildBranchSummaryQueryScope } from '../../shared/payroll-branch-summary';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
@@ -608,9 +609,9 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
   // 이전 기간 환불 건 조회: 현재 정산월에 환불 승인된 + 이전 기간 매출 건
   const prevRefunds = await db.prepare(`
-    SELECT id, type, client_name, amount, contract_date, deposit_date, card_deposit_date, payment_type, refund_approved_at
+    SELECT id, type, client_name, amount, refund_amount, contract_date, deposit_date, card_deposit_date, payment_type, refund_approved_at
     FROM sales_records
-    WHERE user_id = ? AND status = 'refunded'
+    WHERE user_id = ? AND COALESCE(refund_amount, 0) > 0
       AND refund_approved_at >= ? AND refund_approved_at <= ?
   `).bind(userId, monthStart, monthEnd + ' 23:59:59').all();
   const refundRecoveries = (prevRefunds.results as any[]).filter((r: any) => {
@@ -619,15 +620,29 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       : r.deposit_date ? r.deposit_date : r.contract_date;
     return sd && sd < monthStart;
   }).map((r: any) => {
-    const supply = vatSupplyAmount(r.amount, month);
+    const supply = vatSupplyAmount(r.refund_amount, month);
     const recovery = calculateRefundRecoveryAmount({
-      amount: r.amount,
+      amount: r.refund_amount,
       payType: isCommission ? 'commission' : 'salary',
       commissionRate: effectiveRate,
       payrollMonth: month,
     });
     return { ...r, supply_amount: supply, recovery_amount: recovery };
   });
+
+  // 전월 이월 공제(carryover): 이번 정산월(month)을 청구월로 하는 미해소 이월분을 세후공제로 반영한다.
+  await db.prepare(`CREATE TABLE IF NOT EXISTS payroll_carryovers (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, origin_month TEXT NOT NULL, target_month TEXT NOT NULL,
+    amount INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')), updated_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+    UNIQUE(user_id, origin_month)
+  )`).run();
+  const pendingCarryover = await db.prepare(
+    "SELECT origin_month, amount FROM payroll_carryovers WHERE user_id = ? AND target_month = ? AND status = 'pending' LIMIT 1"
+  ).bind(userId, month).first<{ origin_month: string; amount: number }>();
+  const carryoverDeduction = pendingCarryover
+    ? { origin_month: pendingCarryover.origin_month, amount: Number(pendingCarryover.amount) || 0 }
+    : null;
 
   // 계약포상: 짝수월 + 본사관리 아닌 인원 한해 산정 (급여제·비율제 모두)
   const contractAward = (isPayoutMonth && !isHQ)
@@ -660,6 +675,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     lawitgo_new_settlements: lawitgoNewSettlements,
     refunded_records: refundedRecords,
     refund_recoveries: refundRecoveries,
+    carryover_deduction: carryoverDeduction,
     contract_award: contractAward, // { rank, count, award, total_amount } — rank null이면 자격 미달
     joining_settlement: joiningSettlement,
     termination_settlement: terminationSettlement,
@@ -879,6 +895,33 @@ payroll.post('/lock', requireRole(...ACCOUNTING_ROLES), async (c) => {
     }
     await db.prepare("UPDATE payroll_saves SET locked = 1, updated_at = datetime('now') WHERE user_id = ? AND period = ? AND locked = 0")
       .bind(body.user_id, body.period).run();
+
+    // 이월(carryover): 실지급(net_pay)이 음수면 미회수분을 익월로 이월하고, 이번 달로 청구되던 이월분은 해소한다.
+    const settleMonth = String((existingData as unknown as { settle_month?: string }).settle_month || '');
+    const netPay = Math.round(Number((existingData as unknown as { net_pay?: number }).net_pay));
+    if (/^\d{4}-\d{2}$/.test(settleMonth) && Number.isFinite(netPay)) {
+      await db.prepare(`CREATE TABLE IF NOT EXISTS payroll_carryovers (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, origin_month TEXT NOT NULL, target_month TEXT NOT NULL,
+        amount INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_by TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')), updated_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+        UNIQUE(user_id, origin_month)
+      )`).run();
+      await db.prepare("UPDATE payroll_carryovers SET status = 'resolved', updated_at = datetime('now', '+9 hours') WHERE user_id = ? AND target_month = ? AND status = 'pending'")
+        .bind(body.user_id, settleMonth).run();
+      const nextMonth = nextPayrollMonth(settleMonth);
+      if (netPay < 0 && nextMonth) {
+        await db.prepare(`INSERT INTO payroll_carryovers (id, user_id, origin_month, target_month, amount, status, created_by)
+          VALUES (?, ?, ?, ?, ?, 'pending', ?)
+          ON CONFLICT(user_id, origin_month) DO UPDATE SET
+            target_month = excluded.target_month, amount = excluded.amount, status = 'pending',
+            created_by = excluded.created_by, updated_at = datetime('now', '+9 hours')`)
+          .bind(crypto.randomUUID(), body.user_id, settleMonth, nextMonth, -netPay, user.sub).run();
+      } else {
+        await db.prepare("DELETE FROM payroll_carryovers WHERE user_id = ? AND origin_month = ? AND status = 'pending'")
+          .bind(body.user_id, settleMonth).run();
+      }
+    }
+
     return c.json({ success: true, locked: 1 });
   }
   const result = await lockPaidPayrollSaves(db);

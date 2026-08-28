@@ -96,6 +96,9 @@ export default function UserManagement() {
   const canSetHireDate = ['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   const canConvertEmploymentType = ['master', 'ceo', 'accountant'].includes(currentUser?.role || '');
   const canGrantReportPermission = currentUser?.role === 'master';
+  const canManageAlimtalkSettings = (targetUser: User | null) => !!currentUser && !!targetUser
+    && ['accountant', 'accountant_asst'].includes(targetUser.role)
+    && (currentUser.id === targetUser.id || ['master', 'ceo', 'cc_ref', 'admin'].includes(currentUser.role));
 
   const load = () => {
     setLoading(true);
@@ -248,11 +251,15 @@ export default function UserManagement() {
     setHireDateInput(u.hire_date || '');
     const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
     setAccountingEffectiveMonth(kst.toISOString().slice(0, 7));
-    // 알림톡 설정 로드
-    try {
-      const alimRes = await api.users.getAlimtalkSettings(u.id);
-      setAlimBranches(new Set(alimRes.branches ? alimRes.branches.split(',').map(normalizeBranchName).filter(Boolean) : []));
-    } catch { setAlimBranches(new Set()); }
+    // 알림톡 설정은 수정 권한이 있는 사용자에게만 로드한다.
+    if (canManageAlimtalkSettings(u)) {
+      try {
+        const alimRes = await api.users.getAlimtalkSettings(u.id);
+        setAlimBranches(new Set(alimRes.branches ? alimRes.branches.split(',').map(normalizeBranchName).filter(Boolean) : []));
+      } catch { setAlimBranches(new Set()); }
+    } else {
+      setAlimBranches(new Set());
+    }
     if (!canViewAccounting) return;
     // 총무보조 제한 대상: 회계 정보 로드 생략
     if (isRestrictedForViewer(u)) {
@@ -617,7 +624,8 @@ export default function UserManagement() {
         </div>
 
         {/* 자료 생성 설정 */}
-        <div className="card" style={{ marginBottom: 20, padding: 20 }}>
+        {(canEditAuctionSettings || canGrantReportPermission) && (
+          <div className="card" style={{ marginBottom: 20, padding: 20 }}>
           <h3 style={{ marginTop: 0, marginBottom: 16, fontSize: '1rem', color: '#1a1a2e' }}>자료 생성 설정</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
             <div>
@@ -646,22 +654,23 @@ export default function UserManagement() {
                 {selectedUser.has_myauction_credentials ? '마이옥션 계정이 저장되어 있습니다.' : '저장된 마이옥션 계정이 없습니다.'}
               </div>
             </div>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>자료 생성 권한</label>
-              <select
-                className="form-input"
-                value={reportPermissionInput}
-                onChange={(e) => setReportPermissionInput(e.target.value as 'basic' | 'special')}
-                disabled={!canGrantReportPermission}
-                style={{ width: '100%' }}
-              >
-                <option value="basic">basic - 브리핑자료</option>
-                <option value="special">special - 브리핑자료 + 권리분석 보증서</option>
-              </select>
-              <div style={{ fontSize: '0.72rem', color: canGrantReportPermission ? '#5f6368' : '#9aa0a6', marginTop: 4 }}>
-                권한 부여는 현재 마스터만 가능합니다.
+            {canGrantReportPermission && (
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: '#3c4043' }}>자료 생성 권한</label>
+                <select
+                  className="form-input"
+                  value={reportPermissionInput}
+                  onChange={(e) => setReportPermissionInput(e.target.value as 'basic' | 'special')}
+                  style={{ width: '100%' }}
+                >
+                  <option value="basic">basic - 브리핑자료</option>
+                  <option value="special">special - 브리핑자료 + 권리분석 보증서</option>
+                </select>
+                <div style={{ fontSize: '0.72rem', color: '#5f6368', marginTop: 4 }}>
+                  권한 부여는 현재 마스터만 가능합니다.
+                </div>
               </div>
-            </div>
+            )}
           </div>
           {(canEditAuctionSettings || canGrantReportPermission) && (
             <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -673,16 +682,10 @@ export default function UserManagement() {
               )}
             </div>
           )}
-        </div>
-
-        {/* 회계 정보 카드 (회계 열람 가능자만, 총무보조 제한 대상 제외) */}
-        {canViewAccounting && isRestrictedForViewer(selectedUser) && (
-          <div className="card" style={{ padding: 16, marginBottom: 16, background: '#fff8e1', borderLeft: '3px solid #f4d03f' }}>
-            <div style={{ fontSize: '0.85rem', color: '#5f6368' }}>
-              <strong style={{ color: '#e65100' }}>🔒 열람 제한</strong> — 해당 직원의 급여·회계 정보는 <strong>총무담당 이상</strong>만 조회할 수 있습니다.
-            </div>
           </div>
         )}
+
+        {/* 회계 정보 카드 (회계 열람 가능자만, 총무보조 제한 대상 제외) */}
         {canViewAccounting && !isRestrictedForViewer(selectedUser) && (
           <div className="card" style={{ marginBottom: 20, padding: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -925,7 +928,7 @@ export default function UserManagement() {
         )}
 
         {/* 알림톡 수신 설정 (선택된 사용자가 총무일 때만) */}
-        {['accountant', 'accountant_asst'].includes(selectedUser.role) && ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '') && (
+        {canManageAlimtalkSettings(selectedUser) && (
           <div className="card" style={{ marginBottom: 20, padding: 20 }}>
             <h3 style={{ margin: '0 0 12px', fontSize: '1rem', color: '#1a1a2e' }}>알림톡 수신 설정</h3>
             <p style={{ fontSize: '0.78rem', color: '#9aa0a6', margin: '0 0 14px' }}>지사별 알림톡 수신 여부를 설정합니다.</p>
@@ -954,7 +957,7 @@ export default function UserManagement() {
         )}
 
         {/* 매출 평가 이력 (회계 열람 가능자만) */}
-        {canViewAccounting && (
+        {canViewAccounting && !isRestrictedForViewer(selectedUser) && (
           <div className="card" style={{ marginBottom: 20, padding: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
               <h3 style={{ margin: 0, fontSize: '1rem', color: '#1a1a2e' }}>매출 평가 이력 (2개월 단위)</h3>
@@ -1030,7 +1033,7 @@ export default function UserManagement() {
         )}
 
         {/* 강등 대상 경고 및 조치 */}
-        {canEditAccounting && evaluations.some((ev) => ev.consecutive_misses >= 3) && (
+        {canEditAccounting && !isRestrictedForViewer(selectedUser) && evaluations.some((ev) => ev.consecutive_misses >= 3) && (
           <div className="card" style={{ marginBottom: 20, padding: 20, border: '2px solid #d93025', background: '#fce4ec' }}>
             <h3 style={{ margin: '0 0 12px', fontSize: '1rem', color: '#d93025', display: 'flex', alignItems: 'center', gap: 8 }}>
               <ArrowDownCircle size={20} /> 강등 대상 알림

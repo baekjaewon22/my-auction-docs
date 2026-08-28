@@ -40,6 +40,62 @@ export const ALIMTALK_TEMPLATES = {
 #{link}`,
   },
 
+  // 영수증 첨부 신청서 제출 → 총무담당(accountant) 전용
+  // NCP 템플릿 승인이 끝나기 전에는 dispatcher가 DOC_SUBMITTED로 안전하게 fallback한다.
+  EXPENSE_RECEIPT_SUBMITTED: {
+    code: 'expense1',
+    variables: ['applicant_name', 'doc_title', 'branch', 'department', 'receipt_count', 'submit_date', 'link'],
+    content: `[마이옥션 오피스]
+
+총무담당자님
+
+#{applicant_name}님이 영수증 첨부 신청서를 제출했습니다.
+
+■ 신청서: #{doc_title}
+■ 소속: #{branch} #{department}
+■ 영수증: #{receipt_count}건
+■ 제출일: #{submit_date}
+
+신청서와 영수증을 확인한 후 대표 직인으로 승인해주세요.
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 영수증 첨부 지출결의 승인 완료 → 신청자
+  EXPENSE_RECEIPT_APPROVED: {
+    code: 'expense2',
+    variables: ['approve_date', 'link'],
+    content: `[마이옥션 오피스]
+
+영수증 첨부 지출결의서가 승인되었습니다.
+
+■ 처리 상태: 승인 완료
+■ 처리일: #{approve_date}
+
+승인된 문서를 확인해주세요.
+
+▶ 바로가기
+#{link}`,
+  },
+
+  // 영수증 첨부 지출결의 반려 → 신청자
+  EXPENSE_RECEIPT_REJECTED: {
+    code: 'expense3',
+    variables: ['reject_date', 'link'],
+    content: `[마이옥션 오피스]
+
+영수증 첨부 지출결의서가 반려되었습니다.
+
+■ 처리 상태: 반려
+■ 처리일: #{reject_date}
+
+반려 사유를 확인한 후 수정하여 다시 제출해주세요.
+
+▶ 바로가기
+#{link}`,
+  },
+
   // 단계 승인 → 다음 결재자에게 (docstep2)
   DOC_STEP_APPROVED: {
     code: 'docstep2',
@@ -353,6 +409,23 @@ export const ALIMTALK_TEMPLATES = {
 ▶ 바로가기
 #{link}`,
   },
+  COMMUNITY_REPLY: {
+    code: 'commreply',
+    variables: ['receiver_name', 'title', 'responder_name', 'link'],
+    content: `[마이옥션 오피스]
+
+#{receiver_name}님
+
+작성하신 커뮤니티 게시글에 새 댓글이 등록되었습니다.
+
+■ 게시글: #{title}
+■ 작성자: #{responder_name}
+
+댓글 내용을 확인해주세요.
+
+▶ 바로가기
+#{link}`,
+  },
 } as const;
 
 // 앱 도메인 (바로가기 링크용)
@@ -421,13 +494,26 @@ export interface AlimtalkDeliveryResult {
   };
 }
 
+export class AlimtalkHttpError extends Error {
+  readonly httpStatus: number;
+  readonly responseBody: string;
+
+  constructor(httpStatus: number, responseBody: string) {
+    super(`알림톡 발송 실패: ${httpStatus}`);
+    this.name = 'AlimtalkHttpError';
+    this.httpStatus = httpStatus;
+    this.responseBody = responseBody;
+  }
+}
+
 type AlimtalkLogStatus = 'pending' | 'sent' | 'delivered' | 'delivery_failed' | 'failed' | 'skipped';
 
-type AlimtalkSendOptions = {
+export type AlimtalkSendOptions = {
   db?: D1Database;
   relatedType?: string;
   relatedId?: string;
   force?: boolean;
+  dedupeAcrossTemplates?: boolean;
 };
 
 // ── 유틸리티 함수 ──
@@ -513,7 +599,15 @@ async function ensureAlimtalkLogSchema(db: D1Database): Promise<void> {
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_alimtalk_logs_dedupe ON alimtalk_logs(template_code, related_type, related_id, recipient_phone)').run();
 }
 
-function alimtalkStatusFromMessage(message?: Partial<AlimtalkDeliveryResult>): AlimtalkLogStatus {
+function alimtalkStatusFromMessage(
+  message?: Partial<AlimtalkDeliveryResult>,
+  response?: Pick<AlimtalkSendResponse, 'statusCode' | 'statusName'>,
+): AlimtalkLogStatus {
+  if (response && (
+    String(response.statusCode || '') !== '202'
+    || /(?:fail|error|실패)/i.test(response.statusName || '')
+  )) return 'failed';
+  if (message?.requestStatusCode && message.requestStatusCode !== 'A000') return 'failed';
   if (!message?.messageStatusCode) return 'sent';
   return message.messageStatusCode === '0000' ? 'delivered' : 'delivery_failed';
 }
@@ -524,17 +618,18 @@ async function hasExistingAcceptedAlimtalkLog(
   relatedType: string,
   relatedId: string,
   phone: string,
+  dedupeAcrossTemplates = false,
 ): Promise<boolean> {
   const row = await db.prepare(`
     SELECT 1
     FROM alimtalk_logs
-    WHERE template_code = ?
+    WHERE (? = 1 OR template_code = ?)
       AND related_type = ?
       AND related_id = ?
       AND recipient_phone = ?
       AND status IN ('sent', 'delivered')
     LIMIT 1
-  `).bind(templateCode, relatedType, relatedId, phone).first();
+  `).bind(dedupeAcrossTemplates ? 1 : 0, templateCode, relatedType, relatedId, phone).first();
   return !!row;
 }
 
@@ -615,9 +710,9 @@ export async function sendAlimtalk(
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
+    const errorText = await response.text().catch(() => '');
     console.error(`[알림톡] 발송 실패: ${response.status} — ${errorText}`);
-    throw new Error(`알림톡 발송 실패: ${response.status}`);
+    throw new AlimtalkHttpError(response.status, errorText);
   }
 
   return response.json() as Promise<AlimtalkSendResponse>;
@@ -757,7 +852,14 @@ export async function sendAlimtalkByTemplate(
     await ensureAlimtalkLogSchema(db);
     const filtered: string[] = [];
     for (const phone of normalizedPhones) {
-      const exists = await hasExistingAcceptedAlimtalkLog(db, template.code, relatedType, relatedId, phone);
+      const exists = await hasExistingAcceptedAlimtalkLog(
+        db,
+        template.code,
+        relatedType,
+        relatedId,
+        phone,
+        options?.dedupeAcrossTemplates,
+      );
       if (!exists) filtered.push(phone);
     }
     targetPhones = filtered;
@@ -794,7 +896,7 @@ export async function sendAlimtalkByTemplate(
   if (db) {
     for (const phone of targetPhones) {
       const messageResult = (result?.messages || []).find((message) => normalizePhone(message.to) === phone);
-      const logStatus = result ? alimtalkStatusFromMessage(messageResult) : 'skipped';
+      const logStatus = result ? alimtalkStatusFromMessage(messageResult, result) : 'skipped';
       await insertAlimtalkLog(db, {
         templateCode: template.code,
         recipientPhone: phone,

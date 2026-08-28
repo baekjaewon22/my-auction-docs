@@ -10,6 +10,8 @@ import { Archive, FileCheck, FileText, Search, Trash2, MapPin, Cloud, CloudOff }
 import DriveBackupModal from '../components/DriveBackupModal';
 import { sameBranchName } from '../lib/branchAliases';
 import BriefingMaterialArchive from '../components/BriefingMaterialArchive';
+import ExpenseReceiptArchive from './ExpenseReceiptArchive';
+import { EXPENSE_RECEIPT_TEMPLATE_ID } from '../lib/expense-receipt';
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   draft: { label: '작성중', className: 'status-draft' },
@@ -26,6 +28,7 @@ export default function ArchivePage() {
   const BRANCH_OPTS = branches.map(b => ({ value: b, label: b }));
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pdfLoadingId, setPdfLoadingId] = useState<string | null>(null);
   const [filterMonth, setFilterMonth] = useState('');
   const [filterBranch, setFilterBranch] = useState('');
   const [filterDept, setFilterDept] = useState('');
@@ -60,6 +63,7 @@ export default function ArchivePage() {
   const isAdmin = ['master', 'ceo', 'cc_ref', 'admin'].includes(user?.role || '');
   const isAccountant = ['accountant', 'accountant_asst'].includes(user?.role || '');
   const canDrive = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
+  const canManageDrive = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user?.role || '');
   const [searchParams, setSearchParams] = useSearchParams();
   const [driveModalOpen, setDriveModalOpen] = useState(searchParams.get('drive') === '1' && canDrive);
   useEffect(() => {
@@ -102,7 +106,8 @@ export default function ArchivePage() {
     setLoading(true);
     api.documents.list('approved')
       .then((res) => {
-        setDocuments(res.documents);
+        // 영수증 지출결의는 전용 카테고리(영수증 지출결의)에서만 관리 — 결재문서 목록에서는 제외(중복 노출 방지)
+        setDocuments((res.documents || []).filter((d) => d.template_id !== EXPENSE_RECEIPT_TEMPLATE_ID));
       })
       .finally(() => setLoading(false));
   }, []);
@@ -173,6 +178,25 @@ export default function ArchivePage() {
     setFilterStatus('approved');
   };
 
+  const handleViewPdf = async (docId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (pdfLoadingId) return;
+    const win = window.open('', '_blank');
+    if (win) win.document.write('<p style="font-family:sans-serif;padding:24px;color:#555">PDF를 생성하고 있습니다… 최대 5초 정도 걸립니다.</p>');
+    setPdfLoadingId(docId);
+    try {
+      const url = await api.documents.viewPdfUrl(docId);
+      if (win) win.location.href = url;
+      else window.open(url, '_blank');
+    } catch (err) {
+      if (win) win.close();
+      alert(err instanceof Error ? err.message : 'PDF를 생성하지 못했습니다.');
+    } finally {
+      setPdfLoadingId(null);
+    }
+  };
+
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -184,6 +208,7 @@ export default function ArchivePage() {
   };
 
   if (searchParams.get('category') === 'briefing') return <BriefingMaterialArchive />;
+  if (searchParams.get('category') === 'expense-receipts') return <ExpenseReceiptArchive />;
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -192,6 +217,7 @@ export default function ArchivePage() {
       <nav className="archive-category-tabs" aria-label="문서보관함 하위 카테고리">
         <button type="button" className="active"><FileText size={16} /> 결재문서</button>
         <button type="button" onClick={() => setSearchParams({ category: 'briefing' })}><FileCheck size={16} /> 브리핑자료</button>
+        <button type="button" onClick={() => setSearchParams({ category: 'expense-receipts' })}><Archive size={16} /> 영수증 지출결의</button>
       </nav>
       <div className="page-header">
         <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -348,6 +374,17 @@ export default function ArchivePage() {
                     {statusConfig[doc.status]?.label}
                   </span>
                 )}
+                {!isCancelled && doc.status === 'approved' && (
+                  <button
+                    className="btn btn-sm"
+                    style={{ padding: '2px 8px', fontSize: '0.72rem', fontWeight: 700 }}
+                    onClick={(e) => handleViewPdf(doc.id, e)}
+                    disabled={pdfLoadingId === doc.id}
+                    title="서버 PDF 열람 (구글드라이브 저장본과 동일)"
+                  >
+                    {pdfLoadingId === doc.id ? '생성중…' : 'PDF'}
+                  </button>
+                )}
                 {isCeoPlus && (doc.status !== 'approved' || user?.role === 'master') && (
                   <button className="btn btn-sm btn-danger" style={{ padding: '2px 6px' }} onClick={(e) => handleDelete(doc.id, e)} title="삭제">
                     <Trash2 size={12} />
@@ -392,7 +429,12 @@ export default function ArchivePage() {
         </div>
       )}
 
-      {driveModalOpen && <DriveBackupModal onClose={() => setDriveModalOpen(false)} />}
+      {driveModalOpen && (
+        <DriveBackupModal
+          canManage={canManageDrive}
+          onClose={() => setDriveModalOpen(false)}
+        />
+      )}
     </div>
   );
 }

@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import { auctionScheduleEditBaseData } from '../src/react-app/journal/auction-schedule-form.ts';
+
+const page = readFileSync(new URL('../src/react-app/pages/AuctionSchedule.tsx', import.meta.url), 'utf8');
+const form = readFileSync(new URL('../src/react-app/journal/JournalForm.tsx', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../src/react-app/index.css', import.meta.url), 'utf8');
+
+test('일반 일정 수정·삭제는 결과 입력과 분리하여 총무·마스터의 오늘 이후 일정에만 노출한다', () => {
+  const resultAccess = page.match(/const canWriteSelected =[\s\S]*?\n {2}\)\);/)?.[0] || '';
+  const generalAccess = page.match(/const canMutateSelected =[\s\S]*?\n {2}\);/)?.[0] || '';
+
+  assert.match(resultAccess, /canManageAuctionBidResult/);
+  assert.doesNotMatch(resultAccess, /selectedIsPast|todayKey|canManageAuctionSchedule/);
+  assert.match(generalAccess, /!selectedIsPast/);
+  assert.match(generalAccess, /canManageAuctionSchedule\(\{ role: user\?\.role \}\)/);
+  assert.match(page, /selected\?\.activity_type === '입찰' && selectedBidResult !== 'pending'/);
+  assert.match(page, /const canEditSelected = canMutateSelected && !editLockedByBidResult/);
+  assert.match(page, /const canDeleteSelected = canMutateSelected/);
+  assert.match(page, /\{canEditSelected && \([\s\S]*?일정 수정/);
+  assert.match(page, /\{canDeleteSelected && <button[\s\S]*?일정 삭제/);
+  assert.match(page, /일정 기본정보는 수정·삭제할 수 없지만 입찰가와 낙찰·실패·취소 등 결과는 계속 입력/);
+});
+
+test('KST 자정과 화면 재활성화 시 과거 잠금 상태를 갱신하고 열린 편집창도 닫는다', () => {
+  assert.match(page, /useState\(\(\) => auctionScheduleKstDateKey\(\)\)/);
+  assert.match(page, /millisecondsUntilNextKstDate/);
+  assert.match(page, /window\.setTimeout\(refreshKstDate/);
+  assert.match(page, /document\.addEventListener\('visibilitychange'/);
+  assert.match(page, /isPastAuctionScheduleDate\(editingEntry\.target_date, kstTodayReference\)[\s\S]*?setEditingEntry\(null\)[\s\S]*?setSelected\(editingEntry\)/);
+});
+
+test('경매스케줄 편집은 기존 필드를 채우고 일반 update API 흐름을 사용한다', () => {
+  assert.match(page, /initialEntry=\{\{/);
+  assert.match(page, /updateEntry=\{payload => api\.auctionSchedule\.update\(editingEntry\.id, payload\)\}/);
+  assert.match(form, /const editingSchedule = mode === 'auction-schedule'/);
+  assert.match(form, /await updateEntry\(\{/);
+  assert.match(form, /editingSchedule \? '일정 수정' : '일정 등록'/);
+  assert.match(form, /auctionScheduleEditBaseData\(initialEntry\?\.activity_type, activityType, initialData\)/);
+  assert.match(form, /disabled=\{editingSchedule\}[\s\S]*?onClick=\{\(\) => setActivityType\(t\)\}/);
+  assert.match(form, /\{!editingSchedule && \([\s\S]*?제시입찰가[\s\S]*?작성입찰가/);
+  assert.match(form, /입찰가와 낙찰·실패·취소·취하\/변경 결과는 일정 상세의 전용 버튼/);
+  assert.match(css, /\.activity-tab:disabled[\s\S]*?cursor:\s*not-allowed/);
+});
+
+test('동일 유형 편집은 화면에 없는 연동 메타데이터를 보존하고 유형 변경 때만 제거한다', () => {
+  const initial = {
+    client: '김고객',
+    clientPhone: '010-0000-0000',
+    inspectionSourceId: 'inspection-1',
+    materializedBidGroup: 'group-1',
+    memo: '숨은 메모',
+  };
+  const sameType = auctionScheduleEditBaseData('입찰', '입찰', initial);
+  assert.deepEqual(sameType, initial);
+  assert.notEqual(sameType, initial);
+  assert.deepEqual(auctionScheduleEditBaseData('임장', '입찰', initial), {});
+});
+
+test('임장 입찰기일은 필수이며 모바일에서도 인라인 오류를 표시한다', () => {
+  assert.doesNotMatch(form, /입찰기일[^\n]*선택사항/);
+  assert.match(form, /입찰기일 \* <span>필수 입력/);
+  assert.match(form, /getRequiredInspectionBidDateError\(activityType, \{ bidDate: inspectionBidDate \}\)/);
+  assert.match(form, /aria-label="입찰기일 일자"[\s\S]*?aria-invalid=\{!!inspBidDateError\}[\s\S]*?required/);
+  assert.match(form, /onInvalid=\{\(\) => setInspBidDateError/);
+  assert.match(form, /className="auction-inspection-bid-date-error" role="alert"/);
+  assert.match(form, /과거 일정은 등록 후 수정하거나 삭제할 수 없습니다/);
+  assert.match(css, /\.auction-inspection-bid-date-selects select\[aria-invalid="true"\]/);
+  assert.match(css, /@media \(max-width: 768px\)[\s\S]*?\.auction-inspection-bid-date-selects select[\s\S]*?min-height:\s*44px/);
+  assert.match(css, /@media \(max-width: 360px\)[\s\S]*?\.auction-schedule-manage-actions[\s\S]*?grid-template-columns:\s*1fr/);
+});

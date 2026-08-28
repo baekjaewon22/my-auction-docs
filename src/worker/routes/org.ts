@@ -5,6 +5,7 @@ import { branchAliases, normalizeBranchName } from '../lib/branchAliases';
 import { applyBranchApprovalOverride, ensureBranchApprovalOverridesTable } from '../lib/branch-approval-overrides';
 import { recreateAlertsForDoc } from '../lib/approval-alerts';
 import { dispatchApprovalAlerts } from '../lib/approval-alerts-dispatcher';
+import { EXPENSE_RECEIPT_TEMPLATE_ID } from '../../shared/expense-receipt';
 
 const org = new Hono<AuthEnv>();
 org.use('*', authMiddleware);
@@ -21,6 +22,7 @@ async function backfillBranchApproverForSubmittedDocs(
     FROM documents
     WHERE status = 'submitted'
       AND COALESCE(cancelled, 0) = 0
+      AND COALESCE(template_id, '') != ?
       AND branch IN (${placeholders})
       AND author_id != ?
       AND NOT EXISTS (
@@ -28,7 +30,7 @@ async function backfillBranchApproverForSubmittedDocs(
         WHERE s.document_id = documents.id
           AND s.approver_id = ?
       )
-  `).bind(...aliases, approverId, approverId).all<{ id: string; author_id: string }>();
+  `).bind(EXPENSE_RECEIPT_TEMPLATE_ID, ...aliases, approverId, approverId).all<{ id: string; author_id: string }>();
 
   let repaired = 0;
   for (const doc of docsRes.results || []) {
