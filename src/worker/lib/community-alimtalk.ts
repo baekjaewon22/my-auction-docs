@@ -1,7 +1,7 @@
-import { APP_URL, sendAlimtalkByTemplate } from '../alimtalk';
-import type { AlimtalkTemplateKey } from '../alimtalk';
-import { communityCreatedNotificationMode } from '../../shared/community-notifications';
-import { JEONG_MINHO_USER_ID } from '../../shared/eviction-quote-access';
+import { APP_URL, sendAlimtalkByTemplate } from '../alimtalk.ts';
+import type { AlimtalkTemplateKey } from '../alimtalk.ts';
+import { communityCreatedNotificationMode } from '../../shared/community-notifications.ts';
+import { JEONG_MINHO_USER_ID } from '../../shared/eviction-quote-access.ts';
 
 type CommunityCategory = 'eviction_quote' | 'legal_support';
 

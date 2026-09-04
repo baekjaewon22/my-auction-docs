@@ -155,11 +155,19 @@ export async function pullLawitgoProgressCache(env: Env): Promise<{
   if (!apiKey) throw new Error('LAWITGO_API_KEY is not configured');
   await ensureLawitgoProgressCacheSchema(env.DB);
   const mappings = await listActiveLawitgoConsultantMappings(env.DB);
-  const results = await mapWithConcurrency(mappings, CONSULTANT_CONCURRENCY, (mapping) =>
+  // 전 직원이 자동 매핑되지만, 실제 명도 사건이 배정된 컨설턴트만 조회한다.
+  // 비담당(관리·회계·지원·테스트) 계정은 lawitgo가 403을 주고 서브요청만 소모해,
+  // 실제 담당자 조회가 Worker 서브요청 한도(1000)에 걸려 뒷순번부터 잘리는 문제를 방지한다.
+  const caseOwners = await env.DB.prepare(
+    `SELECT DISTINCT consultant_user_id AS uid FROM cases WHERE COALESCE(consultant_user_id, '') != ''`
+  ).all<{ uid: string }>();
+  const ownerSet = new Set((caseOwners.results || []).map((row) => row.uid));
+  const targets = ownerSet.size > 0 ? mappings.filter((mapping) => ownerSet.has(mapping.userId)) : mappings;
+  const results = await mapWithConcurrency(targets, CONSULTANT_CONCURRENCY, (mapping) =>
     pullConsultant(env.DB, apiKey, mapping.consultantId)
   );
   return {
-    consultants: mappings.length,
+    consultants: targets.length,
     succeeded: results.filter((result) => result.success).length,
     failed: results.filter((result) => !result.success).length,
     items: results.reduce((sum, result) => sum + result.items, 0),

@@ -171,4 +171,53 @@ alimtalk.post('/test', requireRole('master', 'ceo'), async (c) => {
   }
 });
 
+// POST /api/alimtalk/resend-failed — 도착실패한 '승인대기' 알림톡 즉시 재발송
+// 아직 미결(open+need_approve)인 알림 중 최근 도착실패/실패 로그가 있는 건만 notification_sent=0으로 리셋한 뒤
+// 디스패처를 즉시 실행한다. 내용은 현재(최신) 템플릿으로 재생성되며, 이미 도착완료된 건은 대상에서 제외된다.
+alimtalk.post('/resend-failed', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant'), async (c) => {
+  const db = c.env.DB;
+  const env = c.env as unknown as { DB: D1Database } & Record<string, unknown>;
+
+  // 1) 미결 상태로 남아있는 알림(이미 발송 시도됨) 조회
+  const pending = await db.prepare(`
+    SELECT a.id, a.document_id, COALESCE(u.phone, '') AS phone
+    FROM alert_approval_pending a
+    LEFT JOIN users u ON u.id = a.approver_id
+    WHERE a.status = 'open' AND a.my_status = 'need_approve' AND a.notification_sent != 0
+  `).all<{ id: string; document_id: string; phone: string }>();
+
+  // 2) 최근 30일 도착실패/실패 로그
+  const failed = await db.prepare(`
+    SELECT recipient_phone, content
+    FROM alimtalk_logs
+    WHERE status IN ('delivery_failed', 'failed')
+      AND created_at >= datetime('now', '-30 days')
+  `).all<{ recipient_phone: string; content: string }>();
+  const failedRows = failed.results || [];
+
+  // 3) 수신자(phone) + 문서id(content 링크에 포함)로 실제 실패한 건만 매칭 → 리셋
+  const toReset = (pending.results || []).filter((a) =>
+    !!a.phone && !!a.document_id
+    && failedRows.some((l) => l.recipient_phone === a.phone && String(l.content || '').includes(a.document_id)),
+  );
+  for (const row of toReset) {
+    await db.prepare(
+      "UPDATE alert_approval_pending SET notification_sent = 0, notification_error = NULL WHERE id = ?"
+    ).bind(row.id).run();
+  }
+
+  // 4) 즉시 디스패치 (현재 템플릿으로 내용 재생성하여 발송; 이미 도착완료 건은 dedupe로 스킵)
+  let dispatch = { picked: 0, sent: 0, failed: 0, skipped_no_phone: 0 };
+  try {
+    const { reconcileSubmittedDocs } = await import('../lib/approval-alerts-reconciler');
+    await reconcileSubmittedDocs(env).catch(() => {});
+    const { dispatchApprovalAlerts } = await import('../lib/approval-alerts-dispatcher');
+    dispatch = await dispatchApprovalAlerts(env);
+  } catch (err: any) {
+    return c.json({ error: err?.message || '재발송 처리 중 오류가 발생했습니다.' }, 500);
+  }
+
+  return c.json({ success: true, reset: toReset.length, dispatch });
+});
+
 export default alimtalk;

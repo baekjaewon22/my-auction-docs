@@ -7,6 +7,10 @@ import { isHeadOfficeBranch, isRestrictedAccountingBranch } from '../lib/branchA
 import { canUseBusinessAutomation } from '../../shared/automation-access';
 import { canViewAuctionSchedule } from '../../shared/auction-schedule';
 import { canViewConsultantJournal } from '../../shared/consultant-journal-access';
+import {
+  canUploadBriefingMaterial,
+  canViewBriefingMaterial,
+} from '../../shared/briefing-material-access';
 import WebPushConsentPrompt from './WebPushConsentPrompt';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
@@ -84,7 +88,8 @@ export default function Layout() {
   const canViewOrg = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst'].includes(role);
   const canManageUsers = !isFreelancer && ['master', 'ceo', 'admin', 'manager', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
-  const canViewBidHistory = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
+  const canViewBidHistory = (!isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role))
+    || canUploadBriefingMaterial(user);
   const canViewFreelancerBids = role === 'master'
     || (!isFreelancer && ['ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role));
   const showAuctionSchedule = canViewAuctionSchedule(user);
@@ -103,6 +108,7 @@ export default function Layout() {
   );
   const canViewMissingDocuments = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant', 'accountant_asst'].includes(role);
   const canUseDocumentGeneration = canUseBusinessAutomation(user);
+  const canViewBriefingArchive = canViewBriefingMaterial(user);
   const canUseMasterAutomationTools = role === 'master';
 
   const sidebarContent = (
@@ -209,6 +215,12 @@ export default function Layout() {
         <Link to="/templates" className={`nav-item ${isActive('/templates') ? 'active' : ''}`} title="템플릿" onClick={() => setMobileOpen(false)}>
           <ClipboardList size={18} /> {!collapsed && '템플릿'}
         </Link>
+        <Link to="/expense-receipts/new" className={`nav-item ${isActive('/expense-receipts/new') ? 'active' : ''}`} title="영수증 지출결의" onClick={() => setMobileOpen(false)}>
+          <Receipt size={18} /> {!collapsed && '영수증 지출결의'}
+        </Link>
+        <Link to="/expense-receipts" className={`nav-item ${location.pathname === '/expense-receipts' ? 'active' : ''}`} title="영수증 보관함" onClick={() => setMobileOpen(false)}>
+          <Archive size={18} /> {!collapsed && '영수증 보관함'}
+        </Link>
         {isFreelancer && (
           <Link to="/review" className={`nav-item ${isActive('/review') ? 'active' : ''}`} title="문서 승인" onClick={() => setMobileOpen(false)}>
             <CheckCircle size={18} /> {!collapsed && '문서 승인'}
@@ -217,6 +229,11 @@ export default function Layout() {
         {!isFreelancer && (
           <Link to="/archive" className={`nav-item ${isActive('/archive') ? 'active' : ''}`} title="문서 보관함" onClick={() => setMobileOpen(false)}>
             <Archive size={18} /> {!collapsed && '문서 보관함'}
+          </Link>
+        )}
+        {isFreelancer && canViewBriefingArchive && (
+          <Link to="/archive?category=briefing" className={`nav-item ${isActive('/archive') ? 'active' : ''}`} title="브리핑자료" onClick={() => setMobileOpen(false)}>
+            <Archive size={18} /> {!collapsed && '브리핑자료'}
           </Link>
         )}
 

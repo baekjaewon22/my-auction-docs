@@ -16,6 +16,10 @@ import {
   getPersonalCalendarFitZoom,
   getPersonalCalendarScrollForZoom,
 } from '../src/react-app/lib/personal-calendar-zoom.ts';
+import {
+  buildPersonalCalendarHolidayNames,
+  personalCalendarHolidayName,
+} from '../src/react-app/lib/personal-calendar-holidays.ts';
 
 function d1FromSqlite(db: Database.Database): D1Database {
   return {
@@ -34,6 +38,7 @@ const route = readFileSync(new URL('../src/worker/routes/personal-calendar.ts', 
 const worker = readFileSync(new URL('../src/worker/index.ts', import.meta.url), 'utf8');
 const layout = readFileSync(new URL('../src/react-app/components/Layout.tsx', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../src/react-app/App.tsx', import.meta.url), 'utf8');
+const apiSource = readFileSync(new URL('../src/react-app/api.ts', import.meta.url), 'utf8');
 const page = readFileSync(new URL('../src/react-app/pages/PersonalCalendar.tsx', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../src/react-app/index.css', import.meta.url), 'utf8');
 const auctionCalendarLib = readFileSync(new URL('../src/worker/lib/personal-calendar-auction-events.ts', import.meta.url), 'utf8');
@@ -58,6 +63,27 @@ test('개인 캘린더는 사용자별 별도 테이블을 사용한다', () => 
   assert.deepEqual(row, { user_id: 'user-1', event_date: '2026-08-21', title: '테스트' });
 });
 
+test('일요일은 빨간색을 유지하고 공휴일은 명칭과 함께 빨간색으로 표시한다', () => {
+  const named = buildPersonalCalendarHolidayNames([
+    { holiday_date: '2026-06-03', name: '제9회 전국동시지방선거' },
+    { holiday_date: '2026-09-24', name: '추석 연휴' },
+    { holiday_date: 'invalid', name: '무효' },
+  ]);
+  assert.equal(personalCalendarHolidayName('2026-06-03', named), '제9회 전국동시지방선거');
+  assert.equal(personalCalendarHolidayName('2026-09-24', named), '추석 연휴');
+  assert.equal(personalCalendarHolidayName('2026-09-23', named), '');
+  assert.match(apiSource, /request<\{ events: PersonalCalendarEvent\[\]; holidays: CompanyHoliday\[\] \}>/);
+  assert.match(page, /setHolidayNames\(buildPersonalCalendarHolidayNames\(result\.holidays \|\| \[\]\)\)/);
+  assert.doesNotMatch(page, /api\.leave\.holidays/);
+  assert.match(page, /className=\{`personal-calendar-day[^`]*\$\{isHoliday \? ' holiday' : ''\}`\}/);
+  assert.match(page, /personal-calendar-day-number[^`]*\$\{isHoliday \? ' holiday' : ''\}/);
+  assert.match(page, /\{holidayName && <span className="personal-calendar-holiday-name">\{holidayName\}<\/span>\}/);
+  assert.match(page, /aria-label=\{`\$\{formatCalendarDate\(key\)\}\$\{holidayName \? `, \$\{holidayName\}` : ''\}/);
+  assert.match(css, /\.personal-calendar-day-number\.holiday[\s\S]*?color:\s*#d84b4b/);
+  assert.match(css, /\.personal-calendar-day-number\.saturday\.holiday\s*\{[\s\S]*?color:\s*#d84b4b/);
+  assert.match(css, /\.personal-calendar-day\.holiday\.today \.personal-calendar-day-number[\s\S]*?background:\s*#c5221f/);
+});
+
 test('캘린더 API는 인증 후 지사와 직책에 관계없이 모든 일정을 공유한다', () => {
   assert.match(route, /personalCalendar\.use\('\*', authMiddleware\)/);
   assert.doesNotMatch(route, /WHERE user_id = \?/);
@@ -75,15 +101,15 @@ test('임장 입찰기일 또는 입찰 일정 중 하나만 있어도 캘린더
     data: JSON.stringify({ caseNo: '2026타경456', court: '서울중앙지방법원', propertyCategory: '상업·업무시설' }),
   })]);
   assert.equal(inspection.length, 1);
-  assert.equal(inspection[0].title, '[김민수] [주거시설]>[아파트]');
+  assert.equal(inspection[0].title, '[김민수] [아파트]');
   assert.equal(inspection[0].activity_type, '입찰');
   assert.equal(inspection[0].source_id, 'schedule-1');
   assert.equal(inspection[0].source_kind, 'inspection');
   assert.equal(bid.length, 1);
-  assert.equal(bid[0].title, '[김민수] [상업·업무시설]');
+  assert.equal(bid[0].title, '[김민수] [미분류]');
 });
 
-test('캘린더 물건 분류는 대분류와 세부분류를 구분하고 빈 값과 중복을 안정적으로 처리한다', () => {
+test('캘린더는 대분류를 숨기고 세부 물건종류만 표시하며 누락 시 미분류로 표시한다', () => {
   const events = buildPersonalCalendarAuctionEvents([
     auctionRow({
       id: 'both',
@@ -103,16 +129,16 @@ test('캘린더 물건 분류는 대분류와 세부분류를 구분하고 빈 �
     auctionRow({
       id: 'same',
       event_date: '2026-09-04',
-      data: JSON.stringify({ propertyCategory: '아파트', propertyType: ' 아 파 트 ' }),
+      data: JSON.stringify({ propertyCategory: '아파트', propertyType: ' 아파트 ' }),
     }),
     auctionRow({ id: 'empty', event_date: '2026-09-05', data: '{}' }),
   ]);
   const titles = new Map(events.map(event => [event.source_id, event.title]));
-  assert.equal(titles.get('both'), '[김민수] [주거시설]>[아파트]');
-  assert.equal(titles.get('category-only'), '[김민수] [주거시설]');
+  assert.equal(titles.get('both'), '[김민수] [아파트]');
+  assert.equal(titles.get('category-only'), '[김민수] [미분류]');
   assert.equal(titles.get('type-only'), '[김민수] [아파트]');
   assert.equal(titles.get('same'), '[김민수] [아파트]');
-  assert.equal(titles.get('empty'), '[김민수] 입찰');
+  assert.equal(titles.get('empty'), '[김민수] [미분류]');
   const both = events.find(event => event.source_id === 'both');
   assert.equal(both?.property_category, ' 주거시설 ');
   assert.equal(both?.property_type, ' 아파트 ');
@@ -121,8 +147,8 @@ test('캘린더 물건 분류는 대분류와 세부분류를 구분하고 빈 �
     auctionRow({ id: 'inspection-both', data: JSON.stringify({ propertyCategory: '주거시설', propertyType: '아파트' }) }),
     auctionRow({ id: 'inspection-empty', data: '{}' }),
   ]);
-  assert.equal(inspections[0].title, '[김민수] 임장 · [주거시설]>[아파트]');
-  assert.equal(inspections[1].title, '[김민수] 임장 · 미분류');
+  assert.equal(inspections.find(event => event.source_id === 'inspection-both')?.title, '[김민수] 임장 · [아파트]');
+  assert.equal(inspections.find(event => event.source_id === 'inspection-empty')?.title, '[김민수] 임장 · [미분류]');
 });
 
 test('같은 담당자·날짜·법원·사건·물건의 임장과 입찰은 실제 입찰 하나로 합친다', () => {
@@ -264,6 +290,48 @@ test('물건번호가 다른 입찰은 같은 사건이라도 별도 일정으�
   assert.equal(events.length, 2);
 });
 
+test('빈 물건번호는 입력 순서와 무관하게 서로 다른 명시 물건번호를 연결하지 않는다', () => {
+  const rows = [
+    auctionRow({
+      id: 'item-1', source_kind: 'bid', updated_at: '2026-09-01 09:00:02',
+      data: JSON.stringify({ caseNo: '2026타경123', itemNo: '1', court: '의정부지방법원' }),
+    }),
+    auctionRow({
+      id: 'item-2', source_kind: 'bid', updated_at: '2026-09-01 09:00:01',
+      data: JSON.stringify({ caseNo: '2026타경123', itemNo: '2', court: '의정부지방법원' }),
+    }),
+    auctionRow({
+      id: 'item-blank', source_kind: 'bid', updated_at: '2026-09-01 09:00:03',
+      data: JSON.stringify({ caseNo: '2026타경123', itemNo: '', court: '의정부지방법원' }),
+    }),
+  ];
+  const permutations = [
+    rows,
+    [rows[0], rows[2], rows[1]],
+    [rows[1], rows[0], rows[2]],
+    [rows[1], rows[2], rows[0]],
+    [rows[2], rows[0], rows[1]],
+    [rows[2], rows[1], rows[0]],
+  ];
+
+  for (const input of permutations) {
+    const events = buildPersonalCalendarAuctionEvents(input);
+    assert.equal(events.length, 2);
+    assert.deepEqual(events.map(event => event.source_id).sort(), ['item-2', 'item-blank']);
+    assert.equal(events.reduce((count, event) => count + event.source_snapshots.length, 0), 3);
+    for (const event of events) {
+      const explicitItems = new Set(event.source_snapshots
+        .map(source => String((JSON.parse(source.data) as { itemNo?: string }).itemNo || '').trim())
+        .filter(Boolean));
+      assert.ok(explicitItems.size <= 1);
+    }
+    assert.equal(
+      events.map(event => toPublicPersonalCalendarAuctionEvent(event, { id: 'viewer', role: 'member' })).length,
+      2,
+    );
+  }
+});
+
 test('마이페이지에 캘린더 메뉴와 전용 라우트를 노출한다', () => {
   assert.match(layout, /to="\/personal-calendar"/);
   assert.ok(layout.indexOf('to="/personal-calendar"') < layout.indexOf('to="/rooms"'));
@@ -361,7 +429,8 @@ test('auction calendar loader enforces self and branch scopes and excludes compa
     CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, branch TEXT NOT NULL, position_title TEXT NOT NULL);
     CREATE TABLE freelancer_auction_schedules (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, target_date TEXT NOT NULL,
-      activity_type TEXT NOT NULL, data TEXT NOT NULL, branch TEXT NOT NULL,
+      activity_type TEXT NOT NULL, activity_subtype TEXT NOT NULL DEFAULT '',
+      data TEXT NOT NULL, branch TEXT NOT NULL, department TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -389,7 +458,7 @@ test('auction calendar loader enforces self and branch scopes and excludes compa
   const [inspectionEvent] = buildPersonalCalendarInspectionEvents(inspectionRows);
   assert.equal(inspectionEvent.event_date, '2026-09-01');
   assert.equal(inspectionEvent.source_type, 'auction_inspection');
-  assert.equal(inspectionEvent.title, '[김민수] 임장 · 미분류');
+  assert.equal(inspectionEvent.title, '[김민수] 임장 · [미분류]');
 });
 
 test('calendar keeps cancellation distinct from withdrawal and exposes automatic cancellation', () => {
@@ -404,6 +473,31 @@ test('calendar keeps cancellation distinct from withdrawal and exposes automatic
   assert.equal(cancelled.bid_result, 'cancelled');
   assert.equal(cancelled.automatic_cancel, 1);
   assert.equal(withdrawn.bid_result, 'withdrawn');
+
+  const [derivedCancelled] = buildPersonalCalendarAuctionEvents([
+    auctionRow({
+      id: 'inspection-origin',
+      source_kind: 'inspection',
+      data: JSON.stringify({
+        bidDate: '2026-09-15', caseNo: '2026타경789', court: '의정부지방법원',
+        itemNo: '1', propertyType: '아파트', client: '고객',
+      }),
+    }),
+    auctionRow({
+      id: 'inspection-bid:inspection-origin',
+      source_kind: 'bid',
+      data: JSON.stringify({
+        caseNo: '2026타경789', court: '의정부지방법원', itemNo: '1',
+        propertyType: '아파트', client: '고객', inspectionSourceId: 'inspection-origin',
+        bidResultCancelled: true,
+      }),
+    }),
+  ]);
+  assert.equal(derivedCancelled.bid_result, 'cancelled');
+  assert.equal(
+    toPublicPersonalCalendarAuctionEvent(derivedCancelled, { id: 'ordinary', role: 'member' }).bid_result,
+    'cancelled',
+  );
 });
 
 test('auction calendar uses the requested branch stripe colors', () => {

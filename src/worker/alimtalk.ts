@@ -56,7 +56,7 @@ export const ALIMTALK_TEMPLATES = {
 ■ 영수증: #{receipt_count}건
 ■ 제출일: #{submit_date}
 
-신청서와 영수증을 확인한 후 대표 직인으로 승인해주세요.
+신청서와 영수증을 확인한 후 승인해주세요.
 
 ▶ 바로가기
 #{link}`,
@@ -422,6 +422,7 @@ export const ALIMTALK_TEMPLATES = {
 ■ 작성자: #{responder_name}
 
 댓글 내용을 확인해주세요.
+해당 메시지는 고객님께서 요청하신 댓글 알림으로 게시글에 새로운 댓글이 접수될 경우 발송됩니다.
 
 ▶ 바로가기
 #{link}`,

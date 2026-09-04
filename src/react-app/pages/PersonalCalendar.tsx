@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Pencil, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import type { AuctionBidResultEntry, AuctionBidScheduleSaveResponse, PersonalCalendarEvent } from '../api';
 import { useAuthStore } from '../store';
 import { canViewAuctionStoryAnomalies } from '../../shared/auction-story-anomaly-access';
+import { canManagePersonalCalendar } from '../../shared/personal-calendar-management';
 import AuctionBidResultEditor from '../components/AuctionBidResultEditor';
 import {
   clampPersonalCalendarZoom,
@@ -16,6 +17,10 @@ import {
   PERSONAL_CALENDAR_DESKTOP_MIN_ZOOM,
   PERSONAL_CALENDAR_MOBILE_MAX_ZOOM,
 } from '../lib/personal-calendar-zoom';
+import {
+  buildPersonalCalendarHolidayNames,
+  personalCalendarHolidayName,
+} from '../lib/personal-calendar-holidays';
 
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 const CALENDAR_TOUCH_QUERY = '(max-width: 600px), (pointer: coarse)';
@@ -97,6 +102,7 @@ export default function PersonalCalendar() {
     return new Date(today.getFullYear(), today.getMonth(), 1);
   });
   const [events, setEvents] = useState<PersonalCalendarEvent[]>([]);
+  const [holidayNames, setHolidayNames] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedEvent, setSelectedEvent] = useState<PersonalCalendarEvent | null>(null);
@@ -104,6 +110,8 @@ export default function PersonalCalendar() {
   const [bidResultEditorMode, setBidResultEditorMode] = useState<'full' | 'price' | null>(null);
   const [bidResultLoading, setBidResultLoading] = useState(false);
   const [bidResultError, setBidResultError] = useState('');
+  const [scheduleDeleteLoading, setScheduleDeleteLoading] = useState(false);
+  const [scheduleManageError, setScheduleManageError] = useState('');
   const [viewMode, setViewMode] = useState<'bid' | 'all'>('bid');
   const [calendarZoom, setCalendarZoom] = useState(1);
   const [calendarFitMode, setCalendarFitMode] = useState(true);
@@ -112,6 +120,8 @@ export default function PersonalCalendar() {
   const [isTouchCalendar, setIsTouchCalendar] = useState(supportsCalendarTouchGestures);
   const [calendarGestureActive, setCalendarGestureActive] = useState(false);
   const bidResultRequestId = useRef(0);
+  const scheduleDeleteInFlight = useRef(false);
+  const selectedEventRef = useRef<PersonalCalendarEvent | null>(null);
   const calendarScrollRef = useRef<HTMLDivElement>(null);
   const calendarCanvasRef = useRef<HTMLDivElement>(null);
   const calendarTouchPoints = useRef(new Map<number, CalendarTouchPoint>());
@@ -149,6 +159,7 @@ export default function PersonalCalendar() {
     : undefined;
 
   calendarZoomRef.current = effectiveCalendarZoom;
+  selectedEventRef.current = selectedEvent;
 
   useLayoutEffect(() => {
     const viewport = calendarScrollRef.current;
@@ -223,7 +234,10 @@ export default function PersonalCalendar() {
     setError('');
     api.personalCalendar.list(rangeStart, rangeEnd)
       .then((result) => {
-        if (active) setEvents(result.events || []);
+        if (active) {
+          setEvents(result.events || []);
+          setHolidayNames(buildPersonalCalendarHolidayNames(result.holidays || []));
+        }
       })
       .catch((err: Error) => {
         if (active) setError(err.message || '캘린더를 불러오지 못했습니다.');
@@ -516,7 +530,52 @@ export default function PersonalCalendar() {
 
   const closeSelectedEvent = () => {
     closeBidResultEditor();
+    setScheduleManageError('');
     setSelectedEvent(null);
+  };
+
+  const removeSelectedAuctionEvent = async () => {
+    if (scheduleDeleteInFlight.current) return;
+    const event = selectedEvent;
+    const management = event?.management;
+    if (
+      !event
+      || !management
+      || management.can_delete !== 1
+      || !management.source_id
+      || !management.revision
+      || (event.source_type !== 'auction_bid' && event.source_type !== 'auction_inspection')
+    ) return;
+
+    const fallbackWarning = management.origin_kind === 'inspection_bid_projection'
+      ? '원본 임장 일정이 삭제되며, 임장 일정과 여기서 파생된 입찰기일이 함께 사라집니다.'
+      : management.origin_kind === 'inspection'
+        ? '원본 임장 일정만 삭제됩니다. 단순 파생된 입찰기일 표시는 사라지지만, 이미 별도로 생성되었거나 결과 처리된 입찰은 유지될 수 있습니다.'
+        : '같은 사건으로 병합된 입찰 원본이 있으면 함께 삭제됩니다.';
+    const warning = management.delete_warning || fallbackWarning;
+    if (!window.confirm(`${warning}\n\n이 일정을 삭제할까요? 삭제 후에는 복구할 수 없습니다.`)) return;
+
+    scheduleDeleteInFlight.current = true;
+    setScheduleDeleteLoading(true);
+    setScheduleManageError('');
+    try {
+      await api.personalCalendar.deleteAuctionEvent(management.source_id, {
+        source_type: event.source_type,
+        revision: management.revision,
+      });
+      const result = await api.personalCalendar.list(rangeStart, rangeEnd);
+      setEvents(result.events || []);
+      setHolidayNames(buildPersonalCalendarHolidayNames(result.holidays || []));
+      if (selectedEventRef.current?.id === event.id) setSelectedEvent(null);
+      setError('');
+    } catch (err: unknown) {
+      const message = errorMessage(err, '일정을 삭제하지 못했습니다.');
+      if (selectedEventRef.current?.id === event.id) setScheduleManageError(message);
+      else setError(message);
+    } finally {
+      scheduleDeleteInFlight.current = false;
+      setScheduleDeleteLoading(false);
+    }
   };
 
   const openBidResultEditor = async (event: PersonalCalendarEvent, mode: 'full' | 'price') => {
@@ -553,6 +612,7 @@ export default function PersonalCalendar() {
         && event.item_no === previous?.item_no
       ));
       setEvents(nextEvents);
+      setHolidayNames(buildPersonalCalendarHolidayNames(result.holidays || []));
       setError('');
       setSelectedEvent(refreshed || null);
       setBidResultEntry(null);
@@ -565,6 +625,25 @@ export default function PersonalCalendar() {
       setError(errorMessage(err, '입찰 결과는 저장되었지만 캘린더를 새로 불러오지 못했습니다.'));
     }
   };
+
+  const selectedManagement = selectedEvent?.management;
+  const isCalendarScheduleManager = canManagePersonalCalendar({ role: user?.role });
+  const selectedEditUrl = selectedManagement
+    ? selectedManagement.edit_url || '/auction-schedule?' + new URLSearchParams({
+        date: selectedManagement.source_target_date,
+        schedule: selectedManagement.source_id,
+      }).toString()
+    : '';
+  const canEditSelectedSchedule = Boolean(
+    isCalendarScheduleManager
+    && selectedManagement?.can_edit === 1
+    && selectedEditUrl,
+  );
+  const canDeleteSelectedSchedule = Boolean(
+    isCalendarScheduleManager
+    && selectedManagement?.can_delete === 1
+    && selectedManagement.revision,
+  );
 
   return (
     <div className={`page personal-calendar-page${isTouchCalendar ? ' calendar-touch-enabled' : ''}`}>
@@ -679,15 +758,20 @@ export default function PersonalCalendar() {
               const isOutside = day.getMonth() !== visibleMonth.getMonth();
               const isToday = key === todayKey;
               const dayOfWeek = day.getDay();
+              const holidayName = personalCalendarHolidayName(key, holidayNames);
+              const isHoliday = Boolean(holidayName);
               return (
                 <div
                   key={key}
-                  className={`personal-calendar-day${isOutside ? ' outside' : ''}${isToday ? ' today' : ''}`}
+                  className={`personal-calendar-day${isOutside ? ' outside' : ''}${isToday ? ' today' : ''}${isHoliday ? ' holiday' : ''}`}
                   role="gridcell"
-                  aria-label={`${formatCalendarDate(key)}${dayEvents.length ? `, 일정 ${dayEvents.length}개` : ''}`}
+                  aria-label={`${formatCalendarDate(key)}${holidayName ? `, ${holidayName}` : ''}${dayEvents.length ? `, 일정 ${dayEvents.length}개` : ''}`}
                 >
-                  <span className={`personal-calendar-day-number${dayOfWeek === 0 ? ' sunday' : dayOfWeek === 6 ? ' saturday' : ''}`}>
-                    {day.getDate()}
+                  <span className="personal-calendar-day-heading">
+                    <span className={`personal-calendar-day-number${dayOfWeek === 0 ? ' sunday' : dayOfWeek === 6 ? ' saturday' : ''}${isHoliday ? ' holiday' : ''}`}>
+                      {day.getDate()}
+                    </span>
+                    {holidayName && <span className="personal-calendar-holiday-name">{holidayName}</span>}
                   </span>
                   <span className="personal-calendar-day-events">
                     {dayEvents.map((event) => (
@@ -698,6 +782,7 @@ export default function PersonalCalendar() {
                         key={event.id}
                         onClick={() => {
                           closeBidResultEditor();
+                          setScheduleManageError('');
                           setSelectedEvent(event);
                         }}
                         aria-label={`${event.title || '일정'} 상세 보기`}
@@ -781,6 +866,47 @@ export default function PersonalCalendar() {
                   </button>
                 </div>
                 {bidResultError && <p role="alert">{bidResultError}</p>}
+              </div>
+            )}
+            {isCalendarScheduleManager && selectedManagement && (
+              <div className="personal-calendar-manage">
+                {(canDeleteSelectedSchedule || selectedManagement.delete_warning) && (
+                  <small className="personal-calendar-manage-warning" role="note">
+                    <strong>삭제 영향</strong>
+                    {selectedManagement.delete_warning || (
+                      selectedManagement.origin_kind === 'inspection_bid_projection'
+                        ? '원본 임장 일정이 삭제되며, 임장 일정과 여기서 파생된 입찰기일이 함께 사라집니다.'
+                        : selectedManagement.origin_kind === 'inspection'
+                          ? '원본 임장 일정만 삭제됩니다. 단순 파생된 입찰기일 표시는 사라지지만, 이미 별도로 생성되었거나 결과 처리된 입찰은 유지될 수 있습니다.'
+                          : '같은 사건으로 병합된 입찰 원본이 있으면 함께 삭제됩니다.'
+                    )}
+                  </small>
+                )}
+                {selectedManagement.block_reason && (
+                  <small className="personal-calendar-manage-block-reason" role="note">
+                    {selectedManagement.block_reason}
+                  </small>
+                )}
+                {(canEditSelectedSchedule || canDeleteSelectedSchedule) && (
+                  <div className="personal-calendar-manage-actions">
+                    {canEditSelectedSchedule && (
+                      <Link className="btn btn-secondary" to={selectedEditUrl} onClick={closeSelectedEvent}>
+                        <Pencil size={15} /> 원본 일정 수정
+                      </Link>
+                    )}
+                    {canDeleteSelectedSchedule && (
+                      <button
+                        type="button"
+                        className="btn btn-danger"
+                        disabled={scheduleDeleteLoading}
+                        onClick={removeSelectedAuctionEvent}
+                      >
+                        <Trash2 size={15} /> {scheduleDeleteLoading ? '삭제 중...' : '일정 삭제'}
+                      </button>
+                    )}
+                  </div>
+                )}
+                {scheduleManageError && <p className="personal-calendar-manage-error" role="alert">{scheduleManageError}</p>}
               </div>
             )}
           </section>

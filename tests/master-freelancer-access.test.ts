@@ -48,5 +48,5 @@ test('일반 프리랜서도 업무성과 계약 등수를 조회하고 화면�
   assert.match(salesPage, /api\.sales\.ranking\(startMonth, endMonth\)/);
   assert.match(salesPage, /className="sales-ranking"/);
   assert.doesNotMatch(rankingRoute, /requireRole|login_type|접근 권한/);
-  assert.match(rankingRoute, /return c\.json\(\{ ranking: result\.results \|\| \[\] \}\)/);
+  assert.match(rankingRoute, /return c\.json\(\{ ranking \}\)/);
 });

@@ -489,6 +489,20 @@ def build_template_data(data: dict) -> dict:
         if block.strip()
     ]
 
+    try:
+        from .rights_checklist import build_checklist_from_pipeline, checklist_to_context
+    except ImportError:  # 단독 실행 대비
+        from rights_checklist import build_checklist_from_pipeline, checklist_to_context
+    _checklist_ctx = checklist_to_context(build_checklist_from_pipeline(
+        data=data, rights=rights, base_right=base_right, valid_tenants=valid_tenants,
+        management_fee=management_fee, surplus_description=surplus_description,
+        texts=[
+            sale_spec_remarks_text, status_survey_etc_text, case_notice_text,
+            data.get("case_document_text") or "", data.get("property_overview") or "",
+            data.get("item_type") or "",
+        ],
+    ))
+
     return {
         "caseNumber": case_number,
         "caceNumber": case_number,
@@ -530,6 +544,9 @@ def build_template_data(data: dict) -> dict:
         "hasUnpaidFee": int(management_fee.get("unpaidAmount") or 0) > 0,
         "reviewText": "\n".join(review_items),
         "reviewItems": review_items,
+        "checklistRows": _checklist_ctx["checklistRows"],
+        "checklistDetails": _checklist_ctx["checklistDetails"],
+        "checklistSummaryText": _checklist_ctx["checklistSummaryText"],
     }
 
 
@@ -2421,6 +2438,8 @@ def render_certificate_template(template_path: str, data: dict) -> str:
     rendered = _replace_each(rendered, "tenantAnalyses", data.get("tenantAnalyses") or [])
     rendered = _replace_each(rendered, "miscItems", data.get("miscItems") or [])
     rendered = _replace_each(rendered, "reviewItems", data.get("reviewItems") or [])
+    rendered = _replace_each(rendered, "checklistRows", data.get("checklistRows") or [])
+    rendered = _replace_each(rendered, "checklistDetails", data.get("checklistDetails") or [])
 
     rendered = _replace_if(rendered, "noTenants", bool(data.get("noTenants")))
     rendered = _replace_if(rendered, "hasUnpaidFee", bool(data.get("hasUnpaidFee")))

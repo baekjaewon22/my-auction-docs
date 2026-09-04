@@ -76,6 +76,19 @@ export function normalizeLawitgoProgressList(payload: unknown): { items: Lawitgo
   return { items: candidates.map(normalizeLawitgoProgressItem).filter((item): item is LawitgoProgressListItem => Boolean(item)) };
 }
 
+// lawitgo 진행현황 응답에는 stage/status 구조화 필드가 비어 있고, 실제 진행단계는
+// 렌더된 스텝퍼 HTML의 `class="step current"` 단계에만 담겨 있다. 그 단계 제목을 추출한다.
+// (미추출 시 프론트가 전부 '사건수임' fallback으로 표시되는 문제 해결)
+export function extractLawitgoProgressStage(html: string): string {
+  if (!html) return '';
+  const current = html.match(/class="step current"[\s\S]*?class="step-title"[^>]*>\s*([^<]+?)\s*</);
+  if (current) return current[1].trim();
+  // 모든 단계 완료(현재 단계 없음)면 마지막 완료 단계를 사용
+  const dones = [...html.matchAll(/class="step done"[\s\S]*?class="step-title"[^>]*>\s*([^<]+?)\s*</g)];
+  if (dones.length) return dones[dones.length - 1][1].trim();
+  return '';
+}
+
 export function normalizeLawitgoProgressDetail(payload: unknown): {
   item: LawitgoProgressListItem;
   ui: { html: string; css: string };
@@ -88,6 +101,11 @@ export function normalizeLawitgoProgressDetail(payload: unknown): {
   const html = text(ui.html, MAX_UI_HTML_LENGTH);
   const css = text(ui.css, MAX_UI_CSS_LENGTH);
   if (!html) return null;
+  // JSON에 단계 정보가 없으면 렌더 HTML에서 현재 단계를 추출해 채운다.
+  if (!item.stageLabel && !item.statusLabel) {
+    const stage = extractLawitgoProgressStage(html);
+    if (stage) item.stageLabel = stage;
+  }
   return { item, ui: { html, css } };
 }
 

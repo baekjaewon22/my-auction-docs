@@ -4,14 +4,13 @@ import {
 } from '../../shared/auction-schedule.ts';
 import { sendWebPushToUser } from './web-push-delivery.ts';
 import { ensureAuctionScheduleTable } from './auction-schedule-schema.ts';
+import {
+  acquireAuctionScheduleMutationClaim,
+  releaseAuctionScheduleMutationClaim,
+  type AuctionScheduleMutationSnapshot,
+} from './auction-schedule-mutation-claim.ts';
 
-type DueSchedule = {
-  id: string;
-  user_id: string;
-  target_date: string;
-  activity_subtype: string;
-  data: string;
-};
+type DueSchedule = AuctionScheduleMutationSnapshot;
 
 function parseData(value: string): Record<string, unknown> {
   try {
@@ -44,6 +43,7 @@ export async function ensureAuctionBidResultReminderTable(db: D1Database): Promi
 export async function runAuctionBidResultReminders(
   env: Env,
   scheduledAt: Date = new Date(),
+  deliver: typeof sendWebPushToUser = sendWebPushToUser,
 ): Promise<{ due: boolean; checked: number; reminders: number; sent: number; failed: number }> {
   const kst = new Date(scheduledAt.getTime() + 9 * 60 * 60 * 1000).toISOString();
   if (Number(kst.slice(11, 13)) < 15) return { due: false, checked: 0, reminders: 0, sent: 0, failed: 0 };
@@ -54,7 +54,8 @@ export async function runAuctionBidResultReminders(
     ensureAuctionBidResultReminderTable(db),
   ]);
   const result = await db.prepare(`
-    SELECT s.id, s.user_id, s.target_date, s.activity_subtype, s.data
+    SELECT s.id, s.user_id, s.target_date, s.activity_type, s.activity_subtype,
+      s.data, s.branch, s.department, s.created_at, s.updated_at
     FROM freelancer_auction_schedules s
     JOIN users u ON u.id = s.user_id
     WHERE s.activity_type = '입찰'
@@ -72,16 +73,30 @@ export async function runAuctionBidResultReminders(
     if (!isAuctionScheduleBidResultDue(schedule.target_date, scheduledAt)) continue;
     const missing = auctionScheduleBidResultMissingFields(parseData(schedule.data));
     if (!missing.length) continue;
+    const scheduleClaim = await acquireAuctionScheduleMutationClaim(
+      db,
+      schedule,
+      'bid_result_reminder',
+      'system:bid-result-reminder',
+    );
+    if (!scheduleClaim) continue;
+    try {
     const runId = crypto.randomUUID();
     const claim = await db.prepare(`
       INSERT OR IGNORE INTO auction_bid_result_reminder_runs
         (id, schedule_id, user_id, target_date, missing_fields_json)
-      VALUES (?, ?, ?, ?, ?)
-    `).bind(runId, schedule.id, schedule.user_id, schedule.target_date, JSON.stringify(missing)).run();
+      SELECT ?, ?, ?, ?, ?
+      WHERE EXISTS (
+        SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?
+      )
+    `).bind(
+      runId, schedule.id, schedule.user_id, schedule.target_date, JSON.stringify(missing),
+      schedule.id, scheduleClaim,
+    ).run();
     if (Number(claim.meta?.changes || 0) === 0) continue;
 
     reminders += 1;
-    const delivery = await sendWebPushToUser(db, env, {
+    const delivery = await deliver(db, env, {
       userId: schedule.user_id,
       eventType: 'auction_bid_result_missing',
       title: '입찰 결과를 입력해 주세요',
@@ -97,6 +112,9 @@ export async function runAuctionBidResultReminders(
       SET status = ?, sent_count = ?, failed_count = ?, updated_at = datetime('now', '+9 hours')
       WHERE id = ?
     `).bind(status, delivery.sent, delivery.failed, runId).run();
+    } finally {
+      await releaseAuctionScheduleMutationClaim(db, scheduleClaim);
+    }
   }
 
   return { due: true, checked: schedules.length, reminders, sent, failed };

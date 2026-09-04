@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { kstDateKey } from '../src/worker/lib/personal-calendar-auction-events.ts';
+import { auctionPropertyDetailLabel } from '../src/shared/auction-property-label.ts';
 
 const route = readFileSync(new URL('../src/worker/routes/personal-calendar.ts', import.meta.url), 'utf8');
 const dashboard = readFileSync(new URL('../src/react-app/pages/Dashboard.tsx', import.meta.url), 'utf8');
@@ -34,6 +35,10 @@ test('both employee and freelancer dashboards show all requested today-bid colum
   assert.match(dashboard, /failed: '실패'/);
   assert.match(dashboard, /cancelled: '취소'/);
   assert.match(dashboard, /withdrawn: '취하\/변경'/);
+  assert.match(route, /property_type: event\.property_type/);
+  assert.match(dashboard, /auctionPropertyDetailLabel\(bid\.property_type\)/);
+  assert.equal(auctionPropertyDetailLabel(' 다세대(빌라) '), '다세대(빌라)');
+  assert.equal(auctionPropertyDetailLabel(''), '미분류');
 });
 
 test('오늘의 입찰 인원을 누르면 해당 캘린더 일정 상세 팝업으로 이동한다', () => {

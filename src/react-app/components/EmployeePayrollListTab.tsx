@@ -10,6 +10,8 @@ import {
   withholdingSettlementAdjustment,
   type WithholdingSettlementItem,
 } from '../../shared/withholding-settlement';
+import { calculateFreelancerSettlement } from '../../shared/freelancer-settlement';
+import { payrollContractAwardAmount } from '../lib/contractAwardUi';
 
 type PayrollListRow = {
   user_id: string;
@@ -28,6 +30,7 @@ type PayrollListRow = {
   extra_pay: number;
   deduction: number;
   total_pay: number;
+  carryover_amount: number;
   withholding_settlements: WithholdingSettlementItem[];
   withholding_adjustment: number;
   actual_transfer: number;
@@ -43,6 +46,12 @@ function payrollMoney(n: number, month: string): number {
 function vatSupplyAmount(n: number, month: string): number { return payrollMoney((Number(n) || 0) * 10 / 11, month); }
 function parseMoney(value: unknown): number {
   return Number(String(value ?? '').replace(/[^0-9-]/g, '')) || 0;
+}
+
+function savedPayrollNetPay(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : null;
 }
 
 const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -117,9 +126,11 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
           const accounting = payroll.accounting || {};
 
           let saved: any = {};
+          let userLocked = false;
           try {
             const saveRes = await api.payroll.getSave(user.id, payroll.period_label || month);
             saved = saveRes.save ? JSON.parse(saveRes.save.data || '{}') : {};
+            userLocked = !!saveRes.save?.locked;
           } catch {
             saved = {};
           }
@@ -131,10 +142,9 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
           const isCommission = accounting.pay_type === 'commission';
           const liveCaseAllowance = isCommission ? 0 : Number(salaryCaseAllowanceByUser[user.id] || 0);
           const savedCaseAllowance = Number(saved.caseAllowance?.bonus || saved.payroll_snapshot?.caseAllowance?.bonus || 0);
-          const caseAllowance = isCommission ? 0 : (savedCaseAllowance || liveCaseAllowance);
-          const contractAward = payroll.is_payout_month && payroll.contract_award?.rank
-            ? Number(payroll.contract_award.award || 0)
-            : 0;
+          // 잠긴(지급완료) 월만 안건 수당 유지 — 미잠금/신규는 0(제외).
+          const caseAllowance = (isCommission || !userLocked) ? 0 : (savedCaseAllowance || liveCaseAllowance);
+          const contractAward = payrollContractAwardAmount(payroll);
           const manualExtraPay = parseMoney(saved.extraPay);
           const commExtraRaw = Array.isArray(saved.commExtras)
             ? saved.commExtras.reduce((sum: number, item: any) => sum + parseMoney(item?.amount), 0)
@@ -151,8 +161,10 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             + Number(payroll.termination_settlement?.leave_deduction || 0)
             + commDeductionRaw;
           const terminationLeavePayout = Number(payroll.termination_settlement?.leave_payout || 0);
-          const lawitgoNewSettlement = (payroll.lawitgo_new_settlements || [])
-            .reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0);
+          // 잠긴 월만 신 안건수당 유지 — 미잠금/신규는 0.
+          const lawitgoNewSettlement = userLocked
+            ? (payroll.lawitgo_new_settlements || []).reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0)
+            : 0;
 
           let rowBasePay = basePay;
           let rowPerformanceBonus = performanceBonus;
@@ -166,9 +178,9 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             const rate = Number(accounting.commission_rate || 0);
             const normalRecords = (payroll.records || []).filter((r: any) => r.type !== '매수신청대리');
             const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (Number(r.supply_amount) || vatSupplyAmount(r.amount, month)), 0);
-            const normalRefundSupply = (payroll.refunded_records || [])
-              .filter((r: any) => r.type !== '매수신청대리')
-              .reduce((sum: number, r: any) => sum + vatSupplyAmount(r.amount, month), 0);
+            // 당월 부분환불액(공급가)만 차감. 당월 전액환불은 확정매출/records에 없어 자동 제외.
+            const normalRefundSupply = normalRecords
+              .reduce((sum: number, r: any) => sum + vatSupplyAmount(Number(r.refund_amount) || 0, month), 0);
             const netNormalSales = normalSupply - normalRefundSupply;
             const commissionAmount = truncMoney(netNormalSales * rate / 100);
             const proxyIncome = (payroll.records || [])
@@ -197,24 +209,56 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                   .filter((item: any) => !item?.isFood && !item?.skipTax)
                   .reduce((sum: number, item: any) => sum + parseMoney(item?.amount), 0)
               : 0;
-            const totalIncome = commissionAmount + proxyIncome + lawitgoNewSettlement + extraDetails.reduce((sum: number, item: any) => sum + item.afterRate, 0);
-            const taxExemptAmount = extraDetails.filter((item: any) => item.skipTax).reduce((sum: number, item: any) => sum + item.afterRate, 0);
-            const taxableIncome = totalIncome - taxExemptAmount - preTaxDeductions;
-            const tax33 = truncMoney(taxableIncome * 0.033);
-            const contractAwardTax = truncMoney(contractAward * 0.033);
-            rowBasePay = commissionAmount + proxyIncome;
+            const taxableExtraIncome = extraDetails
+              .filter((item: any) => !item.skipTax)
+              .reduce((sum: number, item: any) => sum + item.afterRate, 0);
+            const taxExemptIncome = extraDetails
+              .filter((item: any) => item.skipTax)
+              .reduce((sum: number, item: any) => sum + item.afterRate, 0);
+            const positionAllowanceIncome = month >= '2026-08' ? positionAllowance : 0;
+            const settlement = calculateFreelancerSettlement({
+              // 신 안건수당은 기존 정산수익 구성에 그대로 두고, 새 합산 대상은 계약포상만이다.
+              settlementIncome: commissionAmount + proxyIncome + positionAllowanceIncome + lawitgoNewSettlement,
+              contractAward,
+              taxableExtraIncome,
+              taxExemptIncome,
+              preTaxDeduction: preTaxDeductions,
+              postTaxDeduction: otherDeductions,
+            });
+            rowBasePay = commissionAmount + proxyIncome + positionAllowanceIncome; // 신 안건수당은 별도 열에 표시
             rowPerformanceBonus = 0;
-            rowCaseAllowance = 0;
-            rowContractAward = contractAward;
-            rowExtraPay = extraDetails.reduce((sum: number, item: any) => sum + item.afterRate, 0);
-            rowDeduction = preTaxDeductions + otherDeductions + tax33 + contractAwardTax;
-            totalPay = payrollMoney(rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay + lawitgoNewSettlement, month);
+            rowCaseAllowance = caseAllowance;
+            rowContractAward = settlement.contractAward;
+            rowExtraPay = settlement.taxableExtraIncome + settlement.taxExemptIncome;
+            rowDeduction = settlement.preTaxDeduction + settlement.withholdingTax + settlement.postTaxDeduction;
+            const lockedSavedNetPay = userLocked
+              ? savedPayrollNetPay(saved.net_pay ?? saved.payroll_snapshot?.manual?.net_pay)
+              : null;
+            const legacyLockedNetPay = userLocked && lockedSavedNetPay === null
+              ? calculateFreelancerSettlement({
+                  settlementIncome: commissionAmount + proxyIncome + positionAllowanceIncome + lawitgoNewSettlement,
+                  taxableExtraIncome,
+                  taxExemptIncome,
+                  preTaxDeduction: preTaxDeductions,
+                  postTaxDeduction: otherDeductions,
+                }).netPay
+              : null;
+            totalPay = payrollMoney(
+              userLocked
+                ? (lockedSavedNetPay ?? legacyLockedNetPay ?? settlement.netPay)
+                : settlement.netPay,
+              month,
+            );
           }
 
           const withholdingSettlements = normalizeWithholdingSettlements(
             saved.withholdingSettlements ?? saved.payroll_snapshot?.manual?.withholdingSettlements,
           );
           const withholdingAdjustment = withholdingSettlementAdjustment(withholdingSettlements);
+          // 개인 정산서와 동일하게 음수 정산은 당월 지급액 0원, 차액은 익월 이월로 표시한다.
+          // 저장 net_pay는 위에서 음수 원값을 유지하므로 이월 원장 계산에는 영향이 없다.
+          const displayedTotalPay = isCommission ? Math.max(totalPay, 0) : totalPay;
+          const carryoverAmount = isCommission ? Math.max(-totalPay, 0) : 0;
 
           return {
             user_id: user.id,
@@ -232,10 +276,11 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             contract_award: rowContractAward,
             extra_pay: rowExtraPay,
             deduction: rowDeduction,
-            total_pay: totalPay,
+            total_pay: displayedTotalPay,
+            carryover_amount: carryoverAmount,
             withholding_settlements: withholdingSettlements,
             withholding_adjustment: withholdingAdjustment,
-            actual_transfer: actualTransferAmount(totalPay, withholdingSettlements),
+            actual_transfer: actualTransferAmount(displayedTotalPay, withholdingSettlements),
           } satisfies PayrollListRow;
         } catch {
           return null;
@@ -266,10 +311,11 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       extra_pay: acc.extra_pay + row.extra_pay,
       deduction: acc.deduction + row.deduction,
       total_pay: acc.total_pay + row.total_pay,
+      carryover_amount: acc.carryover_amount + row.carryover_amount,
       withholding_adjustment: acc.withholding_adjustment + row.withholding_adjustment,
       actual_transfer: acc.actual_transfer + row.actual_transfer,
     }),
-    { base_pay: 0, performance_bonus: 0, case_allowance: 0, lawitgo_new_settlement: 0, contract_award: 0, extra_pay: 0, deduction: 0, total_pay: 0, withholding_adjustment: 0, actual_transfer: 0 }
+    { base_pay: 0, performance_bonus: 0, case_allowance: 0, lawitgo_new_settlement: 0, contract_award: 0, extra_pay: 0, deduction: 0, total_pay: 0, carryover_amount: 0, withholding_adjustment: 0, actual_transfer: 0 }
   ), [rows]);
 
   const exportExcel = async () => {
@@ -290,6 +336,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       row.extra_pay,
       row.deduction,
       row.total_pay,
+      row.carryover_amount,
       row.withholding_adjustment,
       row.actual_transfer,
     ]);
@@ -297,21 +344,21 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
       ['전직원 급여 내역'],
       [`기준월: ${month}`, `작성일: ${new Date().toISOString().slice(0, 10)}`, `인원: ${rows.length}명`],
       [],
-      ['No', '지사', '담당자', '직급', '정산유형', '급여', '성과금', '안건 수당', '신 안건수당', '계약포상', '기타지급', '공제', '당월 급여 실지급(A)', '원천세 정산(B)', '실제 이체액(A+B)'],
+      ['No', '지사', '담당자', '직급', '정산유형', '급여', '성과금', '안건 수당', '신 안건수당', '계약포상', '기타지급', '공제', '당월 급여 실지급(A)', '익월 이월', '원천세 정산(B)', '실제 이체액(A+B)'],
       ...sheetRows,
       [],
-      ['합계', '', '', '', '', totals.base_pay, totals.performance_bonus, totals.case_allowance, totals.lawitgo_new_settlement, totals.contract_award, totals.extra_pay, totals.deduction, totals.total_pay, totals.withholding_adjustment, totals.actual_transfer],
+      ['합계', '', '', '', '', totals.base_pay, totals.performance_bonus, totals.case_allowance, totals.lawitgo_new_settlement, totals.contract_award, totals.extra_pay, totals.deduction, totals.total_pay, totals.carryover_amount, totals.withholding_adjustment, totals.actual_transfer],
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(sheetData);
     ws['!cols'] = [
       { wch: 6 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
-      { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 20 }, { wch: 18 }, { wch: 20 },
+      { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 20 }, { wch: 18 }, { wch: 18 }, { wch: 20 },
     ];
     const firstDataRow = 5;
     const totalRow = firstDataRow + sheetRows.length + 1;
     for (let r = firstDataRow; r <= totalRow; r += 1) {
-      ['F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'].forEach((col) => {
+      ['F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'].forEach((col) => {
         const cell = ws[`${col}${r}`];
         if (cell) cell.z = '#,##0';
       });
@@ -414,7 +461,10 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                   <td style={{ textAlign: 'right', color: row.lawitgo_new_settlement > 0 ? '#188038' : undefined }}>{fmt(row.lawitgo_new_settlement)}원</td>
                   <td style={{ textAlign: 'right' }}>{fmt(row.contract_award)}원</td>
                   <td style={{ textAlign: 'right' }}>{fmt(row.extra_pay - row.deduction)}원</td>
-                  <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(row.total_pay)}원</td>
+                  <td style={{ textAlign: 'right', fontWeight: 700 }}>
+                    {fmt(row.total_pay)}원
+                    {row.carryover_amount > 0 && <small style={{ display: 'block', color: '#e65100', fontWeight: 400 }}>(이월 {fmt(row.carryover_amount)}원)</small>}
+                  </td>
                   <td style={{ textAlign: 'right', color: row.withholding_adjustment >= 0 ? '#188038' : '#d93025' }}>
                     {row.withholding_adjustment > 0 ? '+' : ''}{fmt(row.withholding_adjustment)}원
                   </td>
@@ -431,7 +481,10 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
                 <td style={{ textAlign: 'right', color: totals.lawitgo_new_settlement > 0 ? '#188038' : undefined }}>{fmt(totals.lawitgo_new_settlement)}원</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.contract_award)}원</td>
                 <td style={{ textAlign: 'right' }}>{fmt(totals.extra_pay - totals.deduction)}원</td>
-                <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(totals.total_pay)}원</td>
+                <td style={{ textAlign: 'right', fontWeight: 700 }}>
+                  {fmt(totals.total_pay)}원
+                  {totals.carryover_amount > 0 && <small style={{ display: 'block', color: '#e65100', fontWeight: 400 }}>(이월 {fmt(totals.carryover_amount)}원)</small>}
+                </td>
                 <td style={{ textAlign: 'right', color: totals.withholding_adjustment >= 0 ? '#188038' : '#d93025' }}>
                   {totals.withholding_adjustment > 0 ? '+' : ''}{fmt(totals.withholding_adjustment)}원
                 </td>

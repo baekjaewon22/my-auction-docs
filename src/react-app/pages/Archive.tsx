@@ -12,6 +12,7 @@ import { sameBranchName } from '../lib/branchAliases';
 import BriefingMaterialArchive from '../components/BriefingMaterialArchive';
 import ExpenseReceiptArchive from './ExpenseReceiptArchive';
 import { EXPENSE_RECEIPT_TEMPLATE_ID } from '../lib/expense-receipt';
+import { canViewBriefingMaterial } from '../../shared/briefing-material-access';
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   draft: { label: '작성중', className: 'status-draft' },
@@ -65,7 +66,16 @@ export default function ArchivePage() {
   const canDrive = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
   const canManageDrive = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(user?.role || '');
   const [searchParams, setSearchParams] = useSearchParams();
+  const archiveCategory = searchParams.get('category');
+  const canViewBriefing = canViewBriefingMaterial(user);
+  const showBriefingArchive = archiveCategory === 'briefing' && canViewBriefing;
   const [driveModalOpen, setDriveModalOpen] = useState(searchParams.get('drive') === '1' && canDrive);
+  useEffect(() => {
+    if (archiveCategory !== 'briefing' || canViewBriefing) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('category');
+    setSearchParams(next, { replace: true });
+  }, [archiveCategory, canViewBriefing, searchParams, setSearchParams]);
   useEffect(() => {
     if (driveModalOpen && searchParams.get('drive') === '1') {
       // 쿼리 파라미터 정리 (뒤로가기 시 재오픈 방지)
@@ -103,14 +113,18 @@ export default function ArchivePage() {
   const [statusTab, setStatusTab] = useState<'all' | 'approved' | 'cancelled'>('approved');
 
   useEffect(() => {
+    if (showBriefingArchive) return;
+    let active = true;
     setLoading(true);
     api.documents.list('approved')
       .then((res) => {
+        if (!active) return;
         // 영수증 지출결의는 전용 카테고리(영수증 지출결의)에서만 관리 — 결재문서 목록에서는 제외(중복 노출 방지)
         setDocuments((res.documents || []).filter((d) => d.template_id !== EXPENSE_RECEIPT_TEMPLATE_ID));
       })
-      .finally(() => setLoading(false));
-  }, []);
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [showBriefingArchive]);
 
   // 문서 제목 기반 카테고리 분류 (외근일지 별도, 휴가류 통합)
   const DOC_CATEGORIES = [
@@ -207,7 +221,7 @@ export default function ArchivePage() {
     } catch (err: any) { alert(err.message); }
   };
 
-  if (searchParams.get('category') === 'briefing') return <BriefingMaterialArchive />;
+  if (showBriefingArchive) return <BriefingMaterialArchive />;
   if (searchParams.get('category') === 'expense-receipts') return <ExpenseReceiptArchive />;
 
   if (loading) return <div className="page-loading">로딩중...</div>;
@@ -216,7 +230,7 @@ export default function ArchivePage() {
     <div className="page">
       <nav className="archive-category-tabs" aria-label="문서보관함 하위 카테고리">
         <button type="button" className="active"><FileText size={16} /> 결재문서</button>
-        <button type="button" onClick={() => setSearchParams({ category: 'briefing' })}><FileCheck size={16} /> 브리핑자료</button>
+        {canViewBriefing && <button type="button" onClick={() => setSearchParams({ category: 'briefing' })}><FileCheck size={16} /> 브리핑자료</button>}
         <button type="button" onClick={() => setSearchParams({ category: 'expense-receipts' })}><Archive size={16} /> 영수증 지출결의</button>
       </nav>
       <div className="page-header">

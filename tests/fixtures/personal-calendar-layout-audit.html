@@ -58,8 +58,10 @@
     for (let index = 0; index < 42; index += 1) {
       const day = document.createElement('button');
       day.type = 'button';
-      day.className = `personal-calendar-day${index === 12 ? ' today' : ''}`;
-      day.innerHTML = `<span class="personal-calendar-day-number">${index + 1}</span><span class="personal-calendar-day-events"></span>`;
+      const holiday = index === 23;
+      day.className = `personal-calendar-day${index === 12 ? ' today' : ''}${holiday ? ' holiday' : ''}`;
+      day.setAttribute('aria-label', `2026년 9월 ${index + 1}일${holiday ? ', 추석 연휴' : ''}`);
+      day.innerHTML = `<span class="personal-calendar-day-heading"><span class="personal-calendar-day-number${holiday ? ' holiday' : ''}">${index + 1}</span>${holiday ? '<span class="personal-calendar-holiday-name">추석 연휴</span>' : ''}</span><span class="personal-calendar-day-events"></span>`;
       if (index === 10) {
         const events = day.querySelector('.personal-calendar-day-events');
         for (let eventIndex = 0; eventIndex < 80; eventIndex += 1) {
@@ -67,9 +69,9 @@
           event.className = `personal-calendar-event-chip${eventIndex <= 1 ? ' auction' : ''}${eventIndex === 1 ? ' inspection' : ''}`;
           event.style.setProperty('--event-color', ['#4f6bed', '#dd5a5a', '#32a071'][eventIndex % 3]);
           if (eventIndex === 0) {
-            event.innerHTML = '<span class="personal-calendar-event-title">[김민수] [주거시설]&gt;[아파트]</span><span class="personal-calendar-event-result won">낙찰</span>';
+            event.innerHTML = '<span class="personal-calendar-event-title">[김민수] [아파트]</span><span class="personal-calendar-event-result won">낙찰</span>';
           } else if (eventIndex === 1) {
-            event.innerHTML = '<span class="personal-calendar-event-title">[이서초] 임장 · [상업·업무시설]&gt;[근린상가]</span>';
+            event.innerHTML = '<span class="personal-calendar-event-title">[이서초] 임장 · [근린상가]</span>';
           } else {
             event.textContent = `일정 ${eventIndex + 1} - 긴 일정 제목 반응형 확인`;
           }

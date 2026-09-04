@@ -3,7 +3,9 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import {
+  AUCTION_SCHEDULE_MUTATION_ROLES,
   auctionScheduleKstDateKey,
+  canEditAuctionScheduleEntry,
   canManageAuctionSchedule,
   getRequiredInspectionBidDateError,
   isPastAuctionScheduleDate,
@@ -63,7 +65,8 @@ function setup() {
     );
     CREATE TABLE sales_records (
       id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
-      external_id TEXT, winning_price INTEGER NOT NULL DEFAULT 0
+      external_id TEXT, amount INTEGER NOT NULL DEFAULT 0,
+      winning_price INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE commissions (
       id TEXT PRIMARY KEY, journal_entry_id TEXT, status TEXT NOT NULL DEFAULT 'pending', win_price TEXT
@@ -143,25 +146,32 @@ test('일정 날짜와 임장 입찰기일은 실제로 존재하는 YYYY-MM-DD�
   assert.equal(getRequiredInspectionBidDateError('임장', { bidDate: '2026-02-28' }), null);
 });
 
-test('오늘·미래 일정의 일반 PUT·DELETE는 master와 accountant만 실행한다', async () => {
-  assert.equal(canManageAuctionSchedule({ role: 'master' }), true);
-  assert.equal(canManageAuctionSchedule({ role: 'accountant' }), true);
-  for (const role of ['ceo', 'admin', 'accountant_asst', 'member', 'support']) {
+test('일반 PUT·DELETE는 날짜와 소유자에 관계없이 관리자급만 실행한다', async () => {
+  assert.deepEqual([...AUCTION_SCHEDULE_MUTATION_ROLES], ['master', 'accountant', 'accountant_asst', 'ceo']);
+  for (const role of AUCTION_SCHEDULE_MUTATION_ROLES) {
+    assert.equal(canManageAuctionSchedule({ role }), true, role);
+  }
+  for (const role of ['admin', 'member', 'support']) {
     assert.equal(canManageAuctionSchedule({ role }), false, role);
   }
+  assert.equal(canEditAuctionScheduleEntry(
+    { role: 'member', sub: 'owner' },
+    { user_id: 'owner', target_date: '2099-12-31' },
+  ), false);
 
   const { sqlite, insertSchedule, request } = setup();
   const actors = ['master', 'accountant', 'owner', 'ceo', 'admin', 'asst', 'support'];
+  const managerActors = ['master', 'accountant', 'ceo', 'asst'];
   for (const actor of actors) {
     const putId = `put-${actor}`;
     insertSchedule(putId);
     const put = await request(actor, `/${putId}`, 'PUT', { activity_subtype: `${actor}-updated` });
-    assert.equal(put.status, ['master', 'accountant'].includes(actor) ? 200 : 403, `PUT ${actor}: ${await put.clone().text()}`);
+    assert.equal(put.status, managerActors.includes(actor) ? 200 : 403, `PUT ${actor}: ${await put.clone().text()}`);
 
     const deleteId = `delete-${actor}`;
     insertSchedule(deleteId);
     const remove = await request(actor, `/${deleteId}`, 'DELETE');
-    assert.equal(remove.status, ['master', 'accountant'].includes(actor) ? 200 : 403, `DELETE ${actor}: ${await remove.clone().text()}`);
+    assert.equal(remove.status, managerActors.includes(actor) ? 200 : 403, `DELETE ${actor}: ${await remove.clone().text()}`);
   }
   sqlite.close();
 });
@@ -267,21 +277,31 @@ test('결과가 처리된 입찰 일정은 일반 PUT을 차단하지만 DELETE�
   sqlite.close();
 });
 
-test('과거 일정은 master·accountant도 PUT·DELETE할 수 없고 미래 일정을 과거로 옮기지 못한다', async () => {
+test('과거·오늘·미래 일정 모두 관리자급만 PUT·DELETE할 수 있다', async () => {
   const { sqlite, insertSchedule, request } = setup();
-  for (const actor of ['master', 'accountant']) {
+  for (const actor of ['master', 'accountant', 'ceo', 'asst']) {
     const pastId = `past-${actor}`;
     insertSchedule(pastId, '2000-01-01');
     const put = await request(actor, `/${pastId}`, 'PUT', { activity_subtype: '변경' });
-    assert.equal(put.status, 409, `past PUT ${actor}`);
+    assert.equal(put.status, 200, `past PUT ${actor}: ${await put.clone().text()}`);
     const remove = await request(actor, `/${pastId}`, 'DELETE');
-    assert.equal(remove.status, 409, `past DELETE ${actor}`);
+    assert.equal(remove.status, 200, `past DELETE ${actor}: ${await remove.clone().text()}`);
 
     const futureId = `move-${actor}`;
     insertSchedule(futureId);
     const moveToPast = await request(actor, `/${futureId}`, 'PUT', { target_date: '2000-01-01' });
-    assert.equal(moveToPast.status, 409, `move-to-past PUT ${actor}`);
+    assert.equal(moveToPast.status, 200, `move-to-past PUT ${actor}: ${await moveToPast.clone().text()}`);
   }
+
+  insertSchedule('past-owner', '2000-01-01');
+  assert.equal((await request('owner', '/past-owner', 'PUT', { activity_subtype: '변경' })).status, 403);
+  assert.equal((await request('owner', '/past-owner', 'DELETE')).status, 403);
+  insertSchedule('today-owner', auctionScheduleKstDateKey());
+  assert.equal((await request('owner', '/today-owner', 'PUT', { activity_subtype: '변경' })).status, 403);
+  assert.equal((await request('owner', '/today-owner', 'DELETE')).status, 403);
+  insertSchedule('future-owner');
+  assert.equal((await request('owner', '/future-owner', 'PUT', { activity_subtype: '변경' })).status, 403);
+  assert.equal((await request('owner', '/future-owner', 'DELETE')).status, 403);
   sqlite.close();
 });
 

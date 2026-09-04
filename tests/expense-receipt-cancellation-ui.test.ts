@@ -7,6 +7,7 @@ const documentsRoute = readFileSync(new URL('../src/worker/routes/documents.ts',
 const api = readFileSync(new URL('../src/react-app/api.ts', import.meta.url), 'utf8');
 const application = readFileSync(new URL('../src/react-app/pages/ExpenseReceiptApplication.tsx', import.meta.url), 'utf8');
 const archive = readFileSync(new URL('../src/react-app/pages/ExpenseReceiptArchive.tsx', import.meta.url), 'utf8');
+const approvalManage = readFileSync(new URL('../src/react-app/pages/ExpenseReceiptApprovalManage.tsx', import.meta.url), 'utf8');
 
 test('영수증 전용 상세와 목록 응답은 문서 취소 상태와 사유를 노출한다', () => {
   assert.match(route, /type ReceiptDocument = \{[\s\S]*?cancel_requested: number;[\s\S]*?cancel_reason: string;[\s\S]*?cancelled: number;/);
@@ -20,7 +21,8 @@ test('취소 상태 필터는 원래 승인 상태와 상호 배타적으로 조
   assert.match(route, /status === 'cancelled'[\s\S]*?COALESCE\(d\.cancelled,0\)=1/);
   assert.match(route, /status === 'cancel_requested'[\s\S]*?COALESCE\(d\.cancelled,0\)=0 AND COALESCE\(d\.cancel_requested,0\)=1/);
   assert.match(route, /\['draft', 'submitted', 'approved', 'rejected'\][\s\S]*?COALESCE\(d\.cancelled,0\)=0 AND COALESCE\(d\.cancel_requested,0\)=0/);
-  assert.match(archive, /option value="cancel_requested">취소 신청<\/option><option value="cancelled">취소<\/option>/);
+  assert.match(approvalManage, /option value="cancel_requested">취소 신청<\/option><option value="cancelled">취소<\/option>/);
+  assert.match(archive, /option value="approved">승인 완료<\/option><option value="cancelled">취소<\/option>/);
 });
 
 test('전용 작성 화면은 작성자에게만 기존 문서 취소 API를 열고 처리 상태를 표시한다', () => {

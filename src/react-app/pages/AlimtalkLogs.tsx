@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import { MessageSquare, Search, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { MessageSquare, Search, CheckCircle, XCircle, Clock, RefreshCw, Send } from 'lucide-react';
 
 interface LogEntry {
   id: string;
@@ -66,6 +66,8 @@ export default function AlimtalkLogs() {
   const [searchInput, setSearchInput] = useState('');
   const [filterTemplate, setFilterTemplate] = useState('');
   const [, setCategories] = useState<{ code: string; label: string }[]>([]);
+  const [resending, setResending] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -83,6 +85,33 @@ export default function AlimtalkLogs() {
   useEffect(() => { load(); }, [filterTemplate, search]);
 
   const handleSearch = () => setSearch(searchInput.trim());
+
+  const handleRefreshStatus = async () => {
+    setRefreshing(true);
+    try {
+      const res = await api.alimtalk.refreshStatus();
+      await load();
+      alert(`전달상태 ${res.checked ?? 0}건 갱신했습니다.`);
+    } catch (e: any) {
+      alert(e.message || '상태 갱신에 실패했습니다.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleResendFailed = async () => {
+    if (!confirm('도착실패한 승인대기 알림톡을 지금 재발송할까요?\n(현재 템플릿으로 재생성되어 발송되며, 이미 도착완료·처리완료된 건은 제외됩니다.)')) return;
+    setResending(true);
+    try {
+      const res = await api.alimtalk.resendFailed();
+      await load();
+      alert(`재발송 처리 완료\n· 재발송 대상: ${res.reset}건\n· 발송: ${res.dispatch?.sent ?? 0}건 / 실패: ${res.dispatch?.failed ?? 0}건`);
+    } catch (e: any) {
+      alert(e.message || '재발송에 실패했습니다.');
+    } finally {
+      setResending(false);
+    }
+  };
 
   if (loading && logs.length === 0) return <div className="page-loading">로딩중...</div>;
 
@@ -107,6 +136,14 @@ export default function AlimtalkLogs() {
             style={{ flex: 1, padding: '6px 10px', fontSize: '0.82rem' }} />
           <button className="btn btn-primary btn-sm" onClick={handleSearch}><Search size={14} /></button>
         </div>
+        <button className="btn btn-sm" onClick={handleRefreshStatus} disabled={refreshing}
+          title="최근 발송 건의 최종 도착상태를 다시 조회합니다.">
+          <RefreshCw size={13} className={refreshing ? 'drive-spin' : ''} /> {refreshing ? '갱신 중...' : '전달상태 새로고침'}
+        </button>
+        <button className="btn btn-sm btn-danger" onClick={handleResendFailed} disabled={resending}
+          title="도착실패한 승인대기 알림톡을 현재 템플릿으로 즉시 재발송합니다. (도착완료·처리완료 건 제외)">
+          <Send size={13} /> {resending ? '재발송 중...' : '도착실패 재발송'}
+        </button>
         <span style={{ fontSize: '0.75rem', color: '#9aa0a6' }}>{logs.length}건</span>
       </div>
 

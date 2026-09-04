@@ -8,6 +8,7 @@ import {
   auctionScheduleBidResult,
   auctionScheduleBidResultMissingFields,
   auctionScheduleSalesExternalId,
+  auctionScheduleSalesExternalIds,
   calculateAuctionScheduleWinningFee,
   canViewResignedAuctionHistory,
   canViewSuggestedBidPrice,
@@ -32,7 +33,17 @@ import { DEFAULT_COMPANY_HOLIDAYS } from '../../shared/work-calendar.ts';
 import { loadSystemHolidayDates } from '../lib/system-holidays.ts';
 import { findAuctionInspectionSuggestions } from '../lib/auction-schedule-inspection-suggestions.ts';
 import {
-  auctionBidItemNumbersCompatible,
+  AmbiguousLegacyAuctionLinkError,
+  ensureCalendarAuctionDeletionSchema,
+  loadLegacyIdentityState,
+  linkedBusinessData,
+} from '../lib/calendar-auction-management.ts';
+import {
+  acquireAuctionScheduleMutationClaim,
+  releaseAuctionScheduleMutationClaim,
+  type AuctionScheduleMutationSnapshot,
+} from '../lib/auction-schedule-mutation-claim.ts';
+import {
   canonicalAuctionBidGroupMarker,
   canonicalAuctionBidItemMarker,
   canManageAuctionBidResult,
@@ -43,7 +54,6 @@ import {
   canCreateAuctionSchedule,
   canManageAuctionSchedule,
   getRequiredInspectionBidDateError,
-  isPastAuctionScheduleDate,
   isValidAuctionScheduleDate,
 } from '../../shared/auction-schedule-write-access.ts';
 
@@ -90,6 +100,131 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   }
 }
 
+function sanitizeClientAuctionScheduleData(value: unknown): Record<string, unknown> {
+  const {
+    inspectionSourceId: _inspectionSourceId,
+    materializedBidGroup: _materializedBidGroup,
+    materializedBidItem: _materializedBidItem,
+    ...data
+  } = sanitizeAuctionScheduleData(value);
+  return data;
+}
+
+async function auctionScheduleTableExists(db: D1Database, table: string): Promise<boolean> {
+  const row = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .bind(table).first<{ name: string }>();
+  return !!row;
+}
+
+type AuctionBusinessCommissionSnapshot = {
+  id: string;
+  journal_entry_id: string;
+  status: string;
+  win_price: string;
+};
+
+async function auctionBusinessSnapshotGate(
+  db: D1Database,
+  input: {
+    schedule: AuctionBidResultRow;
+    data: Record<string, unknown>;
+    externalId: string;
+    linkedSale: LinkedBidSale | null;
+    linkedCommission: AuctionBusinessCommissionSnapshot | null;
+    commissionKeys: string[];
+    requireUnlockedLawitgo?: boolean;
+  },
+): Promise<{ sql: string; params: unknown[] }> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  const scheduleExternalIds = auctionScheduleSalesExternalIds(input.schedule.id);
+  if (input.linkedSale) {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM sales_records current_sale
+      WHERE current_sale.id = ? AND current_sale.status = ? AND current_sale.amount = ?
+        AND current_sale.winning_price = ? AND COALESCE(current_sale.external_id, '') = ?
+    ) AND NOT EXISTS (
+      SELECT 1 FROM sales_records duplicate_schedule_sale
+      WHERE duplicate_schedule_sale.external_id IN (?, ?)
+        AND duplicate_schedule_sale.id != ?
+    )`);
+    params.push(
+      input.linkedSale.id,
+      input.linkedSale.status,
+      input.linkedSale.amount,
+      input.linkedSale.winning_price,
+      input.linkedSale.external_id || '',
+      ...scheduleExternalIds,
+      input.linkedSale.id,
+    );
+  } else {
+    conditions.push("NOT EXISTS (SELECT 1 FROM sales_records WHERE external_id IN (?, ?))");
+    params.push(...scheduleExternalIds);
+    if (await auctionScheduleTableExists(db, 'freelancer_bid_entries')) {
+      const item = canonicalAuctionBidItemMarker(input.data.itemNo);
+      const client = normalizeAuctionBidIdentity(input.data.client || input.data.bidder);
+      const court = normalizeAuctionBidIdentity(input.data.court);
+      const caseNumber = normalizeAuctionBidIdentity(input.data.caseNo);
+      if (client && court && caseNumber) {
+        conditions.push(`NOT EXISTS (
+          SELECT 1 FROM freelancer_bid_entries legacy_bid
+          JOIN sales_records legacy_sale ON legacy_sale.external_id = 'freelancer-bid:' || legacy_bid.id
+          WHERE legacy_bid.user_id = ? AND legacy_bid.bid_date = ?
+            AND lower(replace(COALESCE(legacy_bid.case_number, ''), ' ', '')) = ?
+            AND lower(replace(COALESCE(legacy_bid.court, ''), ' ', '')) = ?
+            AND replace(replace(lower(COALESCE(legacy_bid.item_no, '')), ' ', ''), '번', '') = ?
+            AND lower(replace(COALESCE(NULLIF(legacy_bid.client_name, ''), legacy_bid.bidder_name, ''), ' ', '')) = ?
+        )`);
+        params.push(
+          input.schedule.user_id,
+          input.schedule.target_date,
+          caseNumber,
+          court,
+          item,
+          client,
+        );
+      }
+    }
+  }
+  if (input.linkedCommission) {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM commissions current_commission
+      WHERE current_commission.id = ? AND current_commission.journal_entry_id = ?
+        AND current_commission.status = ? AND COALESCE(current_commission.win_price, '') = ?
+    ) AND NOT EXISTS (
+      SELECT 1 FROM commissions duplicate_schedule_commission
+      WHERE duplicate_schedule_commission.journal_entry_id IN (${input.commissionKeys.map(() => '?').join(', ')})
+        AND duplicate_schedule_commission.id != ?
+    )`);
+    params.push(
+      input.linkedCommission.id,
+      input.linkedCommission.journal_entry_id,
+      input.linkedCommission.status,
+      input.linkedCommission.win_price || '',
+      ...input.commissionKeys,
+      input.linkedCommission.id,
+    );
+  } else if (input.commissionKeys.length > 0) {
+    const placeholders = input.commissionKeys.map(() => '?').join(', ');
+    conditions.push(`NOT EXISTS (SELECT 1 FROM commissions WHERE journal_entry_id IN (${placeholders}))`);
+    params.push(...input.commissionKeys);
+  }
+  if (input.requireUnlockedLawitgo && await auctionScheduleTableExists(db, 'lawitgo_winning_outbox')) {
+    conditions.push(`NOT EXISTS (
+      SELECT 1 FROM lawitgo_winning_outbox
+      WHERE sales_record_id IN (
+        SELECT alias_sale.id FROM sales_records alias_sale
+        WHERE alias_sale.external_id IN (?, ?)
+      ) AND status IN ('sending', 'sent')
+    )`);
+    params.push(...scheduleExternalIds);
+  }
+  return {
+    sql: conditions.length ? ` AND ${conditions.join(' AND ')}` : '',
+    params,
+  };
+}
+
 type AuctionBidResultRow = {
   id: string;
   user_id: string;
@@ -100,6 +235,8 @@ type AuctionBidResultRow = {
   data: string;
   branch: string;
   department: string;
+  created_at: string;
+  updated_at: string;
 };
 
 const BID_RESULT_EDITOR_DATA_FIELDS = [
@@ -169,9 +306,14 @@ function sameBidIdentity(
 ): boolean {
   if (candidate.user_id !== ownerId || candidate.target_date !== bidDate || candidate.activity_type !== '입찰') return false;
   const candidateData = parseJsonObject(candidate.data);
+  const candidateClient = normalizeAuctionBidIdentity(candidateData.client || candidateData.bidder);
+  const sourceClient = normalizeAuctionBidIdentity(sourceData.client || sourceData.bidder);
   return normalizeAuctionBidIdentity(candidateData.court) === normalizeAuctionBidIdentity(sourceData.court)
     && normalizeAuctionBidIdentity(candidateData.caseNo) === normalizeAuctionBidIdentity(sourceData.caseNo)
-    && auctionBidItemNumbersCompatible(candidateData.itemNo, sourceData.itemNo);
+    && canonicalAuctionBidItemMarker(candidateData.itemNo) === canonicalAuctionBidItemMarker(sourceData.itemNo)
+    && !!candidateClient
+    && !!sourceClient
+    && candidateClient === sourceClient;
 }
 
 async function loadAuctionBidResultRow(db: D1Database, id: string): Promise<AuctionBidResultRow | null> {
@@ -196,7 +338,32 @@ async function findMatchingBidForInspection(
     WHERE s.user_id = ? AND s.target_date = ? AND s.activity_type = '입찰'
     ORDER BY s.created_at, s.id
   `).bind(inspection.user_id, bidDate).all<AuctionBidResultRow>();
-  return (rows.results || []).find((row) => sameBidIdentity(row, inspection.user_id, bidDate, sourceData)) || null;
+  const candidates = rows.results || [];
+  const deterministicId = inspectionMaterializedBidId(inspection.id);
+  const explicit = candidates.filter((row) => row.id === deterministicId);
+  if (explicit.length === 1) {
+    const explicitData = parseJsonObject(explicit[0].data);
+    if (
+      String(explicitData.inspectionSourceId || '').trim() !== inspection.id
+      || !sameBidIdentity(explicit[0], inspection.user_id, bidDate, sourceData)
+    ) {
+      throw new Error('임장 원본과 기존 입찰 일정의 사건·물건·고객 정보가 달라 자동 연결할 수 없습니다. 원본을 확인해 주세요.');
+    }
+    return explicit[0];
+  }
+  if (explicit.length > 1) throw new Error('임장 일정과 명시적으로 연결된 입찰 일정이 여러 건입니다. 원본을 확인해 주세요.');
+
+  // provenance가 없는 전환 전 direct bid만 고객까지 정확히 같은 경우 재사용한다.
+  // 다른 임장에서 materialize된 행을 사건/물건번호만으로 가로채지 않는다.
+  const legacy = candidates.filter((row) => {
+    const candidateData = parseJsonObject(row.data);
+    return !String(candidateData.inspectionSourceId || '').trim()
+      && !row.id.startsWith('inspection-bid:')
+      && sameBidIdentity(row, inspection.user_id, bidDate, sourceData);
+  });
+  if (legacy.length === 1) return legacy[0];
+  if (legacy.length > 1) throw new Error('같은 고객·사건의 기존 입찰 일정이 여러 건이어서 자동 연결할 수 없습니다. 원본을 확인해 주세요.');
+  return null;
 }
 
 async function materializeBidFromInspection(
@@ -233,19 +400,17 @@ async function materializeBidFromInspection(
     INSERT OR IGNORE INTO freelancer_auction_schedules
       (id, user_id, target_date, activity_type, activity_subtype, data, branch, department)
     SELECT ?, ?, ?, '입찰', ?, ?, ?, ?
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM freelancer_auction_schedules competing
-      WHERE competing.user_id = ?
-        AND competing.target_date = ?
-        AND competing.activity_type = '입찰'
-        AND COALESCE(json_extract(competing.data, '$.materializedBidGroup'), '') = ?
-        AND (
-          COALESCE(json_extract(competing.data, '$.materializedBidItem'), '') = ?
-          OR COALESCE(json_extract(competing.data, '$.materializedBidItem'), '') = ''
-          OR ? = ''
-        )
-    )
+    FROM freelancer_auction_schedules source_inspection
+    WHERE source_inspection.id = ?
+      AND source_inspection.user_id = ?
+      AND source_inspection.target_date = ?
+      AND source_inspection.activity_type = ?
+      AND source_inspection.activity_subtype = ?
+      AND source_inspection.data = ?
+      AND source_inspection.branch = ?
+      AND source_inspection.department = ?
+      AND source_inspection.created_at = ?
+      AND source_inspection.updated_at = ?
   `).bind(
     id,
     inspection.user_id,
@@ -254,11 +419,16 @@ async function materializeBidFromInspection(
     data,
     inspection.branch || '',
     inspection.department || '',
+    inspection.id,
     inspection.user_id,
-    bidDate,
-    canonicalGroup,
-    canonicalItem,
-    canonicalItem,
+    inspection.target_date,
+    inspection.activity_type,
+    inspection.activity_subtype,
+    inspection.data,
+    inspection.branch,
+    inspection.department,
+    inspection.created_at,
+    inspection.updated_at,
   ).run();
   // INSERT가 경쟁 요청 때문에 생략됐더라도, 원자 조건을 통과해 먼저 생성된
   // 동일 입찰 행을 다시 찾아 두 요청 모두 같은 schedule_id를 사용한다.
@@ -465,7 +635,7 @@ auctionSchedule.post('/', async (c) => {
   if (!isValidAuctionScheduleDate(targetDate) || !isAuctionScheduleActivityType(activityType)) {
     return c.json({ error: '날짜와 활동유형(입찰·임장)을 확인해 주세요.' }, 400);
   }
-  const rawData = sanitizeAuctionScheduleData(body.data);
+  const rawData = sanitizeClientAuctionScheduleData(body.data);
   const data = activityType === '입찰'
     ? { ...rawData, bidWon: false, bidFailed: false, bidCancelled: false, bidResultCancelled: false, winPrice: '' }
     : rawData;
@@ -535,18 +705,21 @@ auctionSchedule.put('/:id', async (c) => {
   const existing = await db.prepare('SELECT * FROM freelancer_auction_schedules WHERE id = ?').bind(id).first<any>();
   if (!existing) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
   if (!canManageAuctionSchedule(user)) {
-    return c.json({ error: '경매 스케줄 수정 권한이 없습니다.' }, 403);
-  }
-  if (isPastAuctionScheduleDate(existing.target_date)) {
-    return c.json({ error: '자정이 지나 과거가 된 일정은 수정할 수 없습니다. 필요한 내용은 새 일정으로 추가해 주세요.' }, 409);
+    return c.json({ error: '경매 스케줄 수정 권한이 없습니다. (마스터·총무·총무보조·대표만 가능)' }, 403);
   }
   const existingData = parseJsonObject(existing.data);
   if (existing.activity_type === '입찰' && auctionScheduleBidResult(existingData) !== 'pending') {
     return c.json({ error: '입찰 결과가 처리된 일정은 일반 정보를 수정할 수 없습니다. 입찰 결과 전용 기능을 이용해 주세요.' }, 409);
   }
-  const linkedSale = await db.prepare('SELECT id FROM sales_records WHERE external_id = ?')
-    .bind(auctionScheduleSalesExternalId(id))
-    .first<{ id: string }>();
+  const existingExternalId = auctionScheduleSalesExternalId(id);
+  const linkedSale = existing.activity_type === '입찰'
+    ? await findCanonicalBidSale(
+      db, existingExternalId, existing.user_id, existing.target_date,
+      String(existingData.caseNo || ''), String(existingData.itemNo || ''),
+      String(existingData.client || existingData.bidder || ''),
+      String(existingData.court || ''),
+    )
+    : null;
   if (linkedSale) {
     return c.json({ error: '입금신청이 연결된 낙찰 일정은 수정할 수 없습니다. 먼저 업무성과에서 입금신청 상태를 확인해 주세요.' }, 409);
   }
@@ -565,29 +738,50 @@ auctionSchedule.put('/:id', async (c) => {
   if (activityType !== existing.activity_type) {
     return c.json({ error: '기존 일정의 활동유형은 변경할 수 없습니다. 필요한 활동유형으로 새 일정을 추가해 주세요.' }, 409);
   }
-  if (isPastAuctionScheduleDate(targetDate)) {
-    return c.json({ error: '과거 일정은 새로 추가할 수만 있으며 기존 일정을 과거로 변경할 수 없습니다.' }, 409);
-  }
   const incomingData = body.data === undefined
     ? existingData
-    : mergeGeneralScheduleEditData(existingData, sanitizeAuctionScheduleData(body.data));
+    : mergeGeneralScheduleEditData(existingData, sanitizeClientAuctionScheduleData(body.data));
   const parsedData = incomingData;
   const data = JSON.stringify(parsedData);
   const validationError = getRequiredInspectionBidDateError(activityType, parsedData)
     || getAuctionScheduleValidationError(activityType, parsedData);
   if (validationError) return c.json({ error: validationError }, 400);
-  await db.prepare(`
-    UPDATE freelancer_auction_schedules
-    SET target_date = ?, activity_type = ?, activity_subtype = ?, data = ?, updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(
-    targetDate,
-    activityType,
-    body.activity_subtype === undefined ? existing.activity_subtype : String(body.activity_subtype).slice(0, 200),
-    data,
-    id,
-  ).run();
-  return c.json({ success: true });
+  const generalEditBusinessGate = existing.activity_type === '입찰'
+    ? await auctionBusinessSnapshotGate(db, {
+      schedule: existing as AuctionBidResultRow,
+      data: existingData,
+      externalId: existingExternalId,
+      linkedSale: null,
+      linkedCommission: null,
+      commissionKeys: auctionScheduleSalesExternalIds(id),
+    })
+    : { sql: '', params: [] as unknown[] };
+  const claim = await acquireAuctionScheduleMutationClaim(db, existing as AuctionScheduleMutationSnapshot, 'general_edit', user.sub);
+  if (!claim) return c.json({ error: '일정이 변경되었거나 다른 처리가 진행 중입니다. 새로고침 후 다시 시도해 주세요.' }, 409);
+  try {
+    const updated = await db.prepare(`
+      UPDATE freelancer_auction_schedules
+      SET target_date = ?, activity_type = ?, activity_subtype = ?, data = ?, updated_at = datetime('now', '+9 hours')
+      WHERE id = ?
+        AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+        ${generalEditBusinessGate.sql}
+    `).bind(
+      targetDate,
+      activityType,
+      body.activity_subtype === undefined ? existing.activity_subtype : String(body.activity_subtype).slice(0, 200),
+      data,
+      id,
+      id,
+      claim,
+      ...generalEditBusinessGate.params,
+    ).run();
+    if (Number(updated.meta?.changes || 0) !== 1) {
+      return c.json({ error: '일정이 변경되어 수정하지 못했습니다. 새로고침 후 다시 시도해 주세요.' }, 409);
+    }
+    return c.json({ success: true });
+  } finally {
+    await releaseAuctionScheduleMutationClaim(db, claim);
+  }
 });
 
 auctionSchedule.put('/:id/bid-prices', async (c) => {
@@ -605,6 +799,11 @@ auctionSchedule.put('/:id/bid-prices', async (c) => {
   if (!suggestedPrice && !actualBidPrice && !winningPrice) {
     return c.json({ error: '제안입찰가·작성입찰가·최종 낙찰가 중 하나 이상 입력해 주세요.' }, 400);
   }
+  const claimTokens: string[] = [];
+  const requestedClaim = await acquireAuctionScheduleMutationClaim(db, requested, 'bid_prices_source', user.sub);
+  if (!requestedClaim) return c.json({ error: '일정이 변경되었거나 다른 처리가 진행 중입니다. 새로고침 후 다시 시도해 주세요.' }, 409);
+  claimTokens.push(requestedClaim);
+  try {
   let existing = requested;
   if (requested.activity_type === '임장') {
     try {
@@ -616,22 +815,48 @@ auctionSchedule.put('/:id/bid-prices', async (c) => {
     return c.json({ error: '입찰 또는 입찰기일이 등록된 임장 일정만 입찰가를 작성할 수 있습니다.' }, 400);
   }
   const id = existing.id;
-  const linkedSale = await db.prepare('SELECT id FROM sales_records WHERE external_id = ?')
-    .bind(auctionScheduleSalesExternalId(id)).first<{ id: string }>();
+  let mutationClaim = requestedClaim;
+  if (id !== requested.id) {
+    const materializedClaim = await acquireAuctionScheduleMutationClaim(db, existing, 'bid_prices_target', user.sub);
+    if (!materializedClaim) return c.json({ error: '연결된 입찰 일정이 변경되었거나 다른 처리가 진행 중입니다.' }, 409);
+    claimTokens.push(materializedClaim);
+    mutationClaim = materializedClaim;
+  }
+  const data = parseJsonObject(existing.data);
+  const externalId = auctionScheduleSalesExternalId(id);
+  const linkedSale = await findCanonicalBidSale(
+    db, externalId, existing.user_id, existing.target_date,
+    String(data.caseNo || ''), String(data.itemNo || ''),
+    String(data.client || data.bidder || ''),
+    String(data.court || ''),
+  );
   if (linkedSale) return c.json({ error: '입금신청이 연결된 낙찰 건의 입찰가는 변경할 수 없습니다.' }, 409);
 
-  const data = parseJsonObject(existing.data);
+  const bidPriceBusinessGate = await auctionBusinessSnapshotGate(db, {
+    schedule: existing,
+    data,
+    externalId,
+    linkedSale: null,
+    linkedCommission: null,
+    commissionKeys: auctionScheduleSalesExternalIds(id),
+  });
   const nextData = {
     ...data,
     suggestedPrice: suggestedPrice ? String(suggestedPrice) : '',
     bidPrice: actualBidPrice ? String(actualBidPrice) : '',
     winPrice: winningPrice ? String(winningPrice) : '',
   };
-  await db.prepare(`UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?`)
-    .bind(JSON.stringify(nextData), id).run();
+  const updated = await db.prepare(`
+    UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+      AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+      ${bidPriceBusinessGate.sql}
+  `).bind(JSON.stringify(nextData), id, id, mutationClaim, ...bidPriceBusinessGate.params).run();
+  if (Number(updated.meta?.changes || 0) !== 1) {
+    return c.json({ error: '일정이 변경되어 입찰가를 저장하지 못했습니다.' }, 409);
+  }
 
   if (data.bidFailed) {
-    const externalId = auctionScheduleSalesExternalId(id);
     await db.prepare("DELETE FROM bid_analysis_entries WHERE source_type = 'freelancer' AND source_id = ?").bind(externalId).run();
     await upsertBidAnalysisEntry(db, {
       bid_datetime: existing.target_date,
@@ -644,13 +869,16 @@ auctionSchedule.put('/:id/bid-prices', async (c) => {
       actual_bid_price: actualBidPrice,
       winning_price: winningPrice,
       bid_result: '실패',
-      client_name: String(data.bidder || data.client || ''),
+      client_name: String(data.client || data.bidder || ''),
       source_type: 'freelancer',
       source_id: externalId,
       uploaded_by: existing.user_id,
     });
   }
   return c.json({ success: true, schedule_id: id, missing_fields: auctionScheduleBidResultMissingFields(nextData) });
+  } finally {
+    await Promise.all(claimTokens.map(token => releaseAuctionScheduleMutationClaim(db, token)));
+  }
 });
 
 auctionSchedule.post('/:id/bid-result', async (c) => {
@@ -658,6 +886,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
   const db = c.env.DB;
   await ensureAuctionScheduleTable(db);
   await ensureAuctionScheduleResultSchema(db);
+  await ensureCalendarAuctionDeletionSchema(db);
   const requested = await loadAuctionBidResultRow(db, c.req.param('id'));
   if (!requested) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
   if (!canManageAuctionBidResult(user, requested.user_id)) {
@@ -681,6 +910,13 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     }
   }
 
+  const claimTokens: string[] = [];
+  const requestedClaim = await acquireAuctionScheduleMutationClaim(db, requested, 'bid_result_source', user.sub);
+  if (!requestedClaim) {
+    return c.json({ error: '일정이 변경되었거나 다른 처리가 진행 중입니다. 새로고침 후 다시 시도해 주세요.' }, 409);
+  }
+  claimTokens.push(requestedClaim);
+  try {
   let existing = requested;
   if (requested.activity_type === '임장') {
     try {
@@ -692,8 +928,19 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     return c.json({ error: '입찰 또는 입찰기일이 등록된 임장 일정만 결과를 처리할 수 있습니다.' }, 400);
   }
   const id = existing.id;
+  let mutationClaim = requestedClaim;
+  if (id !== requested.id) {
+    const materializedClaim = await acquireAuctionScheduleMutationClaim(db, existing, 'bid_result_target', user.sub);
+    if (!materializedClaim) {
+      return c.json({ error: '연결된 입찰 일정이 변경되었거나 다른 처리가 진행 중입니다.' }, 409);
+    }
+    claimTokens.push(materializedClaim);
+    mutationClaim = materializedClaim;
+  }
 
   const data = parseJsonObject(existing.data);
+  const clientName = String(data.client || data.bidder || '');
+  const depositorName = String(data.bidder || data.client || '');
   const externalId = auctionScheduleSalesExternalId(id);
   const linkedSale = await findCanonicalBidSale(
     db,
@@ -701,17 +948,35 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     existing.user_id,
     existing.target_date,
     String(data.caseNo || ''),
+    String(data.itemNo || ''),
+    String(data.client || data.bidder || ''),
+    String(data.court || ''),
   );
-  const linkedCommissionKeys = linkedSale?.source === 'legacy'
-    ? [externalId, linkedSale.external_id]
-    : [externalId, externalId];
-  const linkedCommission = await db.prepare(`
-    SELECT id, status, win_price FROM commissions WHERE journal_entry_id = ?
-       OR journal_entry_id = ?
+  const linkedCommissionKeys = Array.from(new Set([
+    ...auctionScheduleSalesExternalIds(id),
+    linkedSale?.external_id,
+  ].filter((value): value is string => !!value)));
+  const linkedCommissionPlaceholders = linkedCommissionKeys.map(() => '?').join(', ');
+  const linkedCommissionRows = await db.prepare(`
+    SELECT id, journal_entry_id, status, win_price FROM commissions
+    WHERE journal_entry_id IN (${linkedCommissionPlaceholders})
     ORDER BY CASE WHEN journal_entry_id = ? THEN 0 ELSE 1 END
-    LIMIT 1
-  `).bind(linkedCommissionKeys[0], linkedCommissionKeys[1], externalId)
-    .first<{ id: string; status: string; win_price: string }>();
+  `).bind(...linkedCommissionKeys, externalId)
+    .all<AuctionBusinessCommissionSnapshot>();
+  const linkedCommissions = linkedCommissionRows.results || [];
+  if (linkedCommissions.length > 1) {
+    return c.json({ error: '동일 일정에 수수료 항목이 여러 건 연결되어 있어 결과를 변경할 수 없습니다. 총무에게 기존 연결 정리를 요청해 주세요.' }, 409);
+  }
+  const linkedCommission = linkedCommissions[0] || null;
+  const businessGate = await auctionBusinessSnapshotGate(db, {
+    schedule: existing,
+    data,
+    externalId,
+    linkedSale,
+    linkedCommission,
+    commissionKeys: linkedCommissionKeys,
+    requireUnlockedLawitgo: result === 'pending',
+  });
 
   if (result === 'won' || result === 'failed') {
     const suggestedPrice = normalizeAmount(body.suggested_price);
@@ -735,8 +1000,15 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         bidResultCancelledAutomatically: false,
         bidResultCancelledAt: '',
       });
-      await db.prepare(`UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?`)
-        .bind(nextData, id).run();
+      const updated = await db.prepare(`
+        UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours')
+        WHERE id = ?
+          AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+          ${businessGate.sql}
+      `).bind(nextData, id, id, mutationClaim, ...businessGate.params).run();
+      if (Number(updated.meta?.changes || 0) !== 1) {
+        return c.json({ error: '일정이 변경되어 입찰 결과를 저장하지 못했습니다.' }, 409);
+      }
       await db.prepare("DELETE FROM bid_analysis_entries WHERE source_type = 'freelancer' AND source_id = ?").bind(externalId).run();
       await upsertBidAnalysisEntry(db, {
         bid_datetime: existing.target_date,
@@ -749,7 +1021,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         actual_bid_price: actualBidPrice,
         winning_price: winningPrice,
         bid_result: '실패',
-        client_name: String(data.bidder || data.client || ''),
+        client_name: clientName,
         source_type: 'freelancer',
         source_id: externalId,
         uploaded_by: existing.user_id,
@@ -759,7 +1031,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     const normalized = normalizeWonSalesInput({
       actual_bid_price: winningPrice,
       sales_amount: calculateAuctionScheduleWinningFee(winningPrice),
-      depositor_name: String(data.bidder || data.client || ''),
+      depositor_name: depositorName,
       payment_type: '이체',
     });
     if (!normalized) return c.json({ error: '고객명과 최종 낙찰가를 확인해 주세요.' }, 400);
@@ -770,7 +1042,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       try {
         customer = await resolveSalesCustomer(db, {
           ownerId: existing.user_id,
-          name: String(data.bidder || data.client || ''),
+          name: clientName,
           phone: clientPhone,
         });
       } catch (error) {
@@ -799,9 +1071,31 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       clientPhone,
     });
     const salesId = linkedSale?.id || crypto.randomUUID();
+    const operationAuditId = crypto.randomUUID();
     const statements = [
-      db.prepare(`UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?`)
-        .bind(nextData, id),
+      db.prepare(`
+        UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours')
+        WHERE id = ?
+          AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+          ${businessGate.sql}
+      `).bind(nextData, id, id, mutationClaim, ...businessGate.params),
+      db.prepare(`
+        INSERT INTO accounting_activity_logs (
+          id, actor_id, actor_name, actor_role, action, target_type, target_id,
+          target_label, diff_summary, before_snapshot, after_snapshot, source_page, created_at
+        )
+        SELECT ?, ?, ?, ?, 'update', 'auction_schedule', ?, ?, ?, ?, ?, 'auction_schedule', datetime('now', '+9 hours')
+        WHERE EXISTS (
+          SELECT 1 FROM freelancer_auction_schedules current_schedule
+          WHERE current_schedule.id = ? AND current_schedule.data = ?
+            AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+        )
+          ${businessGate.sql}
+      `).bind(
+        operationAuditId, user.sub, user.name || '', user.role, id,
+        `auction_schedule:${id}`, '입찰 결과 낙찰 처리', existing.data, nextData,
+        id, nextData, id, mutationClaim, ...businessGate.params,
+      ),
     ];
     if (!linkedSale) {
       statements.push(db.prepare(`
@@ -809,14 +1103,16 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
           id, user_id, type, type_detail, client_name, depositor_name, depositor_different,
           amount, contract_date, status, direction, branch, department, payment_type,
           winning_price, client_phone, customer_id, memo, external_id
-        ) VALUES (?, ?, '낙찰', ?, ?, ?, ?, ?, ?, 'pending', 'income', ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        SELECT ?, ?, '낙찰', ?, ?, ?, ?, ?, ?, 'pending', 'income', ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
       `).bind(
         salesId,
         existing.user_id,
         [data.court, data.caseNo, data.itemNo ? `${data.itemNo}번` : ''].filter(Boolean).join(' · '),
-        String(data.bidder || data.client || ''),
+        clientName,
         normalized.depositor_name,
-        normalized.depositor_name !== String(data.bidder || data.client || '') ? 1 : 0,
+        normalized.depositor_name !== clientName ? 1 : 0,
         normalized.sales_amount,
         existing.target_date,
         existing.branch || '',
@@ -827,23 +1123,33 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         customer?.id || null,
         '경매 스케줄 낙찰 자동 입금신청',
         externalId,
+        operationAuditId,
       ));
     } else if (customer) {
-      statements.push(db.prepare("UPDATE sales_records SET client_phone = ?, customer_id = ? WHERE id = ?")
-        .bind(clientPhone, customer.id, linkedSale.id));
+      statements.push(db.prepare(`
+        UPDATE sales_records SET client_phone = ?, customer_id = ? WHERE id = ?
+          AND EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
+      `).bind(clientPhone, customer.id, linkedSale.id, operationAuditId));
     }
     if (!linkedCommission) {
       statements.push(db.prepare(`
         INSERT INTO commissions (id, journal_entry_id, user_id, user_name, client_name, case_no, win_price)
         SELECT ?, ?, ?, ?, ?, ?, ?
         WHERE NOT EXISTS (SELECT 1 FROM commissions WHERE journal_entry_id = ?)
+          AND EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
       `).bind(
         crypto.randomUUID(), externalId, existing.user_id, existing.user_name || '',
-        String(data.bidder || data.client || ''), String(data.caseNo || ''),
-        String(normalized.sales_amount), externalId,
+        clientName, String(data.caseNo || ''),
+        String(normalized.sales_amount), externalId, operationAuditId,
       ));
     }
-    await db.batch(statements);
+    const batchResults = await db.batch(statements);
+    if (Number((batchResults[0] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1) {
+      return c.json({ error: '일정이 변경되어 낙찰 결과를 저장하지 못했습니다.' }, 409);
+    }
+    if (Number((batchResults[1] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1) {
+      return c.json({ error: '연결된 입금신청 또는 수수료 정보가 변경되어 낙찰 결과를 저장하지 못했습니다.' }, 409);
+    }
     if (customer) {
       await linkSalesCustomerCase(db, customer.id, {
         court: String(data.court || ''),
@@ -868,7 +1174,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       actual_bid_price: actualBidPrice,
       winning_price: winningPrice,
       bid_result: '낙찰',
-      client_name: String(data.bidder || data.client || ''),
+      client_name: clientName,
       source_type: 'freelancer',
       source_id: externalId,
       uploaded_by: existing.user_id,
@@ -938,25 +1244,65 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     bidResultCancelledAt: result === 'cancelled' ? new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19) : '',
     ...(result === 'pending' ? { winPrice: '' } : {}),
   });
+  const pendingRollback = result === 'pending' && linkedSale?.source === 'schedule';
+  const rollbackAuditId = pendingRollback ? crypto.randomUUID() : '';
   const statements = [
-    db.prepare(`UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours') WHERE id = ?`).bind(nextData, id),
-    db.prepare("DELETE FROM commissions WHERE journal_entry_id = ? AND status = 'pending'").bind(externalId),
+    db.prepare(`
+      UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours')
+      WHERE id = ?
+        AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+        ${businessGate.sql}
+    `).bind(nextData, id, id, mutationClaim, ...businessGate.params),
   ];
-  if (result === 'pending' && linkedSale?.source === 'schedule') {
-    statements.push(db.prepare("DELETE FROM sales_records WHERE id = ? AND status = 'pending'").bind(linkedSale.id));
+  if (pendingRollback && linkedSale) {
     statements.push(db.prepare(`
       INSERT INTO accounting_activity_logs (
         id, actor_id, actor_name, actor_role, action, target_type, target_id,
         target_label, diff_summary, before_snapshot, source_page, created_at
-      ) VALUES (?, ?, ?, ?, 'delete', 'sales_record', ?, ?, ?, ?, 'auction_schedule', datetime('now', '+9 hours'))
+      )
+      SELECT ?, ?, ?, ?, 'delete', 'sales_record', ?, ?, ?, ?, 'auction_schedule', datetime('now', '+9 hours')
+      WHERE EXISTS (
+        SELECT 1 FROM freelancer_auction_schedules current_schedule
+        WHERE current_schedule.id = ? AND current_schedule.data = ?
+          AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+      )
+        ${businessGate.sql}
     `).bind(
-      crypto.randomUUID(), user.sub, user.name || '', user.role, linkedSale.id,
+      rollbackAuditId, user.sub, user.name || '', user.role, linkedSale.id,
       `[${existing.user_name || ''}] 경매 스케줄 낙찰 입금신청`,
       '경매 스케줄 낙찰 취소로 대기 중 입금신청 삭제',
       JSON.stringify(linkedSale),
+      id, nextData, id, mutationClaim, ...businessGate.params,
     ));
+    statements.push(db.prepare(`
+      DELETE FROM commissions WHERE journal_entry_id = ? AND status = 'pending'
+        AND EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
+    `).bind(linkedSale.external_id, rollbackAuditId));
+    statements.push(db.prepare(`
+      DELETE FROM sales_records WHERE id = ? AND status = 'pending'
+        AND EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
+    `).bind(linkedSale.id, rollbackAuditId));
+  } else {
+    statements.push(db.prepare(`
+      DELETE FROM commissions WHERE journal_entry_id = ? AND status = 'pending'
+        AND EXISTS (
+          SELECT 1 FROM freelancer_auction_schedules current_schedule
+          WHERE current_schedule.id = ? AND current_schedule.data = ?
+            AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+        )
+        ${businessGate.sql}
+    `).bind(linkedCommission?.journal_entry_id || externalId, id, nextData, id, mutationClaim, ...businessGate.params));
   }
-  await db.batch(statements);
+  const batchResults = await db.batch(statements);
+  if (Number((batchResults[0] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1) {
+    return c.json({ error: '일정이 변경되어 입찰 결과를 저장하지 못했습니다.' }, 409);
+  }
+  if (pendingRollback && (
+    Number((batchResults[1] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1
+    || Number((batchResults[3] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1
+  )) {
+    return c.json({ error: '입금신청·수수료 또는 Lawitgo 상태가 변경되어 낙찰 취소를 중단했습니다.' }, 409);
+  }
   await db.prepare("DELETE FROM bid_analysis_entries WHERE source_type = 'freelancer' AND source_id = ?").bind(externalId).run();
   if (result === 'withdrawn' || result === 'cancelled') {
     await upsertBidAnalysisEntry(db, {
@@ -970,13 +1316,16 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       actual_bid_price: null,
       winning_price: null,
       bid_result: result === 'withdrawn' ? '취하/변경' : '취소',
-      client_name: String(data.bidder || data.client || ''),
+      client_name: clientName,
       source_type: 'freelancer',
       source_id: externalId,
       uploaded_by: existing.user_id,
     });
   }
   return c.json({ success: true, schedule_id: id, sales_record_id: null, sales_status: null });
+  } finally {
+    await Promise.all(claimTokens.map(token => releaseAuctionScheduleMutationClaim(db, token)));
+  }
 });
 
 auctionSchedule.delete('/:id', async (c) => {
@@ -985,21 +1334,155 @@ auctionSchedule.delete('/:id', async (c) => {
   await ensureAuctionScheduleTable(db);
   await ensureAuctionScheduleResultSchema(db);
   const id = c.req.param('id');
-  const existing = await db.prepare('SELECT user_id, target_date FROM freelancer_auction_schedules WHERE id = ?')
-    .bind(id).first<{ user_id: string; target_date: string }>();
+  const existing = await db.prepare('SELECT * FROM freelancer_auction_schedules WHERE id = ?')
+    .bind(id).first<AuctionScheduleMutationSnapshot>();
   if (!existing) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
   if (!canManageAuctionSchedule(user)) {
-    return c.json({ error: '경매 스케줄 삭제 권한이 없습니다.' }, 403);
+    return c.json({ error: '경매 스케줄 삭제 권한이 없습니다. (마스터·총무·총무보조·대표만 가능)' }, 403);
   }
-  if (isPastAuctionScheduleDate(existing.target_date)) {
-    return c.json({ error: '자정이 지나 과거가 된 일정은 삭제할 수 없습니다.' }, 409);
+  await ensureCalendarAuctionDeletionSchema(db);
+  const claim = await acquireAuctionScheduleMutationClaim(db, existing, 'source_delete', user.sub);
+  if (!claim) {
+    return c.json({ error: '일정이 변경되었거나 입찰 결과 처리가 진행 중입니다. 새로고침 후 다시 시도해 주세요.' }, 409);
   }
-  const externalId = auctionScheduleSalesExternalId(id);
-  const linkedSale = await db.prepare('SELECT id FROM sales_records WHERE external_id = ?').bind(externalId).first<{ id: string }>();
-  if (linkedSale) return c.json({ error: '입금신청이 연결된 일정은 삭제할 수 없습니다. 업무성과의 환불·취소 절차를 먼저 처리하세요.' }, 409);
-  await db.prepare('DELETE FROM freelancer_auction_schedules WHERE id = ?').bind(id).run();
-  await db.prepare("DELETE FROM bid_analysis_entries WHERE source_type = 'freelancer' AND source_id = ?").bind(externalId).run();
-  return c.json({ success: true });
+  try {
+    const sourceSnapshot = {
+      id: existing.id,
+      user_id: existing.user_id,
+      source_kind: existing.activity_type === '입찰' ? 'bid' as const : 'inspection' as const,
+      source_target_date: existing.target_date,
+      event_date: existing.target_date,
+      activity_subtype: existing.activity_subtype,
+      branch: existing.branch,
+      department: existing.department,
+      data: existing.data,
+      created_at: existing.created_at,
+      updated_at: existing.updated_at,
+    };
+    let dependencies;
+    try {
+      dependencies = await linkedBusinessData(db, [sourceSnapshot]);
+    } catch (error) {
+      if (error instanceof AmbiguousLegacyAuctionLinkError) {
+        return c.json({ error: error.message }, 409);
+      }
+      throw error;
+    }
+    if (dependencies.sales.length || dependencies.commissions.length || dependencies.lawitgo.length) {
+      return c.json({ error: '입금신청이 연결된 일정은 삭제할 수 없습니다. 수수료 또는 Lawitgo 전송 내역도 업무성과의 환불·취소 절차를 먼저 처리하세요.' }, 409);
+    }
+    let legacyState;
+    try {
+      legacyState = await loadLegacyIdentityState(db, sourceSnapshot);
+    } catch (error) {
+      if (error instanceof AmbiguousLegacyAuctionLinkError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
+    const protectedBusinessExternalIds = Array.from(new Set([
+      ...auctionScheduleSalesExternalIds(id),
+      ...(legacyState?.exact_rows || []).map(row => `freelancer-bid:${row.id}`),
+    ]));
+    const protectedBusinessPlaceholders = protectedBusinessExternalIds.map(() => '?').join(', ');
+    const legacySnapshotGuard = !legacyState ? '' : legacyState.rows.length === 0
+      ? ` AND NOT EXISTS (
+          SELECT 1 FROM freelancer_bid_entries legacy_bid
+          WHERE legacy_bid.user_id = ? AND legacy_bid.bid_date = ?
+            AND lower(replace(COALESCE(legacy_bid.case_number, ''), ' ', '')) = ?
+        )`
+      : ` AND (
+          SELECT COUNT(*) FROM freelancer_bid_entries legacy_bid
+          WHERE legacy_bid.user_id = ? AND legacy_bid.bid_date = ?
+            AND lower(replace(COALESCE(legacy_bid.case_number, ''), ' ', '')) = ?
+            AND (${legacyState.rows.map(() => `(
+              legacy_bid.id = ? AND COALESCE(legacy_bid.court, '') = ?
+              AND COALESCE(legacy_bid.item_no, '') = ?
+              AND COALESCE(legacy_bid.client_name, '') = ? AND COALESCE(legacy_bid.bidder_name, '') = ?
+            )`).join(' OR ')})
+        ) = ? AND NOT EXISTS (
+          SELECT 1 FROM freelancer_bid_entries legacy_bid
+          WHERE legacy_bid.user_id = ? AND legacy_bid.bid_date = ?
+            AND lower(replace(COALESCE(legacy_bid.case_number, ''), ' ', '')) = ?
+            AND legacy_bid.id NOT IN (${legacyState.rows.map(() => '?').join(', ')})
+        )`;
+    const legacySnapshotParams = !legacyState ? [] : legacyState.rows.length === 0
+      ? [legacyState.target.user_id, legacyState.target.source_target_date, legacyState.case_number]
+      : [
+        legacyState.target.user_id, legacyState.target.source_target_date, legacyState.case_number,
+        ...legacyState.rows.flatMap(row => [row.id, row.court, row.item_no, row.client_name, row.bidder_name]),
+        legacyState.rows.length,
+        legacyState.target.user_id, legacyState.target.source_target_date, legacyState.case_number,
+        ...legacyState.rows.map(row => row.id),
+      ];
+    const auditId = crypto.randomUUID();
+    const beforeSnapshot = JSON.stringify(existing);
+    const results = await db.batch([
+      db.prepare(`
+        INSERT INTO accounting_activity_logs (
+          id, actor_id, actor_name, actor_role, action, target_type, target_id,
+          target_label, diff_summary, before_snapshot, source_page, created_at
+        )
+        SELECT ?, ?, ?, ?, 'delete', 'auction_schedule', ?, ?, ?, ?, 'auction_schedule', datetime('now', '+9 hours')
+        WHERE EXISTS (
+          SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?
+        )
+          AND EXISTS (
+            SELECT 1 FROM users current_actor
+            WHERE current_actor.id = ? AND current_actor.approved = 1
+              AND current_actor.role IN ('master', 'accountant', 'accountant_asst', 'ceo')
+          )
+          AND NOT EXISTS (SELECT 1 FROM sales_records WHERE external_id IN (${protectedBusinessPlaceholders}))
+          AND NOT EXISTS (SELECT 1 FROM commissions WHERE journal_entry_id IN (${protectedBusinessPlaceholders}))
+          ${legacySnapshotGuard}
+      `).bind(
+        auditId, user.sub, user.name || '', user.role, id,
+        `auction_schedule:${id}`, '경매 스케줄 원본 화면에서 삭제', beforeSnapshot,
+        id, claim, user.sub,
+        ...protectedBusinessExternalIds,
+        ...protectedBusinessExternalIds,
+        ...legacySnapshotParams,
+      ),
+      db.prepare(`
+        DELETE FROM bid_analysis_entries
+        WHERE source_type = 'freelancer' AND source_id IN (?, ?)
+          AND EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
+      `).bind(...auctionScheduleSalesExternalIds(id), auditId),
+      db.prepare(`
+        DELETE FROM auction_bid_result_reminder_runs
+        WHERE schedule_id = ?
+          AND EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
+      `).bind(id, auditId),
+      db.prepare(`
+        DELETE FROM freelancer_auction_schedules
+        WHERE id = ?
+          AND EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
+      `).bind(id, auditId),
+    ]);
+    const auditChanges = Number((results[0] as { meta?: { changes?: number } })?.meta?.changes || 0);
+    const deleteChanges = Number((results[3] as { meta?: { changes?: number } })?.meta?.changes || 0);
+    if (auditChanges !== 1 || deleteChanges !== 1) {
+      const currentActor = await db.prepare('SELECT role, approved FROM users WHERE id = ?')
+        .bind(user.sub).first<{ role: string; approved: number }>();
+      if (!currentActor || currentActor.approved !== 1 || !canManageAuctionSchedule(currentActor)) {
+        return c.json({ error: '삭제 처리 중 계정 권한이 변경되어 작업이 중단되었습니다.' }, 403);
+      }
+      let currentDependencies;
+      try {
+        currentDependencies = await linkedBusinessData(db, [sourceSnapshot]);
+      } catch (error) {
+        if (error instanceof AmbiguousLegacyAuctionLinkError) {
+          return c.json({ error: error.message }, 409);
+        }
+        throw error;
+      }
+      if (currentDependencies.sales.length || currentDependencies.commissions.length || currentDependencies.lawitgo.length) {
+        return c.json({ error: '입금신청이 연결되어 삭제가 중단되었습니다. 수수료 또는 Lawitgo 내역도 확인해 주세요.' }, 409);
+      }
+      return c.json({ error: '삭제 직전에 일정 또는 계정 권한이 변경되었습니다. 새로고침 후 다시 시도해 주세요.' }, 409);
+    }
+    return c.json({ success: true });
+  } finally {
+    await releaseAuctionScheduleMutationClaim(db, claim);
+  }
 });
 
 export default auctionSchedule;

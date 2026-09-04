@@ -32,6 +32,11 @@ test('업무성과 낙찰은 전화번호를 저장하고 담당자 동명이인
   const page = readFileSync(new URL('../src/react-app/pages/Sales.tsx', import.meta.url), 'utf8');
   const dashboard = readFileSync(new URL('../src/react-app/pages/Dashboard.tsx', import.meta.url), 'utf8');
   const route = readFileSync(new URL('../src/worker/routes/sales.ts', import.meta.url), 'utf8');
+  const rankingHelper = readFileSync(new URL('../src/worker/lib/contract-award-ranking.ts', import.meta.url), 'utf8');
+  const companyRankingHelper = rankingHelper.slice(
+    rankingHelper.indexOf('export async function loadCompanyContractRanking'),
+    rankingHelper.indexOf('export async function loadLegacyBranchContractRanking'),
+  );
   const scheduleRoute = readFileSync(new URL('../src/worker/routes/auction-schedule.ts', import.meta.url), 'utf8');
   const resultEditor = readFileSync(new URL('../src/react-app/components/AuctionBidResultEditor.tsx', import.meta.url), 'utf8');
   assert.match(page, /formType === '계약' \|\| formType === '낙찰'/);
@@ -41,7 +46,8 @@ test('업무성과 낙찰은 전화번호를 저장하고 담당자 동명이인
   assert.match(route, /WHERE user_id = \?/);
   assert.match(route, /sales\.get\('\/customer-contracts'/);
   assert.match(page, /api\.sales\.customerContracts/);
-  assert.match(route, /GROUP BY user_id, user_name, eff_branch, position/);
+  assert.match(companyRankingHelper, /GROUP BY user_id/);
+  assert.doesNotMatch(companyRankingHelper, /GROUP BY user_id,.*eff_branch/);
   assert.match(resultEditor, /고객 전화번호.*나중에 입력 가능/);
   assert.doesNotMatch(resultEditor, /result === 'won'.*replace\(\/\\D\/g, ''\)\.length < 10/);
   assert.match(resultEditor, /client_phone: result === 'won'/);

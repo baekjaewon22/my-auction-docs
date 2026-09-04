@@ -179,15 +179,18 @@ test('경매 스케줄 낙찰은 동일 사건의 기존 입금신청을 재사�
   const sqlite = new Database(':memory:');
   sqlite.exec(`
     CREATE TABLE freelancer_bid_entries (
-      id TEXT PRIMARY KEY, user_id TEXT, bid_date TEXT, case_number TEXT, updated_at TEXT
+      id TEXT PRIMARY KEY, user_id TEXT, bid_date TEXT, case_number TEXT,
+      court TEXT, item_no TEXT, client_name TEXT, bidder_name TEXT, updated_at TEXT
     );
     CREATE TABLE sales_records (
       id TEXT PRIMARY KEY, status TEXT, amount INTEGER, winning_price INTEGER, external_id TEXT
     );
     INSERT INTO freelancer_bid_entries VALUES
-      ('legacy-1', 'u1', '2026-08-07', '2026 타경 1234', '2026-08-07 15:00:00');
+      ('legacy-1', 'u1', '2026-08-07', '2026 타경 1234', '의정부지방법원', '1', '고객', '', '2026-08-07 15:00:00'),
+      ('legacy-other-court', 'u1', '2026-08-07', '2026 타경 1234', '서울중앙지방법원', '1', '고객', '', '2026-08-07 15:01:00');
     INSERT INTO sales_records VALUES
-      ('sale-legacy', 'pending', 3300000, 330000000, 'freelancer-bid:legacy-1');
+      ('sale-legacy', 'pending', 3300000, 330000000, 'freelancer-bid:legacy-1'),
+      ('sale-other-court', 'pending', 4400000, 440000000, 'freelancer-bid:legacy-other-court');
   `);
   const db = d1FromSqlite(sqlite);
 
@@ -197,9 +200,24 @@ test('경매 스케줄 낙찰은 동일 사건의 기존 입금신청을 재사�
     'u1',
     '2026-08-07',
     '2026타경1234',
+    '1',
+    '고객',
+    '의정부지방법원',
   );
   assert.equal(legacy?.id, 'sale-legacy');
   assert.equal(legacy?.source, 'legacy');
+
+  const otherCourt = await findCanonicalBidSale(
+    db,
+    'auction-schedule:schedule-other-court',
+    'u1',
+    '2026-08-07',
+    '2026타경1234',
+    '1',
+    '고객',
+    '서울중앙지방법원',
+  );
+  assert.equal(otherCourt?.id, 'sale-other-court');
 
   sqlite.prepare(`INSERT INTO sales_records VALUES (?, ?, ?, ?, ?)`).run(
     'sale-schedule', 'pending', 3300000, 330000000, 'auction-schedule:schedule-1',
@@ -210,6 +228,9 @@ test('경매 스케줄 낙찰은 동일 사건의 기존 입금신청을 재사�
     'u1',
     '2026-08-07',
     '2026타경1234',
+    '1',
+    '고객',
+    '의정부지방법원',
   );
   assert.equal(direct?.id, 'sale-schedule');
   assert.equal(direct?.source, 'schedule');

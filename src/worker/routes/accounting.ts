@@ -1688,7 +1688,10 @@ accounting.put('/:userId', requireRole(...ACCOUNTING_ROLES), async (c) => {
     return c.json({ error: '정산유형은 급여제 또는 비율제만 선택할 수 있습니다.' }, 400);
   }
   const expectedPayType = (user.login_type || 'employee') === 'freelancer' ? 'commission' : 'salary';
-  if (newPayType !== expectedPayType) {
+  const existingPayType = (existing as any)?.pay_type;
+  // 이미 설정된 정산유형(예: 정규직인데 비율제)은 그대로 두고 직급수당 등 편집을 허용한다.
+  // 새로 다른 유형으로 바꾸려는 경우에만 차단(전환 버튼 유도).
+  if (newPayType !== expectedPayType && newPayType !== existingPayType) {
     return c.json({
       error: expectedPayType === 'commission'
         ? '프리랜서 계정은 비율제로만 저장할 수 있습니다. 정규직 변경은 정규직 전환 버튼을 이용해 주세요.'

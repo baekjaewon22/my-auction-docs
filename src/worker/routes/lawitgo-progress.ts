@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireRole } from '../middleware/auth';
 import { isSafeLawitgoProgressId } from '../lib/lawitgo-progress';
 import { resolveLawitgoConsultantId } from '../lib/lawitgo-consultant-mapping';
-import { cachedLawitgoDetail, cachedLawitgoList } from '../lib/lawitgo-progress-cache';
+import { cachedLawitgoDetail, cachedLawitgoList, pullLawitgoProgressCache } from '../lib/lawitgo-progress-cache';
 import { canViewAllEvictionProgress } from '../../shared/eviction-quote-access';
 import { getLawitgoStatementByProgress } from '../lib/lawitgo-new-settlement';
 
@@ -85,6 +85,27 @@ lawitgoProgress.get('/:id', async (c) => {
   if (!detail) return c.json({ error: '캐시된 사건 진행사항을 찾을 수 없습니다.' }, 404);
   const consultantStatement = await getLawitgoStatementByProgress(c.env.DB, id);
   return c.json({ ...detail, consultantStatement });
+});
+
+// 관리자 수동 재-pull: lawitgo 진행현황을 즉시 다시 가져와 캐시를 갱신한다(크론 대기 없이 검증·복구용).
+lawitgoProgress.post('/refresh', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'), async (c) => {
+  let pulled;
+  try {
+    pulled = await pullLawitgoProgressCache(c.env);
+  } catch (err: any) {
+    return c.json({ ok: false, error: String(err?.message || err) }, 502);
+  }
+  const runs = await c.env.DB.prepare(`
+    SELECT status, COUNT(*) AS consultants, COALESCE(SUM(item_count), 0) AS items,
+           MAX(last_success_at) AS last_success_at, MAX(error_message) AS sample_error
+    FROM lawitgo_progress_cache_runs
+    GROUP BY status
+  `).all();
+  const active = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS active_items, COUNT(DISTINCT consultant_id) AS consultants
+     FROM lawitgo_progress_cache WHERE active = 1`
+  ).first();
+  return c.json({ ok: true, pulled, runs: runs.results || [], activeCache: active });
 });
 
 export default lawitgoProgress;

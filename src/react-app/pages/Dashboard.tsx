@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../store';
 import { api } from '../api';
@@ -16,6 +16,8 @@ import { canDismissDashboardAlertItems } from '../../shared/dashboard-alert-dism
 import { salesMissingAlertScopeTitle } from '../../shared/sales-record-scope';
 import type { AuctionBidResultEntry } from '../components/AuctionBidResultEditor';
 import { EXPENSE_RECEIPT_TEMPLATE_ID } from '../lib/expense-receipt';
+import { auctionPropertyDetailLabel } from '../../shared/auction-property-label';
+import { dashboardNoticeItems } from '../lib/dashboard-notices';
 
 const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
 
@@ -40,6 +42,17 @@ interface ScheduleGapAlert {
   userName: string;
   date: string;
   gaps: string[]; // ["09:00~10:00", "14:00~15:30"]
+}
+
+interface AccountantLeave {
+  id: string;
+  branch: string;
+  name: string;
+  position_title?: string;
+  leave_type: string;
+  start_date: string;
+  end_date: string;
+  reason?: string;
 }
 
 const dashboardNewsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -122,7 +135,7 @@ function TodayBidList() {
               <span data-label="지사">{bid.branch || '-'}</span>
               <span data-label="담당자">{bid.assignee_name || '-'}</span>
               <span data-label="직책">{bid.position_title || '-'}</span>
-              <span data-label="물건카테고리">{bid.property_category || '-'}</span>
+              <span data-label="물건카테고리">{auctionPropertyDetailLabel(bid.property_type)}</span>
               <span data-label="법원">{bid.court || '-'}</span>
               <span data-label="사건번호">{bid.case_no || '-'}{bid.item_no ? ` · ${bid.item_no}번` : ''}</span>
               <span data-label="낙찰유무"><strong className={`dashboard-today-bid-result ${bid.bid_result}`}>{TODAY_BID_RESULT_LABELS[bid.bid_result]}</strong></span>
@@ -134,6 +147,69 @@ function TodayBidList() {
   );
 }
 
+function AccountantLeaveNotice({
+  leaves,
+  sectionAction,
+  renderItemAction,
+}: {
+  leaves: AccountantLeave[];
+  sectionAction?: ReactNode;
+  renderItemAction?: (leave: AccountantLeave) => ReactNode;
+}) {
+  if (leaves.length === 0) return null;
+
+  const todayStr = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const tomorrowStr = new Date(Date.now() + 9 * 60 * 60 * 1000 + 86400000).toISOString().slice(0, 10);
+  const formatDate = (date: string) => date?.replace(/-/g, '.') || '';
+
+  return (
+    <section className="section dashboard-accountant-leave-section">
+      <div className="dashboard-accountant-leave-panel">
+        <div className="dashboard-accountant-leave-header">
+          <Clock size={16} />
+          <span>총무 휴무 안내</span>
+          {sectionAction}
+        </div>
+        {leaves.map((leave) => {
+          const isSameDay = leave.start_date === leave.end_date;
+          const period = isSameDay
+            ? `(${formatDate(leave.start_date)})`
+            : `(${formatDate(leave.start_date)}~${formatDate(leave.end_date).slice(5)})`;
+          const leaveLabel = leave.leave_type === '반차'
+            ? '반차휴무'
+            : leave.leave_type === '연차'
+              ? '연차휴무'
+              : leave.leave_type === '월차'
+                ? '월차휴무'
+                : `${leave.leave_type} 휴무`;
+          const isToday = leave.start_date <= todayStr && leave.end_date >= todayStr;
+          const isTomorrow = leave.start_date === tomorrowStr;
+
+          return (
+            <div key={leave.id} className="dashboard-accountant-leave-item">
+              {renderItemAction?.(leave)}
+              <div className="dashboard-accountant-leave-title">
+                {leave.branch}지사 {leave.name} {leave.position_title || ''} {leaveLabel}
+              </div>
+              <div className="dashboard-accountant-leave-period">
+                {isToday && <span className="dashboard-accountant-leave-badge today">오늘</span>}
+                {isTomorrow && !isToday && <span className="dashboard-accountant-leave-badge tomorrow">내일</span>}
+                {period}
+                {leave.reason && leave.leave_type === '특별휴가' && (
+                  <span className="dashboard-accountant-leave-reason">({leave.reason})</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        <div className="dashboard-accountant-leave-footer">
+          결재 관련 문의는 다른 총무 담당자에게 연락해주세요.
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function FreelancerDashboard() {
   const { user } = useAuthStore();
   const isSupervisor = user?.role === 'manager';
@@ -141,6 +217,7 @@ function FreelancerDashboard() {
   const [todayNews, setTodayNews] = useState<any[]>([]);
   const [notices, setNotices] = useState<any[]>([]);
   const [legalFacts, setLegalFacts] = useState<any[]>([]);
+  const [accountantLeaves, setAccountantLeaves] = useState<AccountantLeave[]>([]);
   const [bidResultRequirements, setBidResultRequirements] = useState<AuctionBidResultEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -151,9 +228,11 @@ function FreelancerDashboard() {
       api.adminNotes.list({ category: 'article_news' }).catch(() => null),
       api.adminNotes.list({ category: 'legal_support', legal_subcategory: 'legal_terms' }).catch(() => null),
       api.adminNotes.list({ category: 'notice' }).catch(() => null),
-    ]).then(([bidResultRes, salesRes, newsRes, legalFactsRes, noticeRes]) => {
+      api.leave.accountantLeaves().catch(() => null),
+    ]).then(([bidResultRes, salesRes, newsRes, legalFactsRes, noticeRes, accountantLeavesRes]) => {
       if (bidResultRes) setBidResultRequirements(bidResultRes.entries || []);
       if (noticeRes) setNotices(noticeRes.notes || []);
+      if (accountantLeavesRes) setAccountantLeaves(accountantLeavesRes.leaves || []);
       if (salesRes) {
         const visibleSales = salesRes.records || [];
         setMySales(isSupervisor ? visibleSales : visibleSales.filter((r: SalesRecord) => r.user_id === user?.id));
@@ -249,7 +328,7 @@ function FreelancerDashboard() {
           {notices.length === 0 ? (
             <div className="dashboard-today-news-empty">등록된 공지사항이 없습니다.</div>
           ) : (
-            notices.slice(0, 3).map((notice: any) => (
+            dashboardNoticeItems(notices).map((notice: any) => (
               <Link key={notice.id} to={`/admin-notes?section=notice&note=${notice.id}`} className="dashboard-notice-item">
                 <div className="dashboard-notice-line">
                   <strong>{notice.title}</strong>
@@ -304,6 +383,8 @@ function FreelancerDashboard() {
       </section>
 
       <TodayBidList />
+
+      <AccountantLeaveNotice leaves={accountantLeaves} />
 
       {myMissingDocs.length > 0 && (
         <section className="section">
@@ -387,7 +468,7 @@ export default function Dashboard() {
   const dupAllBranches = true;
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [pendingSalesBranch, setPendingSalesBranch] = useState('');
-  const [accountantLeaves, setAccountantLeaves] = useState<any[]>([]);
+  const [accountantLeaves, setAccountantLeaves] = useState<AccountantLeave[]>([]);
   const [coopAlerts, setCoopAlerts] = useState<any[]>([]);
   const [noticeItems, setNoticeItems] = useState<any[]>([]);
   const [todayNews, setTodayNews] = useState<any[]>([]);
@@ -763,11 +844,7 @@ export default function Dashboard() {
         }
 
         if (noticeRes) {
-          const latestNotices = (noticeRes.notes || [])
-            .slice()
-            .sort((a: any, b: any) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))
-            .slice(0, 1);
-          setNoticeItems(latestNotices);
+          setNoticeItems(dashboardNoticeItems(noticeRes.notes || []));
         }
 
         if (newsRes) {
@@ -804,7 +881,7 @@ export default function Dashboard() {
   const newsPreview = (content: string = '') => content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const newsDate = (value: string = '') => value ? value.slice(0, 10).replace(/-/g, '.') : '';
   const NoticePanel = () => {
-    const topNotices = noticeItems.slice(0, 3);
+    const topNotices = dashboardNoticeItems(noticeItems);
     return (
       <section className="section dashboard-notice-section">
         <div className="dashboard-notice-panel">
@@ -1010,45 +1087,22 @@ export default function Dashboard() {
 
       <TodayBidList />
 
-      {/* 총무 휴가 알림 (전체 직원에게 노출) */}
-      {accountantLeaves.length > 0 && (
-        <section className="section">
-          <div style={{ padding: '14px 18px', background: 'linear-gradient(135deg, #fff8e1 0%, #fff3cd 100%)', borderRadius: 10, border: '1px solid #ffd54f' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <Clock size={16} color="#f9a825" />
-              <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#e65100' }}>총무 휴무 안내</span>
-              <MasterCloseBtn alertType="accountant_leave" keys={accountantLeaves.map((lv: any) => `acc_leave_${lv.id}`)} onClose={() => setAccountantLeaves([])} />
-            </div>
-            {accountantLeaves.map((lv: any) => {
-              const isSameDay = lv.start_date === lv.end_date;
-              const formatDate = (d: string) => d?.replace(/-/g, '.') || '';
-              const periodStr = isSameDay ? `(${formatDate(lv.start_date)})` : `(${formatDate(lv.start_date)}~${formatDate(lv.end_date).slice(5)})`;
-              const leaveLabel = lv.leave_type === '반차' ? '반차휴무' : lv.leave_type === '연차' ? '연차휴무' : lv.leave_type === '월차' ? '월차휴무' : `${lv.leave_type} 휴무`;
-              const todayStr = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
-              const tomorrowStr = new Date(Date.now() + 9 * 60 * 60 * 1000 + 86400000).toISOString().slice(0, 10);
-              const isToday = lv.start_date <= todayStr && lv.end_date >= todayStr;
-              const isTomorrow = lv.start_date === tomorrowStr;
-              return (
-                <div key={lv.id} style={{ padding: '8px 12px', background: '#fff', borderRadius: 8, marginBottom: 6, border: '1px solid #ffe082', position: 'relative' }}>
-                  {canDismissAlertItems && <div style={{ position: 'absolute', top: 4, right: 4 }}><AlertItemCloseBtn alertType="accountant_leave" alertKey={`acc_leave_${lv.id}`} /></div>}
-                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#1a1a2e' }}>
-                    {lv.branch}지사 {lv.name} {lv.position_title || ''} {leaveLabel}
-                  </div>
-                  <div style={{ fontSize: '0.78rem', color: '#e65100', marginTop: 2 }}>
-                    {isToday && <span style={{ background: '#d93025', color: '#fff', padding: '1px 6px', borderRadius: 4, fontSize: '0.7rem', fontWeight: 700, marginRight: 6 }}>오늘</span>}
-                    {isTomorrow && !isToday && <span style={{ background: '#f9a825', color: '#fff', padding: '1px 6px', borderRadius: 4, fontSize: '0.7rem', fontWeight: 700, marginRight: 6 }}>내일</span>}
-                    {periodStr}
-                    {lv.reason && lv.leave_type === '특별휴가' && <span style={{ color: '#9aa0a6', marginLeft: 8 }}>({lv.reason})</span>}
-                  </div>
-                </div>
-              );
-            })}
-            <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 6 }}>
-              결재 관련 문의는 다른 총무 담당자에게 연락해주세요.
-            </div>
+      {/* 총무 휴가 알림 (일반 직원과 프리랜서 모두에게 노출) */}
+      <AccountantLeaveNotice
+        leaves={accountantLeaves}
+        sectionAction={(
+          <MasterCloseBtn
+            alertType="accountant_leave"
+            keys={accountantLeaves.map(leave => `acc_leave_${leave.id}`)}
+            onClose={() => setAccountantLeaves([])}
+          />
+        )}
+        renderItemAction={(leave) => canDismissAlertItems ? (
+          <div className="dashboard-accountant-leave-item-action">
+            <AlertItemCloseBtn alertType="accountant_leave" alertKey={`acc_leave_${leave.id}`} />
           </div>
-        </section>
-      )}
+        ) : null}
+      />
 
       {/* 업무협조요청 알림 */}
       {coopAlerts.length > 0 && (

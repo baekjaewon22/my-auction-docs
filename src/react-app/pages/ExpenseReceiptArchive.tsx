@@ -19,6 +19,7 @@ import { api, type ExpenseReceiptArchiveItem } from '../api';
 import { useAuthStore } from '../store';
 import { useBranches } from '../hooks/useBranches';
 import { formatExpenseReceiptBytes, formatExpenseReceiptDateTime } from '../lib/expense-receipt';
+import { canViewBriefingMaterial } from '../../shared/briefing-material-access';
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   draft: { label: '작성중', className: 'status-draft' },
@@ -51,6 +52,7 @@ export default function ExpenseReceiptArchive() {
   const [error, setError] = useState('');
 
   const isFreelancer = user?.login_type === 'freelancer' && user.role !== 'master';
+  const canViewBriefing = canViewBriefingMaterial(user);
   const canViewAll = Boolean(user && !isFreelancer
     && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(user.role));
   const scopeDescription = canViewAll
@@ -110,7 +112,7 @@ export default function ExpenseReceiptArchive() {
     <div className="page expense-receipt-archive-page">
       <nav className="archive-category-tabs" aria-label="문서보관함 하위 카테고리">
         {!isFreelancer && <button type="button" onClick={() => navigate('/archive')}><FileText size={16} /> 결재문서</button>}
-        {!isFreelancer && <button type="button" onClick={() => navigate('/archive?category=briefing')}><FileCheck size={16} /> 브리핑자료</button>}
+        {canViewBriefing && <button type="button" onClick={() => navigate('/archive?category=briefing')}><FileCheck size={16} /> 브리핑자료</button>}
         <button type="button" className="active"><Receipt size={16} /> 영수증 지출결의</button>
       </nav>
 

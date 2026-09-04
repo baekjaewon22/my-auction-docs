@@ -1,3 +1,5 @@
+import type { CompanyHoliday } from '../shared/work-calendar.ts';
+
 const BASE = '/api';
 
 export interface AutomationGenerationLog {
@@ -217,6 +219,17 @@ export interface PersonalCalendarEvent {
   automatic_cancel?: number;
   can_edit_bid_result?: 0 | 1;
   bid_result_block_reason?: string;
+  management?: {
+    origin_kind: 'direct_bid' | 'inspection' | 'inspection_bid_projection';
+    source_id: string;
+    source_target_date: string;
+    can_edit: 0 | 1;
+    can_delete: 0 | 1;
+    edit_url: string;
+    revision: string;
+    block_reason?: string;
+    delete_warning?: string;
+  };
 }
 
 export interface AuctionBidResultEntry {
@@ -250,6 +263,7 @@ export interface TodayBidDashboardEntry {
   assignee_name: string;
   position_title: string;
   property_category: string;
+  property_type: string;
   court: string;
   case_no: string;
   item_no: string;
@@ -406,9 +420,20 @@ export const api = {
 
   personalCalendar: {
     list: (from: string, to: string) =>
-      request<{ events: PersonalCalendarEvent[] }>(
+      request<{ events: PersonalCalendarEvent[]; holidays: CompanyHoliday[] }>(
         `/personal-calendar/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
       ),
+    deleteAuctionEvent: (
+      sourceId: string,
+      data: {
+        source_type: 'auction_bid' | 'auction_inspection';
+        revision: string;
+        reason?: string;
+      },
+    ) => request<{ success: boolean; deleted_source_ids: string[]; audit_id: string }>(
+      `/personal-calendar/auction-events/${encodeURIComponent(sourceId)}`,
+      { method: 'DELETE', body: JSON.stringify(data) },
+    ),
     todayBids: () => request<{ date: string; bids: TodayBidDashboardEntry[] }>('/personal-calendar/today-bids'),
     storyAnomalies: (params: { month?: string; branch?: string } = {}) => {
       const query = new URLSearchParams();
@@ -831,6 +856,9 @@ export const api = {
     get: (id: string) => request<{ item: LawitgoProgressItem; ui: { html: string; css: string }; refreshedAt: string; consultantStatement: { title: string; format: 'text'; content: string } | null }>(
       '/lawitgo/progress/' + encodeURIComponent(id)
     ),
+    refresh: () => request<{ ok: boolean; pulled: { consultants: number; succeeded: number; failed: number; items: number }; runs: any[]; activeCache: { active_items: number; consultants: number } }>(
+      '/lawitgo/progress/refresh', { method: 'POST' }
+    ),
   },
 
   lawitgoWinningAdmin: {
@@ -972,7 +1000,7 @@ export const api = {
       return request<{ records: import('./types').SalesRecord[] }>('/sales' + (qs ? '?' + qs : ''));
     },
     ranking: (period_start: string, period_end: string) =>
-      request<{ ranking: Array<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number }> }>(
+      request<{ ranking: Array<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number; rank?: number }> }>(
         '/sales/ranking?period_start=' + encodeURIComponent(period_start) + '&period_end=' + encodeURIComponent(period_end)
       ),
     contractTracker: (
@@ -1280,6 +1308,15 @@ export const api = {
     },
     getSave: (userId: string, period: string) =>
       request<{ save: any }>('/payroll/save/' + userId + '?period=' + encodeURIComponent(period)),
+    getInternalMemo: (userId: string, period: string) =>
+      request<{
+        memo: { content: string; updated_at: string; updated_by_name: string } | null;
+      }>('/payroll/internal-memo/' + userId + '?period=' + encodeURIComponent(period)),
+    saveInternalMemo: (data: { user_id: string; period: string; content: string }) =>
+      request<{
+        success: boolean;
+        memo: { content: string; updated_at: string; updated_by_name: string } | null;
+      }>('/payroll/internal-memo', { method: 'PUT', body: JSON.stringify(data) }),
     save: (data: { user_id: string; period: string; pay_type: string; data: Record<string, unknown> }) =>
       request('/payroll/save', { method: 'POST', body: JSON.stringify(data) }),
     lock: (data?: { user_id?: string; period?: string }) =>
@@ -1690,5 +1727,7 @@ export const api = {
       return request<{ logs: any[] }>('/alimtalk/logs' + (q.toString() ? '?' + q.toString() : ''));
     },
     status: () => request<{ configured: boolean; templates: any[]; categories: any[] }>('/alimtalk/status'),
+    refreshStatus: () => request<{ success: boolean; checked: number }>('/alimtalk/refresh-status', { method: 'POST' }),
+    resendFailed: () => request<{ success: boolean; reset: number; dispatch: { picked: number; sent: number; failed: number; skipped_no_phone: number } }>('/alimtalk/resend-failed', { method: 'POST' }),
   },
 };

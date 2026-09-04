@@ -127,7 +127,8 @@ test('응답 유실 재조정은 서버 SHA와 크기가 일치한 신규 첨부
 });
 
 test('작성·상세·전용 보관함은 모든 로그인 유형에 열고 기존 전체 보관함은 직원 전용으로 유지한다', () => {
-  assert.match(app, /path="archive" element={<EmployeeOnlyRoute><ArchivePage \/><\/EmployeeOnlyRoute>}/);
+  assert.match(app, /path="archive" element={<ArchiveRoute><ArchivePage \/><\/ArchiveRoute>}/);
+  assert.match(app, /function ArchiveRoute[\s\S]*?isFreelancer && !\(isBriefingArchive && canViewBriefingMaterial\(user\)\)/);
   assert.match(app, /path="expense-receipts" element={<ExpenseReceiptArchive \/>}/);
   assert.match(app, /path="expense-receipts\/new" element={<ExpenseReceiptApplication \/>}/);
   assert.match(app, /path="expense-receipts\/:id" element={<ExpenseReceiptApplication \/>}/);

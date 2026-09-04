@@ -11,6 +11,11 @@ import EmployeePayrollListTab from '../components/EmployeePayrollListTab';
 import { Receipt, Camera } from 'lucide-react';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
+import {
+  isContractAwardMonth,
+  payrollContractAwardAmount,
+  payrollContractAwardPeriodLabel,
+} from '../lib/contractAwardUi';
 import { refundApprovalMonth } from '../../shared/refund-recovery';
 import {
   actualTransferAmount,
@@ -19,6 +24,11 @@ import {
   type WithholdingSettlementCategory,
   type WithholdingSettlementItem,
 } from '../../shared/withholding-settlement';
+import { calculateFreelancerSettlement } from '../../shared/freelancer-settlement';
+import {
+  canEditPayrollInternalMemo,
+  canViewPayrollInternalMemo,
+} from '../../shared/payroll-internal-memo-access';
 
 function fmtWon(n: number): string { return n.toLocaleString('ko-KR') + '원'; }
 function truncMoney(n: number): number { return Math.trunc((Number(n) || 0) / 10) * 10; }
@@ -38,6 +48,28 @@ function toMoneyDisplay(val: string): string {
 }
 function fromMoneyDisplay(val: string): string {
   return val.replace(/[^0-9]/g, '');
+}
+
+function savedPayrollNetPay(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function formatInternalMemoUpdatedAt(value: string): string {
+  if (!value) return '';
+  const hasTimeZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
+  const date = new Date(hasTimeZone ? normalized : `${normalized}Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 type WithholdingSettlementDraft = {
@@ -126,6 +158,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const canEditPayroll = !!currentUser && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(currentUser.role);
   const canUnlockPayroll = !!currentUser && ['master', 'accountant'].includes(currentUser.role);
   const canResolveRefundRecovery = canUnlockPayroll;
+  const canViewInternalMemo = canViewPayrollInternalMemo(currentUser);
+  const canEditInternalMemo = canEditPayrollInternalMemo(currentUser);
   const [searchParams, setSearchParams] = useSearchParams();
   const { branches: BRANCHES } = useBranches();
   const [users, setUsers] = useState<User[]>([]);
@@ -151,8 +185,18 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const [commDeductions, setCommDeductions] = useState<{ label: string; amount: string; isFood?: boolean; skipTax?: boolean; sourceId?: string }[]>([]);
   const [withholdingSettlementDrafts, setWithholdingSettlementDrafts] = useState<WithholdingSettlementDraft[]>([]);
   const [isLocked, setIsLocked] = useState(false);
+  const [lockedNetPay, setLockedNetPay] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [refundRecoveryResolved, setRefundRecoveryResolved] = useState(false);
+  const [internalMemo, setInternalMemo] = useState('');
+  const [savedInternalMemo, setSavedInternalMemo] = useState('');
+  const [internalMemoMeta, setInternalMemoMeta] = useState<{ updated_at: string; updated_by_name: string } | null>(null);
+  const [internalMemoLoading, setInternalMemoLoading] = useState(false);
+  const [internalMemoSaving, setInternalMemoSaving] = useState(false);
+  const [internalMemoLoadError, setInternalMemoLoadError] = useState('');
+  const [internalMemoSaveError, setInternalMemoSaveError] = useState('');
+  const [internalMemoNotice, setInternalMemoNotice] = useState('');
+  const [internalMemoReloadKey, setInternalMemoReloadKey] = useState(0);
   // 안건 수당 (외부 사건 수신 — 2개월 단위 짝수월에만 지급)
   const [caseAllowance, setCaseAllowance] = useState<{ total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; period_label: string; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null } | null>(null);
 
@@ -161,9 +205,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const [branchLoading, setBranchLoading] = useState(false);
 
   const commissionNetRef = useRef(0);
+  const internalMemoRequestRef = useRef(0);
   const printRef = useRef<HTMLDivElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
   const branchRef = useRef<HTMLDivElement>(null);
+  const loadedPayrollMatchesSelection = !!data
+    && String(data.user?.id || '') === selectedUserId
+    && String(data.month || '') === selectedMonth;
 
   useEffect(() => {
     api.users.list().then(res => setUsers(res.users)).catch(() => {});
@@ -172,6 +220,42 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   useEffect(() => {
     setTab(initialTab === 'business_income' && !canAccessBusinessIncome ? 'payroll' : initialTab);
   }, [canAccessBusinessIncome, initialTab]);
+
+  useEffect(() => {
+    const requestId = ++internalMemoRequestRef.current;
+    setInternalMemo('');
+    setSavedInternalMemo('');
+    setInternalMemoMeta(null);
+    setInternalMemoLoadError('');
+    setInternalMemoSaveError('');
+    setInternalMemoNotice('');
+    setInternalMemoSaving(false);
+
+    if (!canViewInternalMemo || !selectedUserId || !loadedPayrollMatchesSelection) {
+      setInternalMemoLoading(false);
+      return;
+    }
+
+    setInternalMemoLoading(true);
+    api.payroll.getInternalMemo(selectedUserId, selectedMonth)
+      .then(({ memo }) => {
+        if (requestId !== internalMemoRequestRef.current) return;
+        const content = memo?.content || '';
+        setInternalMemo(content);
+        setSavedInternalMemo(content);
+        setInternalMemoMeta(memo ? {
+          updated_at: memo.updated_at,
+          updated_by_name: memo.updated_by_name,
+        } : null);
+      })
+      .catch((error: unknown) => {
+        if (requestId !== internalMemoRequestRef.current) return;
+        setInternalMemoLoadError(error instanceof Error ? error.message : '내부 메모를 불러오지 못했습니다.');
+      })
+      .finally(() => {
+        if (requestId === internalMemoRequestRef.current) setInternalMemoLoading(false);
+      });
+  }, [canViewInternalMemo, internalMemoReloadKey, loadedPayrollMatchesSelection, selectedMonth, selectedUserId]);
 
   useEffect(() => {
     if (!requireBranchSelection) return;
@@ -215,6 +299,9 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       setCommDeductions([]);
       setWithholdingSettlementDrafts([]);
       setIsLocked(!!res.payroll_save?.locked);
+      setLockedNetPay(res.payroll_save?.locked
+        ? savedPayrollNetPay(res.payroll_snapshot?.manual?.net_pay)
+        : null);
       // 저장 데이터 로드
       const period = res.period_label || selectedMonth;
       let snapshotCaseAllowance = res.payroll_snapshot?.caseAllowance || null;
@@ -241,6 +328,9 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
             memo: item.memo || '',
           })));
           setIsLocked(!!saveRes.save.locked);
+          setLockedNetPay(saveRes.save.locked
+            ? savedPayrollNetPay(sd.net_pay ?? sd.payroll_snapshot?.manual?.net_pay)
+            : null);
         }
       } catch { /* 저장 없음 */ }
 
@@ -333,6 +423,44 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       alert('저장되었습니다.');
     } catch (err: any) { alert(err.message); }
     finally { setSaving(false); }
+  };
+
+  const handleSaveInternalMemo = async () => {
+    if (
+      !canEditInternalMemo
+      || !selectedUserId
+      || !loadedPayrollMatchesSelection
+      || internalMemoSaving
+      || internalMemoLoading
+      || !!internalMemoLoadError
+      || internalMemo.length > 2000
+    ) return;
+
+    const requestId = ++internalMemoRequestRef.current;
+    setInternalMemoSaving(true);
+    setInternalMemoSaveError('');
+    setInternalMemoNotice('');
+    try {
+      const { memo } = await api.payroll.saveInternalMemo({
+        user_id: selectedUserId,
+        period: selectedMonth,
+        content: internalMemo,
+      });
+      if (requestId !== internalMemoRequestRef.current) return;
+      const content = memo?.content || '';
+      setInternalMemo(content);
+      setSavedInternalMemo(content);
+      setInternalMemoMeta(memo ? {
+        updated_at: memo.updated_at,
+        updated_by_name: memo.updated_by_name,
+      } : null);
+      setInternalMemoNotice(memo ? '내부 메모를 저장했습니다.' : '내부 메모를 비웠습니다.');
+    } catch (error: unknown) {
+      if (requestId !== internalMemoRequestRef.current) return;
+      setInternalMemoSaveError(error instanceof Error ? error.message : '내부 메모를 저장하지 못했습니다.');
+    } finally {
+      if (requestId === internalMemoRequestRef.current) setInternalMemoSaving(false);
+    }
   };
 
   const handleLockPayroll = async () => {
@@ -435,7 +563,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const visibleBranchCards = PAYROLL_BRANCH_SELECTOR;
 
   const s = data?.summary;
-  const lawitgoNewSettlements: any[] = Array.isArray(data?.lawitgo_new_settlements) ? data.lawitgo_new_settlements : [];
+  // 잠긴(지급완료) 월만 신 안건수당 유지 — 미잠금/신규는 제외(이미 지급된 과거는 건드리지 않음).
+  const lawitgoNewSettlements: any[] = (isLocked && Array.isArray(data?.lawitgo_new_settlements)) ? data.lawitgo_new_settlements : [];
   const lawitgoNewSettlementTotal = lawitgoNewSettlements.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 
   // 공제/기타 반영 계산
@@ -452,8 +581,10 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const basePay = s ? s.salary + s.position_allowance : 0;
   const caseAllowanceIncludedInBonusBasis = s?.bonus_case_allowance_included_in_bonus_basis !== false;
   const afterDeduction = basePay - joiningBaseDeduction - terminationBaseDeduction - deductionNum - unpaidDeduction - extraDeductionNum - terminationLeaveDeduction;
-  const caseAllowanceValue = caseAllowance?.bonus || 0;
-  const contractAwardAmount = (data?.is_payout_month && data?.contract_award?.rank) ? (data.contract_award.award || 0) : 0;
+  // 잠긴 월만 안건 수당 실지급 합산 — 미잠금/신규는 0(제외).
+  const caseAllowanceValue = isLocked ? (caseAllowance?.bonus || 0) : 0;
+  const contractAwardAmount = payrollContractAwardAmount(data);
+  const contractAwardPeriodLabel = payrollContractAwardPeriodLabel(data);
   const totalPay = s ? payrollMoney(afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount + lawitgoNewSettlementTotal, selectedMonth) : 0;
   const commExtraTotal = commExtras.reduce((sum, item) => sum + (Number(item.amount.replace(/[^0-9]/g, '')) || 0), 0);
   const commDeductionTotal = commDeductions.reduce((sum, item) => sum + (Number(item.amount.replace(/[^0-9]/g, '')) || 0), 0);
@@ -626,7 +757,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                     </tr>
                   </thead>
                   <tbody>
-                    {data.records.length === 0 ? (
+                    {data.records.length === 0 && !(data.refunded_records?.length) ? (
                       <tr><td colSpan={6} style={{ textAlign: 'center', color: '#9aa0a6', padding: 32 }}>해당 기간 확정매출 내역이 없습니다.</td></tr>
                     ) : (
                       <>
@@ -638,6 +769,15 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                             <td className="num">{fmtWon(r.amount)}</td>
                             <td className="num sub">{fmtWon(r.supply_amount)}</td>
                             <td className="num sub">{fmtWon(r.vat_amount)}</td>
+                          </tr>
+                        ))}
+                        {(data.refunded_records || []).map((r: any) => (
+                          <tr key={`rf-${r.id}`} style={{ background: '#fff5f5' }}>
+                            <td>{r.contract_date?.slice(5)}</td>
+                            <td>{r.client_name}{r.depositor_different === 1 && r.depositor_name && <span className="payroll-depositor">({r.depositor_name})</span>}</td>
+                            <td><span className={`payroll-type payroll-type-${r.type}`}>{r.type}</span></td>
+                            <td className="num" style={{ textDecoration: 'line-through', color: '#c0392b' }}>{fmtWon(r.amount)}</td>
+                            <td className="num sub" colSpan={2} style={{ textAlign: 'right', color: '#c0392b', fontWeight: 500 }}>당월 전액환불 · 정산제외</td>
                           </tr>
                         ))}
                         <tr className="payroll-total-row">
@@ -702,7 +842,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                   // 일반 매출 (매수신청대리 제외)
                   const normalRecords = (data.records || []).filter((r: any) => r.type !== '매수신청대리');
                   const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || vatSupplyAmount(r.amount, selectedMonth)), 0);
-                  const normalRefundSupply = (data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + vatSupplyAmount(r.amount, selectedMonth), 0);
+                  // 당월 부분환불액(공급가)만 차감. 당월 전액환불은 확정매출/records에 없어 자동 제외(정산 미포함).
+                  const normalRefundSupply = normalRecords.reduce((sum: number, r: any) => sum + vatSupplyAmount(Number(r.refund_amount) || 0, selectedMonth), 0);
                   const netNormalSales = normalSupply - normalRefundSupply;
                   const commissionAmount = truncMoney(netNormalSales * rate / 100);
 
@@ -731,14 +872,41 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                   const otherDeductions = commDeductions
                     .filter(e => !e.isFood && !e.skipTax)
                     .reduce((s, e) => s + (Number(e.amount.replace(/[^0-9]/g, '')) || 0), 0);
-                  // 소득 합계: 매출수입(비율) + 매수신청대리(100%) + 추가정산
-                  const totalIncome = commissionAmount + proxyIncome + lawitgoNewSettlementTotal + extraDetails.reduce((s, e) => s + e.afterRate, 0);
-                  // 원천세: (소득 - 세전공제 - 원천세면제항목) × 3.3%
-                  const taxExemptAmount = extraDetails.filter(e => e.skipTax).reduce((s, e) => s + e.afterRate, 0);
-                  const taxableIncome = totalIncome - taxExemptAmount - preTaxDeductions;
-                  const tax33 = truncMoney(taxableIncome * 0.033);
-                  // 실지급 = 소득 - 세전공제 - 원천세 - 세후공제
-                  const finalPay = totalIncome - preTaxDeductions - tax33 - otherDeductions;
+                  // 비율제도 직급수당을 지급한다(3.3% 원천세 대상 — 소득에 합산).
+                  // 소급 방지: 2026-08(8월)부터 적용(go-forward). 이전 월은 그대로 미반영.
+                  const positionAllowance = selectedMonth >= '2026-08' ? Number(s?.position_allowance || 0) : 0;
+                  const taxableExtraIncome = extraDetails
+                    .filter(e => !e.skipTax)
+                    .reduce((sum, e) => sum + e.afterRate, 0);
+                  const taxExemptIncome = extraDetails
+                    .filter(e => e.skipTax)
+                    .reduce((sum, e) => sum + e.afterRate, 0);
+                  const settlement = calculateFreelancerSettlement({
+                    // 신 안건수당은 기존 정산수익 구성에 그대로 두고, 이번 통합 대상 성과금은 계약포상만이다.
+                    settlementIncome: commissionAmount + proxyIncome + positionAllowance + lawitgoNewSettlementTotal,
+                    contractAward: contractAwardAmount,
+                    taxableExtraIncome,
+                    taxExemptIncome,
+                    preTaxDeduction: preTaxDeductions,
+                    postTaxDeduction: otherDeductions,
+                  });
+                  const totalIncome = settlement.grossIncome;
+                  const taxExemptAmount = settlement.taxExemptIncome;
+                  const tax33 = settlement.withholdingTax;
+                  // 잠긴 정산은 당시 저장된 실지급액을 우선해 과거 금액을 자동 재계산하지 않는다.
+                  // 저장액이 없는 구형 잠금 건도 이번 계약포상 합산을 소급하지 않고 기존 산식으로 유지한다.
+                  const legacyLockedNetPay = isLocked && lockedNetPay === null
+                    ? calculateFreelancerSettlement({
+                        settlementIncome: commissionAmount + proxyIncome + positionAllowance + lawitgoNewSettlementTotal,
+                        taxableExtraIncome,
+                        taxExemptIncome,
+                        preTaxDeduction: preTaxDeductions,
+                        postTaxDeduction: otherDeductions,
+                      }).netPay
+                    : null;
+                  const finalPay = isLocked
+                    ? (lockedNetPay ?? legacyLockedNetPay ?? settlement.netPay)
+                    : settlement.netPay;
                   commissionNetRef.current = finalPay;
                   return (
                     <>
@@ -765,6 +933,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                           <span className="num" style={{ fontWeight: 700, color: '#1a73e8' }}>{fmtWon(commissionAmount)}</span>
                         </div>
 
+                        {positionAllowance > 0 && (
+                          <div className="payroll-bonus-row" style={{ color: '#188038' }}>
+                            <span>직급수당 <span style={{ fontSize: '0.68rem', color: '#9aa0a6' }}>(3.3% 원천세 적용)</span></span>
+                            <span className="num">+{fmtWon(positionAllowance)}</span>
+                          </div>
+                        )}
+
                         {/* 매수신청대리 수익 (100%) */}
                         {proxyIncome > 0 && (
                           <div className="payroll-bonus-row" style={{ color: '#188038' }}>
@@ -784,6 +959,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                             <span className="num">+{fmtWon(Number(item.amount) || 0)}</span>
                           </div>
                         ))}
+
+                        {settlement.contractAward > 0 && (
+                          <div className="payroll-bonus-row" style={{ color: '#188038', borderTop: '1px solid #e8eaed', paddingTop: 6 }}>
+                            <span>성과금 <span style={{ fontSize: '0.68rem', color: '#9aa0a6' }}>(계약포상)</span></span>
+                            <span className="num" style={{ fontWeight: 600 }}>+{fmtWon(settlement.contractAward)}</span>
+                          </div>
+                        )}
 
                         {/* 추가 정산 */}
                         {extraDetails.map((e, i) => (
@@ -827,13 +1009,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                         ))}
 
                         <div className="payroll-bonus-row grand-total" style={{ marginTop: 8 }}>
-                          <span>실 지급액</span>
+                          <span>최종 실지급액{isLocked && lockedNetPay !== null && <small style={{ display: 'block', color: '#9aa0a6', fontWeight: 400 }}>확정 당시 저장액</small>}</span>
                           <span className="num">{finalPay < 0 ? <>{fmtWon(0)}<span style={{ fontSize: '0.72rem', color: '#e65100', marginLeft: 4 }}>(이월 {fmtWon(-finalPay)} 익월청구)</span></> : fmtWon(finalPay)}</span>
                         </div>
                       </div>
 
                       {/* 안건 수당 — 짝수월에만, 외부 명승 사건 기반 (commission rate 미적용, 33% 세금만 차감) */}
-                      {data.is_payout_month && caseAllowance && caseAllowance.case_count > 0 && (
+                      {isLocked && data.is_payout_month && caseAllowance && caseAllowance.case_count > 0 && (
                         <>
                           <div className="payroll-section-title" style={{ marginTop: 16 }}>
                             안건 수당 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({caseAllowance.period_label} · 외부 명승 사건)</span>
@@ -869,11 +1051,11 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                         </>
                       )}
 
-                      {/* 계약포상 — 짝수월 + 계약 랭킹 1·2·3등 (최저 10건 이상) — 비율제는 33% 차감 */}
-                      {data.is_payout_month && data.contract_award?.rank && data.contract_award.award > 0 && (
+                      {/* 계약포상 — 백엔드에서 확정한 지급월·등수·금액을 전체 소득에 합산한다. */}
+                      {isContractAwardMonth(data) && data.contract_award?.rank && data.contract_award.award > 0 && (
                         <>
                           <div className="payroll-section-title" style={{ marginTop: 16 }}>
-                            계약포상 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({data.bonus_period_label} · 계약 랭킹 {data.contract_award.rank}등)</span>
+                            계약포상 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({contractAwardPeriodLabel} · 계약 랭킹 {data.contract_award.rank}등)</span>
                           </div>
                           <div className="payroll-bonus-box">
                             <div className="payroll-bonus-row">
@@ -888,13 +1070,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                               <span>등급 포상금</span>
                               <span className="num" style={{ fontWeight: 600, color: '#188038' }}>+{fmtWon(data.contract_award.award)}</span>
                             </div>
-                            <div className="payroll-bonus-row" style={{ color: '#d93025', fontSize: '0.85rem' }}>
-                              <span>　└ 원천세 (3.3%)</span>
-                              <span className="num">−{fmtWon(truncMoney(data.contract_award.award * 0.033))}</span>
+                            <div className="payroll-bonus-row" style={{ color: '#5f6368', fontSize: '0.85rem' }}>
+                              <span>원천징수</span>
+                              <span className="num">담당자 정산 합계에서 3.3% 일괄 계산</span>
                             </div>
                             <div className="payroll-bonus-row total">
-                              <span>계약포상</span>
-                              <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(data.contract_award.award - truncMoney(data.contract_award.award * 0.033))}</span>
+                              <span>합산 대상 계약포상</span>
+                              <span className="num accent" style={{ color: '#188038' }}>+{fmtWon(data.contract_award.award)}</span>
                             </div>
                           </div>
                         </>
@@ -962,7 +1144,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 </tr>
               </thead>
               <tbody>
-                {data.records.length === 0 ? (
+                {data.records.length === 0 && !(data.refunded_records?.length) ? (
                   <tr><td colSpan={6} style={{ textAlign: 'center', color: '#9aa0a6', padding: 32 }}>해당 월 확정매출 내역이 없습니다.</td></tr>
                 ) : (
                   <>
@@ -984,6 +1166,15 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                           )}
                         </td>
                         <td className="num sub">{fmtWon(r.vat_amount)}</td>
+                      </tr>
+                    ))}
+                    {(data.refunded_records || []).map((r: any) => (
+                      <tr key={`rf-${r.id}`} style={{ background: '#fff5f5' }}>
+                        <td>{r.contract_date?.slice(5)}</td>
+                        <td>{r.client_name}{r.depositor_different === 1 && r.depositor_name && <span className="payroll-depositor">({r.depositor_name})</span>}</td>
+                        <td><span className={`payroll-type payroll-type-${r.type}`}>{r.type}</span></td>
+                        <td className="num" style={{ textDecoration: 'line-through', color: '#c0392b' }}>{fmtWon(r.amount)}</td>
+                        <td className="num sub" colSpan={2} style={{ textAlign: 'right', color: '#c0392b', fontWeight: 500 }}>당월 전액환불 · 정산제외</td>
                       </tr>
                     ))}
                     <tr className="payroll-total-row">
@@ -1101,7 +1292,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
             )}
 
             {/* 안건 수당 — 짝수월에만, 외부 명승 사건 기반 */}
-            {!data.is_hq && data.is_payout_month && caseAllowance && caseAllowance.case_count > 0 && (
+            {isLocked && !data.is_hq && data.is_payout_month && caseAllowance && caseAllowance.case_count > 0 && (
               <>
                 <div className="payroll-section-title">
                   안건 수당 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({caseAllowance.period_label} · 외부 명승 사건)</span>
@@ -1125,11 +1316,11 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
               </>
             )}
 
-            {/* 계약포상 — 짝수월 + 계약 랭킹 1·2·3등 (최저 10건 이상) — 급여제는 그대로 지급 */}
-            {!data.is_hq && data.is_payout_month && data.contract_award?.rank && data.contract_award.award > 0 && (
+            {/* 계약포상 — 백엔드에서 확정한 지급월·등수·금액을 그대로 지급한다. */}
+            {!data.is_hq && isContractAwardMonth(data) && data.contract_award?.rank && data.contract_award.award > 0 && (
               <>
                 <div className="payroll-section-title">
-                  계약포상 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({data.bonus_period_label} · 계약 랭킹 {data.contract_award.rank}등)</span>
+                  계약포상 <span style={{ fontSize: '0.75rem', color: '#9aa0a6', fontWeight: 400 }}>({contractAwardPeriodLabel} · 계약 랭킹 {data.contract_award.rank}등)</span>
                 </div>
                 <div className="payroll-bonus-box">
                   <div className="payroll-bonus-row">
@@ -1239,9 +1430,9 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 <span className="num">+{fmtWon(caseAllowanceValue)}</span>
               </div>
               )}
-              {!data.is_hq && data.is_payout_month && contractAwardAmount > 0 && (
+              {!data.is_hq && isContractAwardMonth(data) && contractAwardAmount > 0 && (
               <div className="payroll-bonus-row" style={{ color: '#188038' }}>
-                <span>계약포상 ({data.bonus_period_label} · {data.contract_award.rank}등)</span>
+                <span>계약포상 ({contractAwardPeriodLabel} · {data.contract_award.rank}등)</span>
                 <span className="num">+{fmtWon(contractAwardAmount)}</span>
               </div>
               )}
@@ -1306,7 +1497,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
             const rate = data.accounting.commission_rate || 0;
             const normalRecords = (data.records || []).filter((r: any) => r.type !== '매수신청대리');
             const normalSupply = normalRecords.reduce((sum: number, r: any) => sum + (r.supply_amount || vatSupplyAmount(r.amount, selectedMonth)), 0);
-            const normalRefundSupply = (data.refunded_records || []).filter((r: any) => r.type !== '매수신청대리').reduce((sum: number, r: any) => sum + vatSupplyAmount(r.amount, selectedMonth), 0);
+            // 당월 부분환불액(공급가)만 차감. 당월 전액환불은 확정매출/records에 없어 자동 제외.
+            const normalRefundSupply = normalRecords.reduce((sum: number, r: any) => sum + vatSupplyAmount(Number(r.refund_amount) || 0, selectedMonth), 0);
             const netSales = normalSupply - normalRefundSupply;
             const commAmt = truncMoney(netSales * rate / 100);
             const proxyRecords = (data.records || []).filter((r: any) => r.type === '매수신청대리');
@@ -1581,12 +1773,86 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                 </div>
                 <div style={{ marginTop: 10, fontSize: '0.78rem', color: '#9aa0a6' }}>
                   {data.accounting.pay_type === 'commission'
-                    ? '실지급액 = (소득 - 세전공제[식대/원천세면제]) × 3.3% 원천세 차감 후 - 세후공제'
+                    ? '최종 실지급액 = 기존 정산수익 + 계약포상 - 전체 원천징수/공제'
                     : '총지급액 = ((기본급여 + 직급수당) - 공제합계 - 추가공제) + 상여금 + 기타 + 추가정산'}
                 </div>
               </>
             )}
             </div>
+          )}
+
+          {/* 전용 API로 분리된 내부 메모: 급여 스냅샷 및 PNG 복사 영역(printRef)에 포함하지 않는다. */}
+          {canViewInternalMemo && loadedPayrollMatchesSelection && (
+            <section
+              className="card payroll-internal-memo no-print"
+              data-payroll-copy-excluded="true"
+              aria-labelledby="payroll-internal-memo-title"
+            >
+              <div className="payroll-internal-memo-header">
+                <div>
+                  <h3 id="payroll-internal-memo-title">내부 정산 메모 <span>선택</span></h3>
+                  <p>총무 업무용 내부 메모입니다. 급여 정산서 PNG 복사·출력·직원 화면에는 포함되지 않습니다.</p>
+                </div>
+                <span className="payroll-internal-memo-private">내부 열람 전용</span>
+              </div>
+
+              {internalMemoLoading ? (
+                <div className="payroll-internal-memo-state">메모를 불러오는 중입니다.</div>
+              ) : internalMemoLoadError ? (
+                <div className="payroll-internal-memo-state error" role="alert">
+                  <span>{internalMemoLoadError}</span>
+                  <button type="button" className="btn btn-sm" onClick={() => setInternalMemoReloadKey(value => value + 1)}>다시 불러오기</button>
+                </div>
+              ) : canEditInternalMemo ? (
+                <>
+                  <textarea
+                    id="payroll-internal-memo-input"
+                    className="form-input payroll-internal-memo-input"
+                    value={internalMemo}
+                    onChange={(event) => {
+                      setInternalMemo(event.target.value);
+                      setInternalMemoNotice('');
+                      setInternalMemoSaveError('');
+                    }}
+                    maxLength={2000}
+                    placeholder="필요한 경우에만 정산 관련 내부 참고사항을 남겨주세요."
+                    aria-label="내부 정산 메모"
+                    aria-describedby="payroll-internal-memo-help"
+                  />
+                  <div className="payroll-internal-memo-footer">
+                    <div id="payroll-internal-memo-help" className="payroll-internal-memo-meta">
+                      {internalMemoMeta ? (
+                        <span>최근 저장: {internalMemoMeta.updated_by_name || '담당자'} · {formatInternalMemoUpdatedAt(internalMemoMeta.updated_at)}</span>
+                      ) : (
+                        <span>작성하지 않아도 됩니다. 내용을 비워 저장하면 기존 메모가 삭제됩니다.</span>
+                      )}
+                      <span className="payroll-internal-memo-count">{internalMemo.length.toLocaleString('ko-KR')} / 2,000자</span>
+                    </div>
+                    <div className="payroll-internal-memo-actions">
+                      {internalMemoSaveError && <span className="payroll-internal-memo-error" role="alert">{internalMemoSaveError}</span>}
+                      {internalMemoNotice && <span className="payroll-internal-memo-notice" role="status">{internalMemoNotice}</span>}
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={handleSaveInternalMemo}
+                        disabled={internalMemoSaving || internalMemo === savedInternalMemo}
+                      >
+                        {internalMemoSaving ? '저장 중...' : '메모 저장'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="payroll-internal-memo-readonly">
+                  <div>{internalMemo || '등록된 내부 메모가 없습니다.'}</div>
+                  {internalMemoMeta && (
+                    <div className="payroll-internal-memo-readonly-meta">
+                      최근 저장: {internalMemoMeta.updated_by_name || '담당자'} · {formatInternalMemoUpdatedAt(internalMemoMeta.updated_at)}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
           )}
         </>
       )}

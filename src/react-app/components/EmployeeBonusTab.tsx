@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Download, FileText, RefreshCw } from 'lucide-react';
 import { api } from '../api';
 import type { User } from '../types';
+import { payrollContractAwardAmount } from '../lib/contractAwardUi';
 
 type BonusRow = {
   user_id: string;
@@ -51,18 +52,20 @@ export default function EmployeeBonusTab({ month, users }: { month: string; user
           if (payroll.accounting?.pay_type === 'commission') return null;
 
           let saved: any = {};
+          let userLocked = false;
           try {
             const saveRes = await api.payroll.getSave(user.id, payroll.period_label || month);
             saved = saveRes.save ? JSON.parse(saveRes.save.data || '{}') : {};
+            userLocked = !!saveRes.save?.locked;
           } catch {
             saved = {};
           }
 
           const performanceBonus = payroll.summary?.bonus || 0;
-          const contractAward = payroll.is_payout_month && payroll.contract_award?.rank
-            ? (payroll.contract_award.award || 0)
-            : 0;
-          const caseAllowance = isPayoutMonth ? (caseAllowanceByUser[user.id] || 0) : 0;
+          const contractAward = payrollContractAwardAmount(payroll);
+          // 잠긴(지급완료) 월만 안건 수당 유지 — 미잠금/신규는 0.
+          const savedCaseAllow = Number(saved.caseAllowance?.bonus || saved.payroll_snapshot?.caseAllowance?.bonus || 0);
+          const caseAllowance = (isPayoutMonth && userLocked) ? (savedCaseAllow || caseAllowanceByUser[user.id] || 0) : 0;
           const extraBonus = parseMoney(saved.extraPay);
           const totalBonus = performanceBonus + caseAllowance + contractAward + extraBonus;
 

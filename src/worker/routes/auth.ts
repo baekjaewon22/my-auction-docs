@@ -22,6 +22,8 @@ const RESET_RATE_LIMIT = 3;
 const RESET_MAX_ATTEMPTS = 5;
 const FORGOT_RESPONSE = '입력한 정보와 일치하는 계정이 있으면 인증번호가 발송됩니다.';
 
+type AuthUserWithTeamName = User & { team_name?: string };
+
 async function ensureUserReportSettingColumns(db: D1Database): Promise<void> {
   const columns = await db.prepare('PRAGMA table_info(users)').all<{ name: string }>();
   const names = new Set((columns.results || []).map((col) => col.name));
@@ -72,7 +74,12 @@ auth.post('/login', async (c) => {
 
   const db = c.env.DB;
   await ensurePasswordSecuritySchema(db);
-  const user = await db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
+  const user = await db.prepare(`
+    SELECT u.*, COALESCE(t.name, '') AS team_name
+    FROM users u
+    LEFT JOIN teams t ON t.id = u.team_id
+    WHERE u.email = ?
+  `).bind(email).first<AuthUserWithTeamName>();
   if (!user) return c.json({ error: '이메일 또는 비밀번호가 올바르지 않습니다.' }, 401);
 
   const valid = await verifyPassword(password, user.password_hash);
@@ -107,7 +114,7 @@ auth.post('/login', async (c) => {
   return c.json({
     token,
     user: { id: user.id, email: user.email, name: user.name, phone: user.phone,
-      role: user.role, team_id: user.team_id, branch: user.branch, department: user.department,
+      role: user.role, team_id: user.team_id, team_name: user.team_name || '', branch: user.branch, department: user.department,
       position_title: user.position_title,
       login_type: sessionLoginType,
       myauction_id: (user as any).myauction_id || '',
@@ -127,6 +134,7 @@ auth.get('/me', authMiddleware, async (c) => {
         name: payload.name,
         role: payload.role,
         team_id: payload.team_id,
+        team_name: '',
         branch: payload.branch,
         department: payload.department,
         auth_type: payload.auth_type,
@@ -139,12 +147,14 @@ auth.get('/me', authMiddleware, async (c) => {
   const db = c.env.DB;
   await ensureUserReportSettingColumns(db);
   const user = await db.prepare(`
-    SELECT id, email, name, phone, role, team_id, branch, department, position_title,
-      saved_signature, login_type, created_at,
-      COALESCE(myauction_id, '') AS myauction_id,
-      CASE WHEN COALESCE(myauction_id, '') != '' AND COALESCE(myauction_pw, '') != '' THEN 1 ELSE 0 END AS has_myauction_credentials,
-      COALESCE(report_permission, 'basic') AS report_permission
-    FROM users WHERE id = ?
+    SELECT u.id, u.email, u.name, u.phone, u.role, u.team_id, COALESCE(t.name, '') AS team_name,
+      u.branch, u.department, u.position_title, u.saved_signature, u.login_type, u.created_at,
+      COALESCE(u.myauction_id, '') AS myauction_id,
+      CASE WHEN COALESCE(u.myauction_id, '') != '' AND COALESCE(u.myauction_pw, '') != '' THEN 1 ELSE 0 END AS has_myauction_credentials,
+      COALESCE(u.report_permission, 'basic') AS report_permission
+    FROM users u
+    LEFT JOIN teams t ON t.id = u.team_id
+    WHERE u.id = ?
   `).bind(payload.sub).first();
   if (!user) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
   return c.json({

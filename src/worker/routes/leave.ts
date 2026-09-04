@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
-import type { AuthEnv } from '../types';
-import { authMiddleware, requireRole } from '../middleware/auth';
-import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
-import { isHeadOfficeBranch } from '../lib/branchAliases';
-import { buildOrgApprovalChain } from '../lib/org-approval-chain';
+import type { AuthEnv } from '../types.ts';
+import { authMiddleware, requireRole } from '../middleware/auth.ts';
+import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk.ts';
+import { isHeadOfficeBranch } from '../lib/branchAliases.ts';
+import { buildOrgApprovalChain } from '../lib/org-approval-chain.ts';
 import {
   countLeaveBusinessDays,
   isLeaveDateRange,
@@ -12,20 +12,29 @@ import {
   subtractLeaveBusinessDays,
   type SummerChainPosition,
   type SummerLeavePlan,
-} from '../../shared/leave-calendar';
+} from '../../shared/leave-calendar.ts';
 import {
   businessDayLeaveValidationError,
   CREATE_ACTIVE_EXACT_LEAVE_INDEX_SQL,
   CREATE_ACTIVE_SUMMER_LEAVE_INDEX_SQL,
   markApprovedLeaveCancelRequested,
-} from '../../shared/leave-request-constraints';
-import { sumApprovedLeave, type LeaveCycle } from '../../shared/leave-balance';
+} from '../../shared/leave-request-constraints.ts';
+import { sumApprovedLeave, type LeaveCycle } from '../../shared/leave-balance.ts';
+import {
+  isSummerLeaveRequestPeriod,
+  isSummerLeaveUsageDate,
+  SUMMER_LEAVE_REQUEST_PERIOD_ERROR,
+  SUMMER_LEAVE_SPECIAL_USAGE_PERIOD_ERROR,
+  SUMMER_LEAVE_USAGE_PERIOD_ERROR,
+} from '../../shared/summer-leave-policy.ts';
 
 const leave = new Hono<AuthEnv>();
 leave.use('*', authMiddleware);
 leave.use('*', async (c, next) => {
   const user = c.get('user');
-  if (user.login_type === 'freelancer' && user.role !== 'master') {
+  const isAccountantLeaveNoticeRead = c.req.method === 'GET'
+    && c.req.path.endsWith('/accountant-leaves');
+  if (user.login_type === 'freelancer' && user.role !== 'master' && !isAccountantLeaveNoticeRead) {
     return c.json({ error: '프리랜서는 연차·휴가 기능을 사용할 수 없습니다.' }, 403);
   }
   await next();
@@ -104,26 +113,12 @@ function leaveTypeForMessage(leaveType: string, halfDayPeriod?: string): string 
   return leaveType === '반차' && halfDayPeriod ? `반차(${halfDayPeriod})` : leaveType;
 }
 
-function kstToday(): Date {
-  return new Date(Date.now() + 9 * 60 * 60 * 1000);
-}
-
 function isSummerVacationReason(reason: unknown): boolean {
   return String(reason || '').includes('[여름휴가]');
 }
 
 function isRewardVacationReason(reason: unknown): boolean {
   return String(reason || '').includes('[특별유급]') && String(reason || '').includes('포상휴가');
-}
-
-function isSummerVacationWindowOpen(): boolean {
-  const month = kstToday().getUTCMonth() + 1;
-  return month >= 7 && month <= 8;
-}
-
-function isJulyOrAugustDate(value: string): boolean {
-  const month = Number(String(value || '').slice(5, 7));
-  return month === 7 || month === 8;
 }
 
 function summerVacationDays(reason: unknown): number | null {
@@ -1013,8 +1008,8 @@ leave.post('/request/summer', async (c) => {
     'SELECT id, name, branch, department FROM users WHERE id = ? AND approved = 1'
   ).bind(targetUserId).first<any>();
   if (!targetUser) return c.json({ error: '휴가를 신청할 직원을 찾을 수 없습니다.' }, 404);
-  if (!isSummerVacationWindowOpen()) {
-    return c.json({ error: '여름 특별휴가는 매년 7~8월에만 신청할 수 있습니다. 9월부터는 사용이 불가합니다.' }, 400);
+  if (!isSummerLeaveRequestPeriod()) {
+    return c.json({ error: SUMMER_LEAVE_REQUEST_PERIOD_ERROR }, 400);
   }
 
   const summerDays = Number(body.summer_days);
@@ -1058,8 +1053,8 @@ leave.post('/request/summer', async (c) => {
     plan.annualStartDate,
     plan.annualEndDate,
   ].filter((date): date is string => Boolean(date));
-  if (allDates.some((date) => !isJulyOrAugustDate(date))) {
-    return c.json({ error: '여름 특별휴가와 연결 연차는 모두 7~8월 안에서만 사용할 수 있습니다.' }, 400);
+  if (allDates.some((date) => !isSummerLeaveUsageDate(date))) {
+    return c.json({ error: SUMMER_LEAVE_USAGE_PERIOD_ERROR }, 400);
   }
   let inserted: SummerLeaveInsertResult;
   try {
@@ -1138,8 +1133,8 @@ leave.post('/request', async (c) => {
 
   const isSummerVacation = requestedLeaveType === '특별휴가' && isSummerVacationReason(body.reason);
   if (isSummerVacation) {
-    if (!isSummerVacationWindowOpen()) {
-      return c.json({ error: '여름 특별휴가는 매년 7~8월에만 신청할 수 있습니다. 9월부터는 사용이 불가합니다.' }, 400);
+    if (!isSummerLeaveRequestPeriod()) {
+      return c.json({ error: SUMMER_LEAVE_REQUEST_PERIOD_ERROR }, 400);
     }
     const requestedDays = summerVacationDays(body.reason);
     if (!requestedDays) {
@@ -1176,8 +1171,8 @@ leave.post('/request', async (c) => {
         legacyPlan.annualStartDate,
         legacyPlan.annualEndDate,
       ].filter((date): date is string => Boolean(date));
-      if (legacyDates.some((date) => !isJulyOrAugustDate(date))) {
-        return c.json({ error: '여름 특별휴가와 연결 연차는 모두 7~8월 안에서만 사용할 수 있습니다.' }, 400);
+      if (legacyDates.some((date) => !isSummerLeaveUsageDate(date))) {
+        return c.json({ error: SUMMER_LEAVE_USAGE_PERIOD_ERROR }, 400);
       }
       let inserted: SummerLeaveInsertResult;
       try {
@@ -1230,8 +1225,8 @@ leave.post('/request', async (c) => {
     } catch (err: any) {
       return c.json({ error: err?.message || '여름휴가 날짜를 계산할 수 없습니다.' }, 400);
     }
-    if (!isJulyOrAugustDate(body.start_date) || !isJulyOrAugustDate(body.end_date)) {
-      return c.json({ error: '여름 특별휴가는 사용 기간도 7~8월 안으로만 지정할 수 있습니다.' }, 400);
+    if (!isSummerLeaveUsageDate(body.start_date) || !isSummerLeaveUsageDate(body.end_date)) {
+      return c.json({ error: SUMMER_LEAVE_SPECIAL_USAGE_PERIOD_ERROR }, 400);
     }
     if (await hasActiveSummerVacationRequest(db, targetUserId, year)) {
       return c.json({ error: '여름 특별휴가는 인당 연 1회만 신청할 수 있습니다.' }, 400);
@@ -1688,7 +1683,23 @@ leave.delete('/requests/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'a
 
 // ───── 총무 휴가 알림 (대시보드) ─────
 // GET /api/leave/accountant-leaves — 현재~향후 7일 내 총무 휴가 조회
+interface AccountantLeaveNoticeRecord {
+  id: string;
+  user_id: string;
+  leave_type: string;
+  start_date: string;
+  end_date: string;
+  hours: number | null;
+  days: number;
+  reason: string | null;
+  name: string;
+  branch: string;
+  department: string;
+  position_title: string;
+}
+
 leave.get('/accountant-leaves', async (c) => {
+  const viewer = c.get('user');
   const db = c.env.DB;
   const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST
   // 오늘부터 7일 후까지 공지
@@ -1705,9 +1716,24 @@ leave.get('/accountant-leaves', async (c) => {
       AND lr.end_date >= ?
       AND lr.start_date <= ?
     ORDER BY lr.start_date ASC
-  `).bind(today, future).all();
+  `).bind(today, future).all<AccountantLeaveNoticeRecord>();
 
-  return c.json({ leaves: result.results || [] });
+  const leaves = result.results || [];
+  if (viewer.login_type === 'freelancer') {
+    return c.json({
+      leaves: leaves.map((leave) => ({
+        id: leave.id,
+        leave_type: leave.leave_type,
+        start_date: leave.start_date,
+        end_date: leave.end_date,
+        name: leave.name,
+        branch: leave.branch,
+        position_title: leave.position_title,
+      })),
+    });
+  }
+
+  return c.json({ leaves });
 });
 
 export default leave;

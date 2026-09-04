@@ -87,7 +87,7 @@
 		"test:automation-python": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/test-automation-python.ps1",
 		"test:automation-access": "node --experimental-strip-types --test tests/automation-access.test.ts",
 		"test:automation-agent-health": "node --experimental-strip-types --test tests/automation-agent-health.test.ts",
-		"test:leave": "node --experimental-strip-types --test tests/leave-calendar.test.ts tests/leave-constraints.test.ts tests/leave-cancel-migration.test.ts",
+		"test:leave": "node --experimental-strip-types --test tests/leave-calendar.test.ts tests/leave-constraints.test.ts tests/leave-cancel-migration.test.ts tests/summer-leave-policy.test.ts tests/summer-leave-ui-policy.test.ts",
 		"test:refund-recovery": "node --experimental-strip-types --test tests/refund-recovery.test.ts",
 		"test:sales-recognition": "node --experimental-strip-types --test tests/sales-recognition.test.ts",
 		"test:sales-assignment": "node --experimental-strip-types --test tests/sales-assignment.test.ts",

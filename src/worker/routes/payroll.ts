@@ -5,20 +5,28 @@ import { calculateCaseAllowance, isCaseAllowanceExcludedName } from './cases';
 import { reinitUserLeave } from './leave';
 import { normalizeBranchName } from '../lib/branchAliases';
 import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotForMonth, payTypeAtMonthSql, resolvePayTypeFromHistory } from '../lib/pay-type-history';
-import { calculateRefundRecoveryAmount } from '../../shared/refund-recovery';
+import { calculateRefundRecoveryAmount, payrollPeriodLabelFromMonth } from '../../shared/refund-recovery';
 import { nextPayrollMonth } from '../../shared/payroll-carryover';
 import { confirmedSalesSql, payrollRecognizedOrRefundedSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 import { buildBranchSummaryQueryScope } from '../../shared/payroll-branch-summary';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { normalizeWithholdingSettlements } from '../../shared/withholding-settlement';
+import {
+  applyFreelancerSettlementToSaveData,
+  calculateFreelancerSavedSettlement,
+  calculateFreelancerSettlement,
+} from '../../shared/freelancer-settlement';
+import {
+  canEditPayrollInternalMemo,
+  canViewPayrollInternalMemo,
+} from '../../shared/payroll-internal-memo-access';
+import {
+  calculateContractCountFromRows,
+  getContractAwardPeriod,
+} from '../../shared/contract-award';
+import { calculateContractAwardForUser } from '../lib/contract-award-ranking';
 import { getLawitgoNewSettlements } from '../lib/lawitgo-new-settlement';
 
-// ───── 계약포상 (신설) ─────
-// 2개월 단위 계약건수 랭킹 1/2/3등에게 30/20/10만원
-// 최저 10건 이상이어야 자격 (220만 이상은 2건 카운트, exclude_from_count 제외)
-// 매출포상(일반 성과금) 산정에는 합산 X — 별도 항목으로만 표시
-const CONTRACT_AWARD_TIERS = [300_000, 200_000, 100_000];
-const CONTRACT_AWARD_MIN_COUNT = 10;
 const LEAVE_HOURS_PER_DAY = 8;
 const CASE_ALLOWANCE_EXCLUDED_FROM_BONUS_BASIS_FROM = '2026-06';
 const PAYROLL_TRUNCATE_MONEY_FROM = '2026-06';
@@ -153,6 +161,28 @@ function payrollPeriodLabel(month: string): string {
   return `${Number(year)}년 ${Number(monthText)}월`;
 }
 
+function normalizePayrollInternalMemoPeriod(value: string): string {
+  const month = parsePayrollPeriodMonth(value);
+  const monthNumber = Number(month.slice(5, 7));
+  return month && monthNumber >= 1 && monthNumber <= 12 ? payrollPeriodLabel(month) : '';
+}
+
+async function ensurePayrollInternalMemosTable(db: D1Database): Promise<void> {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS payroll_internal_memos (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      period TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL,
+      updated_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(user_id, period)
+    )
+  `).run();
+}
+
 function isPayrollPaidMonth(month: string): boolean {
   const parsed = parsePayrollPeriodMonth(month);
   if (!parsed) return false;
@@ -207,87 +237,167 @@ function parsePayrollSaveData(raw: unknown): Record<string, any> {
   }
 }
 
-function buildPayrollSnapshot(response: Record<string, any>, saveData: Record<string, any>, extra: { period: string; month: string }) {
-  return {
-    version: 1,
-    saved_at: new Date().toISOString(),
-    period: extra.period,
-    month: extra.month,
-    response,
-    caseAllowance: saveData.caseAllowance || null,
-    manual: {
-      deduction: saveData.deduction ?? '0',
-      extraPay: saveData.extraPay ?? '0',
-      extraLabel: saveData.extraLabel ?? '',
-      extraDeduction: saveData.extraDeduction ?? '0',
-      extraDeductionLabel: saveData.extraDeductionLabel ?? '',
-      commExtras: Array.isArray(saveData.commExtras) ? saveData.commExtras : [],
-      commDeductions: Array.isArray(saveData.commDeductions) ? saveData.commDeductions : [],
-      withholdingSettlements: normalizeWithholdingSettlements(saveData.withholdingSettlements),
-    },
-  };
-}
-function contractCustomerKey(r: any): string {
-  const phone = String(r.client_phone || '').replace(/\D/g, '');
-  const name = String(r.client_name || '').trim().toLowerCase();
-  if (!phone || !name) return `row:${r.id || `${name}:${r.amount}:${r.contract_date}`}`;
-  return `${name}|${phone}`;
-}
+type AuthoritativePayrollSave = {
+  payType: 'salary' | 'commission';
+  settlement: ReturnType<typeof calculateFreelancerSettlement> | null;
+  businessIncome: { amount: number; tax: number; net: number; contractAward: number } | null;
+  response: Record<string, any> | null;
+};
 
-function calculateContractCountFromRows(rows: any[]): number {
-  const grouped = new Map<string, number>();
-  rows
-    .filter((r: any) => r.type === '계약' && r.status === 'confirmed' && !r.exclude_from_count)
-    .forEach((r: any) => {
-      const key = contractCustomerKey(r);
-      grouped.set(key, (grouped.get(key) || 0) + (Number(r.amount) || 0));
+async function buildAuthoritativePayrollSave(
+  db: D1Database,
+  userId: string,
+  month: string,
+  saveData: Record<string, any>,
+  submittedResponse: Record<string, any> | null,
+): Promise<AuthoritativePayrollSave | null> {
+  const targetUser = await db.prepare(
+    'SELECT id, name, branch, role FROM users WHERE id = ?'
+  ).bind(userId).first<any>();
+  if (!targetUser) return null;
+
+  const currentAccounting = await db.prepare(
+    'SELECT pay_type, commission_rate, position_allowance FROM user_accounting WHERE user_id = ?'
+  ).bind(userId).first<any>();
+  const monthAccounting = await getPayTypeSnapshotForMonth(db, userId, month, currentAccounting || {});
+  const isJanFeb2026 = month === '2026-01' || month === '2026-02';
+  const payType: 'salary' | 'commission' = isJanFeb2026 ? 'commission' : monthAccounting.pay_type;
+  const [yearText, monthText] = month.split('-');
+  const year = Number(yearText);
+  const monthNumber = Number(monthText);
+  const isPayoutMonth = monthNumber % 2 === 0;
+  const contractAwardPeriod = getContractAwardPeriod(month);
+  const isHQ = normalizeBranchName(targetUser.branch) === '본사관리'
+    || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(String(targetUser.role || ''));
+  const contractAward = contractAwardPeriod.isAwardMonth && !isHQ
+    ? await calculateContractAwardForUser(db, userId, month)
+    : { rank: null, count: 0, award: 0, total_amount: 0 };
+  const responseWithAuthoritativeAward: Record<string, any> | null = submittedResponse ? {
+    ...submittedResponse,
+    month,
+    is_payout_month: isPayoutMonth,
+    is_contract_award_month: contractAwardPeriod.isAwardMonth,
+    contract_award_period_label: contractAwardPeriod.label,
+    contract_award: contractAward,
+  } : null;
+  if (payType !== 'commission') {
+    return {
+      payType,
+      settlement: null,
+      businessIncome: null,
+      response: responseWithAuthoritativeAward,
+    };
+  }
+
+  const override = await db.prepare(
+    'SELECT commission_rate FROM commission_rate_overrides WHERE user_id = ? AND year_month = ?'
+  ).bind(userId, month).first<any>().catch(() => null);
+  const rate = override?.commission_rate !== undefined
+    ? Number(override.commission_rate)
+    : (isJanFeb2026 ? 50 : Number(monthAccounting.commission_rate) || 0);
+  const monthStart = `${month}-01`;
+  const monthEnd = `${month}-${String(new Date(year, monthNumber, 0).getDate()).padStart(2, '0')}`;
+  const salesResult = await db.prepare(`
+    SELECT id, type, type_detail, client_name, client_phone, depositor_name, depositor_different,
+      amount, refund_amount, contract_date, deposit_date, status, confirmed_at, memo, exclude_from_count,
+      payment_type, card_deposit_date, proxy_cost, direction, external_id
+    FROM sales_records
+    WHERE user_id = ? AND ${payrollRecognizedOrRefundedSql('sales_records')}
+      AND (
+        (payment_type = '카드' AND card_deposit_date >= ? AND card_deposit_date <= ?)
+        OR (payment_type != '카드' AND payment_type != '' AND deposit_date >= ? AND deposit_date <= ?)
+        OR ((payment_type = '' OR payment_type IS NULL) AND contract_date >= ? AND contract_date <= ?)
+      )
+    ORDER BY contract_date ASC
+  `).bind(userId, monthStart, monthEnd, monthStart, monthEnd, monthStart, monthEnd).all<any>();
+  const records = (salesResult.results || [])
+    .map((record: any) => normalizeSalesRecognition(record))
+    .filter((record: any) => record.status === 'confirmed' && !excludeCaseAllowanceSalesRecordFromPayroll(record, month))
+    .map((record: any) => {
+      const grossSupply = vatSupplyAmount(record.amount, month);
+      const proxyCost = record.type === '매수신청대리' ? Number(record.proxy_cost || 0) : 0;
+      return {
+        ...record,
+        supply_amount: record.type === '매수신청대리'
+          ? Math.max(grossSupply - proxyCost, 0)
+          : grossSupply,
+        vat_amount: (Number(record.amount) || 0) - grossSupply,
+        gross_supply_amount: grossSupply,
+        proxy_payroll_amount: record.type === '매수신청대리'
+          ? Math.max(grossSupply - proxyCost, 0)
+          : grossSupply,
+      };
     });
-  return [...grouped.values()].reduce((sum, amount) => sum + (amount >= 2_200_000 ? 2 : 1), 0);
-}
+  const response = responseWithAuthoritativeAward ? {
+    ...responseWithAuthoritativeAward,
+    month,
+    accounting: {
+      ...(responseWithAuthoritativeAward.accounting || {}),
+      pay_type: 'commission',
+      commission_rate: rate,
+      position_allowance: monthAccounting.position_allowance,
+    },
+    summary: {
+      ...(responseWithAuthoritativeAward.summary || {}),
+      position_allowance: monthAccounting.position_allowance,
+    },
+    records,
+    is_payout_month: isPayoutMonth,
+    is_contract_award_month: contractAwardPeriod.isAwardMonth,
+    contract_award_period_label: contractAwardPeriod.label,
+    contract_award: contractAward,
+  } : {
+    month,
+    accounting: {
+      pay_type: 'commission',
+      commission_rate: rate,
+      position_allowance: monthAccounting.position_allowance,
+    },
+    summary: { position_allowance: monthAccounting.position_allowance },
+    records,
+    is_payout_month: isPayoutMonth,
+    is_contract_award_month: contractAwardPeriod.isAwardMonth,
+    contract_award_period_label: contractAwardPeriod.label,
+    contract_award: contractAward,
+  };
+  const lawitgoIncome = (await getLawitgoNewSettlements(db, userId, month))
+    .reduce((sum, item) => sum + item.amount, 0);
+  let caseAllowanceIncome = 0;
+  if (isPayoutMonth && !isCaseAllowanceExcludedName(targetUser.name)) {
+    const periodKey = `${year}-${String(monthNumber - 1).padStart(2, '0')}_${String(monthNumber).padStart(2, '0')}`;
+    const caseAllowanceCases = await db.prepare(`
+      SELECT COALESCE(SUM(
+        CASE WHEN fee_type = 'fixed' THEN MAX(0, fee_amount - 150000)
+             ELSE CAST(fee_amount * 1.0 / 1.1 AS INTEGER) END
+      ), 0) as total_fee_adjusted
+      FROM cases
+      WHERE consultant_user_id = ? AND bimonthly_period = ?
+        AND NOT EXISTS (SELECT 1 FROM lawitgo_new_settlements lns WHERE lns.case_id = cases.id)
+    `).bind(userId, periodKey).first<any>();
+    caseAllowanceIncome = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
+  }
+  let normalSupply = 0;
+  let proxyIncome = 0;
+  for (const record of records) {
+    if (String(record.type_detail || '').startsWith('명도성과금')) continue;
+    if (record.type === '매수신청대리') proxyIncome += Number(record.supply_amount) || 0;
+    else normalSupply += Number(record.supply_amount) || 0;
+  }
+  const businessIncomeSettlement = calculateFreelancerSettlement({
+    settlementIncome: truncMoney(normalSupply * rate / 100) + proxyIncome + caseAllowanceIncome + lawitgoIncome,
+    contractAward: Number(contractAward.award) || 0,
+  });
 
-async function calcContractAwardForUser(
-  db: D1Database, userId: string, periodStart: string, periodEnd: string,
-): Promise<{ rank: number | null; count: number; award: number; total_amount: number }> {
-  await ensurePayTypeHistoryTable(db);
-  const result = await db.prepare(`
-    SELECT user_id, user_name,
-      SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as cnt,
-      SUM(customer_amount) as total_amount
-    FROM (
-      SELECT u.id as user_id, u.name as user_name,
-        CASE
-          WHEN COALESCE(sr.client_name, '') = '' OR COALESCE(sr.client_phone, '') = '' THEN sr.id
-          ELSE LOWER(TRIM(sr.client_name)) || '|' || REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(sr.client_phone, ''), '-', ''), ' ', ''), '(', ''), ')', '')
-        END as customer_key,
-        SUM(sr.amount) as customer_amount
-      FROM sales_records sr
-      JOIN users u ON u.id = sr.user_id
-      WHERE sr.type = '계약' AND ${confirmedSalesSql('sr')}
-        AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
-        AND (
-          (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
-          OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
-          OR ((sr.payment_type = '' OR sr.payment_type IS NULL) AND sr.contract_date >= ? AND sr.contract_date <= ?)
-        )
-      GROUP BY u.id, customer_key
-    )
-    GROUP BY user_id, user_name
-    HAVING cnt >= ?
-    ORDER BY cnt DESC, total_amount DESC
-    LIMIT 3
-  `).bind(
-    periodStart, periodEnd, periodStart, periodEnd, periodStart, periodEnd,
-    CONTRACT_AWARD_MIN_COUNT,
-  ).all<any>();
-
-  const top3 = result.results || [];
-  const idx = top3.findIndex((r: any) => r.user_id === userId);
-  if (idx === -1) return { rank: null, count: 0, award: 0, total_amount: 0 };
   return {
-    rank: idx + 1,
-    count: top3[idx].cnt,
-    award: CONTRACT_AWARD_TIERS[idx] || 0,
-    total_amount: top3[idx].total_amount || 0,
+    payType,
+    settlement: calculateFreelancerSavedSettlement(response, saveData, month),
+    businessIncome: {
+      amount: businessIncomeSettlement.grossIncome,
+      tax: businessIncomeSettlement.withholdingTax,
+      net: businessIncomeSettlement.netPay,
+      contractAward: businessIncomeSettlement.contractAward,
+    },
+    response,
   };
 }
 
@@ -303,6 +413,26 @@ const requirePayrollAccess = async (c: any, next: any) => {
     return next();
   }
   return c.json({ error: '권한이 없습니다.' }, 403);
+};
+
+// Payroll internal memos are deliberately separate from payroll snapshots and exports.
+// Keep this an exact-role check: requireRole maps cc_ref to ceo, but cc_ref is not allowed here.
+const requirePayrollInternalMemoView = async (c: any, next: any) => {
+  c.header('Cache-Control', 'private, no-store');
+  const user = c.get('user');
+  if (user?.auth_type !== 'user' || !canViewPayrollInternalMemo(user)) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
+  }
+  return next();
+};
+
+const requirePayrollInternalMemoEdit = async (c: any, next: any) => {
+  c.header('Cache-Control', 'private, no-store');
+  const user = c.get('user');
+  if (user?.auth_type !== 'user' || !canEditPayrollInternalMemo(user)) {
+    return c.json({ error: '권한이 없습니다.' }, 403);
+  }
+  return next();
 };
 
 // 총무보조(accountant_asst) 열람 제한 — 팀장·관리자급·이사·대표자 정산은 총무담당만 접근 가능
@@ -322,6 +452,87 @@ export async function lockPaidPayrollSaves(db: D1Database): Promise<{ scanned: n
   const rows = await db.prepare('SELECT user_id, period FROM payroll_saves WHERE locked = 0').all<any>();
   return { scanned: rows.results?.length || 0, locked: 0 };
 }
+
+// GET /api/payroll/internal-memo/:userId?period=YYYY-MM|YYYY년 M월
+payroll.get('/internal-memo/:userId', requirePayrollInternalMemoView, async (c) => {
+  const period = normalizePayrollInternalMemoPeriod(c.req.query('period') || '');
+  if (!period) {
+    return c.json({ error: 'period는 YYYY-MM 또는 YYYY년 M월 형식이어야 합니다.' }, 400);
+  }
+
+  const db = c.env.DB;
+  await ensurePayrollInternalMemosTable(db);
+  const memo = await db.prepare(`
+    SELECT pim.content, pim.updated_at, COALESCE(u.name, '') AS updated_by_name
+    FROM payroll_internal_memos pim
+    LEFT JOIN users u ON u.id = pim.updated_by
+    WHERE pim.user_id = ? AND pim.period = ?
+    LIMIT 1
+  `).bind(c.req.param('userId'), period).first<{
+    content: string;
+    updated_at: string;
+    updated_by_name: string;
+  }>();
+
+  return c.json({ memo: memo || null });
+});
+
+// PUT /api/payroll/internal-memo
+// Empty content clears the memo. It never enters payroll_saves or a payroll snapshot.
+payroll.put('/internal-memo', requirePayrollInternalMemoEdit, async (c) => {
+  const body = await c.req.json<{
+    user_id?: string;
+    period?: string;
+    content?: string;
+  }>().catch(() => ({} as {
+    user_id?: string;
+    period?: string;
+    content?: string;
+  }));
+  const userId = String(body.user_id || '').trim();
+  const period = normalizePayrollInternalMemoPeriod(String(body.period || ''));
+  const content = String(body.content || '').trim();
+
+  if (!userId) return c.json({ error: 'user_id가 필요합니다.' }, 400);
+  if (!period) return c.json({ error: 'period는 YYYY-MM 또는 YYYY년 M월 형식이어야 합니다.' }, 400);
+  if (content.length > 2000) return c.json({ error: '메모는 2,000자 이내로 작성해 주세요.' }, 400);
+
+  const db = c.env.DB;
+  await ensurePayrollInternalMemosTable(db);
+  if (!content) {
+    await db.prepare('DELETE FROM payroll_internal_memos WHERE user_id = ? AND period = ?')
+      .bind(userId, period).run();
+    return c.json({ success: true, memo: null });
+  }
+
+  const targetUser = await db.prepare('SELECT id FROM users WHERE id = ? LIMIT 1').bind(userId).first<{ id: string }>();
+  if (!targetUser) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
+
+  const editor = c.get('user');
+  await db.prepare(`
+    INSERT INTO payroll_internal_memos (
+      id, user_id, period, content, created_by, updated_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(user_id, period) DO UPDATE SET
+      content = excluded.content,
+      updated_by = excluded.updated_by,
+      updated_at = datetime('now')
+  `).bind(crypto.randomUUID(), userId, period, content, editor.sub, editor.sub).run();
+
+  const memo = await db.prepare(`
+    SELECT pim.content, pim.updated_at, COALESCE(u.name, '') AS updated_by_name
+    FROM payroll_internal_memos pim
+    LEFT JOIN users u ON u.id = pim.updated_by
+    WHERE pim.user_id = ? AND pim.period = ?
+    LIMIT 1
+  `).bind(userId, period).first<{
+    content: string;
+    updated_at: string;
+    updated_by_name: string;
+  }>();
+
+  return c.json({ success: true, memo: memo || null });
+});
 
 // GET /api/payroll/:userId?month=YYYY-MM
 // 급여제: 1개월 정산 + 성과금은 2개월 기준
@@ -356,6 +567,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const bonusPeriodStart = `${y}-${String(bonusPeriodStartMonth).padStart(2, '0')}-01`;
   const bonusPeriodEnd = `${y}-${String(bonusPeriodEndMonth).padStart(2, '0')}-${new Date(y, bonusPeriodEndMonth, 0).getDate()}`;
   const isPayoutMonth = m % 2 === 0;
+  const contractAwardPeriod = getContractAwardPeriod(month);
 
   const user = await db.prepare(
     'SELECT id, name, branch, department, position_title, role, hire_date, resigned_at, updated_at FROM users WHERE id = ?'
@@ -364,14 +576,12 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
 
   const savedPayroll = await db.prepare('SELECT * FROM payroll_saves WHERE user_id = ? AND period = ?').bind(userId, periodLabel).first<any>();
   const savedPayrollData = parsePayrollSaveData(savedPayroll?.data);
-  const lawitgoNewSettlements = await getLawitgoNewSettlements(db, userId, month);
   const excludeCaseAllowanceFromBonusBasis = excludesCaseAllowanceFromBonusBasis(month);
   const shouldUseSavedSnapshot = !!savedPayroll && !!savedPayroll.locked;
   const savedSnapshot = savedPayrollData.payroll_snapshot;
   if (shouldUseSavedSnapshot && savedSnapshot?.response) {
     return c.json({
       ...savedSnapshot.response,
-      lawitgo_new_settlements: lawitgoNewSettlements,
       is_paid_period: isPaidPeriod,
       is_snapshot: true,
       payroll_snapshot: {
@@ -386,6 +596,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       },
     });
   }
+  const lawitgoNewSettlements = await getLawitgoNewSettlements(db, userId, month);
 
   let accounting = await db.prepare(
     'SELECT salary, standard_sales, grade, position_allowance, pay_type, commission_rate FROM user_accounting WHERE user_id = ?'
@@ -428,7 +639,7 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   // 매출 조회: 1개월 기준 (카드→card_deposit_date, 이체→deposit_date, 미지정→contract_date)
   const salesQuery = `
     SELECT id, type, type_detail, client_name, client_phone, depositor_name, depositor_different,
-      amount, contract_date, deposit_date, status, confirmed_at, memo, exclude_from_count,
+      amount, refund_amount, contract_date, deposit_date, status, confirmed_at, memo, exclude_from_count,
       payment_type, card_deposit_date, proxy_cost, direction, external_id
     FROM sales_records
     WHERE user_id = ? AND ${payrollRecognizedOrRefundedSql('sales_records')}
@@ -476,7 +687,10 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const confirmedRecords = records.filter((r: any) => r.status === 'confirmed');
   const totalSales = confirmedRecords.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
   const refundedRecords = records.filter((r: any) => r.status === 'refunded');
-  const totalRefund = refundedRecords.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
+  // 당월 전액환불(status='refunded')은 확정매출에서 이미 제외되므로 정산에서 다시 차감하지 않는다
+  // (공제대상 아님 — 표시는 아래 refunded_records(환불내역)에서 유지).
+  // 정산 차감 대상은 당월 '부분환불'(status='confirmed' 유지 + refund_amount 기록)의 환불액뿐이다.
+  const totalRefund = confirmedRecords.reduce((sum: number, r: any) => sum + (Number(r.refund_amount) || 0), 0);
 
   const salary = accounting?.salary || 0;
   const standardSales = accounting?.standard_sales || 0;
@@ -614,11 +828,23 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     WHERE user_id = ? AND COALESCE(refund_amount, 0) > 0
       AND refund_approved_at >= ? AND refund_approved_at <= ?
   `).bind(userId, monthStart, monthEnd + ' 23:59:59').all();
+  // '회수'는 이미 지급확정(잠금)된 이전 월의 커미션을 환수하는 것.
+  // 원매출월이 아직 미확정이거나, 잠금 전에 환불된 경우엔 그 달에서 매출 제외(공제)로 이미 반영되므로 회수(중복차감) 대상이 아니다.
+  const lockedSavesForRecovery = await db.prepare(
+    "SELECT period, updated_at FROM payroll_saves WHERE user_id = ? AND locked = 1"
+  ).bind(userId).all();
+  const lockedPeriodAt = new Map<string, string>();
+  for (const row of (lockedSavesForRecovery.results as any[])) {
+    lockedPeriodAt.set(String(row.period || ''), String(row.updated_at || ''));
+  }
   const refundRecoveries = (prevRefunds.results as any[]).filter((r: any) => {
     // 원래 매출이 이전 기간인지 확인
     const sd = r.payment_type === '카드' && r.card_deposit_date ? r.card_deposit_date
       : r.deposit_date ? r.deposit_date : r.contract_date;
-    return sd && sd < monthStart;
+    if (!sd || sd >= monthStart) return false;
+    // 원매출월이 '환불 승인 시점 이전에' 잠긴 경우만 회수(= 실제 지급된 커미션 환수).
+    const originLockedAt = lockedPeriodAt.get(payrollPeriodLabelFromMonth(String(sd).slice(0, 7)));
+    return !!originLockedAt && originLockedAt < String(r.refund_approved_at || '');
   }).map((r: any) => {
     const supply = vatSupplyAmount(r.refund_amount, month);
     const recovery = calculateRefundRecoveryAmount({
@@ -644,9 +870,9 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     ? { origin_month: pendingCarryover.origin_month, amount: Number(pendingCarryover.amount) || 0 }
     : null;
 
-  // 계약포상: 짝수월 + 본사관리 아닌 인원 한해 산정 (급여제·비율제 모두)
-  const contractAward = (isPayoutMonth && !isHQ)
-    ? await calcContractAwardForUser(db, userId, bonusPeriodStart, bonusPeriodEnd)
+  // 계약포상은 2026-08까지 기존 짝수월 2개월제, 2026-09부터 당월 전사 순위로 산정한다.
+  const contractAward = (contractAwardPeriod.isAwardMonth && !isHQ)
+    ? await calculateContractAwardForUser(db, userId, month)
     : { rank: null, count: 0, award: 0, total_amount: 0 };
   const joiningSettlement = buildJoiningSettlement(user, month, salary, positionAllowance);
   const terminationSettlement = await buildTerminationSettlement(db, userId, user, month, salary, positionAllowance);
@@ -664,6 +890,8 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     period_label: periodLabel,
     bonus_period_label: isPayoutMonth ? `${y}년 ${bonusPeriodStartMonth}~${bonusPeriodEndMonth}월` : null,
     is_payout_month: isPayoutMonth,
+    is_contract_award_month: contractAwardPeriod.isAwardMonth,
+    contract_award_period_label: contractAwardPeriod.label,
     is_paid_period: isPaidPeriod,
     is_snapshot: false,
     payroll_save: savedPayroll ? {
@@ -709,20 +937,6 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
     },
   };
 
-  if (shouldUseSavedSnapshot && savedPayroll && !savedPayrollData.payroll_snapshot) {
-    const nextData = {
-      ...savedPayrollData,
-      payroll_snapshot: buildPayrollSnapshot(payrollResponse, savedPayrollData, { period: periodLabel, month }),
-    };
-    await db.prepare('UPDATE payroll_saves SET data = ?, locked = 1 WHERE user_id = ? AND period = ?')
-      .bind(JSON.stringify(nextData), userId, periodLabel).run();
-    payrollResponse.payroll_save = {
-      locked: true,
-      pay_type: savedPayroll.pay_type,
-      saved_at: new Date().toISOString(),
-    };
-  }
-
   return c.json(payrollResponse);
 });
 
@@ -758,7 +972,8 @@ payroll.get('/branch/summary', requirePayrollAccess, async (c) => {
       SELECT sr.branch,
         COUNT(*) as total_count,
         SUM(CASE WHEN ${confirmedSalesSql('sr')} THEN sr.amount ELSE 0 END) as confirmed_total,
-        SUM(CASE WHEN sr.status = 'refunded' THEN sr.amount ELSE 0 END) as refunded_total,
+        -- 정산 차감 환불액: 당월 '부분환불'(확정 유지)의 환불액만. 당월 전액환불은 confirmed_total에서 이미 제외되어 이중차감 방지.
+        SUM(CASE WHEN ${confirmedSalesSql('sr')} THEN COALESCE(sr.refund_amount, 0) ELSE 0 END) as refunded_total,
         SUM(CASE WHEN NOT ${confirmedSalesSql('sr')} AND sr.status IN ('pending', 'card_pending') THEN sr.amount ELSE 0 END) as pending_total
       FROM sales_records sr
       WHERE ${salesPeriodSql('sr')}${branchWhere}
@@ -839,7 +1054,7 @@ payroll.get('/save/:userId', requirePayrollAccess, async (c) => {
 payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
-  const { user_id, period, pay_type, data: saveData } = await c.req.json<{
+  const { user_id, period, pay_type: requestedPayType, data: saveData } = await c.req.json<{
     user_id: string; period: string; pay_type: string; data: Record<string, unknown>;
   }>();
   if (!(await canAccessUserPayroll(db, user, user_id))) {
@@ -853,26 +1068,64 @@ payroll.post('/save', requireRole(...ACCOUNTING_ROLES), async (c) => {
   const existing = await db.prepare('SELECT locked FROM payroll_saves WHERE user_id = ? AND period = ?').bind(user_id, period).first<any>();
   if (existing?.locked) return c.json({ error: '해당 기간 정산은 잠금 상태입니다. (익달 5일 이후 수정 불가)' }, 400);
 
+  const submittedSnapshot = (saveData as any).payroll_snapshot;
+  const saveMonth = parsePayrollPeriodMonth(period);
+  if (!saveMonth) return c.json({ error: 'period는 YYYY-MM 또는 YYYY년 M월 형식이어야 합니다.' }, 400);
+  const authoritative = await buildAuthoritativePayrollSave(
+    db,
+    user_id,
+    saveMonth,
+    saveData as Record<string, any>,
+    submittedSnapshot?.response || null,
+  );
+  if (!authoritative) return c.json({ error: '사용자를 찾을 수 없습니다.' }, 404);
+  if (requestedPayType !== authoritative.payType) {
+    return c.json({ error: '현재 급여형과 저장 요청의 급여형이 일치하지 않습니다. 화면을 새로고침해주세요.' }, 409);
+  }
+  const submittedPayType = String(submittedSnapshot?.response?.accounting?.pay_type || '');
+  if (submittedPayType && submittedPayType !== authoritative.payType) {
+    return c.json({ error: '정산 스냅샷의 급여형이 현재 급여형과 일치하지 않습니다. 화면을 새로고침해주세요.' }, 409);
+  }
+  if (submittedSnapshot?.response) {
+    const submittedAward = Number(submittedSnapshot.response.contract_award?.award) || 0;
+    const authoritativeAward = Number(authoritative.response?.contract_award?.award) || 0;
+    const submittedRank = Number(submittedSnapshot.response.contract_award?.rank) || 0;
+    const authoritativeRank = Number(authoritative.response?.contract_award?.rank) || 0;
+    if (submittedAward !== authoritativeAward || submittedRank !== authoritativeRank) {
+      return c.json({ error: '계약포상 산정 결과가 최신 데이터와 일치하지 않습니다. 화면을 새로고침해주세요.' }, 409);
+    }
+  }
+
   const id = crypto.randomUUID();
   const withholdingSettlements = normalizeWithholdingSettlements((saveData as any).withholdingSettlements);
-  const submittedSnapshot = (saveData as any).payroll_snapshot;
-  const normalizedData = {
+  const normalizedSnapshot = submittedSnapshot ? {
+    ...submittedSnapshot,
+    month: saveMonth,
+    period,
+    response: authoritative.response,
+  } : null;
+  const normalizedBaseData = {
     ...saveData,
+    settle_month: saveMonth,
     withholdingSettlements,
-    payroll_snapshot: submittedSnapshot ? {
-      ...submittedSnapshot,
+    ...(authoritative.businessIncome ? { business_income_settlement: authoritative.businessIncome } : {}),
+    payroll_snapshot: normalizedSnapshot ? {
+      ...normalizedSnapshot,
       manual: {
-        ...(submittedSnapshot.manual || {}),
+        ...(normalizedSnapshot.manual || {}),
         withholdingSettlements,
       },
     } : null,
   };
+  const normalizedData = authoritative.settlement
+    ? applyFreelancerSettlementToSaveData(normalizedBaseData, authoritative.settlement)
+    : normalizedBaseData;
   await db.prepare(`
     INSERT INTO payroll_saves (id, user_id, period, pay_type, data, created_by)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, period) DO UPDATE SET
       data = excluded.data, pay_type = excluded.pay_type, updated_at = datetime('now')
-  `).bind(id, user_id, period, pay_type, JSON.stringify(normalizedData), user.sub).run();
+  `).bind(id, user_id, period, authoritative.payType, JSON.stringify(normalizedData), user.sub).run();
 
   return c.json({ success: true });
 });
@@ -886,12 +1139,33 @@ payroll.post('/lock', requireRole(...ACCOUNTING_ROLES), async (c) => {
     if (!(await canAccessUserPayroll(db, user, body.user_id))) {
       return c.json({ error: '해당 직원의 급여정산 확정 권한이 없습니다.' }, 403);
     }
-    const existing = await db.prepare('SELECT id, data, locked FROM payroll_saves WHERE user_id = ? AND period = ?').bind(body.user_id, body.period).first<any>();
+    const existing = await db.prepare('SELECT id, data, pay_type, locked FROM payroll_saves WHERE user_id = ? AND period = ?').bind(body.user_id, body.period).first<any>();
     if (!existing) return c.json({ error: '저장된 급여정산이 없습니다. 먼저 정산 저장 후 확정해주세요.' }, 400);
     if (existing.locked) return c.json({ success: true, locked: 1 });
     const existingData = parsePayrollSaveData(existing.data);
     if (!existingData.payroll_snapshot?.response) {
       return c.json({ error: '확정 시점 스냅샷이 없습니다. 정산을 다시 저장한 뒤 확정해주세요.' }, 400);
+    }
+    const lockMonth = parsePayrollPeriodMonth(body.period);
+    const authoritative = lockMonth
+      ? await buildAuthoritativePayrollSave(
+        db,
+        body.user_id,
+        lockMonth,
+        existingData,
+        existingData.payroll_snapshot.response,
+      )
+      : null;
+    if (!authoritative || authoritative.payType !== existing.pay_type) {
+      return c.json({ error: '현재 급여형 또는 계약포상 기준과 저장된 정산이 다릅니다. 정산을 다시 저장한 뒤 확정해주세요.' }, 409);
+    }
+    const savedAward = existingData.payroll_snapshot.response.contract_award || {};
+    const currentAward = authoritative.response?.contract_award || {};
+    if (
+      (Number(savedAward.rank) || 0) !== (Number(currentAward.rank) || 0)
+      || (Number(savedAward.award) || 0) !== (Number(currentAward.award) || 0)
+    ) {
+      return c.json({ error: '계약포상 순위가 저장 후 변경되었습니다. 정산을 다시 저장한 뒤 확정해주세요.' }, 409);
     }
     await db.prepare("UPDATE payroll_saves SET locked = 1, updated_at = datetime('now') WHERE user_id = ? AND period = ? AND locked = 0")
       .bind(body.user_id, body.period).run();
@@ -959,6 +1233,7 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   const monthStart = `${month}-01`;
   const lastDay = new Date(y, m, 0).getDate();
   const monthEnd = `${month}-${String(lastDay).padStart(2, '0')}`;
+  const contractAwardPeriod = getContractAwardPeriod(month);
   await ensurePayTypeHistoryTable(db);
 
   // 2026-01·02 특별 규칙: 전원 비율제(기본 50%) 처리 (payroll 로직과 동일)
@@ -971,23 +1246,26 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   if (isJanFeb2026) {
     // 전체 활성 컨설턴트 (본사관리/명도팀/support 제외, 퇴사자 포함 → 과거 회차 보고 위해)
     usersResult = await db.prepare(`
-      SELECT u.id, u.name, u.branch, u.department,
+      SELECT u.id, u.name, u.branch, u.department, u.role,
         COALESCE(ua.commission_rate, 0) as commission_rate,
         COALESCE(ua.ssn, '') as ssn,
-        COALESCE(ua.address, '') as address
+        COALESCE(ua.address, '') as address,
+        ps.data as payroll_save_data, COALESCE(ps.locked, 0) as payroll_locked
       FROM users u
       LEFT JOIN user_accounting ua ON ua.user_id = u.id
+      LEFT JOIN payroll_saves ps ON ps.user_id = u.id AND ps.period = ?
       WHERE u.approved = 1
         AND u.role IN ('member', 'manager', 'resigned')
         AND REPLACE(u.branch, ' ', '') != '본사관리'
         AND u.department != '명도팀'
         ${branchFilterSql}
       ORDER BY u.branch, u.department, u.name
-    `).bind(...branchFilterBinds).all<any>();
+    `).bind(periodLabel, ...branchFilterBinds).all<any>();
   } else {
     const historyPayTypeSql = payTypeAtMonthSql('u.id', '?', 'ua.pay_type');
     usersResult = await db.prepare(`
-      SELECT u.id, u.name, u.branch, u.department, ua.commission_rate, ua.ssn, ua.address
+      SELECT u.id, u.name, u.branch, u.department, u.role, ua.commission_rate, ua.ssn, ua.address,
+        ps.data as payroll_save_data, COALESCE(ps.locked, 0) as payroll_locked
       FROM user_accounting ua
       JOIN users u ON u.id = ua.user_id
       LEFT JOIN payroll_saves ps ON ps.user_id = u.id AND ps.period = ?
@@ -1010,6 +1288,17 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
   const eligibleUsers = usersResult.results || [];
   const autoMap: Record<string, { amount: number; tax: number; net: number }> = {};
   for (const u of eligibleUsers) {
+    const savedData = parsePayrollSaveData(u.payroll_save_data);
+    const frozenBusinessIncome = savedData.business_income_settlement;
+    if (Number(u.payroll_locked) && frozenBusinessIncome) {
+      const frozenAmount = Number(frozenBusinessIncome.amount);
+      const frozenTax = Number(frozenBusinessIncome.tax);
+      const frozenNet = Number(frozenBusinessIncome.net);
+      if ([frozenAmount, frozenTax, frozenNet].every(Number.isFinite)) {
+        autoMap[u.id] = { amount: frozenAmount, tax: frozenTax, net: frozenNet };
+        continue;
+      }
+    }
     // 적용 rate: 1) override > 2) user_accounting.commission_rate > 3) Jan/Feb 2026 기본 50%
     const rate = rateOverrides[u.id] !== undefined
       ? rateOverrides[u.id]
@@ -1060,13 +1349,32 @@ payroll.get('/reports/business-income', requirePayrollAccess, async (c) => {
       caseAllowanceIncome = calculateCaseAllowance(caseAllowanceCases?.total_fee_adjusted || 0);
     }
 
-    const commissionAmount = truncMoney(normalSupply * rate / 100);
     const lawitgoNewSettlementIncome = (await getLawitgoNewSettlements(db, u.id, month))
       .reduce((sum, item) => sum + item.amount, 0);
-    const amount = commissionAmount + proxyIncome + caseAllowanceIncome + lawitgoNewSettlementIncome; // 총 소득
-    const tax = truncMoney(amount * 0.033);
-    const net = amount - tax;
-    autoMap[u.id] = { amount, tax, net };
+    const commissionAmount = truncMoney(normalSupply * rate / 100);
+    const existingBusinessIncome = commissionAmount + proxyIncome + caseAllowanceIncome + lawitgoNewSettlementIncome;
+    const isContractAwardEligible = contractAwardPeriod.isAwardMonth
+      && normalizeBranchName(u.branch) !== '본사관리'
+      && !['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(String(u.role || ''));
+    const frozenContractAward = Number(
+      savedData.freelancer_settlement?.contractAward
+      ?? savedData.payroll_snapshot?.response?.contract_award?.award,
+    ) || 0;
+    const contractAwardAmount = Number(u.payroll_locked)
+      ? frozenContractAward
+      : (isContractAwardEligible
+        ? (await calculateContractAwardForUser(db, u.id, month)).award
+        : 0);
+    const settlement = calculateFreelancerSettlement({
+      // 기존 신고 소득 구성은 그대로 두고 계약포상만 과세소득에 추가한다.
+      settlementIncome: existingBusinessIncome,
+      contractAward: contractAwardAmount,
+    });
+    autoMap[u.id] = {
+      amount: settlement.grossIncome,
+      tax: settlement.withholdingTax,
+      net: settlement.netPay,
+    };
   }
 
   // 저장된 오버라이드/ad-hoc 항목

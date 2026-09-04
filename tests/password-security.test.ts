@@ -55,6 +55,9 @@ test('legacy hashes remain valid only so a successful login can upgrade them', a
 test('legacy user login upgrades to the Workers-compatible PBKDF2 limit', async () => {
   const db = new Database(':memory:');
   db.exec(`
+    CREATE TABLE teams (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL
+    );
     CREATE TABLE users (
       id TEXT PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL,
       name TEXT NOT NULL, phone TEXT NOT NULL, role TEXT NOT NULL,

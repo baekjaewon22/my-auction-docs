@@ -61,12 +61,14 @@ test('프리랜서 제한이 걸린 일지 구성원 보조 조회는 업무성�
 
 test('계약건수 랭킹은 프리랜서를 계정 유형으로 제외하지 않는다', () => {
   const source = readFileSync(new URL('../src/worker/routes/sales.ts', import.meta.url), 'utf8');
+  const rankingHelper = readFileSync(new URL('../src/worker/lib/contract-award-ranking.ts', import.meta.url), 'utf8');
   const routeStart = source.indexOf("sales.get('/ranking'");
   const routeEnd = source.indexOf("sales.get('/customer-contracts'", routeStart);
   const routeSource = source.slice(routeStart, routeEnd);
 
-  assert.match(routeSource, /JOIN users u ON u\.id = sr\.user_id/);
-  assert.doesNotMatch(routeSource, /login_type|freelancer/);
+  assert.match(routeSource, /loadCompanyContractRanking/);
+  assert.match(rankingHelper, /JOIN users u ON u\.id = sr\.user_id/);
+  assert.doesNotMatch(`${routeSource}\n${rankingHelper}`, /login_type|freelancer/);
 });
 
 test('계약건수 랭킹은 빈 기간에도 기간 전환 UI와 빈 상태를 표시한다', () => {

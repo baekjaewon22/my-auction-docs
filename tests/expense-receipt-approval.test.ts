@@ -741,7 +741,7 @@ test('route and notification wiring enforce server guards, human users, custom l
   ]);
   assert.match(ALIMTALK_TEMPLATES.EXPENSE_RECEIPT_SUBMITTED.content, /총무담당자님/);
   assert.match(ALIMTALK_TEMPLATES.EXPENSE_RECEIPT_SUBMITTED.content, /영수증: #\{receipt_count\}건/);
-  assert.match(ALIMTALK_TEMPLATES.EXPENSE_RECEIPT_SUBMITTED.content, /대표 직인으로 승인/);
+  assert.match(ALIMTALK_TEMPLATES.EXPENSE_RECEIPT_SUBMITTED.content, /확인한 후 승인해주세요/);
   const migration = readFileSync('d1/migrate-expense-receipt-approval.sql', 'utf8');
   assert.match(migration, /UNIQUE \(approval_step_id\)/);
   assert.match(migration, /expense_receipt_submission_claims/);

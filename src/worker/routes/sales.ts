@@ -5,7 +5,7 @@ import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { resolveSalesRecordSqlScope } from '../lib/sales-record-scope';
-import { calculateRefundRecoveryAmount, refundApprovalMonth } from '../../shared/refund-recovery';
+import { calculateRefundRecoveryAmount, refundApprovalMonth, payrollPeriodLabelFromMonth } from '../../shared/refund-recovery';
 import { resolveRefundRecovery } from '../lib/refund-recovery';
 import { accountingEntryInitialStatus, effectiveSalesStatus, normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
@@ -13,6 +13,15 @@ import { canUseRequestedSalesOwner } from '../../shared/sales-assignment';
 import { isValidCustomerPhone, normalizeCustomerName, normalizeCustomerPhone } from '../../shared/sales-customer-identity';
 import { resolveSalesCustomer, searchSalesCustomers } from '../lib/sales-customer-master';
 import { resolveSalesAttributionBranch } from '../lib/sales-attribution';
+import {
+  CONTRACT_AWARD_MONTHLY_POLICY_FROM,
+  rankContractPerformanceCandidates,
+} from '../../shared/contract-award';
+import {
+  isContractAwardRecipient,
+  loadCompanyContractRanking,
+  loadLegacyBranchContractRanking,
+} from '../lib/contract-award-ranking';
 import {
   assertLawitgoWinningSaleDeletable,
   LawitgoWinningOverrideError,
@@ -534,42 +543,28 @@ sales.get('/ranking', async (c) => {
   const db = c.env.DB;
   const { period_start, period_end } = c.req.query();
   if (!period_start || !period_end) return c.json({ error: 'period_start, period_end 필수' }, 400);
-  const [sy, sm] = period_start.split('-').map(Number);
   const [ey, em] = period_end.split('-').map(Number);
   const mStart = `${period_start}-01`;
   const mEnd = `${period_end}-${new Date(ey, em, 0).getDate()}`;
-  void sy; void sm;
+  const isMonthlyAwardRanking = period_start === period_end
+    && period_start >= CONTRACT_AWARD_MONTHLY_POLICY_FROM;
+  const sourceRows = isMonthlyAwardRanking
+    ? await loadCompanyContractRanking(db, mStart, mEnd)
+    : await loadLegacyBranchContractRanking(db, mStart, mEnd);
+  const candidates = sourceRows
+    .filter((row) => !isMonthlyAwardRanking || isContractAwardRecipient(row));
+  // 매출 화면은 기존과 같이 건수와 금액이 모두 같으면 기간과 무관하게 공동순위를 표시한다.
+  const ranking = rankContractPerformanceCandidates(candidates).map((row) => ({
+    user_id: row.user_id,
+    user_name: row.user_name,
+    eff_branch: row.eff_branch,
+    position: row.position,
+    count: row.count,
+    total_amount: row.total_amount,
+    rank: row.rank,
+  }));
 
-  const result = await db.prepare(`
-    SELECT user_id, user_name, eff_branch, position,
-      SUM(CASE WHEN customer_amount >= 2200000 THEN 2 ELSE 1 END) as count,
-      SUM(customer_amount) as total_amount
-    FROM (
-      SELECT sr.user_id,
-        u.name as user_name,
-        COALESCE(NULLIF(sr.attribution_branch, ''), sr.branch) as eff_branch,
-        u.position_title as position,
-        CASE
-          WHEN COALESCE(sr.client_name, '') = '' OR COALESCE(sr.client_phone, '') = '' THEN sr.id
-          ELSE LOWER(TRIM(sr.client_name)) || '|' || REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(sr.client_phone, ''), '-', ''), ' ', ''), '(', ''), ')', '')
-        END as customer_key,
-        SUM(sr.amount) as customer_amount
-      FROM sales_records sr
-      JOIN users u ON u.id = sr.user_id
-      WHERE sr.type = '계약' AND ${confirmedSalesSql('sr')}
-        AND (sr.exclude_from_count IS NULL OR sr.exclude_from_count = 0)
-        AND (
-          (sr.payment_type = '카드' AND sr.card_deposit_date >= ? AND sr.card_deposit_date <= ?)
-          OR (sr.payment_type != '카드' AND sr.payment_type != '' AND sr.deposit_date >= ? AND sr.deposit_date <= ?)
-          OR ((sr.payment_type = '' OR sr.payment_type IS NULL) AND sr.contract_date >= ? AND sr.contract_date <= ?)
-        )
-      GROUP BY sr.user_id, eff_branch, customer_key
-    )
-    GROUP BY user_id, user_name, eff_branch, position
-    ORDER BY count DESC, total_amount DESC
-  `).bind(mStart, mEnd, mStart, mEnd, mStart, mEnd).all<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>();
-
-  return c.json({ ranking: result.results || [] });
+  return c.json({ ranking });
 });
 
 // GET /api/sales/customer-contracts — 낙찰 등록 시 동일 담당자의 계약 고객만 조회
@@ -1299,6 +1294,19 @@ sales.get('/dashboard/refund-impacts', async (c) => {
     ORDER BY sr.refund_approved_at DESC
   `).all();
 
+  // 회수 판정용: 관련 담당자들의 '잠금(지급확정)' 정산월 + 확정시각
+  const refundUserIds = Array.from(new Set((refunded.results || []).map((r: any) => r.user_id).filter(Boolean)));
+  const lockedAtByUserPeriod = new Map<string, string>();
+  if (refundUserIds.length > 0) {
+    const lockedPh = refundUserIds.map(() => '?').join(',');
+    const lockedSaves = await db.prepare(
+      `SELECT user_id, period, updated_at FROM payroll_saves WHERE locked = 1 AND user_id IN (${lockedPh})`
+    ).bind(...refundUserIds).all();
+    for (const row of (lockedSaves.results as any[])) {
+      lockedAtByUserPeriod.set(`${row.user_id}|${row.period}`, String(row.updated_at || ''));
+    }
+  }
+
   const impacts: any[] = [];
   for (const r of (refunded.results || []) as any[]) {
     // 환불 건이 어느 정산 기간에 속했는지 판단
@@ -1318,7 +1326,10 @@ sales.get('/dashboard/refund-impacts', async (c) => {
 
     const isContract = r.type === '계약';
     const affectsBonus = r.pay_type === 'salary' && !isSamePeriod;
-    const affectsCommission = r.pay_type === 'commission';
+    // '회수'는 원매출월이 지급확정(잠금)된 뒤 환불된 경우만 성립(실제 지급된 커미션 환수).
+    // 원매출월 미확정/잠금 전 환불은 그 달에서 공제(제외)로 반영되므로 회수 대상 아님.
+    const originLockedAt = lockedAtByUserPeriod.get(`${r.user_id}|${payrollPeriodLabelFromMonth(String(settleDate).slice(0, 7))}`);
+    const affectsCommission = r.pay_type === 'commission' && !!originLockedAt && originLockedAt < String(r.refund_approved_at || '');
 
     // 회수 금액 계산 — 부분환불이면 환불액(refund_amount) 비례, 전액환불이면 refund_amount = amount
     const recoveryAmount = calculateRefundRecoveryAmount({

@@ -4,14 +4,14 @@ import {
 } from '../../shared/auction-schedule.ts';
 import { ensureAuctionScheduleTable } from './auction-schedule-schema.ts';
 import { ensureBidAnalysisTable, normalizeAmount, upsertBidAnalysisEntry } from './bid-analysis.ts';
+import {
+  acquireAuctionScheduleMutationClaim,
+  releaseAuctionScheduleMutationClaim,
+  type AuctionScheduleMutationSnapshot,
+} from './auction-schedule-mutation-claim.ts';
 
-type PendingBidSchedule = {
-  id: string;
-  user_id: string;
+type PendingBidSchedule = AuctionScheduleMutationSnapshot & {
   user_name: string;
-  target_date: string;
-  branch: string;
-  data: string;
 };
 
 function parseData(value: string): Record<string, unknown> {
@@ -39,7 +39,9 @@ export async function runAuctionScheduleAutoCancellation(
   const cutoff = auctionScheduleAutoCancellationCutoff(scheduledAt);
   await Promise.all([ensureAuctionScheduleTable(db), ensureBidAnalysisTable(db)]);
   const rows = await db.prepare(`
-    SELECT s.id, s.user_id, u.name AS user_name, s.target_date, s.branch, s.data
+    SELECT s.id, s.user_id, u.name AS user_name, s.target_date,
+      s.activity_type, s.activity_subtype, s.data, s.branch, s.department,
+      s.created_at, s.updated_at
     FROM freelancer_auction_schedules s
     JOIN users u ON u.id = s.user_id
     WHERE s.activity_type = '입찰'
@@ -55,6 +57,9 @@ export async function runAuctionScheduleAutoCancellation(
   for (const row of rows.results || []) {
     const data = parseData(row.data);
     if (auctionScheduleBidResult(data) !== 'pending') continue;
+    const claim = await acquireAuctionScheduleMutationClaim(db, row, 'auto_cancel', 'system:auto-cancel');
+    if (!claim) continue;
+    try {
     const nextData = {
       ...data,
       bidWon: false,
@@ -69,11 +74,12 @@ export async function runAuctionScheduleAutoCancellation(
       UPDATE freelancer_auction_schedules
       SET data = ?, updated_at = datetime('now', '+9 hours')
       WHERE id = ?
+        AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
         AND COALESCE(json_extract(data, '$.bidWon'), 0) = 0
         AND COALESCE(json_extract(data, '$.bidFailed'), 0) = 0
         AND COALESCE(json_extract(data, '$.bidCancelled'), 0) = 0
         AND COALESCE(json_extract(data, '$.bidResultCancelled'), 0) = 0
-    `).bind(JSON.stringify(nextData), row.id).run();
+    `).bind(JSON.stringify(nextData), row.id, row.id, claim).run();
     if (Number(updated.meta?.changes || 0) === 0) continue;
 
     cancelled += 1;
@@ -93,6 +99,9 @@ export async function runAuctionScheduleAutoCancellation(
       source_id: `auction-schedule:${row.id}`,
       uploaded_by: row.user_id,
     });
+    } finally {
+      await releaseAuctionScheduleMutationClaim(db, claim);
+    }
   }
 
   return { cutoff, checked: (rows.results || []).length, cancelled };

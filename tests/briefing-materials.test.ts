@@ -44,11 +44,13 @@ test('Drive backup stores originals in monthly, branch, and assignee folders', (
   assert.match(runner, /uploadFileBuffer/);
 });
 
-test('briefing list and downloads are server-scoped and exclude archived rows', () => {
+test('briefing list and downloads use shared allow-list enforcement and exclude archived rows', () => {
   const route = source('src/worker/routes/briefing-materials.ts');
-  assert.match(route, /const scope = materialScope\(profile\)/);
+  assert.match(route, /canViewBriefingMaterial\(profile\)/);
+  assert.match(route, /canUploadBriefingMaterial\(profile\)/);
+  assert.doesNotMatch(route, /materialScope|FULL_VIEW_ROLES|UPLOAD_ROLES|rejectFreelancer/);
   assert.match(route, /conditions = \['archived_at IS NULL'\]/);
-  assert.match(route, /WHERE id = \? AND archived_at IS NULL\$\{scope\.sql\}/);
+  assert.match(route, /WHERE id = \? AND archived_at IS NULL/);
   assert.match(route, /MAX_BRIEFING_MATERIAL_BYTES/);
 });
 

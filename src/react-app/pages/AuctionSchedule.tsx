@@ -13,7 +13,7 @@ import AuctionBidResultEditor from '../components/AuctionBidResultEditor';
 import { useSearchParams } from 'react-router-dom';
 import { AUCTION_SCHEDULE_BRANCH_OPTIONS, canSelectAuctionScheduleBranch, defaultAuctionScheduleBranch } from '../../shared/auction-schedule-branch';
 import { canManageAuctionBidResult } from '../../shared/auction-bid-result-access';
-import { auctionScheduleKstDateKey, canCreateAuctionSchedule, canManageAuctionSchedule, isPastAuctionScheduleDate } from '../../shared/auction-schedule-write-access';
+import { auctionScheduleKstDateKey, canCreateAuctionSchedule, canEditAuctionScheduleEntry, canManageAuctionSchedule } from '../../shared/auction-schedule-write-access';
 
 registerLocale('ko-auction-schedule', ko);
 
@@ -125,8 +125,6 @@ export default function AuctionSchedule() {
   const canChooseCreateAssignee = user?.role === 'master';
   const canSelectBranch = canSelectAuctionScheduleBranch(user);
   const defaultCreateDate = todayKey >= start && todayKey <= end ? todayKey : start;
-  const kstTodayReference = useMemo(() => new Date(`${todayKey}T00:00:00+09:00`), [todayKey]);
-
   useEffect(() => {
     let midnightTimer = 0;
     const refreshKstDate = () => {
@@ -146,11 +144,17 @@ export default function AuctionSchedule() {
   }, []);
 
   useEffect(() => {
-    if (editingEntry && isPastAuctionScheduleDate(editingEntry.target_date, kstTodayReference)) {
+    if (
+      editingEntry
+      && !canEditAuctionScheduleEntry(
+        { role: user?.role, id: user?.id },
+        { user_id: editingEntry.user_id, target_date: editingEntry.target_date },
+      )
+    ) {
       setEditingEntry(null);
       setSelected(editingEntry);
     }
-  }, [editingEntry, kstTodayReference]);
+  }, [editingEntry, user?.id, user?.role]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -253,18 +257,22 @@ export default function AuctionSchedule() {
     { id: user?.id, role: user?.role },
     selected.user_id,
   ));
-  const selectedIsPast = Boolean(selected && isPastAuctionScheduleDate(selected.target_date, kstTodayReference));
-  const canMutateSelected = Boolean(
-    selected
-    && !selected.read_only
-    && !selectedIsPast
-    && canManageAuctionSchedule({ role: user?.role }),
+  // 관리자급(마스터·총무·총무보조·대표): 과거 포함 언제든 수정·삭제
+  const canManageSelected = Boolean(
+    selected && !selected.read_only && canManageAuctionSchedule({ role: user?.role }),
+  );
+  // 일반 일정 수정은 관리자급만 가능하며, 입찰 결과 전용 권한과는 분리한다.
+  const canEditBase = Boolean(
+    canManageSelected && selected && canEditAuctionScheduleEntry(
+      { role: user?.role, id: user?.id },
+      { user_id: selected.user_id, target_date: selected.target_date },
+    ),
   );
   const editLockedByBidResult = Boolean(
     selected?.activity_type === '입찰' && selectedBidResult !== 'pending',
   );
-  const canEditSelected = canMutateSelected && !editLockedByBidResult;
-  const canDeleteSelected = canMutateSelected;
+  const canEditSelected = canEditBase && !editLockedByBidResult;
+  const canDeleteSelected = canManageSelected; // 삭제는 관리자급만 (과거·미래 무관)
 
   const handleCalendarSelect = (date: Date | null) => {
     if (!date) return;
@@ -443,12 +451,12 @@ export default function AuctionSchedule() {
                 return <div className="auction-schedule-detail-row" key={key}><span>{label}</span><strong>{String(value)}</strong></div>;
               })}
             </div>
-            {selectedIsPast && !selected.read_only && (
+            {!selected.read_only && !canManageSelected && (
               <p className="auction-schedule-past-lock" role="note">
-                자정이 지나 잠긴 과거 일정입니다. 일정 기본정보는 수정·삭제할 수 없지만 입찰가와 낙찰·실패·취소 등 결과는 계속 입력할 수 있습니다. 새 일정 추가도 가능합니다.
+                일정 기본정보 수정·삭제는 마스터·총무·총무보조·대표만 가능합니다. 입찰가·낙찰·실패·취소 등 결과 입력 권한은 기존과 동일합니다.
               </p>
             )}
-            {canMutateSelected && editLockedByBidResult && (
+            {canEditBase && editLockedByBidResult && (
               <p className="auction-schedule-past-lock" role="note">
                 결과가 입력된 입찰 일정은 기본정보를 수정할 수 없습니다. 결과 전용 버튼으로 결과를 해제한 뒤 수정해 주세요.
               </p>

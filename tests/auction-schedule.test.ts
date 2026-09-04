@@ -218,7 +218,7 @@ test('프리랜서 스케줄은 정규직 일지와 별도 테이블·라우트�
   assert.match(route, /입금신청이 연결된 일정은 삭제할 수 없습니다/);
   assert.match(route, /ADMIN_VIEW_ROLES = new Set\(\['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'\]\)/);
   assert.match(route, /canManageAuctionSchedule\(user\)/);
-  assert.match(route, /isPastAuctionScheduleDate\(existing\.target_date\)/);
+  assert.match(route, /if \(!canManageAuctionSchedule\(user\)\)[\s\S]*?수정 권한/);
   assert.match(route, /get\('\/create-options'/);
   assert.match(route, /get\('\/inspection-suggestions'/);
   assert.match(suggestionLib, /activity_type = '임장'/);
@@ -271,9 +271,9 @@ test('화면은 주말과 공휴일을 포함한 7일이며 카드 텍스트를 
   assert.match(page, /user_id: payload\.user_id/);
   assert.match(page, /canManageAuctionBidResult\([\s\S]*?selected\.user_id/);
   assert.match(page, /canManageAuctionSchedule\(\{ role: user\?\.role \}\)/);
-  assert.match(page, /!selectedIsPast/);
-  assert.match(page, /const canEditSelected = canMutateSelected && !editLockedByBidResult/);
-  assert.match(page, /const canDeleteSelected = canMutateSelected/);
+  assert.match(page, /canEditAuctionScheduleEntry\([\s\S]*?selected\.target_date/);
+  assert.match(page, /const canEditSelected = canEditBase && !editLockedByBidResult/);
+  assert.match(page, /const canDeleteSelected = canManageSelected/);
   assert.match(page, /auction-schedule-team-group/);
   assert.match(page, /auction-schedule-team-label/);
   assert.match(css, /\.auction-schedule-team-group \+ \.auction-schedule-team-group[\s\S]*?border-top/);

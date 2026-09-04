@@ -5074,13 +5074,20 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 .dashboard-notice-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  box-sizing: border-box;
   padding: 10px 12px;
   border: 1px solid var(--gray-100);
   border-radius: 8px;
   background: #f8f9fa;
   color: inherit;
   text-decoration: none;
+}
+
+.dashboard-notice-item + .dashboard-notice-item {
+  margin-top: 6px;
 }
 
 .dashboard-notice-line {
@@ -5110,6 +5117,97 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .dashboard-notice-item:hover {
   border-color: var(--primary);
   background: #fff;
+}
+
+.dashboard-accountant-leave-panel {
+  padding: 14px 18px;
+  border: 1px solid #ffd54f;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #fff8e1 0%, #fff3cd 100%);
+}
+
+.dashboard-accountant-leave-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #e65100;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.dashboard-accountant-leave-header > svg {
+  flex: 0 0 auto;
+  color: #f9a825;
+}
+
+.dashboard-accountant-leave-item {
+  position: relative;
+  margin-bottom: 6px;
+  padding: 8px 12px;
+  border: 1px solid #ffe082;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.dashboard-accountant-leave-item-action {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.dashboard-accountant-leave-title {
+  color: #1a1a2e;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.dashboard-accountant-leave-period {
+  margin-top: 2px;
+  color: #e65100;
+  font-size: 0.78rem;
+}
+
+.dashboard-accountant-leave-badge {
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.dashboard-accountant-leave-badge.today { background: #d93025; }
+.dashboard-accountant-leave-badge.tomorrow { background: #f9a825; }
+
+.dashboard-accountant-leave-reason {
+  margin-left: 8px;
+  color: #9aa0a6;
+}
+
+.dashboard-accountant-leave-footer {
+  margin-top: 6px;
+  color: #7b8087;
+  font-size: 0.72rem;
+}
+
+@media (max-width: 480px) {
+  .dashboard-accountant-leave-panel {
+    padding: 12px;
+  }
+
+  .dashboard-accountant-leave-item {
+    padding: 10px;
+  }
+
+  .dashboard-accountant-leave-title {
+    padding-right: 20px;
+    line-height: 1.45;
+  }
+
+  .dashboard-accountant-leave-period {
+    line-height: 1.6;
+  }
 }
 
 .announcement-popup-backdrop {
@@ -9958,7 +10056,17 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y;
 }
 .minutes-pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px; min-width: max-content; }
-.minutes-pdf-page { display: block; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
+.minutes-pdf-page-slot {
+  display: grid; flex: 0 0 auto; place-items: center; overflow: hidden;
+  background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+}
+.minutes-pdf-page { display: block; background: #fff; }
+.minutes-pdf-page-placeholder {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%; min-height: 120px;
+  background: #f4f5f6; color: #7b8087; font-size: .72rem;
+}
+.minutes-pdf-page-placeholder.error { color: #b3261e; }
 .minutes-pdf-loading {
   display: flex; align-items: center; justify-content: center;
   height: 100%; color: #ccc; font-size: 0.9rem;
@@ -11349,6 +11457,142 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   color: #111827;
 }
 
+.payroll-internal-memo {
+  background: #fafbfc;
+  border: 1px solid #d8dee8;
+  border-left: 4px solid #64748b;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+  margin-top: 20px;
+  max-width: 800px;
+  padding: 20px;
+}
+
+.payroll-internal-memo-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.payroll-internal-memo-header h3 {
+  color: #1e293b;
+  font-size: 0.95rem;
+  font-weight: 850;
+  margin: 0 0 5px;
+}
+
+.payroll-internal-memo-header h3 span {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+  margin-left: 5px;
+}
+
+.payroll-internal-memo-header p {
+  color: #64748b;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.payroll-internal-memo-private {
+  background: #eef2f7;
+  border: 1px solid #d8dee8;
+  border-radius: 999px;
+  color: #475569;
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 5px 9px;
+}
+
+.payroll-internal-memo-input {
+  box-sizing: border-box;
+  line-height: 1.55;
+  min-height: 118px;
+  resize: vertical;
+  width: 100%;
+}
+
+.payroll-internal-memo-input:focus {
+  border-color: #64748b;
+  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.12);
+}
+
+.payroll-internal-memo-footer {
+  align-items: flex-end;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.payroll-internal-memo-meta {
+  color: #64748b;
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  gap: 4px 14px;
+  line-height: 1.45;
+}
+
+.payroll-internal-memo-count {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.payroll-internal-memo-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.payroll-internal-memo-notice {
+  color: #188038;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.payroll-internal-memo-error {
+  color: #b42318;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.payroll-internal-memo-state,
+.payroll-internal-memo-readonly {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  color: #64748b;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  min-height: 72px;
+  padding: 14px;
+  white-space: pre-wrap;
+}
+
+.payroll-internal-memo-state.error {
+  align-items: center;
+  border-color: #fecaca;
+  color: #b42318;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.payroll-internal-memo-readonly-meta {
+  border-top: 1px solid #edf1f6;
+  color: #64748b;
+  font-size: 0.72rem;
+  margin-top: 12px;
+  padding-top: 8px;
+}
+
 @media (max-width: 768px) {
   .payroll-control-panel { padding: 12px; }
   .payroll-branch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -11366,11 +11610,124 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .withholding-direction-toggle,
   .withholding-settlement-memo { grid-column: 1 / -1; }
   .withholding-direction-toggle button { flex: 1; }
+  .payroll-internal-memo { padding: 16px; }
+  .payroll-internal-memo-header { flex-direction: column; gap: 8px; }
+  .payroll-internal-memo-footer { align-items: stretch; flex-direction: column; gap: 10px; }
+  .payroll-internal-memo-actions { justify-content: space-between; }
+  .payroll-internal-memo-actions .btn { min-height: 44px; }
+  .payroll-internal-memo-state.error { align-items: stretch; flex-direction: column; }
+}
+
+@media print {
+  .payroll-internal-memo,
+  .payroll-internal-memo.no-print {
+    display: none !important;
+  }
 }
 
 /* ============================= */
 /* 사내 커뮤니티 (Admin Notes)   */
 /* ============================= */
+.admin-notes-page :where(.btn, .btn-icon-sm, .admin-notes-search-button) {
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+.admin-notes-page .btn {
+  min-height: 40px;
+  padding: 9px 15px;
+  border: 1px solid #d8e0eb;
+  border-radius: 10px;
+  background: #fff;
+  color: #334155;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.admin-notes-page .btn.btn-sm {
+  min-height: 36px;
+  padding: 7px 12px;
+  border-radius: 9px;
+  font-size: 0.76rem;
+}
+.admin-notes-page .btn:hover:not(:disabled) {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  color: #0f172a;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.09);
+  transform: translateY(-1px);
+}
+.admin-notes-page .btn.btn-primary {
+  border-color: #2563eb;
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.2);
+}
+.admin-notes-page .btn.btn-primary:hover:not(:disabled) {
+  border-color: #1d4ed8;
+  background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+  color: #fff;
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.28);
+}
+.admin-notes-page .btn.btn-danger {
+  border-color: #fecdd3;
+  background: #fff1f2;
+  color: #be123c;
+  box-shadow: none;
+}
+.admin-notes-page .btn.btn-danger:hover:not(:disabled) {
+  border-color: #fda4af;
+  background: #ffe4e6;
+  color: #9f1239;
+}
+.admin-notes-page :where(.btn, .btn-icon-sm, .admin-notes-search-button):focus-visible,
+.admin-note-inline-pdf-tab:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.28);
+  outline-offset: 2px;
+}
+.admin-notes-page :where(.btn, .btn-icon-sm, .admin-notes-search-button):disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  box-shadow: none;
+  transform: none;
+}
+.admin-notes-page .btn-icon-sm {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #fff;
+  color: #64748b;
+}
+.admin-notes-page .btn-icon-sm:hover:not(:disabled) {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #dc2626;
+  transform: translateY(-1px);
+}
+.admin-notes-primary-nav,
+.admin-notes-section-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.admin-notes-section-tabs {
+  margin-bottom: 12px;
+  padding: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.admin-notes-section-tabs > .btn {
+  box-shadow: none;
+}
+.admin-notes-search-button:hover:not(:disabled) {
+  filter: brightness(0.96);
+}
 .admin-notes-list {
   display: flex;
   flex-direction: column;
@@ -11491,6 +11848,152 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   color: #3c4043;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.admin-note-attachment-list {
+  gap: 8px;
+  margin-top: 16px;
+}
+.admin-note-attachment-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #e0e4ea;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+.admin-note-attachment-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  color: #3c4043;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-note-attachment-name svg { flex: 0 0 auto; }
+.admin-note-attachment-expiry {
+  flex: 0 0 auto;
+  color: #5f6368;
+  font-size: 0.7rem;
+}
+.admin-note-attachment-actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.admin-note-inline-pdf {
+  margin-top: 20px;
+  overflow: hidden;
+  border: 1px solid #dbe3ee;
+  border-radius: 14px;
+  background: #f8fafc;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+.admin-note-inline-pdf-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #fff;
+}
+.admin-note-inline-pdf-header > div {
+  min-width: 0;
+}
+.admin-note-inline-pdf-header h3 {
+  margin: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 0.94rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-note-inline-pdf-eyebrow {
+  display: block;
+  margin-bottom: 3px;
+  color: #2563eb;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.admin-note-inline-pdf-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 9px 12px;
+  overflow-x: auto;
+  border-bottom: 1px solid #dbe3ee;
+  background: #f1f5f9;
+  scrollbar-width: thin;
+}
+.admin-note-inline-pdf-tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  max-width: min(320px, 72vw);
+  min-height: 36px;
+  padding: 6px 12px;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-note-inline-pdf-tab span {
+  display: inline-grid;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 50%;
+  background: #e2e8f0;
+  font-size: 0.66rem;
+}
+.admin-note-inline-pdf-tab:hover {
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+.admin-note-inline-pdf-tab.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+.admin-note-inline-pdf-tab.active span {
+  background: #2563eb;
+  color: #fff;
+}
+.admin-note-inline-pdf-viewer {
+  width: 100%;
+  height: min(78vh, 940px);
+  min-height: 720px;
+  overflow: hidden;
+  background: #e9eef5;
+}
+.admin-note-pdf-preview-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  min-height: 280px;
+  padding: 24px;
+  color: #5f6368;
+  text-align: center;
+}
+.admin-note-pdf-preview-status.error {
+  flex-direction: column;
+  color: #b42318;
 }
 .article-pdf-post {
   width: 100%;
@@ -11729,6 +12232,25 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 @media (max-width: 768px) {
+  .admin-notes-page .btn,
+  .admin-notes-page .btn.btn-sm,
+  .admin-notes-page .btn-icon-sm,
+  .admin-notes-page .admin-notes-search-button,
+  .admin-note-inline-pdf-tab {
+    min-height: 44px;
+  }
+  .admin-notes-page .btn-icon-sm { width: 44px; height: 44px; }
+  .admin-notes-primary-nav,
+  .admin-notes-section-tabs {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .admin-notes-primary-nav::-webkit-scrollbar,
+  .admin-notes-section-tabs::-webkit-scrollbar { display: none; }
+  .admin-notes-primary-nav > .btn,
+  .admin-notes-section-tabs > .btn { flex: 0 0 auto; white-space: nowrap; }
   .admin-notes-card { padding: 12px 14px; }
   .admin-note-detail { padding: 16px; }
   .article-pdf-toolbar {
@@ -11746,6 +12268,41 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
     min-height: 68vh;
     height: 72vh;
     border-radius: 6px;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .admin-note-attachment-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .admin-note-attachment-expiry { align-self: flex-start; }
+  .admin-note-attachment-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    width: 100%;
+    margin-left: 0;
+  }
+  .admin-note-attachment-actions .btn {
+    min-height: 44px;
+    justify-content: center;
+  }
+  .admin-note-inline-pdf {
+    margin-right: -8px;
+    margin-left: -8px;
+    border-radius: 10px;
+  }
+  .admin-note-inline-pdf-header {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 12px;
+  }
+  .admin-note-inline-pdf-header .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  .admin-note-inline-pdf-viewer {
+    height: 72vh;
+    min-height: 68vh;
     overflow: auto;
     -webkit-overflow-scrolling: touch;
   }
@@ -16691,6 +17248,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .lawitgo-list-message { padding: 40px 12px; color: #8a94a6; font-size: .75rem; text-align: center; }
 .lawitgo-sidebar-footer { display: flex; align-items: center; justify-content: space-between; padding: 8px 11px; background: #fafbfc; color: #8a94a6; font-size: .62rem; }
 .lawitgo-sidebar-footer button { display: inline-flex; padding: 4px; border: 0; background: transparent; color: #667085; cursor: pointer; }
+.lawitgo-sidebar-footer button.lawitgo-server-sync { padding: 3px 9px; border: 1px solid #d0d7e2; border-radius: 999px; background: #fff; color: #456ba6; font-size: .62rem; font-weight: 700; white-space: nowrap; }
+.lawitgo-sidebar-footer button.lawitgo-server-sync:disabled { opacity: .6; cursor: default; }
 .lawitgo-case-detail { display: grid; gap: 16px; min-width: 0; }
 .lawitgo-summary-card { padding: 16px; border: 1px solid #dfe3e9; border-radius: 12px; background: #fff; box-shadow: 0 2px 8px rgba(33, 43, 54, .05); }
 .lawitgo-summary-card > header { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
@@ -17387,13 +17946,18 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 
 .personal-calendar-weekdays .sunday,
-.personal-calendar-day-number.sunday {
+.personal-calendar-day-number.sunday,
+.personal-calendar-day-number.holiday {
   color: #d84b4b;
 }
 
 .personal-calendar-weekdays .saturday,
 .personal-calendar-day-number.saturday {
   color: #3f6fc5;
+}
+
+.personal-calendar-day-number.saturday.holiday {
+  color: #d84b4b;
 }
 
 .personal-calendar-day {
@@ -17435,6 +17999,13 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   opacity: 0.36;
 }
 
+.personal-calendar-day-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .personal-calendar-day-number {
   display: inline-flex;
   align-items: center;
@@ -17449,6 +18020,29 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .personal-calendar-day.today .personal-calendar-day-number {
   background: var(--calendar-accent);
   color: #fff;
+}
+
+.personal-calendar-day.holiday {
+  background: #fffafa;
+}
+
+.personal-calendar-day.holiday.today .personal-calendar-day-number {
+  background: #c5221f;
+  color: #fff;
+}
+
+.personal-calendar-holiday-name {
+  overflow: hidden;
+  color: #c5221f;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-calendar-day.outside .personal-calendar-holiday-name {
+  opacity: 0.48;
 }
 
 /* 금일 셀 강조 — 셀에 border:0 + overflow:hidden 이라 inset box-shadow로 링 표시(레이아웃 불변) */
@@ -17627,6 +18221,60 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   overflow-wrap: anywhere;
 }
 
+.personal-calendar-manage {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #edf0f4;
+}
+
+.personal-calendar-manage-warning,
+.personal-calendar-manage-block-reason {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: .76rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.personal-calendar-manage-warning {
+  border: 1px solid #f0d49a;
+  background: #fff8e1;
+  color: #7a4b00;
+}
+
+.personal-calendar-manage-warning strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.personal-calendar-manage-block-reason {
+  margin-top: 8px;
+  border: 1px solid #d9dee8;
+  background: #f6f8fb;
+  color: #4b5563;
+}
+
+.personal-calendar-manage-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.personal-calendar-manage-actions .btn {
+  min-height: 44px;
+  white-space: normal;
+}
+
+.personal-calendar-manage-error {
+  margin: 9px 0 0;
+  color: #b3261e;
+  font-size: .76rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .personal-calendar-bid-result-overlay {
   z-index: 130;
 }
@@ -17748,6 +18396,14 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
     font-size: 0.7rem;
   }
 
+  .personal-calendar-day-heading {
+    gap: 2px;
+  }
+
+  .personal-calendar-holiday-name {
+    font-size: 0.54rem;
+  }
+
   .personal-calendar-day-events {
     flex-direction: row;
     flex-wrap: wrap;
@@ -17815,6 +18471,17 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
     padding-inline: 9px;
   }
 
+  .personal-calendar-manage-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .personal-calendar-manage-actions .btn {
+    width: 100%;
+    min-width: 0;
+    padding-inline: 9px;
+  }
+
 }
 
 @media (max-width: 430px) {
@@ -17844,6 +18511,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   }
 
   .personal-calendar-bid-result-actions > div,
+  .personal-calendar-manage-actions,
   .auction-bid-result-choice {
     grid-template-columns: 1fr;
   }

@@ -1,7 +1,10 @@
 import { Hono } from 'hono';
-import type { AuthEnv } from '../types';
-import { authMiddleware } from '../middleware/auth';
-import { isHeadOfficeBranch } from '../lib/branchAliases';
+import type { AuthEnv } from '../types.ts';
+import { authMiddleware } from '../middleware/auth.ts';
+import {
+  canUploadBriefingMaterial,
+  canViewBriefingMaterial,
+} from '../../shared/briefing-material-access.ts';
 import {
   briefingMaterialMonth,
   briefingMaterialObjectKey,
@@ -10,11 +13,9 @@ import {
   MAX_BRIEFING_MATERIAL_BYTES,
   safeBriefingFileName,
   sha256BriefingMaterial,
-} from '../lib/briefing-materials';
+} from '../lib/briefing-materials.ts';
 
 const briefingMaterials = new Hono<AuthEnv>();
-const UPLOAD_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin']);
-const FULL_VIEW_ROLES = new Set(['master', 'ceo', 'cc_ref', 'accountant', 'accountant_asst']);
 
 briefingMaterials.use('*', authMiddleware);
 
@@ -25,25 +26,16 @@ function attachmentDisposition(fileName: string): string {
 
 async function currentProfile(c: any) {
   const auth = c.get('user');
-  return await c.env.DB.prepare(`SELECT id, name, role, branch, department, login_type
-    FROM users WHERE id = ?`).bind(auth.sub).first();
-}
-
-function rejectFreelancer(profile: any) {
-  return String(profile?.login_type || '') === 'freelancer';
-}
-
-function materialScope(profile: any): { sql: string; values: unknown[] } {
-  const role = String(profile?.role || '');
-  if (FULL_VIEW_ROLES.has(role) || (role === 'admin' && isHeadOfficeBranch(profile?.branch))) return { sql: '', values: [] };
-  if (role === 'director') return { sql: " AND (branch IN ('대전','대전지사','부산','부산지사') OR uploaded_by = ? OR assignee_user_id = ?)", values: [profile.id, profile.id] };
-  if (role === 'admin' || role === 'manager') return { sql: ' AND (branch = ? OR uploaded_by = ? OR assignee_user_id = ?)', values: [profile.branch || '', profile.id, profile.id] };
-  return { sql: ' AND (uploaded_by = ? OR assignee_user_id = ?)', values: [profile.id, profile.id] };
+  return await c.env.DB.prepare(`SELECT u.id, u.name, u.role, u.branch, u.department, u.login_type,
+      COALESCE(t.name, '') AS team_name
+    FROM users u
+    LEFT JOIN teams t ON t.id = u.team_id
+    WHERE u.id = ?`).bind(auth.sub).first();
 }
 
 briefingMaterials.get('/upload-options', async (c) => {
   const profile = await currentProfile(c);
-  if (!profile || rejectFreelancer(profile) || !UPLOAD_ROLES.has(String(profile.role))) return c.json({ error: '브리핑자료 제출 권한이 없습니다.' }, 403);
+  if (!canUploadBriefingMaterial(profile)) return c.json({ error: '브리핑자료 제출 권한이 없습니다.' }, 403);
   const users = await c.env.DB.prepare(`SELECT id, name, branch FROM users
     WHERE approved = 1 AND role != 'resigned' AND COALESCE(login_type, 'employee') != 'freelancer'
     ORDER BY branch, name`).all<any>();
@@ -52,7 +44,7 @@ briefingMaterials.get('/upload-options', async (c) => {
 
 briefingMaterials.post('/', async (c) => {
   const profile = await currentProfile(c);
-  if (!profile || rejectFreelancer(profile) || !UPLOAD_ROLES.has(String(profile.role))) return c.json({ error: '브리핑자료 제출 권한이 없습니다.' }, 403);
+  if (!canUploadBriefingMaterial(profile)) return c.json({ error: '브리핑자료 제출 권한이 없습니다.' }, 403);
   if (!c.env.ARTICLE_BUCKET) return c.json({ error: '브리핑자료 저장소가 설정되지 않았습니다.' }, 503);
   const contentLength = Number(c.req.header('content-length') || 0);
   if (contentLength > MAX_BRIEFING_MATERIAL_BYTES + 1024 * 1024) return c.json({ error: '브리핑자료는 파일당 최대 50MB입니다.' }, 413);
@@ -104,7 +96,7 @@ briefingMaterials.post('/', async (c) => {
 
 briefingMaterials.get('/', async (c) => {
   const profile = await currentProfile(c);
-  if (!profile || rejectFreelancer(profile)) return c.json({ error: '브리핑자료 열람 권한이 없습니다.' }, 403);
+  if (!canViewBriefingMaterial(profile)) return c.json({ error: '브리핑자료 열람 권한이 없습니다.' }, 403);
   await ensureBriefingMaterialSchema(c.env.DB);
   const page = Math.max(1, Number(c.req.query('page') || 1));
   const pageSize = Math.min(100, Math.max(1, Number(c.req.query('page_size') || 20)));
@@ -112,30 +104,27 @@ briefingMaterials.get('/', async (c) => {
   const branch = String(c.req.query('branch') || '').trim();
   const assignee = String(c.req.query('assignee') || '').trim();
   const search = String(c.req.query('search') || '').trim();
-  const scope = materialScope(profile);
   const conditions = ['archived_at IS NULL'];
   const values: unknown[] = [];
   if (month) { conditions.push('material_month = ?'); values.push(month.replace('-', '.')); }
   if (branch) { conditions.push('branch = ?'); values.push(branch); }
   if (assignee) { conditions.push('assignee_name = ?'); values.push(assignee); }
   if (search) { conditions.push('(file_name LIKE ? OR case_number LIKE ? OR assignee_name LIKE ?)'); values.push(`%${search}%`, `%${search}%`, `%${search}%`); }
-  const where = `WHERE ${conditions.join(' AND ')}${scope.sql}`;
-  const allValues = [...values, ...scope.values];
-  const total = await c.env.DB.prepare(`SELECT COUNT(*) AS count FROM briefing_materials ${where}`).bind(...allValues).first<{ count: number }>();
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  const total = await c.env.DB.prepare(`SELECT COUNT(*) AS count FROM briefing_materials ${where}`).bind(...values).first<{ count: number }>();
   const rows = await c.env.DB.prepare(`SELECT id, uploader_name, branch, assignee_user_id, assignee_name, case_number,
       material_month, file_name, file_type, file_size, drive_status, drive_folder_path, drive_backed_up_at, created_at
     FROM briefing_materials ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-    .bind(...allValues, pageSize, (page - 1) * pageSize).all<any>();
+    .bind(...values, pageSize, (page - 1) * pageSize).all<any>();
   return c.json({ materials: rows.results || [], total: Number(total?.count || 0), page, page_size: pageSize });
 });
 
 briefingMaterials.get('/:id/download', async (c) => {
   const profile = await currentProfile(c);
-  if (!profile || rejectFreelancer(profile)) return c.json({ error: '브리핑자료 열람 권한이 없습니다.' }, 403);
+  if (!canViewBriefingMaterial(profile)) return c.json({ error: '브리핑자료 열람 권한이 없습니다.' }, 403);
   await ensureBriefingMaterialSchema(c.env.DB);
-  const scope = materialScope(profile);
-  const row = await c.env.DB.prepare(`SELECT * FROM briefing_materials WHERE id = ? AND archived_at IS NULL${scope.sql}`)
-    .bind(c.req.param('id'), ...scope.values).first<any>();
+  const row = await c.env.DB.prepare('SELECT * FROM briefing_materials WHERE id = ? AND archived_at IS NULL')
+    .bind(c.req.param('id')).first<any>();
   if (!row) return c.json({ error: '브리핑자료를 찾을 수 없습니다.' }, 404);
   if (!row.object_key) return c.json({ error: '원본은 Google Drive 장기보관으로 이동했습니다.' }, 410);
   const object = await c.env.ARTICLE_BUCKET.get(row.object_key);

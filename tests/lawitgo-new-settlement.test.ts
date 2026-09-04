@@ -47,10 +47,15 @@ test('신정산 내부 배분액은 저장 스키마와 안전 payload에 포함
   assert.match(safePayloadBlock, /consultantShare: feeAmount/);
 });
 
-test('신정산 지급액은 기존 안건 수당과 분리되어 급여 응답 및 화면 합계에 반영된다', () => {
+test('신정산 지급액은 기존 안건 수당과 분리되고 잠긴 급여는 저장 스냅샷을 유지한다', () => {
   assert.match(casesSource, /NOT EXISTS \(SELECT 1 FROM lawitgo_new_settlements lns WHERE lns\.case_id = c\.id\)/);
   assert.match(payrollSource, /lawitgo_new_settlements: lawitgoNewSettlements/);
-  assert.match(payrollSource, /savedSnapshot\.response,[\s\S]*lawitgo_new_settlements: lawitgoNewSettlements/);
+  const lockedSnapshotBlock = payrollSource.slice(
+    payrollSource.indexOf('if (shouldUseSavedSnapshot && savedSnapshot?.response)'),
+    payrollSource.indexOf('const lawitgoNewSettlements =', payrollSource.indexOf('if (shouldUseSavedSnapshot && savedSnapshot?.response)')),
+  );
+  assert.match(lockedSnapshotBlock, /\.\.\.savedSnapshot\.response/);
+  assert.doesNotMatch(lockedSnapshotBlock, /lawitgo_new_settlements: lawitgoNewSettlements/);
   assert.match(payrollUiSource, /lawitgoNewSettlementTotal/);
   assert.match(payrollUiSource, /신 안건수당/);
   assert.doesNotMatch(payrollUiSource, /결산내역서 확인/);

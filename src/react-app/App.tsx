@@ -72,6 +72,10 @@ import { canUseBusinessAutomation } from '../shared/automation-access';
 import { canViewAuctionStoryAnomalies } from '../shared/auction-story-anomaly-access';
 import { canViewAuctionSchedule } from '../shared/auction-schedule';
 import { canViewConsultantJournal } from '../shared/consultant-journal-access';
+import {
+  canUploadBriefingMaterial,
+  canViewBriefingMaterial,
+} from '../shared/briefing-material-access';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -203,7 +207,10 @@ function MissingDocumentsRoute({ children }: { children: React.ReactNode }) {
 
 function BidHistoryRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !['master', 'ceo', 'cc_ref', 'admin'].includes(user.role)) {
+  const canViewExistingBidHistory = !!user
+    && (user.login_type !== 'freelancer' || user.role === 'master')
+    && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
+  if (!user || (!canViewExistingBidHistory && !canUploadBriefingMaterial(user))) {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -392,6 +399,18 @@ function EmployeeOnlyRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function ArchiveRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  const location = useLocation();
+  if (!user) return <Navigate to="/login" replace />;
+  const isFreelancer = user.login_type === 'freelancer' && user.role !== 'master';
+  const isBriefingArchive = new URLSearchParams(location.search).get('category') === 'briefing';
+  if (isFreelancer && !(isBriefingArchive && canViewBriefingMaterial(user))) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
 function BusinessAutomationRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore();
   if (loading) return <div className="page-loading">로딩중...</div>;
@@ -547,7 +566,7 @@ export default function App() {
           <Route path="templates" element={<TemplateList />} />
           <Route path="journal" element={<ConsultantJournalRoute><Journal /></ConsultantJournalRoute>} />
           <Route path="case-progress" element={<LawitgoProgress />} />
-          <Route path="archive" element={<EmployeeOnlyRoute><ArchivePage /></EmployeeOnlyRoute>} />
+          <Route path="archive" element={<ArchiveRoute><ArchivePage /></ArchiveRoute>} />
           <Route path="expense-receipts" element={<ExpenseReceiptArchive />} />
           <Route path="expense-receipts/new" element={<ExpenseReceiptApplication />} />
           <Route path="expense-receipts/manage" element={<ExpenseReceiptApprovalManage />} />

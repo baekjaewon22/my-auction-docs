@@ -1,8 +1,12 @@
 export interface AuctionScheduleMutationActor {
   role?: string | null;
+  sub?: string | null;
+  id?: string | null;
 }
 
-export const AUCTION_SCHEDULE_MUTATION_ROLES = ['master', 'accountant'] as const;
+// 경매스케줄 일반정보를 '과거 포함 언제든' 수정·삭제할 수 있는 관리자급 역할.
+// 마스터 · 총무(accountant) · 총무보조(accountant_asst) · 대표(ceo).
+export const AUCTION_SCHEDULE_MUTATION_ROLES = ['master', 'accountant', 'accountant_asst', 'ceo'] as const;
 
 // 경매스케줄을 직접 입력(작성)할 수 있는 역할.
 // 프리랜서는 login_type로 별도 허용하고, 정직원은 아래 역할(현장 업무 포함)에 한해 본인 일정 입력 가능.
@@ -41,6 +45,16 @@ export function auctionScheduleKstDateKey(now: Date = new Date()): string {
 export function isPastAuctionScheduleDate(targetDate: unknown, now: Date = new Date()): boolean {
   const normalized = String(targetDate || '').trim();
   return isValidAuctionScheduleDate(normalized) && normalized < auctionScheduleKstDateKey(now);
+}
+
+// 일정 '수정' 권한은 날짜·소유자와 관계없이 관리자급에만 허용한다.
+// 입찰가·낙찰결과 전용 권한은 별도 정책을 사용한다.
+export function canEditAuctionScheduleEntry(
+  actor: AuctionScheduleMutationActor | null | undefined,
+  _entry: { user_id?: string | null; target_date?: unknown } | null | undefined,
+  _now: Date = new Date(),
+): boolean {
+  return !!_entry && canManageAuctionSchedule(actor);
 }
 
 export function getRequiredInspectionBidDateError(

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import type { AuthEnv } from '../types';
-import { authMiddleware } from '../middleware/auth';
-import { ensureAuctionScheduleTable } from '../lib/auction-schedule-schema';
+import type { AuthEnv } from '../types.ts';
+import { authMiddleware, requireHumanUser } from '../middleware/auth.ts';
+import { ensureAuctionScheduleTable } from '../lib/auction-schedule-schema.ts';
 import {
   buildPersonalCalendarAuctionEvents,
   buildPersonalCalendarInspectionEvents,
@@ -9,10 +9,17 @@ import {
   loadPersonalCalendarAuctionRows,
   loadPersonalCalendarInspectionRows,
   toPublicPersonalCalendarAuctionEvent,
-} from '../lib/personal-calendar-auction-events';
-import { branchAliases, normalizeBranchName } from '../lib/branchAliases';
-import { auctionStoryAnomalyBranches, AUCTION_STORY_BRANCHES } from '../../shared/auction-story-anomaly-access';
-import { buildAuctionStoryAnomalies, loadAuctionStoryStageRows } from '../lib/auction-story-anomalies';
+  toPublicPersonalCalendarInspectionEvent,
+} from '../lib/personal-calendar-auction-events.ts';
+import {
+  CalendarAuctionManagementError,
+  deleteCalendarAuctionEvent,
+  type ManagedCalendarAuctionSourceType,
+} from '../lib/calendar-auction-management.ts';
+import { branchAliases, normalizeBranchName } from '../lib/branchAliases.ts';
+import { auctionStoryAnomalyBranches, AUCTION_STORY_BRANCHES } from '../../shared/auction-story-anomaly-access.ts';
+import { buildAuctionStoryAnomalies, loadAuctionStoryStageRows } from '../lib/auction-story-anomalies.ts';
+import { loadCalendarHolidays } from '../lib/calendar-holidays.ts';
 
 const personalCalendar = new Hono<AuthEnv>();
 personalCalendar.use('*', authMiddleware);
@@ -100,13 +107,15 @@ personalCalendar.get('/events', async (c) => {
   }>();
 
   await ensureAuctionScheduleTable(db);
-  const [auctionRows, inspectionRows] = await Promise.all([
+  const [auctionRows, inspectionRows, holidays] = await Promise.all([
     loadPersonalCalendarAuctionRows(db, from, to, { mode: 'all' }),
     loadPersonalCalendarInspectionRows(db, from, to),
+    loadCalendarHolidays(db, from, to),
   ]);
   const auctionEvents = buildPersonalCalendarAuctionEvents(auctionRows)
     .map(event => toPublicPersonalCalendarAuctionEvent(event, { id: user.sub, role: user.role }));
-  const inspectionEvents = buildPersonalCalendarInspectionEvents(inspectionRows);
+  const inspectionEvents = buildPersonalCalendarInspectionEvents(inspectionRows)
+    .map(event => toPublicPersonalCalendarInspectionEvent(event, { id: user.sub, role: user.role }));
   const personalEvents = (result.results || []).map(event => ({ ...event, source_type: 'personal' }));
 
   return c.json({
@@ -114,7 +123,45 @@ personalCalendar.get('/events', async (c) => {
       String(left.event_date).localeCompare(String(right.event_date))
         || String(left.title).localeCompare(String(right.title), 'ko')
     ),
+    holidays,
   });
+});
+
+// 캘린더는 별도 CRUD 저장소가 아니다. 이 endpoint는 표시 이벤트의 원본
+// 경매스케줄을 서버에서 다시 찾아 삭제하며, 마스터·총무 사용자에게만 허용한다.
+personalCalendar.delete('/auction-events/:sourceId', requireHumanUser(), async (c) => {
+  const user = c.get('user');
+  const sourceId = String(c.req.param('sourceId') || '').trim();
+  if (!sourceId) return c.json({ error: '삭제할 원본 일정 ID를 확인해 주세요.', code: 'invalid_request' }, 400);
+
+  let body: { source_type?: ManagedCalendarAuctionSourceType; revision?: string; reason?: string };
+  try {
+    body = await c.req.json<typeof body>();
+  } catch {
+    return c.json({ error: '삭제 요청 정보를 확인해 주세요.', code: 'invalid_request' }, 400);
+  }
+  if (body.source_type !== 'auction_bid' && body.source_type !== 'auction_inspection') {
+    return c.json({ error: '삭제할 캘린더 일정 종류를 확인해 주세요.', code: 'invalid_request' }, 400);
+  }
+
+  try {
+    const result = await deleteCalendarAuctionEvent(c.env.DB, {
+      sub: user.sub,
+      name: user.name,
+      role: user.role,
+    }, {
+      source_type: body.source_type,
+      source_id: sourceId,
+      revision: String(body.revision || ''),
+      reason: body.reason,
+    });
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    if (error instanceof CalendarAuctionManagementError) {
+      return c.json({ error: error.message, code: error.code, ...(error.details || {}) }, error.status);
+    }
+    throw error;
+  }
 });
 
 personalCalendar.get('/today-bids', async (c) => {
@@ -127,7 +174,8 @@ personalCalendar.get('/today-bids', async (c) => {
     branch: event.branch,
     assignee_name: event.assignee_name,
     position_title: event.position_title,
-    property_category: event.property_category || event.property_type || '미분류',
+    property_category: event.property_category,
+    property_type: event.property_type,
     court: event.court,
     case_no: event.case_no,
     item_no: event.item_no,

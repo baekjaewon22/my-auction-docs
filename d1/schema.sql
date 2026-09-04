@@ -581,6 +581,14 @@ CREATE INDEX IF NOT EXISTS idx_freelancer_schedule_user_date
 CREATE INDEX IF NOT EXISTS idx_freelancer_schedule_scope_date
   ON freelancer_auction_schedules(branch, department, target_date);
 
+CREATE TABLE IF NOT EXISTS auction_schedule_mutation_claims (
+  schedule_id TEXT PRIMARY KEY,
+  claim_token TEXT NOT NULL UNIQUE,
+  operation TEXT NOT NULL,
+  actor_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_leave_requests_active_exact
 ON leave_requests (
   user_id,
@@ -1038,3 +1046,47 @@ BEGIN
   ON CONFLICT(document_id) DO UPDATE SET
     revision = revision + 1, updated_at = datetime('now');
 END;
+-- Notice PDF R2 metadata and durable cleanup queue. Legacy notice attachments
+-- remain in admin_note_attachments and are not migrated automatically.
+CREATE TABLE IF NOT EXISTS notice_pdf_attachments (
+  id TEXT PRIMARY KEY,
+  note_id TEXT NOT NULL,
+  object_key TEXT NOT NULL UNIQUE,
+  file_name TEXT NOT NULL,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT NOT NULL DEFAULT '',
+  uploaded_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now', '+9 hours')),
+  FOREIGN KEY (note_id) REFERENCES admin_notes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS notice_pdf_cleanup_queue (
+  object_key TEXT PRIMARY KEY,
+  attachment_id TEXT,
+  note_id TEXT,
+  reason TEXT NOT NULL DEFAULT 'cleanup',
+  not_before TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now', '+9 hours')),
+  updated_at TEXT DEFAULT (datetime('now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notice_pdf_note
+  ON notice_pdf_attachments(note_id);
+
+CREATE INDEX IF NOT EXISTS idx_notice_pdf_cleanup_due
+  ON notice_pdf_cleanup_queue(not_before, created_at);
+
+-- Private payroll memo, intentionally isolated from payroll_saves snapshots/exports.
+CREATE TABLE IF NOT EXISTS payroll_internal_memos (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  period TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, period)
+);

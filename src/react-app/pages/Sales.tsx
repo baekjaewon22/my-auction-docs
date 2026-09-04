@@ -11,6 +11,10 @@ import {
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { JournalEntry } from '../journal/types';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
+import {
+  contractRankingPeriodIndex,
+  contractRankingPeriods,
+} from '../lib/contractAwardUi';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { canAssignSalesToAnotherUser } from '../../shared/sales-assignment';
@@ -479,16 +483,21 @@ export default function Sales() {
     } catch (err: any) { alert(err.message); }
   };
 
-  // 랭킹 모드: 2달 단위(기본) vs 연간
+  // 랭킹 모드: 정책 적용 기간(과거 2달/현재 월별) vs 연간
+  const rankingYear = new Date().getFullYear();
+  const rankingPeriods = contractRankingPeriods(rankingYear);
   const [rankingYearly, setRankingYearly] = useState(false);
-  const [rankingData, setRankingData] = useState<Array<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number }>>([]);
+  const [rankingData, setRankingData] = useState<Array<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number; rank?: number }>>([]);
   const [rankingError, setRankingError] = useState('');
   const [settleDate, setSettleDate] = useState('');
   const [invoiceDrafts, setInvoiceDrafts] = useState<Record<string, string>>({});
-  // 2개월 기간 선택 (1-2, 3-4, 5-6, 7-8, 9-10, 11-12)
   const [rankingPeriodIdx, setRankingPeriodIdx] = useState(() => {
-    const mo = new Date().getMonth() + 1;
-    return Math.floor((mo - 1) / 2); // 0=1-2월, 1=3-4월, ...
+    const now = new Date();
+    return contractRankingPeriodIndex(
+      contractRankingPeriods(now.getFullYear()),
+      now.getFullYear(),
+      now.getMonth() + 1,
+    );
   });
 
   // 정렬
@@ -638,13 +647,13 @@ export default function Sales() {
       // 랭킹 집계: 전 직원 열람 가능 (개인 레코드 노출 아님)
       try {
         setRankingError('');
-        const year = new Date().getFullYear();
+        const selectedRankingPeriod = rankingPeriods[rankingPeriodIdx] || rankingPeriods[rankingPeriods.length - 1];
         const startMonth = rankingYearly
-          ? `${year}-01`
-          : `${year}-${String(rankingPeriodIdx * 2 + 1).padStart(2, '0')}`;
+          ? `${rankingYear}-01`
+          : selectedRankingPeriod.startMonth;
         const endMonth = rankingYearly
-          ? `${year}-12`
-          : `${year}-${String(rankingPeriodIdx * 2 + 2).padStart(2, '0')}`;
+          ? `${rankingYear}-12`
+          : selectedRankingPeriod.endMonth;
         const rk = await api.sales.ranking(startMonth, endMonth);
         setRankingData(rk.ranking || []);
       } catch {
@@ -983,7 +992,7 @@ export default function Sales() {
   dupCounter.forEach((cnt, k) => { if (cnt >= 2) duplicateKeys.add(k); });
   const isDuplicate = (r: SalesRecord) => !!(r.client_name && r.client_phone && duplicateKeys.has(`${r.client_name}|${r.client_phone}`));
 
-  // 상단 계약건수는 매출월 SELECT 기준으로 표시한다. 2개월 기준은 하단 계약 랭킹에서만 사용한다.
+  // 상단 계약건수는 매출월 SELECT 기준, 하단 계약 랭킹은 선택된 랭킹 기간 기준으로 표시한다.
   const contractCount = calculateContractCount(branchRecords);
   // 확정매출/카드대기/입금신청: 공급가액 기준 (÷1.1)
   const toSupply = (amount: number) => Math.round(amount / 1.1);
@@ -1101,27 +1110,26 @@ export default function Sales() {
           position: r.position || '',
           count: r.count,
           totalAmount: r.total_amount,
+          backendRank: Number(r.rank) > 0 ? Number(r.rank) : null,
         }));
-        // 동률 처리: 건수+금액 모두 같으면 같은 순위
+        // 서버가 산정한 순위가 있으면 그대로 쓰고, 구형 응답만 기존 화면 방식으로 보완한다.
+        let previousFallbackRank = 0;
         const ranking = sorted.map((u, idx) => {
-          let rank = idx + 1;
-          if (idx > 0) {
-            const prev = sorted[idx - 1];
-            if (prev.count === u.count && prev.totalAmount === u.totalAmount) {
-              rank = (sorted as any)[idx - 1]._rank;
-            }
-          }
-          (u as any)._rank = rank;
-          return { ...u, rank };
+          const prev = sorted[idx - 1];
+          const fallbackRank = idx > 0 && prev.count === u.count && prev.totalAmount === u.totalAmount
+            ? previousFallbackRank
+            : idx + 1;
+          previousFallbackRank = fallbackRank;
+          return { ...u, rank: u.backendRank ?? fallbackRank };
         });
         const medalColors = ['#FFD700', '#C0C0C0', '#CD7F32'];
         const medalBg = ['linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%)', 'linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)', 'linear-gradient(135deg, #fdf0e6 0%, #f5e6d3 100%)'];
         const medalBorder = ['#ffd700', '#c0c0c0', '#cd7f32'];
-        const yr = new Date().getFullYear();
-        const ps = rankingPeriodIdx * 2 + 1;
+        const selectedRankingPeriod = rankingPeriods[rankingPeriodIdx] || rankingPeriods[rankingPeriods.length - 1];
         const periodLabel = rankingYearly
-          ? `${yr}년 전체`
-          : `${yr}년 ${ps}~${ps + 1}월`;
+          ? `${rankingYear}년 전체`
+          : selectedRankingPeriod.label;
+        const periodModeLabel = selectedRankingPeriod.modeLabel;
         return (
           <div className="sales-ranking" style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -1132,20 +1140,20 @@ export default function Sales() {
                     disabled={rankingPeriodIdx === 0}
                     style={{ background: 'none', border: 'none', cursor: rankingPeriodIdx === 0 ? 'default' : 'pointer', fontSize: '0.82rem', color: rankingPeriodIdx === 0 ? '#dadce0' : '#5f6368', padding: '2px 4px' }}>◀</button>
                   <span style={{ fontSize: '0.75rem', color: '#1a73e8', fontWeight: 600, padding: '3px 10px', background: '#e8f0fe', borderRadius: 8, minWidth: 80, textAlign: 'center' }}>{periodLabel}</span>
-                  <button onClick={() => setRankingPeriodIdx(Math.min(5, rankingPeriodIdx + 1))}
-                    disabled={rankingPeriodIdx === 5}
-                    style={{ background: 'none', border: 'none', cursor: rankingPeriodIdx === 5 ? 'default' : 'pointer', fontSize: '0.82rem', color: rankingPeriodIdx === 5 ? '#dadce0' : '#5f6368', padding: '2px 4px' }}>▶</button>
+                  <button onClick={() => setRankingPeriodIdx(Math.min(rankingPeriods.length - 1, rankingPeriodIdx + 1))}
+                    disabled={rankingPeriodIdx === rankingPeriods.length - 1}
+                    style={{ background: 'none', border: 'none', cursor: rankingPeriodIdx === rankingPeriods.length - 1 ? 'default' : 'pointer', fontSize: '0.82rem', color: rankingPeriodIdx === rankingPeriods.length - 1 ? '#dadce0' : '#5f6368', padding: '2px 4px' }}>▶</button>
                 </div>
               ) : (
                 <span style={{ fontSize: '0.72rem', color: '#7b1fa2', fontWeight: 600, padding: '3px 10px', background: '#f3e5f5', borderRadius: 8 }}>{periodLabel}</span>
               )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
-                <span style={{ fontSize: '0.72rem', color: !rankingYearly ? '#1a73e8' : '#9aa0a6', fontWeight: !rankingYearly ? 600 : 400 }}>2달</span>
+                <span style={{ fontSize: '0.72rem', color: !rankingYearly ? '#1a73e8' : '#9aa0a6', fontWeight: !rankingYearly ? 600 : 400 }}>{periodModeLabel}</span>
                 <div onClick={() => setRankingYearly(!rankingYearly)}
                   style={{ width: 36, height: 20, borderRadius: 10, background: rankingYearly ? '#7b1fa2' : '#dadce0', cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}>
                   <div style={{ width: 16, height: 16, borderRadius: 8, background: '#fff', position: 'absolute', top: 2, left: rankingYearly ? 18 : 2, transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }} />
                 </div>
-                <span style={{ fontSize: '0.72rem', color: rankingYearly ? '#7b1fa2' : '#9aa0a6', fontWeight: rankingYearly ? 600 : 400 }}>{yr}년</span>
+                <span style={{ fontSize: '0.72rem', color: rankingYearly ? '#7b1fa2' : '#9aa0a6', fontWeight: rankingYearly ? 600 : 400 }}>{rankingYear}년</span>
               </div>
             </div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>

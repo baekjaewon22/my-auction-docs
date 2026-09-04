@@ -896,12 +896,10 @@ export default function UserManagement() {
                 <button
                   className="btn btn-primary"
                   onClick={handleSaveAccounting}
-                  disabled={saving || (selectedUser.login_type === 'freelancer' ? payType !== 'commission' : payType !== 'salary')}
+                  disabled={saving || (selectedUser.login_type === 'freelancer' && payType !== 'commission')}
                   title={selectedUser.login_type === 'freelancer' && payType !== 'commission'
                     ? '정규직 전환 버튼으로 변경해 주세요.'
-                    : selectedUser.login_type !== 'freelancer' && payType !== 'salary'
-                      ? '프리랜서 전환 버튼으로 변경해 주세요.'
-                      : ''}
+                    : ''}
                 >
                   {saving ? '저장중...' : '저장'}
                 </button>

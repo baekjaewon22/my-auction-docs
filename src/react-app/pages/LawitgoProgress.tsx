@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BriefcaseBusiness, CalendarDays, Clock3, FileText, Hash, RefreshCw, Scale, Search, UserRound, X } from 'lucide-react';
 import { api, type LawitgoProgressItem } from '../api';
+import { useAuthStore } from '../store';
 
 const PROGRESS_STAGES = ['사건 수임', '인도명령 신청', '인도명령 결정', '강제집행 신청', '강제집행 실시'];
 
@@ -49,6 +50,10 @@ export default function LawitgoProgress() {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'active' | 'completed' | 'all'>('active');
+  const { user } = useAuthStore();
+  const canServerRefresh = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user?.role || '');
+  const [serverSyncing, setServerSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
 
   const loadList = async () => {
     setLoading(true);
@@ -63,6 +68,20 @@ export default function LawitgoProgress() {
       setError(loadError instanceof Error ? loadError.message : '사건 진행사항을 불러오지 못했습니다.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleServerRefresh = async () => {
+    setServerSyncing(true);
+    setSyncMsg('');
+    try {
+      const r = await api.lawitgoProgress.refresh();
+      setSyncMsg(`재동기화 완료 · 성공 ${r.pulled.succeeded}/${r.pulled.consultants} · 표시 ${r.activeCache?.active_items ?? 0}건`);
+      await loadList();
+    } catch (e) {
+      setSyncMsg(e instanceof Error ? e.message : '재동기화에 실패했습니다.');
+    } finally {
+      setServerSyncing(false);
     }
   };
 
@@ -131,7 +150,12 @@ export default function LawitgoProgress() {
             ))}
           </div>
           <div className="lawitgo-sidebar-footer">
-            <span>{refreshedAt ? `기준 ${formatCacheTime(refreshedAt)}` : '09·12·15·18시 갱신'}</span>
+            <span>{syncMsg || (refreshedAt ? `기준 ${formatCacheTime(refreshedAt)}` : '09·12·15·18시 갱신')}</span>
+            {canServerRefresh && (
+              <button type="button" className="lawitgo-server-sync" onClick={handleServerRefresh} disabled={serverSyncing} title="lawitgo에서 즉시 다시 가져오기(관리자)">
+                {serverSyncing ? '동기화 중…' : '서버 재동기화'}
+              </button>
+            )}
             <button type="button" onClick={loadList} disabled={loading} aria-label="새로고침"><RefreshCw size={14} className={loading ? 'spin' : ''} /></button>
           </div>
         </aside>

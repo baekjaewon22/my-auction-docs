@@ -42,12 +42,14 @@ import auctionReferenceRoute from './routes/auction-reference';
 import announcementPopupsRoute from './routes/announcement-popups';
 import webPushRoute from './routes/web-push';
 import lawitgoProgressRoute from './routes/lawitgo-progress';
+import publicCalendarRoute from './routes/public-calendar';
 import lawitgoSettlementLedgerRoute from './routes/lawitgo-settlement-ledger';
 import lawitgoWinningAdminRoute from './routes/lawitgo-winning-admin';
 import { createDriveFileVerifier, verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
 import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
 import { cleanupExpiredArticlePdfs } from './lib/article-pdfs';
+import { cleanupNoticePdfObjects } from './lib/notice-pdfs';
 import { cleanupOldDocuments } from './lib/document-retention';
 import { cleanupBackedUpBriefingMaterials } from './lib/briefing-material-retention';
 import {
@@ -148,6 +150,7 @@ app.route('/api/freelancer-bids', freelancerBidsRoute);
 app.route('/api/auction-schedule', auctionScheduleRoute);
 app.route('/api/lawitgo-progress', lawitgoProgressRoute);
 app.route('/api/lawitgo/progress', lawitgoProgressRoute);
+app.route('/api/public/calendar', publicCalendarRoute);
 app.route('/api/lawitgo-settlement-ledger', lawitgoSettlementLedgerRoute);
 app.route('/api/lawitgo-winning-admin', lawitgoWinningAdminRoute);
 app.route('/api/system', systemSettingsRoute);
@@ -602,8 +605,12 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
       (err) => console.error('[cron payroll-lock] error', err),
     ));
     ctx.waitUntil(cleanupExpiredArticlePdfs(env, 100).then(
-      (r) => { if (r.scanned > 0) console.log('[cron article-pdf-cleanup] done', r); },
+      (r) => { if (r.scanned > 0 || r.failed > 0) console.log('[cron article-pdf-cleanup] done', r); },
       (err) => console.error('[cron article-pdf-cleanup] error', err),
+    ));
+    ctx.waitUntil(cleanupNoticePdfObjects(env, 100).then(
+      (r) => { if (r.scanned > 0 || r.failed > 0) console.log('[cron notice-pdf-cleanup] done', r); },
+      (err) => console.error('[cron notice-pdf-cleanup] error', err),
     ));
     ctx.waitUntil(cleanupOldDocuments(env.DB, { dryRun: false }).then(
       (r) => { if (r.documents > 0 || r.orphan_drive_backup_logs > 0) console.log('[cron document-retention] done', r); },

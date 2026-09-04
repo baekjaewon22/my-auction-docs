@@ -63,6 +63,16 @@ export function auctionScheduleSalesExternalId(scheduleId: string): string {
   return `auction-schedule:${String(scheduleId || '').trim()}`;
 }
 
+/**
+ * Schedule sales originally used an underscore prefix. Keep both keys when
+ * resolving/protecting historical business records; new writes use the first
+ * (canonical) value only.
+ */
+export function auctionScheduleSalesExternalIds(scheduleId: string): [string, string] {
+  const normalizedId = String(scheduleId || '').trim();
+  return [`auction-schedule:${normalizedId}`, `auction_schedule:${normalizedId}`];
+}
+
 export function calculateAuctionScheduleWinningFee(winningPrice: unknown): number {
   const amount = Number(String(winningPrice || '').replace(/[^0-9]/g, ''));
   if (!Number.isFinite(amount) || amount <= 0) return 0;

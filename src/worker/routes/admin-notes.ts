@@ -1,15 +1,24 @@
-import { Hono } from 'hono';
-import type { AuthEnv, Role } from '../types';
-import { authMiddleware } from '../middleware/auth';
-import { canShareCommunityWithAll } from '../../shared/community-visibility';
-import { communityBroadcastRecipientIds, sendCommunityCommentAlimtalk, sendCommunityNoteCreatedAlimtalk } from '../lib/community-alimtalk';
-import { recheckAlertsAfterEntryDelete, recheckAlertsForJournalEntry } from '../lib/journal-alerts';
-import { articleObjectKey, ensureArticlePdfTable, safePdfFileName, sha256Hex } from '../lib/article-pdfs';
-import { ensureBidAnalysisTable, makeBidDedupeKey, normalizeAmount, normalizeBidResult } from '../lib/bid-analysis';
-import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
-import { sendWebPushToUser } from '../lib/web-push-delivery';
-import { canAccessEvictionQuote, EVICTION_QUOTE_VISIBILITY } from '../../shared/eviction-quote-access';
-import { sendEvictionQuoteSlackNotification } from '../lib/eviction-quote-slack';
+import { Hono, type Context } from 'hono';
+import type { AuthEnv, Role } from '../types.ts';
+import { authMiddleware } from '../middleware/auth.ts';
+import { canShareCommunityWithAll } from '../../shared/community-visibility.ts';
+import { communityBroadcastRecipientIds, sendCommunityCommentAlimtalk, sendCommunityNoteCreatedAlimtalk } from '../lib/community-alimtalk.ts';
+import { recheckAlertsAfterEntryDelete, recheckAlertsForJournalEntry } from '../lib/journal-alerts.ts';
+import {
+  articleObjectKey,
+  decodeArticleUploadHeader,
+  ensureArticlePdfTable,
+  hasObviousArticleTextEncodingDamage,
+  normalizeArticleDate,
+  safePdfFileName,
+  sha256Hex,
+} from '../lib/article-pdfs.ts';
+import { ensureBidAnalysisTable, makeBidDedupeKey, normalizeAmount, normalizeBidResult } from '../lib/bid-analysis.ts';
+import { normalizeBranchName, sameBranchName } from '../lib/branchAliases.ts';
+import { sendWebPushToUser } from '../lib/web-push-delivery.ts';
+import { canAccessEvictionQuote, EVICTION_QUOTE_VISIBILITY } from '../../shared/eviction-quote-access.ts';
+import { canUploadBriefingMaterial } from '../../shared/briefing-material-access.ts';
+import { sendEvictionQuoteSlackNotification } from '../lib/eviction-quote-slack.ts';
 import {
   communityCategoryLabel,
   communityCreatedNotificationMode,
@@ -17,7 +26,24 @@ import {
   communityReplyRecipientIds,
   directRecipientId,
   TARGETED_COMMUNITY_CATEGORIES,
-} from '../../shared/community-notifications';
+} from '../../shared/community-notifications.ts';
+import {
+  decodeAttachmentDataUrl,
+  hasPdfSignature,
+  isPdfAttachmentMetadata,
+  normalizeNoticeAttachments,
+  NoticeAttachmentValidationError,
+} from '../lib/admin-note-attachments.ts';
+import {
+  ensureNoticePdfTables,
+  noticePdfCleanupDelete,
+  noticePdfCleanupUpsert,
+  loadNoticePdfForDelivery,
+  noticePdfMetadataInsert,
+  noticePdfObjectKey,
+  stageNoticePdfUpload,
+  type NoticePdfMetadata,
+} from '../lib/notice-pdfs.ts';
 
 const ADMIN_ROLES: Role[] = ['master', 'ceo', 'cc_ref', 'admin'];
 const NOTE_CATEGORIES = ['community', 'notice', 'article_news', 'briefing_schedule', 'resource_library', 'eviction_quote', 'legal_support'] as const;
@@ -151,6 +177,7 @@ async function ensureAdminNoteExtensionsUncached(db: D1Database): Promise<void> 
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_resource_library_posts_created ON resource_library_posts(created_at DESC)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_resource_library_post_files_post ON resource_library_post_files(post_id)').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_notice_posts_created ON notice_posts(pinned DESC, created_at DESC)').run();
+  await ensureNoticePdfTables(db);
   await db.prepare(`
     INSERT OR IGNORE INTO resource_library_posts (
       id, title, content, author_id, author_name, pinned, is_anonymous,
@@ -205,10 +232,6 @@ function normalizeLegalSubcategory(value: unknown): LegalSubcategory {
   if (value === 'consultation') return 'lawsuit';
   if (value === 'law_reference') return 'legal_terms';
   return LEGAL_SUBCATEGORIES.includes(value as LegalSubcategory) ? value as LegalSubcategory : 'lawsuit';
-}
-
-function canCreateBriefingSchedule(role: string) {
-  return ADMIN_ROLES.includes(role as Role);
 }
 
 function canManageBidHistory(role: string) {
@@ -287,13 +310,6 @@ function addDays(date: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-function normalizeArticleDate(raw: unknown): string | null {
-  const value = String(raw || '').trim() || kstDateString();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const parsed = new Date(`${value}T00:00:00Z`);
-  return Number.isNaN(parsed.getTime()) ? null : value;
-}
-
 function pdfContentDisposition(fileName: string): string {
   return `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
@@ -314,21 +330,7 @@ function resourceObjectKey(noteId: string, fileId: string, fileName: string): st
   return `resource-library/${noteId}/${fileId}-${safeResourceFileName(fileName)}`;
 }
 
-function dataUrlToArrayBuffer(dataUrl: string): { buffer: ArrayBuffer; contentType: string } | null {
-  const match = String(dataUrl || '').match(/^data:([^;,]*)(;base64)?,(.*)$/s);
-  if (!match) return null;
-  const contentType = match[1] || 'application/octet-stream';
-  const isBase64 = !!match[2];
-  const payload = match[3] || '';
-  if (isBase64) {
-    const binary = atob(payload);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return { buffer: bytes.buffer, contentType };
-  }
-  const text = decodeURIComponent(payload);
-  return { buffer: new TextEncoder().encode(text).buffer, contentType };
-}
+const dataUrlToArrayBuffer = decodeAttachmentDataUrl;
 
 async function resolveArticleApiAuthor(db: D1Database, user: any) {
   if (user.auth_type !== 'service_token') {
@@ -649,7 +651,15 @@ adminNotes.get('/', async (c) => {
     notes: rows.slice(0, pageSize).map((n: any) => maskNote(n, role, viewerInfo.department)),
     pagination: { page, page_size: pageSize, has_more: rows.length > pageSize },
   });
-  if (category === 'briefing_schedule' && !canCreateBriefingSchedule(role)) {
+  if (category === 'briefing_schedule' && !(
+    canManageBidHistory(role)
+    || canUploadBriefingMaterial({
+      id: viewer.sub,
+      role,
+      department: viewerInfo.department,
+      team_name: viewerInfo.team_name,
+    })
+  )) {
     return c.json({ error: '브리핑자료 제출 카테고리 열람 권한이 없습니다.' }, 403);
   }
   if (category === 'notice') {
@@ -658,7 +668,8 @@ adminNotes.get('/', async (c) => {
         NULL as assignee_id, NULL as target_date, NULL as item_no, NULL as client_name, NULL as journal_entry_id,
         NULL as source_type, NULL as source_id, NULL as lawsuit_cost_requested, u.position_title as author_position,
         (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = np.id) as comment_count,
-        0 as attachment_count
+        ((SELECT COUNT(*) FROM admin_note_attachments WHERE note_id = np.id)
+          + (SELECT COUNT(*) FROM notice_pdf_attachments WHERE note_id = np.id)) as attachment_count
       FROM notice_posts np
       LEFT JOIN users u ON np.author_id = u.id
       WHERE (? = '' OR np.title LIKE ? OR np.content LIKE ? OR np.author_name LIKE ?)
@@ -764,13 +775,11 @@ adminNotes.get('/briefing-autofill', async (c) => {
   const caseNumber = (c.req.query('case_number') || '').trim();
 
   const profile = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(viewer.sub).first<{ role: string; branch: string }>();
-  if (!canCreateBriefingSchedule(profile?.role || viewer.role)) return c.json({ error: '브리핑자료 제출 등록 권한이 없습니다.' }, 403);
+  if (!canUploadBriefingMaterial({ id: viewer.sub, role: profile?.role || viewer.role })) return c.json({ error: '브리핑자료 제출 등록 권한이 없습니다.' }, 403);
   if (!assigneeId) return c.json({ match: null });
 
   const assignee = await db.prepare('SELECT id, branch FROM users WHERE id = ? AND approved = 1').bind(assigneeId).first<{ id: string; branch: string }>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
-  if ((profile?.role || viewer.role) === 'admin' && !sameBranchName(assignee.branch, profile?.branch)) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
-
   let row: any = null;
   if (caseNumber) {
     row = await db.prepare(`
@@ -836,6 +845,7 @@ adminNotes.post('/articles/upload-pdf', async (c) => {
   }
 
   const contentType = c.req.header('content-type') || '';
+  const mediaType = contentType.split(';', 1)[0].trim().toLowerCase();
   let buffer: ArrayBuffer;
   let fileName = 'article.pdf';
   let title = '';
@@ -844,7 +854,7 @@ adminNotes.post('/articles/upload-pdf', async (c) => {
   let articleDateRaw: unknown = '';
   let visibility = 'all';
 
-  if (contentType.includes('multipart/form-data')) {
+  if (mediaType === 'multipart/form-data') {
     const form = await c.req.formData();
     const file = form.get('file') || form.get('pdf');
     if (!(file instanceof File)) return c.json({ error: 'file 또는 pdf 필드에 PDF 파일을 첨부해주세요.' }, 400);
@@ -855,16 +865,31 @@ adminNotes.post('/articles/upload-pdf', async (c) => {
     sourceName = String(form.get('source_name') || '').trim();
     articleDateRaw = form.get('article_date');
     visibility = String(form.get('visibility') || 'all').trim() || 'all';
-  } else if (contentType.includes('application/pdf')) {
+  } else if (mediaType === 'application/pdf') {
     buffer = await c.req.arrayBuffer();
-    fileName = safePdfFileName(decodeURIComponent(c.req.header('x-file-name') || 'article.pdf'));
-    title = String(c.req.header('x-title') || '').trim();
-    content = String(c.req.header('x-content') || '').trim();
-    sourceName = String(c.req.header('x-source-name') || '').trim();
+    try {
+      fileName = safePdfFileName(decodeArticleUploadHeader(c.req.header('x-file-name'), 'article.pdf'));
+      title = decodeArticleUploadHeader(c.req.header('x-title')).trim();
+      content = decodeArticleUploadHeader(c.req.header('x-content')).trim();
+      sourceName = decodeArticleUploadHeader(c.req.header('x-source-name')).trim();
+    } catch {
+      return c.json({ error: 'PDF 메타데이터 헤더의 URL 인코딩이 올바르지 않습니다.' }, 400);
+    }
     articleDateRaw = c.req.header('x-article-date');
     visibility = String(c.req.header('x-visibility') || 'all').trim() || 'all';
   } else {
     return c.json({ error: 'multipart/form-data 또는 application/pdf 형식으로 업로드해주세요.' }, 415);
+  }
+
+  if (
+    hasObviousArticleTextEncodingDamage(title)
+    || hasObviousArticleTextEncodingDamage(sourceName)
+    || hasObviousArticleTextEncodingDamage(fileName)
+    || hasObviousArticleTextEncodingDamage(content)
+  ) {
+    return c.json({
+      error: '기사 메타데이터에 깨진 문자 인코딩이 포함되어 있습니다. UTF-8로 다시 전송해주세요.',
+    }, 400);
   }
 
   if (buffer.byteLength === 0) return c.json({ error: '빈 PDF 파일은 업로드할 수 없습니다.' }, 400);
@@ -873,7 +898,7 @@ adminNotes.post('/articles/upload-pdf', async (c) => {
   const magic = new TextDecoder().decode(buffer.slice(0, 5));
   if (magic !== '%PDF-') return c.json({ error: 'PDF 파일만 업로드할 수 있습니다.' }, 400);
 
-  const articleDate = normalizeArticleDate(articleDateRaw);
+  const articleDate = normalizeArticleDate(articleDateRaw, kstDateString());
   if (!articleDate) return c.json({ error: 'article_date는 YYYY-MM-DD 형식이어야 합니다.' }, 400);
   const expiresAt = addDays(articleDate, 31);
 
@@ -915,7 +940,14 @@ adminNotes.post('/articles/upload-pdf', async (c) => {
       ).bind(articleId, noteId, objectKey, fileName, buffer.byteLength, sha256, sourceName.slice(0, 120), articleDate, expiresAt, user.sub),
     ]);
   } catch (err) {
-    await c.env.ARTICLE_BUCKET.delete(objectKey).catch(() => undefined);
+    try {
+      await c.env.ARTICLE_BUCKET.delete(objectKey);
+    } catch (rollbackError: unknown) {
+      console.error('[article-pdf] R2 rollback delete failed; retention cleanup will retry the orphan', {
+        objectKey,
+        error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+      });
+    }
     throw err;
   }
 
@@ -1009,6 +1041,36 @@ adminNotes.get('/resource-library/:fileId/download', async (c) => {
       'Cache-Control': 'private, max-age=300',
     },
   });
+});
+
+async function serveNoticePdfAttachment(c: Context<AuthEnv>, mode: 'view' | 'download') {
+  const user = c.get('user');
+  const db = c.env.DB;
+  await ensureAdminNoteExtensions(db);
+
+  const viewerInfo = await db.prepare(
+    'SELECT u.role, u.branch, u.department, t.name as team_name FROM users u LEFT JOIN teams t ON t.id = u.team_id WHERE u.id = ?'
+  ).bind(user.sub).first<{ role: string; branch: string; department: string; team_name: string | null }>();
+  const role = viewerInfo?.role || user.role;
+  const result = await loadNoticePdfForDelivery(
+    db,
+    c.env.ARTICLE_BUCKET,
+    c.req.param('attachmentId'),
+    mode,
+    (row) => canReadNote(row, user, viewerInfo, role),
+  );
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  return new Response(result.body, { headers: result.headers });
+}
+
+// GET /api/admin-notes/attachments/:attachmentId/view - authenticated notice PDF preview
+adminNotes.get('/attachments/:attachmentId/view', async (c) => {
+  return serveNoticePdfAttachment(c, 'view');
+});
+
+// GET /api/admin-notes/attachments/:attachmentId/download - authenticated legacy-compatible notice PDF download
+adminNotes.get('/attachments/:attachmentId/download', async (c) => {
+  return serveNoticePdfAttachment(c, 'download');
 });
 
 adminNotes.get('/bid-analysis', async (c) => {
@@ -1326,6 +1388,7 @@ adminNotes.get('/bid-match-check', async (c) => {
 
 adminNotes.get('/:id', async (c) => {
   const db = c.env.DB;
+  c.header('Cache-Control', 'private, no-store');
   await ensureAdminNoteExtensions(db);
   const viewer = c.get('user');
   const id = c.req.param('id');
@@ -1361,7 +1424,15 @@ adminNotes.get('/:id', async (c) => {
   }
   if (!note) return c.json({ error: '노트를 찾을 수 없습니다.' }, 404);
 
-  if (note.category === 'briefing_schedule' && !canCreateBriefingSchedule(role)) {
+  if (note.category === 'briefing_schedule' && !(
+    canManageBidHistory(role)
+    || canUploadBriefingMaterial({
+      id: viewer.sub,
+      role,
+      department: viewerInfo?.department,
+      team_name: viewerInfo?.team_name,
+    })
+  )) {
     return c.json({ error: '브리핑자료 제출 카테고리 열람 권한이 없습니다.' }, 403);
   }
 
@@ -1402,6 +1473,12 @@ adminNotes.get('/:id', async (c) => {
      WHERE note_id = ? AND deleted_at IS NULL
      ORDER BY created_at ASC`
   ).bind(id).all<any>();
+  const noticePdfAttachments = await db.prepare(
+    `SELECT id, note_id, file_name, file_size, created_at
+     FROM notice_pdf_attachments
+     WHERE note_id = ?
+     ORDER BY created_at ASC`
+  ).bind(id).all<any>();
   const resourceFiles = await db.prepare(
     `SELECT id, post_id as note_id, file_name, file_type, file_size, created_at
      FROM resource_library_post_files
@@ -1437,8 +1514,34 @@ adminNotes.get('/:id', async (c) => {
     storage: 'r2',
     created_at: file.created_at,
   }));
+  const noticeR2Attachments = (noticePdfAttachments.results || []).map((file: any) => ({
+    id: file.id,
+    note_id: file.note_id,
+    file_name: file.file_name,
+    file_type: 'application/pdf',
+    file_size: file.file_size,
+    file_data: '',
+    download_url: `/api/admin-notes/attachments/${file.id}/download`,
+    view_url: `/api/admin-notes/attachments/${file.id}/view`,
+    storage: 'r2',
+    created_at: file.created_at,
+  }));
 
-  return c.json({ note: maskedNote, comments: maskedComments, attachments: [...(attachments.results || []), ...r2Attachments, ...resourceAttachments] });
+  const inlineAttachments = (attachments.results || []).map((file: any) => {
+    if (note.category !== 'notice' || !isPdfAttachmentMetadata(file)) return file;
+    const viewUrl = `/api/admin-notes/attachments/${file.id}/view`;
+    const downloadUrl = `/api/admin-notes/attachments/${file.id}/download`;
+    return {
+      ...file,
+      file_type: 'application/pdf',
+      file_data: '',
+      download_url: downloadUrl,
+      view_url: viewUrl,
+      storage: 'd1',
+    };
+  });
+
+  return c.json({ note: maskedNote, comments: maskedComments, attachments: [...inlineAttachments, ...noticeR2Attachments, ...r2Attachments, ...resourceAttachments] });
 });
 
 // POST /api/admin-notes - 생성
@@ -1456,6 +1559,7 @@ adminNotes.post('/', async (c) => {
   const legalAuctionCaseNumber = no_case_number ? '사건번호없음' : String(case_number || '').trim().replace(/\s+/g, '');
   if (category !== 'briefing_schedule' && (!title?.trim() || !content?.trim())) return c.json({ error: '제목과 내용을 입력하세요.' }, 400);
   const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5) : [];
+  let attachmentsForStorage = safeAttachments;
   if (category === 'resource_library' && safeAttachments.length === 0) {
     return c.json({ error: '자료실은 다운로드할 첨부파일을 1개 이상 등록하세요.' }, 400);
   }
@@ -1476,6 +1580,14 @@ adminNotes.post('/', async (c) => {
   const role = profile?.role || user.role;
   if (category === 'notice' && !canCreateNotice(role)) {
     return c.json({ error: '공지사항 등록 권한이 없습니다.' }, 403);
+  }
+  if (category === 'notice') {
+    try {
+      attachmentsForStorage = normalizeNoticeAttachments(safeAttachments);
+    } catch (error) {
+      if (error instanceof NoticeAttachmentValidationError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
   }
   if (category === 'legal_support' && legalSubcategory === 'legal_terms' && !canCreateLegalTerms(role, profile?.department)) {
     return c.json({ error: '법률이해는 법률지원팀 및 관리자급 이상만 작성할 수 있습니다.' }, 403);
@@ -1506,7 +1618,7 @@ adminNotes.post('/', async (c) => {
   let finalContent = content?.trim() || '';
 
   if (category === 'briefing_schedule') {
-    if (!canCreateBriefingSchedule(role)) return c.json({ error: '브리핑자료 제출 등록 권한이 없습니다.' }, 403);
+    if (!canUploadBriefingMaterial({ id: user.sub, role })) return c.json({ error: '브리핑자료 제출 등록 권한이 없습니다.' }, 403);
     if (!assignee_id) return c.json({ error: '담당자를 목록에서 선택하세요.' }, 400);
     if (!target_date) return c.json({ error: '일정일을 입력하세요.' }, 400);
     if (!court?.trim() || !case_number?.trim() || !client_name?.trim()) return c.json({ error: '법원, 사건번호, 계약자명은 필수입니다.' }, 400);
@@ -1515,8 +1627,6 @@ adminNotes.post('/', async (c) => {
       'SELECT id, name, branch, department, approved FROM users WHERE id = ?'
     ).bind(assignee_id).first<{ id: string; name: string; branch: string; department: string; approved: number }>();
     if (!assignee || assignee.approved !== 1) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
-    if (role === 'admin' && !sameBranchName(assignee.branch, profile?.branch)) return c.json({ error: '담당자를 선택할 권한이 없습니다.' }, 403);
-
     finalTitle = `${target_date} ${assignee.name} 브리핑자료 제출`;
     finalContent = makeBriefingContent({
       targetDate: target_date,
@@ -1568,7 +1678,7 @@ adminNotes.post('/', async (c) => {
     await recheckAlertsForJournalEntry(db, journalEntryId).catch((err) => console.error('[recheckAlerts on briefing schedule insert]', err));
   }
 
-  await db.prepare(
+  const adminNoteInsert = db.prepare(
     `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, court, case_number, legal_subcategory, lawsuit_cost_requested, assignee_id, target_date, item_no, client_name, journal_entry_id, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
   ).bind(
@@ -1588,7 +1698,73 @@ adminNotes.post('/', async (c) => {
     category === 'briefing_schedule' ? item_no?.trim() || '' : null,
     category === 'briefing_schedule' ? client_name.trim() : null,
     journalEntryId
-  ).run();
+  );
+
+  if (category === 'notice') {
+    const noticePostInsert = db.prepare(
+      `INSERT INTO notice_posts (
+        id, title, content, author_id, author_name, pinned, is_anonymous,
+        visibility, author_branch, author_department, view_count, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'all', ?, ?, 0, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
+    ).bind(
+      id,
+      finalTitle,
+      finalContent,
+      user.sub,
+      user.name,
+      canPin && pinned ? 1 : 0,
+      is_anonymous ? 1 : 0,
+      profile?.branch || '',
+      profile?.department || '',
+    );
+    const noticePdfUploads: Array<{ metadata: NoticePdfMetadata; buffer: ArrayBuffer }> = [];
+    const noticeAttachmentStatements: D1PreparedStatement[] = [];
+    for (const file of attachmentsForStorage) {
+      const fileName = safeResourceFileName(file.file_name);
+      if (isPdfAttachmentMetadata(file)) {
+        const buffer = file.decoded_buffer as ArrayBuffer | undefined;
+        if (!buffer || !hasPdfSignature(buffer)) return c.json({ error: `${fileName}: 유효한 PDF 파일이 아닙니다.` }, 400);
+        const attachmentId = crypto.randomUUID();
+        const metadata: NoticePdfMetadata = {
+          id: attachmentId,
+          noteId: id,
+          objectKey: noticePdfObjectKey(id, attachmentId, fileName),
+          fileName,
+          fileSize: buffer.byteLength,
+          sha256: await sha256Hex(buffer),
+          uploadedBy: user.sub,
+        };
+        noticePdfUploads.push({ metadata, buffer });
+        noticeAttachmentStatements.push(noticePdfMetadataInsert(db, metadata));
+        continue;
+      }
+      noticeAttachmentStatements.push(db.prepare(
+        `INSERT INTO admin_note_attachments (id, note_id, file_name, file_type, file_size, file_data, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})`
+      ).bind(
+        crypto.randomUUID(),
+        id,
+        fileName,
+        String(file.file_type || '').slice(0, 100) || 'application/octet-stream',
+        Number(file.file_size || 0),
+        String(file.file_data),
+      ));
+    }
+    if (noticePdfUploads.length > 0 && !c.env.ARTICLE_BUCKET) {
+      return c.json({ error: '공지 PDF 저장소가 설정되지 않았습니다.' }, 503);
+    }
+    for (const upload of noticePdfUploads) {
+      await stageNoticePdfUpload(db, c.env.ARTICLE_BUCKET!, upload.metadata, upload.buffer);
+    }
+    await db.batch([
+      adminNoteInsert,
+      noticePostInsert,
+      ...noticeAttachmentStatements,
+      ...noticePdfUploads.map(upload => noticePdfCleanupDelete(db, upload.metadata.objectKey)),
+    ]);
+  } else {
+    await adminNoteInsert.run();
+  }
   if (category === 'resource_library') {
     await db.prepare(
       `INSERT INTO resource_library_posts (
@@ -1608,26 +1784,7 @@ adminNotes.post('/', async (c) => {
       profile?.department || '',
     ).run();
   }
-  if (category === 'notice') {
-    await db.prepare(
-      `INSERT INTO notice_posts (
-        id, title, content, author_id, author_name, pinned, is_anonymous,
-        visibility, author_branch, author_department, view_count, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'all', ?, ?, 0, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
-    ).bind(
-      id,
-      finalTitle,
-      finalContent,
-      user.sub,
-      user.name,
-      canPin && pinned ? 1 : 0,
-      is_anonymous ? 1 : 0,
-      profile?.branch || '',
-      profile?.department || '',
-    ).run();
-  }
-
-  for (const file of safeAttachments) {
+  for (const file of category === 'notice' ? [] : attachmentsForStorage) {
     if (!file?.file_name || !file?.file_data) continue;
     const fileName = safeResourceFileName(file.file_name);
     const fileType = String(file.file_type || '').slice(0, 100) || 'application/octet-stream';
@@ -1812,6 +1969,25 @@ adminNotes.delete('/:id', async (c) => {
         .catch((err) => console.error('[recheckAlerts on briefing schedule delete]', err));
     }
   }
+  if (note.category === 'article_news') {
+    if (!c.env.ARTICLE_BUCKET) {
+      return c.json({ error: '기사 PDF 저장소가 설정되지 않아 삭제할 수 없습니다.' }, 503);
+    }
+    const articleObjects = await db.prepare(
+      'SELECT object_key FROM article_pdf_uploads WHERE note_id = ?',
+    ).bind(id).all<{ object_key: string }>();
+    try {
+      for (const object of articleObjects.results || []) {
+        await c.env.ARTICLE_BUCKET.delete(object.object_key);
+      }
+    } catch (error: unknown) {
+      console.error('[article-pdf] manual R2 delete failed; preserving DB metadata', {
+        noteId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return c.json({ error: '기사 PDF 원본 삭제에 실패했습니다. 잠시 후 다시 시도해주세요.' }, 502);
+    }
+  }
   if (note.category === 'resource_library' && c.env.ARTICLE_BUCKET) {
     const bucket = c.env.ARTICLE_BUCKET;
     const files = await db.prepare('SELECT object_key FROM resource_library_post_files WHERE post_id = ?').bind(id).all<{ object_key: string }>();
@@ -1819,7 +1995,36 @@ adminNotes.delete('/:id', async (c) => {
     await db.prepare('DELETE FROM resource_library_posts WHERE id = ?').bind(id).run();
   }
   if (note.category === 'notice') {
-    await db.prepare('DELETE FROM notice_posts WHERE id = ?').bind(id).run();
+    const pdfFiles = await db.prepare(
+      'SELECT id, note_id, object_key FROM notice_pdf_attachments WHERE note_id = ?'
+    ).bind(id).all<{ id: string; note_id: string; object_key: string }>();
+    await db.batch([
+      ...(pdfFiles.results || []).map(file => noticePdfCleanupUpsert(db, {
+        id: file.id,
+        noteId: file.note_id,
+        objectKey: file.object_key,
+      }, 'notice_delete', 0)),
+      db.prepare('DELETE FROM notice_pdf_attachments WHERE note_id = ?').bind(id),
+      db.prepare('DELETE FROM notice_posts WHERE id = ?').bind(id),
+      db.prepare("DELETE FROM admin_notes WHERE id = ? AND category = 'notice'").bind(id),
+    ]);
+
+    let cleanupPending = 0;
+    for (const file of pdfFiles.results || []) {
+      try {
+        if (!c.env.ARTICLE_BUCKET) throw new Error('ARTICLE_BUCKET is not configured');
+        await c.env.ARTICLE_BUCKET.delete(file.object_key);
+        await noticePdfCleanupDelete(db, file.object_key).run();
+      } catch (error: unknown) {
+        cleanupPending++;
+        console.error('[notice-pdf] deletion queued for retry', {
+          noteId: id,
+          objectKey: file.object_key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return c.json({ success: true, cleanup_pending: cleanupPending });
   }
   await db.prepare('DELETE FROM admin_notes WHERE id = ?').bind(id).run();
   return c.json({ success: true });

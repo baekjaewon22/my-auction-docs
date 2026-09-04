@@ -8,7 +8,7 @@ import {
 import Select, { toOptions } from '../components/Select';
 import { Plus, X, Trash2 } from 'lucide-react';
 import { parseAuctionCaseNumber } from '../../shared/auction-schedule';
-import { getRequiredInspectionBidDateError, isPastAuctionScheduleDate, isValidAuctionScheduleDate } from '../../shared/auction-schedule-write-access';
+import { getRequiredInspectionBidDateError, isValidAuctionScheduleDate } from '../../shared/auction-schedule-write-access';
 import { auctionScheduleEditBaseData } from './auction-schedule-form';
 
 const TIME_OPTS = toOptions(generateTimeOptions());
@@ -518,9 +518,9 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
           <button className="btn-close" onClick={onClose}><X size={18} /></button>
         </div>
 
-        {mode === 'auction-schedule' && !editingSchedule && isPastAuctionScheduleDate(targetDate) && (
+        {mode === 'auction-schedule' && !editingSchedule && (
           <p className="auction-schedule-past-create-notice" role="note">
-            과거 일정은 등록 후 수정하거나 삭제할 수 없습니다. 저장 전에 내용을 다시 확인해 주세요.
+            일반 일정 수정·삭제는 관리자급(마스터·총무·총무보조·대표)만 가능합니다. 담당자는 등록 후 기본정보를 변경할 수 없으니 저장 전에 내용을 다시 확인해 주세요.
           </p>
         )}
 

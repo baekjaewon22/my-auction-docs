@@ -9,6 +9,12 @@ import {
 } from 'lucide-react';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import { countLeaveBusinessDays, leaveYearsForRange, planSummerLeave } from '../../shared/leave-calendar';
+import {
+  isSummerLeaveRequestPeriod,
+  isSummerLeaveUsageDate,
+  SUMMER_LEAVE_REQUEST_PERIOD_ERROR,
+  SUMMER_LEAVE_USAGE_PERIOD_ERROR,
+} from '../../shared/summer-leave-policy';
 
 type FormLeaveType = '연차' | '반차' | '시간차' | '특별휴가';
 
@@ -39,16 +45,6 @@ function kstToday(): Date {
 
 function currentKstYear(): number {
   return kstToday().getUTCFullYear();
-}
-
-function isSummerVacationWindowOpen(): boolean {
-  const month = kstToday().getUTCMonth() + 1;
-  return month >= 7 && month <= 8;
-}
-
-function isJulyOrAugustDate(value: string): boolean {
-  const month = Number(String(value || '').slice(5, 7));
-  return month === 7 || month === 8;
 }
 
 // 타입 색상 매핑 (목록 표시용)
@@ -280,12 +276,12 @@ export default function Leave() {
           alert(holidayError || '공휴일 정보를 확인하고 있습니다. 잠시 후 다시 신청해주세요.'); return;
         }
         if (!summerVacationOpen) {
-          alert('여름 특별휴가는 매년 7~8월에만 신청할 수 있습니다. 9월부터는 사용이 불가합니다.'); return;
+          alert(SUMMER_LEAVE_REQUEST_PERIOD_ERROR); return;
         }
         if (summerAlreadyRequested) {
           alert('여름 특별휴가는 인당 연 1회만 신청할 수 있습니다.'); return;
         }
-        if (!isJulyOrAugustDate(formStartDate)) {
+        if (!isSummerLeaveUsageDate(formStartDate)) {
           alert('여름 특별휴가 시작일은 7~8월 안에서만 선택할 수 있습니다.'); return;
         }
         if (summerDays < 1 || summerDays > summerRemaining) {
@@ -313,8 +309,8 @@ export default function Leave() {
       }
       const rangeDates = [plan.specialStartDate, plan.specialEndDate, plan.annualStartDate, plan.annualEndDate]
         .filter((date): date is string => Boolean(date));
-      if (rangeDates.some(d => !isJulyOrAugustDate(d))) {
-        alert('여름 특별휴가와 연결 연차는 모두 7~8월 안에서만 사용할 수 있습니다.'); return;
+      if (rangeDates.some(d => !isSummerLeaveUsageDate(d))) {
+        alert(SUMMER_LEAVE_USAGE_PERIOD_ERROR); return;
       }
       const summerReason = summerChain > 0
         ? `[여름휴가] ${summerDays}일 (연차 ${summerChain}일 연결 ${summerChainPos === 'after' ? '뒤' : '앞'})`
@@ -441,7 +437,7 @@ export default function Leave() {
 
   // 여름휴가 — 올해 사용량 집계 (pending + approved)
   const summerSourceRequests = canRequestForOthers && formUserId ? formUserRequests : requests;
-  const summerVacationOpen = isSummerVacationWindowOpen();
+  const summerVacationOpen = isSummerLeaveRequestPeriod();
   const summerYear = currentKstYear();
   const summerActiveStatuses = ['pending', 'approved', 'cancel_requested'];
   const summerAlreadyRequested = summerSourceRequests.some(r =>
