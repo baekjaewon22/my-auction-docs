@@ -59,3 +59,33 @@ test('실행기 버전은 프런트·Worker·Python·빌드가 공용 원본을 
   assert.doesNotMatch(backend, /2026\.07\.28\.1/);
   assert.doesNotMatch(buildScript, /2026\.07\.28\.1/);
 });
+
+test('Python fallback version stays aligned with the shared automation version', () => {
+  const config = readFileSync(
+    new URL('../automation-service/backend/app/core/config.py', import.meta.url),
+    'utf8',
+  );
+  const escapedVersion = AUTOMATION_AGENT_VERSION.replaceAll('.', '\\.');
+
+  assert.match(
+    config,
+    new RegExp(`agent_version\\s*:\\s*str\\s*=\\s*["']${escapedVersion}["']`),
+  );
+});
+
+test('Windows agent packages the PowerPoint PDF conversion dependencies', () => {
+  const requirements = readFileSync(
+    new URL('../automation-service/backend/requirements.txt', import.meta.url),
+    'utf8',
+  );
+  const buildScript = readFileSync(
+    new URL('../scripts/build-auction-automation-agent.ps1', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(requirements, /^pywin32[^\r\n]*sys_platform\s*==\s*["']win32["']/m);
+  assert.match(buildScript, /import PyInstaller, win32com\.client, pythoncom, pywintypes/);
+  assert.match(buildScript, /--hidden-import win32com\.client/);
+  assert.match(buildScript, /--hidden-import pythoncom/);
+  assert.match(buildScript, /--hidden-import pywintypes/);
+});

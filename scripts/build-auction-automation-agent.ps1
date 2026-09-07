@@ -62,9 +62,12 @@ if (!$tesseractDir) {
 
 Push-Location $backendDir
 try {
-  & $venvPython -m PyInstaller --version *> $null
+  & $venvPython -c "import PyInstaller, win32com.client, pythoncom, pywintypes" *> $null
   if ($LASTEXITCODE -ne 0) {
     & $venvPython -m pip install -r requirements.txt
+    if ($LASTEXITCODE -ne 0) {
+      throw "Automation agent Python dependencies could not be installed."
+    }
   }
 
   & $venvPython -m PyInstaller `
@@ -79,6 +82,9 @@ try {
     --hidden-import selenium.webdriver.chrome.options `
     --hidden-import selenium.webdriver.chrome.service `
     --hidden-import selenium.webdriver.common.driver_finder `
+    --hidden-import win32com.client `
+    --hidden-import pythoncom `
+    --hidden-import pywintypes `
     --add-binary "$popplerBin;bin/poppler/Library/bin" `
     --add-binary "$tesseractDir;bin/tesseract" `
     --add-data "templates;templates" `

@@ -22,8 +22,11 @@ from urllib.parse import urljoin
 import fitz
 from PIL import Image, ImageEnhance, ImageOps
 from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
-from pptx.util import Pt
+from pptx.util import Inches, Pt
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -85,6 +88,10 @@ CASE_INFO_FONT_SIZE = Pt(19)
 SPECIAL_SUMMARY_SLIDE_CHAR_LIMIT = 850
 SPECIAL_SUMMARY_WRAP_WIDTH = 48
 SPECIAL_SUMMARY_MAX_WEIGHTED_LINES = 22
+CHECKLIST_ROWS_PER_COLUMN = 16
+CHECKLIST_DETAILS_PER_SLIDE = 4
+CHECKLIST_MIN_SLIDE_WIDTH = Inches(7.5)
+CHECKLIST_MIN_SLIDE_HEIGHT = Inches(10.8)
 NO_TENANTS_TEXT = "조사된 임차인이 없으므로, 낙찰자에게 인수되는 임차권리는 없습니다."
 
 BASE_RIGHT_TYPES = ("근저당권", "근저당", "저당권", "저당", "가압류", "압류", "강제경매", "임의경매")
@@ -2478,8 +2485,437 @@ def render_certificate_pptx_template(template_path: Path, output_path: Path, dat
             special_slide_index += 1
         _replace_placeholders_in_shapes(slide.shapes, slide_mapping)
 
+    _render_checklist_slides(prs, data)
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path))
+
+
+def _render_checklist_slides(prs: Presentation, data: dict) -> None:
+    """Append the checklist as native PPT shapes so PPTX and PDF outputs match.
+
+    The production template currently ends with a deliberately empty fourth slide.
+    Reusing it preserves the established certificate slides and removes the otherwise
+    blank PDF page. Custom templates without an empty final slide get a new slide.
+    """
+    rows = [item for item in (data.get("checklistRows") or []) if isinstance(item, dict)]
+    if not rows:
+        return
+    _validate_checklist_slide_size(prs)
+
+    rows_per_slide = CHECKLIST_ROWS_PER_COLUMN * 2
+    row_pages = [rows[index:index + rows_per_slide] for index in range(0, len(rows), rows_per_slide)]
+    reusable_slide = prs.slides[-1] if len(prs.slides) and len(prs.slides[-1].shapes) == 0 else None
+
+    for page_index, page_rows in enumerate(row_pages):
+        if page_index == 0 and reusable_slide is not None:
+            slide = reusable_slide
+        else:
+            slide = prs.slides.add_slide(_blank_slide_layout(prs))
+        _render_checklist_overview_slide(
+            prs,
+            slide,
+            page_rows,
+            data,
+            page_index=page_index,
+            page_count=len(row_pages),
+        )
+
+    details = [item for item in (data.get("checklistDetails") or []) if isinstance(item, dict)]
+    detail_pages = [
+        details[index:index + CHECKLIST_DETAILS_PER_SLIDE]
+        for index in range(0, len(details), CHECKLIST_DETAILS_PER_SLIDE)
+    ]
+    for page_index, page_details in enumerate(detail_pages):
+        slide = prs.slides.add_slide(_blank_slide_layout(prs))
+        _render_checklist_detail_slide(
+            prs,
+            slide,
+            page_details,
+            data,
+            page_index=page_index,
+            page_count=len(detail_pages),
+        )
+
+
+def _validate_checklist_slide_size(prs: Presentation) -> None:
+    if prs.slide_width >= CHECKLIST_MIN_SLIDE_WIDTH and prs.slide_height >= CHECKLIST_MIN_SLIDE_HEIGHT:
+        return
+
+    width_inches = prs.slide_width / Inches(1)
+    height_inches = prs.slide_height / Inches(1)
+    raise ValueError(
+        "권리분석 체크표 PPTX는 슬라이드 크기가 최소 7.5 x 10.8인치여야 합니다"
+        f"(현재 {width_inches:.2f} x {height_inches:.2f}인치). 가로형 또는 작은 템플릿은 지원하지 않습니다. "
+        "Rights checklist requires slides at least 7.5 x 10.8 inches; "
+        "landscape or smaller templates are not supported."
+    )
+
+
+def _blank_slide_layout(prs: Presentation):
+    for layout in prs.slide_layouts:
+        name = str(getattr(layout, "name", "") or "").strip().lower()
+        if name == "blank" or "빈 화면" in name:
+            return layout
+    if len(prs.slide_layouts) > 6:
+        return prs.slide_layouts[6]
+    return min(prs.slide_layouts, key=lambda layout: len(layout.placeholders))
+
+
+def _render_checklist_overview_slide(
+    prs: Presentation,
+    slide,
+    rows: list[dict],
+    data: dict,
+    *,
+    page_index: int,
+    page_count: int,
+) -> None:
+    _add_checklist_page_frame(prs, slide)
+    suffix = f" ({page_index + 1}/{page_count})" if page_count > 1 else ""
+    _add_ppt_textbox(
+        slide,
+        Inches(0.5),
+        Inches(0.42),
+        prs.slide_width - Inches(1.0),
+        Inches(0.4),
+        f"특이사항 종합 체크표{suffix}",
+        font_size=Pt(20),
+        bold=True,
+        color=RGBColor(37, 45, 55),
+        alignment=PP_ALIGN.CENTER,
+    )
+    _add_ppt_textbox(
+        slide,
+        Inches(0.55),
+        Inches(0.86),
+        prs.slide_width - Inches(1.1),
+        Inches(0.28),
+        f"사건번호 {data.get('caseNumber') or '담당자 확인 필요'} · 자동 권리분석 {len(data.get('checklistRows') or rows)}개 항목",
+        font_size=Pt(9),
+        color=RGBColor(105, 112, 122),
+        alignment=PP_ALIGN.CENTER,
+    )
+    _add_ppt_textbox(
+        slide,
+        Inches(0.55),
+        Inches(1.12),
+        prs.slide_width - Inches(1.1),
+        Inches(0.28),
+        f"판정 요약: {data.get('checklistSummaryText') or '-'}",
+        font_size=Pt(9),
+        bold=True,
+        color=RGBColor(66, 72, 80),
+        alignment=PP_ALIGN.CENTER,
+    )
+
+    table_top = Inches(1.52)
+    side_margin = Inches(0.48)
+    gap = Inches(0.14)
+    table_width = int((prs.slide_width - side_margin * 2 - gap) / 2)
+    columns = (
+        rows[:CHECKLIST_ROWS_PER_COLUMN],
+        rows[CHECKLIST_ROWS_PER_COLUMN:],
+    )
+    for column_index, column_rows in enumerate(columns):
+        if not column_rows:
+            continue
+        left = side_margin + column_index * (table_width + gap)
+        _add_checklist_table(slide, column_rows, left, table_top, table_width)
+
+    _add_checklist_footer(prs, slide, data)
+
+
+def _add_checklist_table(slide, rows: list[dict], left, top, width) -> None:
+    row_height = Inches(0.46)
+    height = row_height * (len(rows) + 1)
+    table = slide.shapes.add_table(len(rows) + 1, 3, left, top, width, height).table
+    table.columns[0].width = int(width * 0.23)
+    table.columns[1].width = int(width * 0.52)
+    table.columns[2].width = width - table.columns[0].width - table.columns[1].width
+
+    for row in table.rows:
+        row.height = row_height
+
+    for column_index, label in enumerate(("분류", "검사항목", "판정")):
+        _style_checklist_cell(
+            table.cell(0, column_index),
+            label,
+            fill_color=RGBColor(76, 68, 45),
+            font_color=RGBColor(255, 255, 255),
+            font_size=Pt(8),
+            bold=True,
+            alignment=PP_ALIGN.CENTER,
+        )
+
+    for row_index, item in enumerate(rows, start=1):
+        body_fill = RGBColor(255, 255, 255) if row_index % 2 else RGBColor(250, 248, 242)
+        _style_checklist_cell(
+            table.cell(row_index, 0),
+            str(item.get("category") or ""),
+            fill_color=RGBColor(245, 239, 220),
+            font_color=RGBColor(67, 63, 52),
+            font_size=Pt(7),
+            bold=True,
+            alignment=PP_ALIGN.CENTER,
+        )
+        _style_checklist_cell(
+            table.cell(row_index, 1),
+            str(item.get("name") or ""),
+            fill_color=body_fill,
+            font_color=RGBColor(40, 47, 55),
+            font_size=Pt(7.5),
+        )
+        state = str(item.get("state") or "미확인")
+        state_color, state_font_color = _checklist_state_colors(state)
+        _style_checklist_cell(
+            table.cell(row_index, 2),
+            state,
+            fill_color=state_color,
+            font_color=state_font_color,
+            font_size=Pt(7.5),
+            bold=True,
+            alignment=PP_ALIGN.CENTER,
+        )
+
+
+def _render_checklist_detail_slide(
+    prs: Presentation,
+    slide,
+    details: list[dict],
+    data: dict,
+    *,
+    page_index: int,
+    page_count: int,
+) -> None:
+    _add_checklist_page_frame(prs, slide)
+    suffix = f" ({page_index + 1}/{page_count})" if page_count > 1 else ""
+    _add_ppt_textbox(
+        slide,
+        Inches(0.5),
+        Inches(0.42),
+        prs.slide_width - Inches(1.0),
+        Inches(0.4),
+        f"위험 · 확인필요 항목 상세{suffix}",
+        font_size=Pt(19),
+        bold=True,
+        color=RGBColor(37, 45, 55),
+        alignment=PP_ALIGN.CENTER,
+    )
+    _add_ppt_textbox(
+        slide,
+        Inches(0.55),
+        Inches(0.88),
+        prs.slide_width - Inches(1.1),
+        Inches(0.28),
+        f"사건번호 {data.get('caseNumber') or '담당자 확인 필요'} · 판정 근거와 참조 자료",
+        font_size=Pt(9),
+        color=RGBColor(105, 112, 122),
+        alignment=PP_ALIGN.CENTER,
+    )
+
+    panel_left = Inches(0.55)
+    panel_width = prs.slide_width - Inches(1.1)
+    panel_height = Inches(1.86)
+    panel_gap = Inches(0.16)
+    panel_top = Inches(1.28)
+    for item_index, item in enumerate(details):
+        top = panel_top + item_index * (panel_height + panel_gap)
+        panel = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, panel_left, top, panel_width, panel_height)
+        panel.fill.solid()
+        panel.fill.fore_color.rgb = RGBColor(251, 250, 246)
+        panel.line.color.rgb = RGBColor(220, 208, 169)
+        panel.line.width = Pt(1)
+
+        state = str(item.get("state") or "미확인")
+        state_color, state_font_color = _checklist_state_colors(state)
+        badge = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE,
+            panel_left + Inches(0.16),
+            top + Inches(0.14),
+            Inches(0.75),
+            Inches(0.3),
+        )
+        badge.fill.solid()
+        badge.fill.fore_color.rgb = state_color
+        badge.line.color.rgb = state_color
+        _set_shape_text(
+            badge,
+            state,
+            font_size=Pt(8),
+            bold=True,
+            color=state_font_color,
+            alignment=PP_ALIGN.CENTER,
+        )
+        _add_ppt_textbox(
+            slide,
+            panel_left + Inches(1.0),
+            top + Inches(0.11),
+            panel_width - Inches(1.2),
+            Inches(0.36),
+            str(item.get("name") or ""),
+            font_size=Pt(11),
+            bold=True,
+            color=RGBColor(42, 48, 56),
+        )
+        _add_ppt_textbox(
+            slide,
+            panel_left + Inches(0.18),
+            top + Inches(0.55),
+            panel_width - Inches(0.36),
+            Inches(0.7),
+            f"판단 근거: {item.get('basis') or '근거 자료 확인 필요'}",
+            font_size=Pt(8.5),
+            color=RGBColor(55, 62, 70),
+        )
+        _add_ppt_textbox(
+            slide,
+            panel_left + Inches(0.18),
+            top + Inches(1.32),
+            panel_width - Inches(0.36),
+            Inches(0.35),
+            f"참조: {item.get('sources') or '원본 문서 확인 필요'}",
+            font_size=Pt(7),
+            color=RGBColor(125, 126, 125),
+        )
+
+    _add_checklist_footer(prs, slide, data)
+
+
+def _add_checklist_page_frame(prs: Presentation, slide) -> None:
+    background = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, prs.slide_width, prs.slide_height)
+    background.fill.solid()
+    background.fill.fore_color.rgb = RGBColor(255, 255, 255)
+    background.line.color.rgb = RGBColor(255, 255, 255)
+
+    for inset, width, color in (
+        (Inches(0.2), Pt(3), RGBColor(200, 168, 75)),
+        (Inches(0.27), Pt(1), RGBColor(232, 201, 106)),
+    ):
+        border = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            inset,
+            inset,
+            prs.slide_width - inset * 2,
+            prs.slide_height - inset * 2,
+        )
+        border.fill.background()
+        border.line.color.rgb = color
+        border.line.width = width
+
+
+def _add_checklist_footer(prs: Presentation, slide, data: dict) -> None:
+    _add_ppt_textbox(
+        slide,
+        Inches(0.55),
+        prs.slide_height - Inches(1.12),
+        prs.slide_width - Inches(1.1),
+        Inches(0.48),
+        "자동 분석 결과이며 현장·관청 미검증 항목은 미확인/해당없음으로 표시됩니다. "
+        "최종 입찰 전 원본 문서를 확인하십시오.",
+        font_size=Pt(7),
+        color=RGBColor(112, 112, 112),
+        alignment=PP_ALIGN.CENTER,
+    )
+    _add_ppt_textbox(
+        slide,
+        Inches(0.55),
+        prs.slide_height - Inches(0.67),
+        prs.slide_width - Inches(1.1),
+        Inches(0.24),
+        f"부동산경매 컨설팅 마이옥션 · {data.get('createdDate') or ''}",
+        font_size=Pt(7),
+        bold=True,
+        color=RGBColor(93, 82, 51),
+        alignment=PP_ALIGN.CENTER,
+    )
+
+
+def _add_ppt_textbox(
+    slide,
+    left,
+    top,
+    width,
+    height,
+    text: str,
+    *,
+    font_size,
+    bold: bool = False,
+    color: RGBColor = RGBColor(40, 47, 55),
+    alignment=PP_ALIGN.LEFT,
+):
+    shape = slide.shapes.add_textbox(left, top, width, height)
+    _set_shape_text(
+        shape,
+        text,
+        font_size=font_size,
+        bold=bold,
+        color=color,
+        alignment=alignment,
+    )
+    return shape
+
+
+def _set_shape_text(shape, text: str, *, font_size, bold: bool, color: RGBColor, alignment) -> None:
+    text_frame = shape.text_frame
+    text_frame.clear()
+    text_frame.word_wrap = True
+    text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    text_frame.margin_left = Inches(0.03)
+    text_frame.margin_right = Inches(0.03)
+    text_frame.margin_top = Inches(0.02)
+    text_frame.margin_bottom = Inches(0.02)
+    paragraph = text_frame.paragraphs[0]
+    paragraph.alignment = alignment
+    paragraph.space_after = Pt(0)
+    run = paragraph.add_run()
+    run.text = str(text or "")
+    run.font.name = "맑은 고딕"
+    run.font.size = font_size
+    run.font.bold = bold
+    run.font.color.rgb = color
+
+
+def _style_checklist_cell(
+    cell,
+    text: str,
+    *,
+    fill_color: RGBColor,
+    font_color: RGBColor,
+    font_size,
+    bold: bool = False,
+    alignment=PP_ALIGN.LEFT,
+) -> None:
+    cell.fill.solid()
+    cell.fill.fore_color.rgb = fill_color
+    cell.margin_left = Inches(0.035)
+    cell.margin_right = Inches(0.035)
+    cell.margin_top = Inches(0.02)
+    cell.margin_bottom = Inches(0.02)
+    text_frame = cell.text_frame
+    text_frame.clear()
+    text_frame.word_wrap = True
+    text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    paragraph = text_frame.paragraphs[0]
+    paragraph.alignment = alignment
+    paragraph.space_after = Pt(0)
+    run = paragraph.add_run()
+    run.text = text
+    run.font.name = "맑은 고딕"
+    run.font.size = font_size
+    run.font.bold = bold
+    run.font.color.rgb = font_color
+
+
+def _checklist_state_colors(state: str) -> tuple[RGBColor, RGBColor]:
+    colors = {
+        "위험": (RGBColor(198, 40, 40), RGBColor(255, 255, 255)),
+        "확인필요": (RGBColor(224, 134, 0), RGBColor(255, 255, 255)),
+        "이상없음": (RGBColor(44, 122, 75), RGBColor(255, 255, 255)),
+        "미확인": (RGBColor(107, 119, 137), RGBColor(255, 255, 255)),
+        "해당없음": (RGBColor(184, 188, 196), RGBColor(44, 48, 54)),
+    }
+    return colors.get(state, colors["미확인"])
 
 
 def export_pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> bool:
