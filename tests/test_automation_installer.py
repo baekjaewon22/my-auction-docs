@@ -49,6 +49,26 @@ class AutomationInstallerTests(unittest.TestCase):
         self.assertIn("continuing with an in-place update", source)
         self.assertNotIn("Old installation could not be removed", source)
 
+    def test_upgrade_preserves_and_restores_existing_workspaces(self):
+        with tempfile.TemporaryDirectory() as temp:
+            install_dir = Path(temp) / setup_agent.AGENT_NAME
+            profile = install_dir / "workspaces" / "slot-1" / "selenium_profile"
+            profile.mkdir(parents=True)
+            cookie = profile / "Cookies"
+            cookie.write_bytes(b"session")
+
+            preserved = setup_agent.preserve_install_workspaces(install_dir)
+
+            self.assertIsNotNone(preserved)
+            self.assertFalse((install_dir / "workspaces").exists())
+            self.assertEqual((preserved / "slot-1" / "selenium_profile" / "Cookies").read_bytes(), b"session")
+
+            (install_dir / "agent-version.txt").write_text("next", encoding="ascii")
+            setup_agent.restore_install_workspaces(preserved, install_dir)
+
+            self.assertEqual(cookie.read_bytes(), b"session")
+            self.assertEqual((install_dir / "agent-version.txt").read_text(encoding="ascii"), "next")
+
     def test_old_and_duplicate_installer_names_are_cleanup_targets(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)

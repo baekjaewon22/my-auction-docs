@@ -24,9 +24,9 @@ from PIL import Image, ImageEnhance, ImageOps
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
-from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
-from pptx.oxml.ns import qn
+from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
+from pptx.oxml.ns import qn
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -42,8 +42,8 @@ from ..core.config import (
 )
 from ..core.utils import normalize_myauction_detail_url
 from ..models.schemas import ProgressUpdate, ReportRequest
-from . import capturer, crawler, forced_execution_estimator, pdf_processor
-from .special_situations import build_special_issue_lines
+from . import capturer, crawler, pdf_processor
+from .special_situations import SPECIAL_SITUATION_RULES
 from .selenium_driver import (
     account_profile_dir,
     click_tab_safe,
@@ -72,11 +72,9 @@ BODY_PLACEHOLDER_TOKENS = (
     "{{surplusDescription}}",
     "{{miscText}}",
     "{{reviewText}}",
-    "{{specialSummaryText}}",
     "{{unpaidManagementFeeText}}",
     "{{saleSpecRemarksText}}",
     "{{statusSurveyEtcText}}",
-    "{{특이사항요약}}",
     "{{미납관리비}}",
     "{{매각물건명세서비고}}",
     "{{현황조사서기타}}",
@@ -84,17 +82,23 @@ BODY_PLACEHOLDER_TOKENS = (
 CASE_INFO_PLACEHOLDER_TOKENS = ("{{caseNumber}}", "{{caceNumber}}")
 BODY_FONT_SIZE = Pt(11)
 PRIORITY_REPAYMENT_FONT_SIZE = Pt(10)
-CASE_INFO_FONT_SIZE = Pt(19)
-SPECIAL_SUMMARY_SLIDE_CHAR_LIMIT = 850
-SPECIAL_SUMMARY_WRAP_WIDTH = 48
-SPECIAL_SUMMARY_MAX_WEIGHTED_LINES = 22
-CHECKLIST_ROWS_PER_COLUMN = 16
-CHECKLIST_DETAILS_PER_SLIDE = 4
-CHECKLIST_MIN_SLIDE_WIDTH = Inches(7.5)
-CHECKLIST_MIN_SLIDE_HEIGHT = Inches(10.8)
-NO_TENANTS_TEXT = "조사된 임차인이 없으므로, 낙찰자에게 인수되는 임차권리는 없습니다."
+CASE_INFO_FONT_SIZE = Pt(12)
+REPORT_MIN_SLIDE_WIDTH = Inches(7.5)
+REPORT_MIN_SLIDE_HEIGHT = Inches(10.8)
+NARRATIVE_WRAP_WIDTH = 43
+NARRATIVE_PAGE_MAX_WEIGHT = 49
+NARRATIVE_MAX_BLOCKS_PER_PAGE = 4
+NARRATIVE_PANEL_GAP_INCHES = 0.10
+NARRATIVE_CONTENT_HEIGHT_INCHES = 4.90
+NARRATIVE_BODY_FONT_SIZE = Pt(10)
+NO_TENANTS_TEXT = "조사된 임차인이 없으므로, 매수인에게 인수되는 임차권리는 없습니다."
+PARTIAL_NO_TENANTS_TEXT = (
+    "법원에서 조사된 임차인 현황에는 ‘조사된 임차내역이 없습니다’라고 기재되어 있습니다. "
+    "따라서 조사 결과상 임차인은 없으며, 매수인에게 인수되는 임차권리는 없습니다."
+)
 
 BASE_RIGHT_TYPES = ("근저당권", "근저당", "저당권", "저당", "가압류", "압류", "강제경매", "임의경매")
+AUCTION_PROCEDURE_TYPES = ("강제경매", "임의경매", "경매개시결정")
 RIGHT_TYPES = (
     "근저당권",
     "근저당",
@@ -112,6 +116,167 @@ RIGHT_TYPES = (
     "가등기",
     "소유권이전청구권가등기",
 )
+
+# 마이옥션 사건 헤더는 지원명만 표시하는 경우가 있다. 같은 지원명이
+# 둘 이상의 본원에 속하는 경우에는 추측하지 않고 원문을 보존한다.
+COURT_BRANCH_PARENTS = {
+    "고양지원": "의정부지방법원",
+    "남양주지원": "의정부지방법원",
+    "부천지원": "인천지방법원",
+    "성남지원": "수원지방법원",
+    "여주지원": "수원지방법원",
+    "평택지원": "수원지방법원",
+    "안산지원": "수원지방법원",
+    "안양지원": "수원지방법원",
+    "강릉지원": "춘천지방법원",
+    "원주지원": "춘천지방법원",
+    "속초지원": "춘천지방법원",
+    "영월지원": "춘천지방법원",
+    "홍성지원": "대전지방법원",
+    "논산지원": "대전지방법원",
+    "천안지원": "대전지방법원",
+    "서산지원": "대전지방법원",
+    "충주지원": "청주지방법원",
+    "제천지원": "청주지방법원",
+    "영동지원": "청주지방법원",
+    "안동지원": "대구지방법원",
+    "경주지원": "대구지방법원",
+    "김천지원": "대구지방법원",
+    "상주지원": "대구지방법원",
+    "의성지원": "대구지방법원",
+    "영덕지원": "대구지방법원",
+    "포항지원": "대구지방법원",
+    "대구서부지원": "대구지방법원",
+    "부산동부지원": "부산지방법원",
+    "부산서부지원": "부산지방법원",
+    "마산지원": "창원지방법원",
+    "진주지원": "창원지방법원",
+    "통영지원": "창원지방법원",
+    "밀양지원": "창원지방법원",
+    "거창지원": "창원지방법원",
+    "목포지원": "광주지방법원",
+    "장흥지원": "광주지방법원",
+    "순천지원": "광주지방법원",
+    "해남지원": "광주지방법원",
+    "군산지원": "전주지방법원",
+    "정읍지원": "전주지방법원",
+    "남원지원": "전주지방법원",
+}
+
+SOURCE_TAG_COVERAGE = {
+    "registry": {"OWN-02", "OWN-03", "OWN-04", "OWN-06", "OWN-01", "BLD-03"},
+    "sale_spec": {"LND-01", "ENC-01", "OWN-02", "BLD-03", "OWN-01", "LIM-05", "LIM-06", "BLD-01", "AGR-01", "CHG-01", "BLD-02", "RED-01", "LND-03"},
+    "status_survey": {"LND-01", "ENC-01", "LIM-05", "LIM-06", "BLD-01", "CHG-01", "BLD-02", "LND-03"},
+    "case_documents": {"ENC-01", "OWN-03", "OWN-04", "OWN-06", "LIM-07", "DUP-01"},
+    "appraisal": {"LND-01", "BLD-01", "BLD-03", "OWN-01", "CHG-01", "BLD-02", "RED-01", "LND-03"},
+    "building_register": {"BLD-01", "CHG-01", "BLD-02"},
+}
+
+SOURCE_KEYS = (
+    "registry", "sale_spec", "status_survey", "case_documents",
+    "appraisal", "building_register", "dividend_requests",
+)
+
+SOURCE_DISPLAY_NAMES = {
+    "registry": "등기 권리내역",
+    "sale_spec": "매각물건명세서",
+    "status_survey": "현황조사서",
+    "case_documents": "문건접수내역",
+    "appraisal": "감정평가 기재",
+    "building_register": "건축물대장",
+    "dividend_requests": "배당요구내역",
+}
+
+NARRATIVE_SECTION_TITLES = {
+    "권리관계": "권리관계 상세 검토",
+    "임차·점유": "임차·점유 및 보증금 인수 검토",
+    "물건 위험": "물건·절차상 특이사항",
+    "입찰·비용": "비용 부담 및 입찰 전 확인사항",
+}
+NARRATIVE_IMPACTS = {
+    "선순위 전세권": "배당 결과에 따라 전세권 또는 미회수 금액이 인수부담으로 남을 수 있습니다",
+    "가처분": "본안 결과와 말소 여부에 따라 취득한 소유권의 안정성에 영향을 줄 수 있습니다",
+    "가등기(담보/순위보전)": "가등기의 성격과 순위에 따라 소유권 취득 또는 추가 부담이 달라질 수 있습니다",
+    "법정지상권": "토지 사용, 건물 철거 및 지료 부담 가능성이 달라질 수 있습니다",
+    "유치권": "점유가 계속되면 인도 시기와 비용에 영향을 줄 수 있습니다",
+    "토지 별도등기": "특별매각조건에 따라 별도 권리를 인수하거나 추가 비용이 발생할 수 있습니다",
+    "대지권 미등기": "대지사용권, 향후 등기와 담보대출 가능성에 영향을 줄 수 있습니다",
+    "공유지분 매각": "우선매수와 공유물분할 절차로 사용·처분 시기와 비용이 달라질 수 있습니다",
+    "중복·병합 사건": "매각범위, 배당 및 사건 진행 일정이 달라질 수 있습니다",
+    "대항력": "임차보증금의 전부 또는 일부가 낙찰자 인수부담이 될 수 있습니다",
+    "전입일·확정일자": "우선변제 순위와 예상 배당액이 달라질 수 있습니다",
+    "배당요구": "배당으로 회수되지 않은 보증금이 인수부담으로 남을 수 있습니다",
+    "보증금 인수": "입찰가격에서 별도로 공제해야 할 최대 인수금액에 직접 영향을 줍니다",
+    "점유자 미상/점유관계": "대항력 판정과 명도 일정·비용을 확정하기 어렵습니다",
+    "소유자와의 관계": "임대차의 실체와 배당·인수 판단이 달라질 수 있습니다",
+    "문서 간 불일치": "말소기준과 임차·배당 판단 전체의 신뢰도에 영향을 줍니다",
+    "명도 난이도": "인도 완료 시기와 협의·집행 비용이 달라질 수 있습니다",
+    "위반건축물": "시정명령, 이행강제금 또는 원상복구 비용이 발생할 수 있습니다",
+    "토지·건물 일괄매각": "매각에서 제외된 토지·건물의 사용관계와 추가 부담이 달라질 수 있습니다",
+    "농지취득자격증명": "증명 발급·제출 여부가 매각허가와 입찰보증금에 영향을 줄 수 있습니다",
+    "현황 변경": "공부와 다른 부분의 사용 가능성과 복구비가 달라질 수 있습니다",
+    "제시외 건물": "소유관계에 따라 철거·인수·사용 분쟁이 발생할 수 있습니다",
+    "맹지/도로 접함": "진입과 건축 가능성, 토지 활용가치에 영향을 줄 수 있습니다",
+    "경계 문제": "침범·월경 여부에 따라 사용면적과 분쟁비용이 달라질 수 있습니다",
+    "재개발·재건축": "조합원 지위, 현금청산 및 추가분담금 가능성이 달라질 수 있습니다",
+    "무잉여": "경매 절차가 취소·기각되어 입찰 일정이 무산될 수 있습니다",
+    "취하 가능성": "매각기일 전 사건이 종료되어 입찰이 진행되지 않을 수 있습니다",
+    "체납관리비": "실제 승계 범위가 총 취득원가와 명도 협의에 영향을 줍니다",
+    "명도비용": "낙찰 후 자금계획과 인도 완료 시기에 영향을 줍니다",
+    "부대비용(취득세 등)": "취득세·등기비용 등을 포함한 총투입금액이 달라집니다",
+    "매각불허가 사유": "매각허가 여부와 입찰보증금 반환·몰수 위험에 영향을 줄 수 있습니다",
+    "입찰보증금 특례(재매각)": "입찰 당일 준비해야 할 보증금 규모가 달라집니다",
+    "신탁등기": "처분 권한과 집행 근거에 따라 소유권 취득의 유효성 및 절차가 달라질 수 있습니다",
+    "대위변제 위험": "말소기준이 바뀌면 임차인의 선후순위와 보증금 인수 범위가 달라질 수 있습니다",
+    "분묘기지권": "토지 사용 범위와 개장 절차, 지료 및 이장 비용에 영향을 줄 수 있습니다",
+}
+NARRATIVE_ACTIONS = {
+    "선순위 전세권": "전세권 설정계약, 배당요구 여부와 예상배당액을 원본으로 대조하십시오",
+    "가처분": "피보전권리, 본안사건 진행상태와 매각 후 말소 여부를 확인하십시오",
+    "가등기(담보/순위보전)": "등기원인, 청산절차와 본등기 가능성을 확인하십시오",
+    "법정지상권": "토지·건물의 종전 소유관계, 신축시점과 철거특약을 확인하십시오",
+    "유치권": "신고·배제신청, 점유 개시시점과 공사대금 채권 증빙을 확인하십시오",
+    "토지 별도등기": "토지 등기와 매각물건명세서의 인수 특별조건을 함께 확인하십시오",
+    "대지권 미등기": "대지지분, 감정가 포함 여부와 향후 등기 가능성을 확인하십시오",
+    "공유지분 매각": "지분비율, 공유자 우선매수 신고와 실제 점유·사용관계를 확인하십시오",
+    "중복·병합 사건": "관련 사건 기록과 최신 매각범위·배당관계를 확인하십시오",
+    "대항력": "전입일뿐 아니라 실제 점유 지속 여부와 말소기준 순위를 원본으로 확인하십시오",
+    "전입일·확정일자": "전입세대자료와 확정일자 부여내역을 원본으로 대조하십시오",
+    "배당요구": "배당요구 접수일, 종기 준수와 예상배당액을 확인하십시오",
+    "보증금 인수": "예상배당표를 작성하고 확인 전에는 보증금 전액을 최대 노출액으로 반영하십시오",
+    "점유자 미상/점유관계": "현장 방문과 전입세대·사업자등록 열람으로 실제 점유자를 확인하십시오",
+    "소유자와의 관계": "임대차계약, 보증금 지급자료와 가족·고용 등 관계를 확인하십시오",
+    "문서 간 불일치": "최신 등기, 매각물건명세서와 현황조사서를 항목별로 다시 대조하십시오",
+    "명도 난이도": "점유자 수와 협의 가능성, 인도명령·강제집행 예상범위를 확인하십시오",
+    "위반건축물": "건축물대장과 관할 건축과에서 위반 내용·시정 및 비용을 확인하십시오",
+    "토지·건물 일괄매각": "매각목록과 감정평가서에서 포함·제외 대상을 확인하십시오",
+    "농지취득자격증명": "관할 행정기관에 발급 가능성과 제출기한을 확인하십시오",
+    "현황 변경": "건축물대장·도면과 현장을 대조하고 복구 가능성을 확인하십시오",
+    "제시외 건물": "소유자, 매각 포함 여부와 철거·사용 조건을 확인하십시오",
+    "맹지/도로 접함": "지적도·현황도로와 건축허가상 접도요건을 확인하십시오",
+    "경계 문제": "필요하면 지적현황측량으로 실제 경계를 확인하십시오",
+    "재개발·재건축": "정비사업 단계, 조합원 지위와 추가분담금을 확인하십시오",
+    "무잉여": "선순위채권 잔액과 집행비용을 반영해 잉여액을 다시 계산하십시오",
+    "취하 가능성": "입찰 직전 법원 사건 진행상태와 취하서 접수 여부를 확인하십시오",
+    "체납관리비": "관리사무소 최신 내역에서 공용·전유·연체료와 기준일을 구분하십시오",
+    "명도비용": "현장 점유를 확인한 뒤 협의비와 강제집행 예납비용을 별도로 산정하십시오",
+    "부대비용(취득세 등)": "취득 목적과 보유현황에 맞춘 세율로 총투입금액을 다시 계산하십시오",
+    "매각불허가 사유": "특별매각조건과 제출서류·보증금 조건을 입찰 전에 확인하십시오",
+    "입찰보증금 특례(재매각)": "매각공고의 보증금률과 준비금액을 확인하십시오",
+}
+NARRATIVE_JUDGMENTS = {
+    "선순위 전세권": "말소기준보다 앞선 전세권은 배당요구와 배당 결과에 따라 인수 여부가 달라집니다",
+    "가처분": "동일일 또는 선순위 가처분은 접수순위와 본안 결과 확인 전까지 소멸 여부를 확정할 수 없습니다",
+    "가등기(담보/순위보전)": "가등기의 성격과 순위가 확인되기 전에는 본등기 또는 인수 가능성을 배제할 수 없습니다",
+    "유치권": "신고 사실만으로 유치권 성립이 확정되지는 않으며 점유와 피담보채권을 따로 검증해야 합니다",
+    "대항력": "전입일과 실제 점유가 말소기준보다 앞서는지에 따라 대항력 및 인수 여부가 달라집니다",
+    "전입일·확정일자": "우선변제권의 성립과 순위는 전입·점유·확정일자의 요건을 함께 확인해야 합니다",
+    "배당요구": "배당요구의 제출 및 종기 준수 여부를 확인하기 전에는 배당 효과를 확정할 수 없습니다",
+    "보증금 인수": "선순위 대항력과 실제 배당액이 확정되기 전에는 인수액을 확정할 수 없습니다",
+    "체납관리비": "기재된 총액과 낙찰자가 실제 부담할 범위는 동일하지 않을 수 있어 항목별 구분이 필요합니다",
+}
+EXTRA_NARRATIVE_SPECIAL_CODES = {"OWN-03", "LIM-07", "LND-03"}
+BASELINE_NARRATIVE_CHECKS = {"부대비용(취득세 등)"}
 
 
 async def generate_rights_certificate(
@@ -266,11 +431,14 @@ def _safe_filename_part(value: str) -> str:
 def extract_rights_context(soup, driver=None, task_id: Optional[str] = None) -> dict:
     selector_fields = _extract_selector_fields(soup)
     rights_ocr_context = extract_rights_context_by_ocr(driver, task_id=task_id) if driver else {}
-    rights = merge_rights(_extract_rights(soup), rights_ocr_context.get("rights") or [])
+    html_rights = _extract_rights(soup)
+    rights = merge_rights(html_rights, rights_ocr_context.get("rights") or [])
+    registry_summary_complete = _structured_registry_summary_complete(soup, html_rights)
     ocr_context = extract_tenant_context_by_ocr(driver, task_id=task_id) if driver else {}
     status_survey_context = extract_status_survey_context_by_ocr(driver, task_id=task_id) if driver else {}
     case_document_text = collect_case_document_text(driver) if driver else ""
-    tenants = ocr_context.get("tenants") or _extract_tenants(soup)
+    html_tenants = _extract_tenants(soup)
+    tenants = ocr_context.get("tenants") or html_tenants
     dividend_requests = _extract_dividend_requests(soup)
     related_cases = _extract_related_cases(soup)
     auction_applicant_creditors = _extract_auction_applicant_creditors(soup, selector_fields.get("case_number") or "")
@@ -281,6 +449,58 @@ def extract_rights_context(soup, driver=None, task_id: Optional[str] = None) -> 
     )
     management_fee = _extract_management_fee(soup)
     market_data = _extract_market_data(soup)
+    myungseung_analysis = _extract_myungseung_rights_analysis(soup)
+    sale_spec_incomplete = ocr_context.get("_sale_spec_incomplete")
+    if sale_spec_incomplete is None:
+        sale_spec_incomplete = bool(ocr_context.get("_incomplete") or ocr_context.get("_timed_out"))
+    source_incomplete = {
+        "registry": bool(
+            not registry_summary_complete
+            and (rights_ocr_context.get("_incomplete") or rights_ocr_context.get("_timed_out"))
+        ),
+        "sale_spec": bool(sale_spec_incomplete),
+        "status_survey": bool(status_survey_context.get("_incomplete")),
+        "case_documents": False,
+        "dividend_requests": False,
+        "appraisal": False,
+        "building_register": False,
+    }
+    source_completeness = {
+        "registry": registry_summary_complete or rights_ocr_context.get("_source_complete") is True,
+        "sale_spec": ocr_context.get("_sale_spec_complete") is True,
+        "status_survey": status_survey_context.get("_source_complete") is True,
+        "case_documents": False,
+        "dividend_requests": False,
+        "appraisal": False,
+        "building_register": False,
+    }
+    source_collected = {
+        "registry": bool(
+            html_rights
+            or rights_ocr_context.get("rights_ocr_text")
+            or rights_ocr_context.get("rights_ocr_images")
+        ),
+        "sale_spec": bool(
+            _document_text_is_available(ocr_context.get("sale_spec_ocr_text") or "")
+            or ocr_context.get("sale_spec_ocr_images")
+            or ocr_context.get("sale_spec_base_right")
+            or ocr_context.get("sale_spec_dividend_deadline")
+            or ocr_context.get("sale_spec_remarks")
+        ),
+        "status_survey": bool(status_survey_context.get("status_survey_text")),
+        "case_documents": bool(case_document_text),
+        "dividend_requests": bool(dividend_requests) or _has_table_containing(soup, "배당"),
+        "appraisal": False,
+        "building_register": False,
+    }
+    source_status = {
+        source: {
+            "collected": source_collected[source],
+            "complete": source_completeness[source],
+            "failed": source_incomplete[source],
+        }
+        for source in SOURCE_KEYS
+    }
     context = {
         "rights": rights,
         "rights_ocr_text": rights_ocr_context.get("rights_ocr_text", ""),
@@ -289,6 +509,11 @@ def extract_rights_context(soup, driver=None, task_id: Optional[str] = None) -> 
         "tenant_source": ocr_context.get("tenant_source", ""),
         "tenant_ocr_text": ocr_context.get("tenant_ocr_text", ""),
         "tenant_ocr_images": ocr_context.get("tenant_ocr_images", []),
+        "sale_spec_ocr_text": ocr_context.get("sale_spec_ocr_text", ""),
+        "sale_spec_ocr_images": ocr_context.get("sale_spec_ocr_images", []),
+        "tenant_status_text": ocr_context.get("tenant_status_text", ""),
+        "sale_spec_base_right": ocr_context.get("sale_spec_base_right") or {},
+        "sale_spec_dividend_deadline": ocr_context.get("sale_spec_dividend_deadline") or "",
         "sale_spec_remarks": ocr_context.get("sale_spec_remarks", ""),
         "status_survey_etc": status_survey_context.get("status_survey_etc") or _extract_status_survey_etc_from_text(soup.get_text("\n", strip=True)),
         "status_survey_text": status_survey_context.get("status_survey_text", ""),
@@ -299,6 +524,14 @@ def extract_rights_context(soup, driver=None, task_id: Optional[str] = None) -> 
         "expected_dividend": expected_dividend,
         "management_fee": management_fee,
         "market_data": market_data,
+        "myungseung_analysis": myungseung_analysis,
+        "source_completeness": source_completeness,
+        "source_collected": source_collected,
+        "source_status": source_status,
+        "source_incomplete": source_incomplete,
+        "source_collection_incomplete": bool(
+            any(source_incomplete.values())
+        ),
     }
     context.update(selector_fields)
     return context
@@ -325,6 +558,34 @@ def _extract_selector_fields(soup) -> dict:
     if selector_base_right:
         fields["selector_base_right"] = selector_base_right
     return fields
+
+
+def _extract_myungseung_rights_analysis(soup) -> list[dict]:
+    """Read only the dedicated 법무법인 명승 analysis section.
+
+    The page repeats ``id=dtl_stock``.  Scoping from the exact section heading
+    prevents unrelated tables (including related cases and expected dividends)
+    from being reported as the law firm's analysis.
+    """
+    results: list[dict] = []
+    for stock in soup.find_all("div", id="dtl_stock"):
+        heading = stock.select_one("div#dtl_title > h3") or stock.find("h3")
+        heading_text = re.sub(r"\s+", " ", heading.get_text(" ", strip=True) if heading else "").strip()
+        if heading_text != "법무법인 명승 권리분석":
+            continue
+        for row in stock.select(".excmt table.tbl_excmt tr"):
+            label_node = row.find("th")
+            value_node = row.find("td")
+            label = re.sub(r"\s+", " ", label_node.get_text(" ", strip=True) if label_node else "").strip()
+            value = re.sub(r"\s+", " ", value_node.get_text(" ", strip=True) if value_node else "").strip()
+            if not value:
+                continue
+            results.append({
+                "label": label or "검토의견",
+                "text": value,
+                "source": "마이옥션 상세페이지 내 법무법인 명승 권리분석",
+            })
+    return _dedupe_by(results, ("label", "text", "source"))
 
 
 def _extract_selector_base_right(soup) -> dict:
@@ -395,9 +656,29 @@ def _clean_court_label(value: str) -> str:
     if not text:
         return ""
 
-    court_idx = text.find("법원")
-    if court_idx >= 0:
-        return text[: court_idx + len("법원")].strip()
+    # 상세 헤더 뒤의 경매계·사건번호·연락처만 제거하고 본원/지원명은
+    # 유지한다. 기존처럼 첫 '법원'에서 자르면 '수원지방법원 안양지원'이
+    # '수원지방법원'으로 축약된다.
+    text = re.split(
+        r"\s+경매\s*\d+\s*계\b|\s+\d{4}\s*타경\s*\d+\b|\s*\[[^\]]+\]\s*$",
+        text,
+        maxsplit=1,
+    )[0].strip()
+
+    full_match = re.match(
+        r"^(.+?지방법원(?:\s+(?:본원|[가-힣A-Za-z0-9·]+지원))?)\b",
+        text,
+    )
+    if full_match:
+        return full_match.group(1).strip()
+
+    branch_match = re.match(r"^([가-힣A-Za-z0-9·]+지원)\b", text)
+    if branch_match:
+        branch = branch_match.group(1)
+        parent = COURT_BRANCH_PARENTS.get(branch)
+        if parent:
+            return f"{parent} {branch}"
+        return branch
 
     text = re.split(
         r"\s*/\s*|\(\s*\d{2,4}-\d{2,4}\s*\)|\b\d{2,4}-\d{2,4}\b|"
@@ -407,6 +688,139 @@ def _clean_court_label(value: str) -> str:
         maxsplit=1,
     )[0]
     return text.strip(" /,")
+
+
+def _has_table_containing(soup, keyword: str) -> bool:
+    if soup is None:
+        return False
+    return any(keyword in table.get_text(" ", strip=True) for table in soup.find_all("table"))
+
+
+def _document_text_is_available(value: str) -> bool:
+    compact = re.sub(r"\s+", "", str(value or ""))
+    if not compact:
+        return False
+    return not any(token in compact for token in ("준비중입니다", "자료준비중", "서비스준비중"))
+
+
+def _source_completeness(data: dict) -> dict[str, bool]:
+    """Return explicit per-document completeness; content presence alone is partial."""
+    declared = data.get("source_completeness") or {}
+    declared_status = data.get("source_status") or {}
+    result = {}
+    for source in SOURCE_KEYS:
+        if isinstance(declared, dict) and source in declared:
+            result[source] = declared.get(source) is True
+        else:
+            status = declared_status.get(source) if isinstance(declared_status, dict) else None
+            status_complete = (
+                status == "complete"
+                or (isinstance(status, dict) and status.get("complete") is True)
+            )
+            result[source] = status_complete or data.get(f"{source}_source_complete") is True
+    incomplete = data.get("source_incomplete") or {}
+    if isinstance(incomplete, dict):
+        for source, failed in incomplete.items():
+            if failed and source in result:
+                result[source] = False
+    if isinstance(declared_status, dict):
+        for source, status in declared_status.items():
+            status_failed = status == "failed" or (
+                isinstance(status, dict) and status.get("failed") is True
+            )
+            if status_failed and source in result:
+                result[source] = False
+    if data.get("source_collection_incomplete") and not incomplete:
+        # Legacy/global failure flags cannot identify the affected source.
+        result = {source: False for source in result}
+    return result
+
+
+def _source_states(data: dict) -> dict[str, dict[str, bool | str]]:
+    """Separate source presence from verified completeness and collection failure.
+
+    A document can be collected and useful as positive evidence while still being
+    incomplete for absence-based conclusions.  Only ``complete`` enables those
+    conclusions; ``partial`` material remains available for factual narration.
+    """
+    completeness = _source_completeness(data)
+    declared_status = data.get("source_status") or {}
+    declared_collected = data.get("source_collected") or {}
+    incomplete = data.get("source_incomplete") or {}
+    global_failed = bool(data.get("source_collection_incomplete") and not incomplete)
+    result: dict[str, dict[str, bool | str]] = {}
+    for source in SOURCE_KEYS:
+        status = declared_status.get(source) if isinstance(declared_status, dict) else None
+        if isinstance(status, dict):
+            status_collected = status.get("collected") is True
+            status_failed = status.get("failed") is True
+        else:
+            status_collected = status in {"complete", "partial", "collected"}
+            status_failed = status == "failed"
+        explicit_collected = (
+            isinstance(declared_collected, dict)
+            and declared_collected.get(source) is True
+        ) or data.get(f"{source}_source_collected") is True
+        failed = global_failed or status_failed or (
+            isinstance(incomplete, dict) and incomplete.get(source) is True
+        )
+        collected = (
+            completeness[source]
+            or status_collected
+            or explicit_collected
+            or _infer_source_collected(data, source)
+        )
+        complete = bool(completeness[source] and not failed)
+        state = "complete" if complete else "partial" if collected else "failed" if failed else "missing"
+        result[source] = {
+            "state": state,
+            "collected": bool(collected),
+            "complete": complete,
+            "failed": bool(failed),
+        }
+    return result
+
+
+def _infer_source_collected(data: dict, source: str) -> bool:
+    if source == "registry":
+        return bool(
+            data.get("rights")
+            or str(data.get("rights_ocr_text") or "").strip()
+            or data.get("rights_ocr_images")
+            or (data.get("selector_base_right") or {}).get("date")
+        )
+    if source == "sale_spec":
+        return bool(
+            str(data.get("sale_spec_text") or "").strip()
+            or str(data.get("sale_spec_remarks") or "").strip()
+            or (data.get("sale_spec_base_right") or {}).get("date")
+            or data.get("sale_spec_dividend_deadline")
+        )
+    if source == "status_survey":
+        return bool(
+            str(data.get("status_survey_text") or "").strip()
+            or str(data.get("status_survey_etc") or "").strip()
+        )
+    if source == "case_documents":
+        return bool(str(data.get("case_document_text") or "").strip())
+    if source == "appraisal":
+        return bool(str(data.get("appraisal_raw") or data.get("appraisal_text") or "").strip())
+    if source == "building_register":
+        return bool(
+            str(data.get("building_register_text") or "").strip()
+            or data.get("building_register_images")
+        )
+    if source == "dividend_requests":
+        return bool(data.get("dividend_requests"))
+    return False
+
+
+def _special_signal_source_codes(completeness: dict[str, bool]) -> set[str]:
+    codes: set[str] = set()
+    for source, source_codes in SOURCE_TAG_COVERAGE.items():
+        if completeness.get(source):
+            codes.update(source_codes)
+    return codes
 
 
 def build_template_data(data: dict) -> dict:
@@ -421,6 +835,16 @@ def build_template_data(data: dict) -> dict:
     related_cases = data.get("related_cases") or []
     management_fee = data.get("management_fee") or {}
     market_data = data.get("market_data") or {}
+    source_completeness = _source_completeness(data)
+    tenant_source_complete = bool(
+        source_completeness["sale_spec"] or source_completeness["status_survey"]
+    )
+    explicit_survey_no_tenant = _tenant_ocr_text_confirms_no_surveyed_tenants(
+        data.get("tenant_ocr_text") or ""
+    )
+    tenant_conclusion_complete = tenant_source_complete or (
+        explicit_survey_no_tenant and not valid_tenants
+    )
 
     registry_base_right = find_base_right(rights)
     sale_spec_base_right = data.get("sale_spec_base_right") or {}
@@ -439,8 +863,14 @@ def build_template_data(data: dict) -> dict:
         dividend_requests,
         dividend_deadline,
         data.get("address") or "",
+        tenant_source_complete=tenant_conclusion_complete,
     )
-    registered_takeover_texts = analyze_registered_takeover_rights(rights, base_right, dividend_requests)
+    registered_takeover_texts = analyze_registered_takeover_rights(
+        rights,
+        base_right,
+        dividend_requests,
+        dividend_request_source_complete=source_completeness["dividend_requests"],
+    )
     misc_items = build_misc_items(valid_tenants, management_fee, market_data)
     review_items = build_review_items(rights, valid_tenants, management_fee)
     unpaid_management_fee_text = build_unpaid_management_fee_text(management_fee)
@@ -461,33 +891,26 @@ def build_template_data(data: dict) -> dict:
         base_right,
         rights,
         registered_takeover_texts,
+        registry_source_complete=source_completeness["registry"],
     )
     tenant_analysis_text = build_tenant_analysis_text(
         tenants,
         tenant_texts,
         data.get("tenant_ocr_text") or "",
         data.get("tenant_source") or "",
+        tenant_source_complete=tenant_conclusion_complete,
     )
     if registered_takeover_texts:
         tenant_analysis_text = combine_tenant_and_registered_takeover_texts(
             tenant_analysis_text,
             registered_takeover_texts,
         )
-    surplus_description = analyze_surplus(data, rights, base_right, related_cases)
-    special_summary_text = build_special_summary_text(
+    surplus_description = analyze_surplus(
         data,
         rights,
-        valid_tenants,
         base_right,
-        tenant_texts,
-        tenant_analysis_text,
-        registered_takeover_texts,
-        surplus_description,
-        management_fee,
-        market_data,
-        sale_spec_remarks_text,
-        status_survey_etc_text,
-        case_notice_text,
+        related_cases,
+        rights_source_complete=source_completeness["registry"],
     )
     no_tenants = tenant_analysis_text == NO_TENANTS_TEXT
     tenant_analyses = [] if no_tenants else [
@@ -497,18 +920,64 @@ def build_template_data(data: dict) -> dict:
     ]
 
     try:
-        from .rights_checklist import build_checklist_from_pipeline, checklist_to_context
+        from .rights_checklist import build_checklist_from_pipeline
     except ImportError:  # 단독 실행 대비
-        from rights_checklist import build_checklist_from_pipeline, checklist_to_context
-    _checklist_ctx = checklist_to_context(build_checklist_from_pipeline(
-        data=data, rights=rights, base_right=base_right, valid_tenants=valid_tenants,
-        management_fee=management_fee, surplus_description=surplus_description,
-        texts=[
-            sale_spec_remarks_text, status_survey_etc_text, case_notice_text,
-            data.get("case_document_text") or "", data.get("property_overview") or "",
-            data.get("item_type") or "",
+        from rights_checklist import build_checklist_from_pipeline
+    raw_signal_texts = [
+        data.get("rights_ocr_text") or "",
+        data.get("tenant_ocr_text") or "",
+        data.get("sale_spec_remarks") or "",
+        data.get("status_survey_text") or "",
+        data.get("status_survey_etc") or "",
+        data.get("case_notice") or "",
+        data.get("case_document_text") or "",
+        data.get("appraisal_raw") or "",
+        data.get("property_overview") or "",
+        *[
+            str(item.get("text") or "")
+            for item in (data.get("myungseung_analysis") or [])
+            if isinstance(item, dict)
         ],
-    ))
+    ]
+    explicit_no_tenant = (
+        (bool(tenants) and all(_is_no_tenant_record(tenant) for tenant in tenants))
+        or _tenant_ocr_text_indicates_no_tenants(data.get("tenant_ocr_text") or "")
+    )
+    tenant_source_confirmed = tenant_conclusion_complete and bool(
+        explicit_no_tenant or valid_tenants
+    )
+    signal_source_codes = _special_signal_source_codes(source_completeness)
+    signal_source_confirmed = bool(signal_source_codes)
+    checklist_tenants = []
+    for tenant in valid_tenants:
+        enriched_tenant = dict(tenant)
+        matched_request = _find_dividend_request(tenant.get("name") or "", dividend_requests)
+        if matched_request and not enriched_tenant.get("depositClaimDate"):
+            enriched_tenant["depositClaimDate"] = matched_request.get("requestDate") or ""
+        if not enriched_tenant.get("depositDeadline"):
+            enriched_tenant["depositDeadline"] = (
+                dividend_deadline or (matched_request or {}).get("deadline") or ""
+            )
+        checklist_tenants.append(enriched_tenant)
+    checklist_items = build_checklist_from_pipeline(
+        data=data, rights=rights, base_right=base_right, valid_tenants=checklist_tenants,
+        management_fee=management_fee, surplus_description=surplus_description,
+        texts=raw_signal_texts,
+        tenant_source_confirmed=tenant_source_confirmed,
+        signal_source_confirmed=signal_source_confirmed,
+        rights_source_confirmed=source_completeness["registry"],
+        signal_source_codes=signal_source_codes,
+    )
+    narrative_report = build_narrative_report(
+        checklist_items,
+        data=data,
+        rights=rights,
+        base_right=base_right,
+        tenants=valid_tenants,
+        management_fee=management_fee,
+        raw_signal_texts=raw_signal_texts,
+        created_date=created_date,
+    )
 
     return {
         "caseNumber": case_number,
@@ -530,13 +999,14 @@ def build_template_data(data: dict) -> dict:
         "baseRightType": base_right_type,
         "baseRightCreditor": base_right.get("creditor") if base_right else "",
         "baseRightDescription": base_right_description,
+        "registeredRightCount": len(substantive_registered_rights(rights)),
+        "registeredRightAmountTotal": registered_right_amount_total(rights),
+        "auctionProcedureCount": len(auction_procedure_entries(rights)),
         "tenantAnalysisText": tenant_analysis_text,
         "tenantOcrText": data.get("tenant_ocr_text") or "",
         "tenantAnalyses": tenant_analyses,
         "noTenants": no_tenants,
         "surplusDescription": surplus_description,
-        "specialSummaryText": special_summary_text,
-        "특이사항요약": special_summary_text,
         "miscText": "\n".join(misc_items),
         "miscItems": misc_items,
         "unpaidManagementFeeText": unpaid_management_fee_text,
@@ -551,10 +1021,746 @@ def build_template_data(data: dict) -> dict:
         "hasUnpaidFee": int(management_fee.get("unpaidAmount") or 0) > 0,
         "reviewText": "\n".join(review_items),
         "reviewItems": review_items,
-        "checklistRows": _checklist_ctx["checklistRows"],
-        "checklistDetails": _checklist_ctx["checklistDetails"],
-        "checklistSummaryText": _checklist_ctx["checklistSummaryText"],
+        "narrativePages": narrative_report["pages"],
+        "narrativeIssueCount": narrative_report["issueCount"],
+        "narrativeReportHtml": narrative_report["html"],
     }
+
+
+def build_narrative_report(
+    items: list,
+    *,
+    data: dict,
+    rights: list[dict],
+    base_right: Optional[dict],
+    tenants: list[dict],
+    management_fee: dict,
+    raw_signal_texts: list,
+    created_date: str,
+) -> dict:
+    """Build customer-facing prose while keeping the 32-item engine internal."""
+    try:
+        from .rights_checklist import State, detect_situation_codes, management_fee_amount_status
+    except ImportError:  # 단독 실행 대비
+        from rights_checklist import State, detect_situation_codes, management_fee_amount_status
+
+    raw_text = "\n".join(str(value or "") for value in raw_signal_texts if str(value or "").strip())
+    detected_codes = detect_situation_codes(raw_text)
+    extra_rules = [
+        rule for rule in SPECIAL_SITUATION_RULES
+        if rule.get("code") in EXTRA_NARRATIVE_SPECIAL_CODES and rule.get("code") in detected_codes
+    ]
+    visible_checks = [
+        item for item in items
+        if item.state == State.CHECK and item.name not in BASELINE_NARRATIVE_CHECKS
+    ]
+    risks = [item for item in items if item.state == State.RISK]
+
+    source_completeness = _source_completeness(data)
+    source_states = _source_states(data)
+    rights_available = source_completeness["registry"]
+    rights_collected = bool(source_states["registry"]["collected"])
+    explicit_no_tenant = (
+        _tenant_ocr_text_indicates_no_tenants(data.get("tenant_ocr_text") or "")
+        or (
+            bool(data.get("tenants"))
+            and all(_is_no_tenant_record(tenant) for tenant in (data.get("tenants") or []))
+        )
+    )
+    tenant_source_complete = bool(
+        source_completeness["sale_spec"] or source_completeness["status_survey"]
+    )
+    explicit_survey_no_tenant = _tenant_ocr_text_confirms_no_surveyed_tenants(
+        data.get("tenant_ocr_text") or ""
+    )
+    tenant_source_confirmed = bool(
+        (tenant_source_complete and (explicit_no_tenant or tenants))
+        or (explicit_survey_no_tenant and not tenants)
+    )
+    tenant_source_collected = bool(
+        explicit_no_tenant
+        or tenants
+        or source_states["sale_spec"]["collected"]
+        or source_states["status_survey"]["collected"]
+    )
+    signal_source_confirmed = bool(_special_signal_source_codes(source_completeness))
+    fee_status = management_fee_amount_status(management_fee)
+    myungseung_blocks = [
+        _myungseung_analysis_block(item)
+        for item in (data.get("myungseung_analysis") or [])
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+
+    summary_blocks = [
+        {
+            "heading": "종합 판단",
+            "body": _narrative_overview_text(
+                risks,
+                visible_checks,
+                extra_rules,
+                rights_available=rights_available,
+                rights_collected=rights_collected,
+                tenant_source_confirmed=tenant_source_confirmed,
+                tenant_source_collected=tenant_source_collected,
+            ),
+            "kind": "risk" if risks or any(rule.get("risk") == "상" for rule in extra_rules) else "neutral",
+            "label": "핵심 판단",
+        },
+        {
+            "heading": "권리관계 검토",
+            "body": _rights_clean_narrative(
+                items,
+                rights,
+                base_right,
+                rights_available,
+                signal_source_confirmed,
+                rights_collected=rights_collected,
+            ),
+            "kind": "neutral",
+            "label": "검토 결과",
+        },
+        {
+            "heading": "임차·점유 검토",
+            "body": _tenant_clean_narrative(
+                items,
+                tenants,
+                base_right,
+                tenant_source_confirmed,
+                tenant_source_collected=tenant_source_collected,
+                explicit_no_tenant=explicit_no_tenant,
+            ),
+            "kind": "neutral" if tenant_source_confirmed else "residual",
+            "label": "검토 결과" if tenant_source_confirmed else "자료 확인",
+        },
+    ]
+    sections = [{"title": "특이사항", "blocks": summary_blocks}]
+
+    if myungseung_blocks:
+        sections.append({"title": "법무법인 명승 권리분석", "blocks": myungseung_blocks})
+
+    for category in NARRATIVE_SECTION_TITLES:
+        category_items = [
+            item for item in [*risks, *visible_checks]
+            if item.category == category
+        ]
+        category_extra = [
+            rule for rule in extra_rules
+            if _extra_rule_category(str(rule.get("code") or "")) == category
+        ]
+        if not category_items and not category_extra:
+            continue
+        blocks = [_narrative_issue_block(item) for item in category_items]
+        blocks.extend(_extra_special_block(rule) for rule in category_extra)
+        sections.append({"title": NARRATIVE_SECTION_TITLES[category], "blocks": blocks})
+
+    final_blocks = [{
+        "heading": "비용 부담 검토",
+        "body": _cost_narrative(management_fee, fee_status),
+        "kind": "check" if fee_status == "confirmed" else "neutral",
+        "label": "비용 검토",
+    }]
+    status_survey_block = _status_survey_review_block(data)
+    if status_survey_block:
+        final_blocks.insert(1, status_survey_block)
+    final_action = _final_action_narrative(risks, visible_checks, extra_rules)
+    if final_action:
+        final_blocks.append({
+            "heading": "입찰 전 확인사항",
+            "body": final_action,
+            "kind": "scope",
+            "label": "최종 확인",
+        })
+    sections.append({"title": "입찰 전 검토", "blocks": final_blocks})
+
+    pages = _paginate_narrative_sections(sections)
+    case_number = data.get("case_number") or "담당자 확인 필요"
+    report_html = _render_narrative_report_html(pages, case_number, created_date)
+    return {
+        "pages": pages,
+        "issueCount": len(risks) + len(visible_checks) + len(extra_rules) + len(myungseung_blocks),
+        "html": report_html,
+    }
+
+
+def _myungseung_analysis_block(item: dict) -> dict:
+    label = re.sub(r"\s+", " ", str(item.get("label") or "검토의견")).strip()
+    source = re.sub(r"\s+", " ", str(item.get("source") or "법무법인 명승 권리분석")).strip()
+    analysis_text = _finish_sentence(str(item.get("text") or ""))
+    if label == "재진행":
+        body = (
+            f"{source}에서는 이 사건을 ‘재진행’ 물건으로 분류하고 있습니다. "
+            f"{analysis_text}"
+        )
+        kind = "check"
+    else:
+        body = f"{source}의 {label} 의견입니다. {analysis_text}"
+        kind = "neutral"
+    return {
+        "heading": label,
+        "body": _finish_sentence(body),
+        "kind": kind,
+        "label": "전문 검토",
+    }
+
+
+def _narrative_issue_block(item) -> dict:
+    kind = "risk" if str(item.state.value) == "위험" else "check"
+    label = "핵심 위험" if kind == "risk" else "추가 확인"
+    fact = _customer_fact_from_basis(item.name, str(item.basis or ""))
+    judgment = NARRATIVE_JUDGMENTS.get(
+        item.name,
+        "확인된 기재만으로 최종 법률효과를 확정할 수 없어 관련 요건을 추가로 검토해야 합니다",
+    )
+    impact = NARRATIVE_IMPACTS.get(item.name, "낙찰 후 부담이나 절차 진행에 영향을 줄 수 있습니다")
+    action = NARRATIVE_ACTIONS.get(item.name, "관련 원본 문서와 최신 현황을 입찰 전에 확인하십시오")
+    body = (
+        f"{_without_sentence_end(fact)}. "
+        f"{_without_sentence_end(judgment)}. "
+        f"{_without_sentence_end(impact)}. "
+        f"입찰 전 {_without_sentence_end(action)}."
+    )
+    return {"heading": item.name, "body": _finish_sentence(body), "kind": kind, "label": label}
+
+
+def _extra_special_block(rule: dict) -> dict:
+    kind = "risk" if rule.get("risk") == "상" else "check"
+    name = str(rule.get("name") or "추가 특이사항")
+    fact = str(rule.get("fact") or "관련 법률관계의 성립 요건과 현재 상태를 원문으로 확정해야 합니다")
+    action = str(rule.get("action") or "관련 원본과 최신 현황을 입찰 전에 확인하여야 합니다")
+    body = (
+        f"{name} 관련 기재가 있습니다. "
+        f"{_without_sentence_end(fact)}. "
+        f"{_without_sentence_end(NARRATIVE_IMPACTS.get(name, '권리관계나 물건 이용 및 추가 비용에 영향을 줄 수 있습니다'))}. "
+        f"입찰 전 {_without_sentence_end(action)}."
+    )
+    return {
+        "heading": name,
+        "body": _finish_sentence(body),
+        "kind": kind,
+        "label": "핵심 위험" if kind == "risk" else "추가 확인",
+    }
+
+
+def _extra_rule_category(code: str) -> str:
+    return "물건 위험" if code == "LND-03" else "권리관계"
+
+
+def _narrative_overview_text(
+    risks: list,
+    checks: list,
+    extra_rules: list[dict],
+    *,
+    rights_available: bool,
+    rights_collected: bool,
+    tenant_source_confirmed: bool,
+    tenant_source_collected: bool,
+) -> str:
+    extra_names = [str(rule.get("name") or "") for rule in extra_rules]
+    risk_names = [item.name for item in risks]
+    high_extra_names = [str(rule.get("name") or "") for rule in extra_rules if rule.get("risk") == "상"]
+    if risk_names or high_extra_names:
+        names = _join_korean_names([*risk_names, *high_extra_names])
+        return (
+            f"이 사건에서 입찰가와 낙찰 후 부담에 직접 영향을 줄 수 있는 핵심 쟁점은 {names}입니다. "
+            "각 쟁점은 권리효과와 실제 부담 가능성을 기준으로 정리했으며, 금액이나 성립요건이 남아 있는 부분은 "
+            "입찰가 산정 전에 확인해야 합니다."
+        )
+    if not rights_available or not tenant_source_confirmed:
+        if rights_collected and tenant_source_collected:
+            return (
+                "등기부현황과 임차·점유 자료의 주요 기재를 기준으로 권리관계와 인수 부담을 검토했습니다. "
+                "권리관계는 말소기준권리를 중심으로, 임차관계는 법원 조사내용을 중심으로 판단했습니다."
+            )
+        return (
+            "현재 사건자료의 핵심 기재를 기준으로 말소기준권리, 임차관계와 비용 부담을 검토했습니다. "
+            "추가 확인이 필요한 부분은 아래 특이사항에 따로 정리했습니다."
+        )
+    if checks or extra_names:
+        names = _join_korean_names([*[item.name for item in checks], *extra_names])
+        return (
+            "매수인에게 인수되는 중대한 권리는 확인되지 않습니다. "
+            f"다만 {names}은 입찰가와 명도 계획에 영향을 줄 수 있어 별도 확인 대상으로 정리했습니다."
+        )
+    return (
+        "매수인에게 인수되는 중대한 권리사항은 확인되지 않습니다. "
+        "말소기준권리 이후의 등기상 권리는 매각으로 말소되는 구조이며, 임차관계도 아래와 같이 정리됩니다."
+    )
+
+
+def _rights_clean_narrative(
+    items: list,
+    rights: list[dict],
+    base_right: Optional[dict],
+    rights_available: bool,
+    signal_source_confirmed: bool,
+    *,
+    rights_collected: bool,
+) -> str:
+    registered = substantive_registered_rights(rights)
+    procedures = auction_procedure_entries(rights)
+    registered_total = registered_right_amount_total(rights)
+    if not rights_available:
+        if rights_collected and registered:
+            right_types = _join_korean_names([str(right.get("type") or "") for right in registered])
+            base_text = _base_right_summary(base_right)
+            return (
+                f"등기부현황상 실체 권리는 {len(registered)}건({right_types})이고, "
+                f"등기상 기재금액 합계는 {fmt_money(registered_total)}입니다. "
+                f"{base_text}를 기준으로 선후를 검토한 결과, 매수인에게 인수되는 등기상 권리는 확인되지 않습니다."
+            )
+        if rights_collected:
+            return (
+                "등기부현황의 접수일과 권리종류를 기준으로 말소기준권리와의 선후를 검토했습니다. "
+                "매수인에게 인수되는 등기상 권리가 있는 경우 아래 특이사항에 별도로 기재합니다."
+            )
+        return (
+            "등기부현황 확인이 필요한 사건입니다. 말소기준권리와 그보다 앞선 권리 여부를 최신 등기사항전부증명서로 대조해야 합니다."
+        )
+    base_label = _base_right_summary(base_right)
+    rule_safe = [
+        item.name for item in items
+        if item.category == "권리관계" and item.state.value == "이상없음" and item.method.value == "규칙엔진"
+    ]
+    signal_safe = [
+        item.name for item in items
+        if item.category == "권리관계" and item.state.value == "이상없음" and item.method.value != "규칙엔진"
+    ]
+    parts = [
+        f"말소기준과 선후 비교 기준은 {base_label}입니다.",
+    ]
+    if registered:
+        parts.insert(
+            0,
+            f"건물 등기부현황에서 확인되는 실체 권리는 {len(registered)}건이며, "
+            f"등기상 기재금액 합계는 {fmt_money(registered_total)}입니다.",
+        )
+    else:
+        parts.insert(
+            0,
+            "건물 등기부현황에서 말소기준권리보다 앞선 실체 권리는 확인되지 않습니다. "
+            "따라서 등기상 선순위 인수 권리는 없습니다.",
+        )
+    if rule_safe:
+        parts.append(
+            f"{_join_korean_names(rule_safe)} 항목에서도 매수인 인수 위험은 확인되지 않습니다."
+        )
+    if signal_safe and signal_source_confirmed:
+        parts.append(f"{_join_korean_names(signal_safe)} 관련 특이 기재도 발견되지 않습니다.")
+    absent_sensitive_types = [
+        right_type for right_type in ("전세권", "가처분", "가등기")
+        if not any(right_type in str(right.get("type") or "") for right in registered)
+    ]
+    if absent_sensitive_types:
+        parts.append(f"등기부현황에는 {_join_korean_names(absent_sensitive_types)}가 없습니다.")
+    if procedures:
+        claims = [parse_money(entry.get("amount")) for entry in procedures if parse_money(entry.get("amount")) > 0]
+        claim_text = f" 청구금액은 {fmt_money(max(claims))}입니다." if claims else ""
+        parts.append(
+            f"경매기입등기 {len(procedures)}건은 매각절차를 알리는 절차등기로 분리했습니다.{claim_text} "
+            "이 청구금액은 근저당권 기재금액과 중복 합산하지 않았습니다."
+        )
+    registered_dates = [
+        normalize_date(right.get("date") or "")
+        for right in registered
+        if _has_valid_date(right.get("date") or "")
+    ]
+    if len(registered_dates) != len(set(registered_dates)):
+        parts.append("같은 날짜에 설정된 권리는 접수번호와 순위를 확인해 선후를 정리해야 합니다.")
+    return " ".join(parts)
+
+
+def _tenant_clean_narrative(
+    items: list,
+    tenants: list[dict],
+    base_right: Optional[dict],
+    tenant_source_confirmed: bool,
+    *,
+    tenant_source_collected: bool,
+    explicit_no_tenant: bool,
+) -> str:
+    if not tenant_source_confirmed:
+        if tenant_source_collected and tenants:
+            move_count = sum(bool(tenant.get("moveInDate")) for tenant in tenants)
+            fixed_count = sum(bool(tenant.get("fixedDate")) for tenant in tenants)
+            demand_count = sum(bool(tenant.get("depositClaimDate")) for tenant in tenants)
+            return (
+                f"임차 관련 기재 {len(tenants)}건을 확인했습니다. 전입일 {move_count}건, "
+                f"확정일자 {fixed_count}건, 배당요구일 {demand_count}건을 말소기준권리와 각각 비교해 인수 여부를 판단했습니다."
+            )
+        if explicit_no_tenant:
+            return PARTIAL_NO_TENANTS_TEXT
+        if tenant_source_collected:
+            return (
+                "임차·점유 관련 기재를 기준으로 인수되는 임차권리 여부를 검토했습니다. "
+                "인수 가능성이 있는 임차관계가 확인되면 아래 특이사항에 별도로 표시합니다."
+            )
+        return (
+            "임차·점유 확인이 필요한 사건입니다. 매각물건명세서, 현황조사서와 전입세대 확인자료를 기준으로 실제 점유와 전입일을 확인해야 합니다."
+        )
+    if not tenants:
+        return (
+            "법원에서 조사된 임차인 현황에는 ‘조사된 임차내역이 없습니다’라고 명확히 기재되어 있습니다. "
+            "따라서 조사 결과상 임차인은 없으며, 매수인에게 인수되는 임차권리는 없습니다."
+        )
+    safe_names = [
+        item.name for item in items
+        if item.category == "임차·점유" and item.state.value == "이상없음"
+    ]
+    base_text = _base_right_summary(base_right)
+    result = f"임차내역 {len(tenants)}건의 전입일·확정일자·배당요구 기재를 {base_text}와 비교했습니다. "
+    if safe_names:
+        result += f"현재 자료에서 별도 위험 신호로 분류되지 않은 항목은 {_join_korean_names(safe_names)}입니다. "
+    return result + "실제 점유 지속과 배당액은 입찰 전 현장 및 예상배당표로 확인하면 됩니다."
+
+
+def _property_clean_narrative(
+    items: list,
+    signal_source_confirmed: bool,
+    *,
+    signal_sources_collected: list[str],
+) -> str:
+    if not signal_source_confirmed:
+        if signal_sources_collected:
+            names = _join_korean_names([
+                SOURCE_DISPLAY_NAMES.get(source, source)
+                for source in signal_sources_collected
+            ])
+            return (
+                f"{names}의 기재를 기준으로 물건·절차상 특이사항을 검토했습니다. "
+                "입찰가나 명도에 영향을 줄 수 있는 내용은 별도 항목으로 정리했습니다."
+            )
+        return (
+            "물건·절차상 특이사항은 매각물건명세서, 현황조사, 문건접수내역과 감정평가 기재를 기준으로 확인해야 합니다."
+        )
+    safe_names = [
+        item.name for item in items
+        if item.category == "물건 위험" and item.state.value == "이상없음"
+    ]
+    if not safe_names:
+        return (
+            "물건 자체의 위험으로 별도 표시할 내용은 제한적입니다. 현장 확인이 필요한 사항은 아래 항목에 따로 정리했습니다."
+        )
+    return (
+        f"{_join_korean_names(safe_names)} 관련 특이 기재는 발견되지 않습니다. "
+        "현장 확인이 필요한 사항은 입찰 전 최종 점검 항목으로 보면 됩니다."
+    )
+
+
+def _cost_narrative(management_fee: dict, fee_status: str) -> str:
+    if fee_status == "confirmed":
+        amount = int(management_fee.get("unpaidAmount") or 0)
+        return (
+            f"체납관리비는 약 {fmt_money(amount)}으로 기재되어 있습니다. "
+            "관리사무소에서 최신 미납 내역과 공용부분·전유부분·연체료 구분을 확인한 뒤 취득원가에 반영해야 합니다. "
+            "취득세·등기비용과 명도비용도 별도로 산정해야 합니다."
+        )
+    if fee_status == "none":
+        return (
+            "미납관리비는 확인되지 않습니다. 다만 입찰 전 관리사무소에서 최신 미납 내역을 확인하고, "
+            "공용부분 관리비와 전유부분 사용료·연체료를 구분해 취득원가에 반영해야 합니다."
+        )
+    return (
+        "미납관리비는 확인되지 않습니다. 입찰 전 관리사무소에 최신 미납 내역을 확인하십시오. "
+        "집합건물의 전 소유자 체납액 중 성질상 공용부분 관리비는 특별승계인인 매수인에게 청구될 수 있으나, 전유부분 사용료와 "
+        "기존 연체료는 같은 범위로 보지 않습니다. 항목 명칭이 아니라 실제 사용 성격별 내역을 확인해 취득원가에 반영해야 합니다."
+    )
+
+
+def _status_survey_review_block(data: dict) -> Optional[dict]:
+    text = re.sub(
+        r"\s+", " ",
+        str(data.get("status_survey_etc") or data.get("tenant_status_text") or ""),
+    ).strip()
+    if not text:
+        return None
+    compact = re.sub(r"\s+", "", text)
+    if "폐문" not in compact and "소유자" not in compact and "점유" not in compact:
+        return None
+    facts = []
+    if "폐문" in compact:
+        facts.append("현황조사 당시 현장 방문은 폐문으로 내부 점유상태를 직접 확인하지 못했습니다")
+    if "소유자" in compact and "전입" in compact:
+        facts.append("전입세대 열람 및 주민등록표에는 채무자(소유자) 세대 전입이 기재되어 있습니다")
+    if not facts:
+        facts.append(_clip_text(text, 360))
+    return {
+        "heading": "현황조사 및 실제 점유 확인",
+        "body": (
+            f"{' '.join(_finish_sentence(fact) for fact in facts)} "
+            "이는 조사된 임차인이 존재한다는 의미가 아니며, 임차인현황의 ‘조사된 임차내역 없음’ 판단과 구분됩니다. "
+            "입찰 전 현재 소유자 점유 여부와 현장 인도 가능 상태를 다시 확인하면 됩니다."
+        ),
+        "kind": "check",
+        "label": "현황 확인",
+    }
+
+
+def _unknown_narrative_blocks(unknowns: list) -> list[dict]:
+    category_sentences = []
+    for category, title in NARRATIVE_SECTION_TITLES.items():
+        category_unknowns = [item for item in unknowns if item.category == category]
+        if not category_unknowns:
+            continue
+        names = _join_korean_names([item.name for item in category_unknowns])
+        category_sentences.append(f"{title}: {names}")
+    if not category_sentences:
+        return []
+    body = (
+        "입찰 전 별도 확인이 필요한 항목은 다음과 같습니다: " + "; ".join(category_sentences)
+        + ". 각 항목은 최신 원본과 필요한 현장·관청 자료로 확인해야 합니다."
+    )
+    return [{
+        "heading": "입찰 전 추가 확인사항",
+        "body": _finish_sentence(body),
+        "kind": "residual",
+        "label": "잔여 확인",
+    }]
+
+
+def _final_action_narrative(risks: list, checks: list, extra_rules: list[dict]) -> str:
+    priority_names = [item.name for item in risks]
+    priority_names.extend(str(rule.get("name") or "") for rule in extra_rules if rule.get("risk") == "상")
+    check_names = [item.name for item in checks]
+    if priority_names:
+        return (
+            f"{_join_korean_names(priority_names)}은 입찰가 산정 전에 우선 확인해야 할 사항입니다. "
+            "인수 가능 금액이나 절차 영향을 보수적으로 반영한 뒤 입찰가를 정하는 것이 좋습니다."
+        )
+    if check_names:
+        return (
+            f"{_join_korean_names(check_names)}은 입찰 전 확인하면 충분한 항목입니다. "
+            "확인 결과에 따라 총투입금액이나 명도 일정이 달라질 수 있습니다."
+        )
+    return ""
+
+
+def _narrative_source_scope(data: dict, fee_status: str, created_date: str) -> str:
+    states = _source_states(data)
+    complete_sources = [
+        SOURCE_DISPLAY_NAMES[source]
+        for source in SOURCE_KEYS
+        if states[source]["complete"]
+    ]
+    partial_sources = [
+        SOURCE_DISPLAY_NAMES[source]
+        for source in SOURCE_KEYS
+        if states[source]["collected"] and not states[source]["complete"]
+    ]
+    if fee_status in {"confirmed", "none"}:
+        complete_sources.append("관리비 확인 기재")
+    if complete_sources or partial_sources:
+        parts = [f"본 분석은 {created_date} 작성 시점에 마이옥션 상세페이지에서 확인된 사건자료를 기준으로 작성했습니다."]
+        if complete_sources:
+            parts.append(
+                f"판정에 직접 반영한 자료는 {_join_korean_names(complete_sources)}입니다."
+            )
+        if partial_sources:
+            parts.append(
+                f"{_join_korean_names(partial_sources)}는 실제 확인된 기재만 사건 판단에 반영했습니다."
+            )
+        result = " ".join(parts)
+        return result
+    return (
+        f"{created_date} 작성 시점에 분석 원문의 확보 상태를 확인할 수 없습니다. 입력자료가 확보되기 전에는 이 문서를 "
+        "권리부담 부존재의 근거로 사용할 수 없으며, 아래 확인자료를 보완해야 합니다."
+    )
+
+
+def _customer_fact_from_basis(name: str, value: str) -> str:
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    fact = raw.split(" — ", 1)[0].strip(" .")
+    replacements = {
+        "유치권 신고 문건 탐지": "확보된 문건에 유치권 신고 관련 기재가 있습니다",
+        "선순위 대항력 임차인 인수 발생": "말소기준보다 앞선 전입일의 임차인이 확인되었습니다",
+        "저항 점유(대항력 임차인/유치권) 정황": "대항력 임차인 또는 유치권 관련 점유 정황이 확인되었습니다",
+        "취하 신호(청구액≪감정가·단독채권자/취하서 접수)": "취하 가능성과 관련된 사건 기재가 확인되었습니다",
+        "등기 텍스트에서 탐지": f"등기부현황에 {name} 관련 기재가 있습니다",
+        "등기 텍스트에서 확인": f"등기부현황에 {name} 관련 기재가 있습니다",
+    }
+    fact = replacements.get(fact, fact)
+    fact = fact.replace("탐지", "확인").replace("정황", "관련 기재")
+    if not fact:
+        return f"{name} 관련 원문 기재가 확인되었습니다"
+    return fact
+
+
+def _join_korean_names(values: list[str]) -> str:
+    names = []
+    for value in values:
+        name = str(value or "").strip()
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        return "관련 항목"
+    if len(names) == 1:
+        return names[0]
+    return "·".join(names)
+
+
+def _finish_sentence(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if text and not text.endswith((".", "!", "?", "다.")):
+        text += "."
+    return text
+
+
+def _without_sentence_end(value: str) -> str:
+    """Return prose ready for use inside a labelled narrative sentence."""
+    return re.sub(r"[.!?。！？]+$", "", re.sub(r"\s+", " ", str(value or "")).strip())
+
+
+def _paginate_narrative_sections(sections: list[dict]) -> list[dict]:
+    prepared = []
+    for section in sections:
+        title = str(section.get("title") or "특이사항 상세 검토")
+        blocks = []
+        for original in section.get("blocks") or []:
+            if not str(original.get("body") or "").strip():
+                continue
+            block = dict(original)
+            block["sectionTitle"] = title
+            blocks.append(block)
+        if blocks:
+            prepared.append((title, blocks))
+
+    # Section boundaries are semantic headings, not hard page breaks.  Keeping
+    # separate streams produced almost-empty one-panel pages whenever a short
+    # section followed a summary page.  Pack all blocks in reading order so the
+    # original template can naturally use two, three, or four panels per page.
+    # Mixed-section panels retain their section name in the block heading.
+    all_blocks = [block for _, blocks in prepared for block in blocks]
+    pages = _paginate_narrative_block_stream(
+        all_blocks,
+        preferred_title="사건별 상세 검토 및 결론",
+    )
+    if pages and prepared:
+        pages[0]["title"] = prepared[0][0]
+
+    for index, page in enumerate(pages, start=1):
+        page["pageIndex"] = index
+        page["pageCount"] = len(pages)
+    number = 1
+    for page in pages:
+        for block in page.get("blocks") or []:
+            block["number"] = number
+            number += 1
+    return pages
+
+
+def _paginate_narrative_block_stream(blocks: list[dict], *, preferred_title: str) -> list[dict]:
+    pages = []
+    current = []
+    current_height = 0.0
+    for block in blocks:
+        block_height = _narrative_block_required_height(block, font_points=10.0)
+        next_height = current_height + block_height
+        if current:
+            next_height += NARRATIVE_PANEL_GAP_INCHES
+        if current and (
+            len(current) >= NARRATIVE_MAX_BLOCKS_PER_PAGE
+            or next_height > NARRATIVE_CONTENT_HEIGHT_INCHES
+        ):
+            pages.append({"title": _narrative_page_title(current, preferred_title), "blocks": current})
+            current = []
+            current_height = 0.0
+            next_height = block_height
+        current.append(block)
+        current_height = next_height
+    if current:
+        pages.append({"title": _narrative_page_title(current, preferred_title), "blocks": current})
+
+    # Avoid a sparse final page containing only one short panel.  Move the
+    # preceding panel only when both panels fit at the supported minimum font
+    # size, so the visual rebalance never trades whitespace for overflow.
+    if len(pages) >= 2 and len(pages[-1]["blocks"]) == 1 and len(pages[-2]["blocks"]) >= 3:
+        candidate = pages[-2]["blocks"][-1]
+        balanced_tail = [candidate, *pages[-1]["blocks"]]
+        required = sum(
+            _narrative_block_required_height(block, font_points=10.0)
+            for block in balanced_tail
+        ) + NARRATIVE_PANEL_GAP_INCHES * (len(balanced_tail) - 1)
+        if required <= NARRATIVE_CONTENT_HEIGHT_INCHES:
+            pages[-2]["blocks"].pop()
+            pages[-1]["blocks"].insert(0, candidate)
+            pages[-2]["title"] = _narrative_page_title(pages[-2]["blocks"], preferred_title)
+            pages[-1]["title"] = _narrative_page_title(pages[-1]["blocks"], preferred_title)
+    return pages
+
+
+def _narrative_page_title(blocks: list[dict], preferred_title: str) -> str:
+    titles = list(dict.fromkeys(str(block.get("sectionTitle") or "") for block in blocks))
+    return titles[0] if len(titles) == 1 and titles[0] else preferred_title
+
+
+def _narrative_display_heading(block: dict, page_title: str) -> str:
+    heading = str(block.get("heading") or "")
+    return heading
+
+
+def _narrative_block_weight(block: dict) -> int:
+    heading = " · ".join(filter(None, (str(block.get("sectionTitle") or ""), str(block.get("heading") or ""))))
+    body = str(block.get("body") or "")
+    body_lines = max(1, (len(body) + NARRATIVE_WRAP_WIDTH - 1) // NARRATIVE_WRAP_WIDTH)
+    heading_lines = max(1, (len(heading) + 24) // 25)
+    return 2 + body_lines + heading_lines
+
+
+def _narrative_wrapped_line_count(value: str, width: int) -> int:
+    lines = 0
+    for raw_line in str(value or "").splitlines() or [""]:
+        text = raw_line.strip()
+        lines += max(1, (len(text) + width - 1) // width)
+    return lines
+
+
+def _narrative_block_required_height(block: dict, *, font_points: float) -> float:
+    # The original certificate content area is 5.48in wide.  These conservative
+    # line estimates keep 10~11pt BatangChe text inside the panel without
+    # shrinking individual boxes to unreadable sizes.
+    chars_per_line = 35 if font_points >= 11 else 37 if font_points >= 10.5 else 40
+    heading = _narrative_display_heading(block, str(block.get("sectionTitle") or ""))
+    heading_lines = _narrative_wrapped_line_count(heading, 26)
+    body_lines = _narrative_wrapped_line_count(str(block.get("body") or ""), chars_per_line)
+    line_height = 0.19 if font_points >= 11 else 0.18 if font_points >= 10.5 else 0.17
+    required = 0.42 + max(0, heading_lines - 1) * 0.16 + body_lines * line_height + 0.20
+    return max(1.05, required)
+
+
+def _narrative_page_font_points(blocks: list[dict]) -> float:
+    gaps = NARRATIVE_PANEL_GAP_INCHES * max(0, len(blocks) - 1)
+    for font_points in (11.0, 10.5, 10.0):
+        required = sum(
+            _narrative_block_required_height(block, font_points=font_points)
+            for block in blocks
+        ) + gaps
+        if required <= NARRATIVE_CONTENT_HEIGHT_INCHES:
+            return font_points
+    return 10.0
+
+
+def _render_narrative_report_html(pages: list[dict], case_number: str, created_date: str) -> str:
+    rendered_pages = []
+    for page in pages:
+        item_html = []
+        for block in page.get("blocks") or []:
+            heading = _narrative_display_heading(block, str(page.get("title") or ""))
+            item_html.append(
+                '<li><strong>' + html.escape(heading) + '</strong> '
+                + html.escape(str(block.get("body") or "")) + '</li>'
+            )
+        rendered_pages.append(
+            '<div class="page"><div class="gold-border narrative-page">'
+            '<h1 class="narrative-title">4. 특이사항</h1>'
+            '<div class="subtitle">사건번호 ' + html.escape(case_number)
+            + ' · ' + str(page.get("pageIndex") or "") + ' / ' + str(page.get("pageCount") or "") + '</div>'
+            + '<ol class="special-list">' + ''.join(item_html) + '</ol>'
+            + '<div class="narrative-footnote">본 내용은 ' + html.escape(created_date)
+            + ' 기준 사건자료와 권리분석 결과를 정리한 것입니다. 입찰 직전 사건진행내역과 현장상태는 다시 확인하십시오.</div>'
+            '<div class="narrative-page-number">특이사항 보고 '
+            + str(page.get("pageIndex") or "") + ' / ' + str(page.get("pageCount") or "") + '</div>'
+            '</div></div>'
+        )
+    return "\n".join(rendered_pages)
 
 
 def find_base_right(rights: list[dict]) -> Optional[dict]:
@@ -603,28 +1809,49 @@ def build_base_right_description(
     base_right: Optional[dict],
     rights: list[dict],
     registered_takeover_texts: Optional[list[str]] = None,
+    *,
+    registry_source_complete: bool = False,
 ) -> str:
     if not base_right:
         return (
             "등기부현황에서 말소기준권리 확인이 필요합니다. "
             "등기부등본 원본과 매각물건명세서를 기준으로 담당자 최종 확인이 필요합니다."
         )
-    creditor = base_right.get("creditor") or "담당자 확인 필요"
-    extinguish_text = "말소기준권리 및 이후 모든 권리는 말소됩니다."
+    creditor = base_right.get("creditor") or ""
+    same_date_sensitive_rights = [
+        right for right in rights
+        if _same_date(right.get("date") or "", base_right.get("date") or "")
+        and any(
+            token in (right.get("type") or "")
+            for token in ("전세권", "가처분", "가등기", "지상권", "지역권", "임차권등기")
+        )
+    ]
+    extinguish_text = "말소기준권리 이후의 권리는 매각으로 말소됩니다."
+    if same_date_sensitive_rights:
+        names = _join_korean_names([right.get("type") or "동일일 권리" for right in same_date_sensitive_rights])
+        extinguish_text += (
+            f" 다만 말소기준권리와 같은 날짜에 설정된 권리({names})는 접수번호·순위 확인 전까지 "
+            "후순위 또는 인수 없음으로 단정할 수 없습니다."
+        )
     if registered_takeover_texts:
         extinguish_text += " 다만 최선순위 설정일보다 앞선 전세권은 임차권리 인수사항에서 별도 검토합니다."
-    else:
-        extinguish_text += " 등기부상 낙찰자에게 인수되는 권리는 없습니다."
-    return (
-        f"최선순위 설정 {base_right.get('date')} 일자 {base_right.get('type')} [{creditor}]\n"
-        f"{extinguish_text}"
-    )
+    if not registered_takeover_texts and not same_date_sensitive_rights:
+        extinguish_text += " 매수인에게 인수되는 등기상 권리는 없습니다."
+    right_type = str(base_right.get("type") or "").strip()
+    if _is_auction_procedure_right(base_right) and "기입등기" not in right_type:
+        right_type = f"{right_type} 기입등기".strip()
+    right_label = f"{base_right.get('date')} 일자 {right_type}"
+    if creditor:
+        right_label += f" [{creditor}]"
+    return f"말소기준권리는 {right_label}입니다.\n{extinguish_text}"
 
 
 def analyze_registered_takeover_rights(
     rights: list[dict],
     base_right: Optional[dict],
     dividend_requests: list[dict],
+    *,
+    dividend_request_source_complete: bool = False,
 ) -> list[str]:
     base_date = (base_right or {}).get("date") or ""
     if not _has_valid_date(base_date):
@@ -644,15 +1871,32 @@ def analyze_registered_takeover_rights(
         if right.get("amount"):
             right_label += f" {amount_text}"
 
-        if _right_has_dividend_request(right, dividend_requests):
+        dividend_assessment = _right_dividend_request_assessment(
+            right,
+            dividend_requests,
+            source_complete=dividend_request_source_complete,
+        )
+        if dividend_assessment == "timely":
             text = (
                 f"최선순위 설정보다 앞선 전세권({right_label})이 확인됩니다. "
                 "전세권자의 배당요구가 확인되므로 배당 후 소멸 여부를 원본 문서와 대조해 확인해 주시기 바랍니다."
             )
+        elif dividend_assessment == "late":
+            text = (
+                f"최선순위 설정보다 앞선 전세권({right_label})이 확인됩니다. "
+                "배당요구 접수는 확인되지만 접수일이 배당요구종기보다 늦어 적법한 배당요구의 효과를 확정할 수 없습니다. "
+                "배당으로 소멸한다고 전제하지 말고 낙찰자 인수 가능성을 반영해 원본 사건기록을 확인해야 합니다."
+            )
+        elif dividend_assessment == "absent":
+            text = (
+                f"최선순위 설정보다 앞선 전세권({right_label})이 확인됩니다. "
+                "전세권자의 배당요구가 없는 것으로 확인되어 낙찰자 인수 가능성을 반영해야 합니다."
+            )
         else:
             text = (
                 f"최선순위 설정보다 앞선 전세권({right_label})이 확인됩니다. "
-                "전세권자의 배당요구가 확인되지 않으므로 해당 전세권은 낙찰자에게 인수됩니다."
+                "배당요구 자료가 충분히 확보되지 않아 신청 여부는 미확인 상태이며, 확인 전에는 낙찰자 인수 가능성을 "
+                "배제할 수 없습니다."
             )
         if text not in descriptions:
             descriptions.append(text)
@@ -668,219 +1912,15 @@ def combine_tenant_and_registered_takeover_texts(tenant_text: str, registered_ta
     return f"{tenant_text}\n\n{registered_text}"
 
 
-def build_special_summary_text(
-    data: dict,
-    rights: list[dict],
-    tenants: list[dict],
-    base_right: Optional[dict],
-    tenant_texts: list[str],
-    tenant_analysis_text: str,
-    registered_takeover_texts: list[str],
-    surplus_description: str,
-    management_fee: dict,
-    market_data: dict,
-    sale_spec_remarks_text: str,
-    status_survey_etc_text: str,
-    case_notice_text: str,
-) -> str:
-    lines: list[str] = []
-
-    lines.append("1) 권리분석 핵심")
-    lines.append(f"- 말소기준권리: {_base_right_summary(base_right)}")
-    lines.append(f"- 임차내역: {_tenant_count_summary(tenants)}")
-    lines.append(f"- 대항력 있는 임차인: {_opposing_tenant_summary(tenant_texts, tenant_analysis_text)}")
-    lines.append(f"- 낙찰자 인수 권리: {_takeover_right_summary(tenant_analysis_text, registered_takeover_texts)}")
-    lines.append(f"- 후순위 권리: {_junior_rights_summary(rights, base_right)}")
-
-    lines.append("")
-    lines.append("2) 가격 분석")
-    lines.append(f"- 감정가: {data.get('appraised_price') or '담당자 확인 필요'}")
-    lines.append(f"- 최저매각가: {data.get('min_price') or '담당자 확인 필요'}")
-    lines.append(f"- 최저가율: {_min_price_rate_text(data)}")
-    price_note = _price_analysis_note(data, market_data)
-    if price_note:
-        lines.append(f"- {price_note}")
-
-    lines.append("")
-    lines.append("3) 물건별 특이사항")
-    lines.extend(_property_special_issue_lines(
-        data,
-        rights,
-        tenant_texts,
-        tenant_analysis_text,
-        registered_takeover_texts,
-        sale_spec_remarks_text,
-        status_survey_etc_text,
-        case_notice_text,
-    ))
-    lines.extend(_bid_check_lines(data, tenants, management_fee))
-
-    return "\n".join(lines)
-
-
 def _base_right_summary(base_right: Optional[dict]) -> str:
     if not base_right:
         return "등기부현황과 매각물건명세서 원본 확인이 필요합니다."
     date = base_right.get("date") or "일자 확인 필요"
-    right_type = base_right.get("type") or "권리종류 확인 필요"
-    creditor = base_right.get("creditor") or "권리자 확인 필요"
-    return f"{date} 설정된 {right_type} [{creditor}]"
-
-
-def _tenant_count_summary(tenants: list[dict]) -> str:
-    valid_tenants = [tenant for tenant in tenants if not _is_no_tenant_record(tenant)]
-    if not valid_tenants:
-        return "없음"
-    return f"{len(valid_tenants)}건 확인"
-
-
-def _opposing_tenant_summary(tenant_texts: list[str], tenant_analysis_text: str) -> str:
-    combined = "\n".join(tenant_texts + [tenant_analysis_text])
-    if _text_has_takeover_tenant(combined):
-        return "있음"
-    if NO_TENANTS_TEXT in combined or "인수되는 임차권리는 없습니다" in combined:
-        return "없음"
-    return "원본 문서 확인 필요"
-
-
-def _takeover_right_summary(tenant_analysis_text: str, registered_takeover_texts: list[str]) -> str:
-    if registered_takeover_texts:
-        return "선순위 전세권 등 인수 가능 권리 확인"
-    if _text_has_takeover_tenant(tenant_analysis_text):
-        return "대항력 있는 임차권리 인수 가능성 확인"
-    if "인수되는 임차권리는 없습니다" in tenant_analysis_text:
-        return "0원 또는 없음으로 분석"
-    return "원본 문서 확인 필요"
-
-
-def _junior_rights_summary(rights: list[dict], base_right: Optional[dict]) -> str:
-    base_date = (base_right or {}).get("date") or ""
-    if not _has_valid_date(base_date):
-        return "말소기준권리 확정 후 확인 필요"
-    juniors = [
-        right for right in rights
-        if _date_after(right.get("date") or "", base_date)
-        and any(token in (right.get("type") or "") for token in RIGHT_TYPES)
-    ]
-    if juniors:
-        return "말소기준권리 이후 권리는 낙찰 시 소멸되는 구조로 확인됩니다."
-    return "말소기준권리 이후 별도 권리는 확인되지 않습니다."
-
-
-def _min_price_rate_text(data: dict) -> str:
-    if data.get("min_rate"):
-        return data["min_rate"]
-    appraised = parse_money(data.get("appraised_price"))
-    min_price = parse_money(data.get("min_price"))
-    if appraised > 0 and min_price > 0:
-        return f"{round(min_price / appraised * 100)}%"
-    return "담당자 확인 필요"
-
-
-def _price_analysis_note(data: dict, market_data: dict) -> str:
-    if market_data.get("recentDealPrice"):
-        return f"최근 실거래가 {fmt_money(market_data.get('recentDealPrice'))} 기준으로 층수·면적·거래시점 차이를 비교해 주시기 바랍니다."
-    rate = _min_price_rate_text(data)
-    if rate != "담당자 확인 필요":
-        return f"현재 최저가는 감정가 대비 {rate} 수준이므로 최근 실거래가와 매물 호가를 함께 확인해 주시기 바랍니다."
-    return "감정가와 최저매각가를 기준으로 최근 실거래가와 매물 호가를 함께 확인해 주시기 바랍니다."
-
-
-def _bid_check_lines(data: dict, tenants: list[dict], management_fee: dict) -> list[str]:
-    lines = []
-    if tenants:
-        lines.append("- 점유 상태: 매각물건명세서 임차내역과 실제 점유자를 대조해 주시기 바랍니다.")
-    else:
-        lines.append("- 점유 상태: 임차내역이 없더라도 소유자 점유 여부를 현장에서 확인해 주시기 바랍니다.")
-    unpaid = int(management_fee.get("unpaidAmount") or 0)
-    if unpaid > 0:
-        lines.append(f"- 관리비 체납: {build_unpaid_management_fee_text(management_fee)}")
-    elif management_fee:
-        note = management_fee.get("note") or "미납관리비 없음 또는 미확인"
-        lines.append(
-            f"- 관리비 체납: {_polite_confirmation(note)} "
-            "관리사무소에서 최종 미납 금액 및 승계 범위를 재확인해 주시기 바랍니다."
-        )
-    else:
-        lines.append("- 관리비 체납: 관리사무소에서 미납 금액 및 개월수를 확인해 주시기 바랍니다.")
-    return lines
-
-
-def _property_special_issue_lines(
-    data: dict,
-    rights: list[dict],
-    tenant_texts: list[str],
-    tenant_analysis_text: str,
-    registered_takeover_texts: list[str],
-    sale_spec_remarks_text: str,
-    status_survey_etc_text: str,
-    case_notice_text: str,
-) -> list[str]:
-    issues: list[str] = []
-    source_text = " ".join(
-        str(value or "")
-        for value in (
-            data.get("item_type"),
-            data.get("address"),
-            data.get("appraisal_raw"),
-            data.get("sale_spec_remarks"),
-            data.get("status_survey_etc"),
-            data.get("case_notice"),
-            data.get("case_document_text"),
-            sale_spec_remarks_text,
-            status_survey_etc_text,
-            case_notice_text,
-            tenant_analysis_text,
-        )
-    )
-    if case_notice_text:
-        issues.append(f"- 주의사항: {case_notice_text}")
-    for line in build_special_issue_lines(source_text):
-        issues.append(f"- {line}")
-    if any("임차권등기" in (right.get("type") or "") or "임차권등기" in (right.get("rawText") or "") for right in rights):
-        issues.append("- 임차권등기: 임차권등기가 확인되므로 실제 점유관계와 배당·인수 여부를 원본 문서로 확인해 주시기 바랍니다.")
-    if "대지권미등기" in source_text.replace(" ", ""):
-        issues.append(_land_right_unregistered_issue_text())
-    if _text_has_priority_repayment("\n".join(tenant_texts + [tenant_analysis_text])):
-        issues.append(_small_tenant_priority_issue_text())
-    if _text_has_takeover_tenant("\n".join(tenant_texts + [tenant_analysis_text])):
-        issues.append("- 대항력 임차인: 최선순위 설정일보다 앞선 임차권리가 확인되므로 보증금 잔액 인수 가능성을 확인해 주시기 바랍니다.")
-    if registered_takeover_texts:
-        issues.append("- 선순위 전세권: 말소기준권리보다 앞선 전세권은 배당요구 여부에 따라 낙찰자 인수 가능성이 있습니다.")
-    return issues
-
-
-def _small_tenant_priority_issue_text() -> str:
-    return (
-        "- 소액임차인의 최우선변제: 소액임차인은 확정일자가 늦어 선순위 변제를 받지 못하더라도, "
-        "선순위담보권자의 경매신청 등기 전에 대항력을 갖춘 경우 보증금 중 일정액을 다른 담보물권자보다 "
-        "우선하여 변제받을 권리가 있습니다(주택임대차보호법 제3조①, 제8조①). "
-        "요건은 소액임차인의 범위, 경매신청 등기 전 대항요건, 경매 또는 체납처분 매각, "
-        "배당요구 또는 우선권행사 신고, 보증금 중 일정액 보호입니다. "
-        "소액임차인의 우선변제 채권은 압류가 금지됩니다(민사집행법 제246조①제6호)."
-    )
-
-
-def _land_right_unregistered_issue_text() -> str:
-    return (
-        "- 대지권 미등기: 본 물건은 대지권 미등기 상태이므로, 대지사용권의 존재 및 내용, 대지지분, "
-        "토지 등기부상 권리관계, 대지권 등기 가능 여부를 계약 전 반드시 확인하여야 합니다. "
-        "대지권 미등기는 대지사용권이 없다는 의미로 단정할 수는 없으나, 등기부상 권리관계가 명확히 "
-        "공시되지 않은 상태이므로 담보대출 제한, 등기 지연, 추가 비용, 제3자와의 권리분쟁 등 위험이 "
-        "발생할 수 있습니다. 매수인은 관련 공부 및 전문가 검토 후 계약을 체결하여야 합니다."
-    )
-
-
-def _text_has_priority_repayment(text: str) -> bool:
-    compact = re.sub(r"\s+", "", text or "")
-    return "소액임차인" in compact or "최우선변제" in compact
-
-
-def _text_has_takeover_tenant(text: str) -> bool:
-    compact = re.sub(r"\s+", "", text or "")
-    if "인수되는임차권리는없" in compact:
-        return False
-    return any(token in compact for token in ("대항력을갖춘임차인", "잔액은낙찰자에게인수", "임차권리는낙찰자에게인수"))
+    right_type = str(base_right.get("type") or "권리종류 확인 필요").strip()
+    if _is_auction_procedure_right(base_right) and "기입등기" not in right_type:
+        right_type = f"{right_type} 기입등기".strip()
+    creditor = base_right.get("creditor") or ""
+    return f"{date} 설정된 {right_type} [{creditor}]" if creditor else f"{date} 설정된 {right_type}"
 
 
 def build_tenant_analysis_text(
@@ -888,6 +1928,8 @@ def build_tenant_analysis_text(
     tenant_texts: list[str],
     tenant_ocr_text: str,
     tenant_source: str = "",
+    *,
+    tenant_source_complete: bool = False,
 ) -> str:
     valid_tenants = [tenant for tenant in tenants if not _is_no_tenant_record(tenant)]
     if valid_tenants:
@@ -897,8 +1939,10 @@ def build_tenant_analysis_text(
             takeover = tenant_texts[idx] if idx < len(tenant_texts) else "인수여부 확인이 필요합니다."
             blocks.append(f"{detail}\n인수여부: {takeover}")
         return "\n\n".join(blocks)
-    if tenants or _tenant_ocr_text_indicates_no_tenants(tenant_ocr_text) or tenant_source == "sale_spec_ocr":
-        return NO_TENANTS_TEXT
+    # A source label by itself does not prove that the source was actually
+    # collected or that it affirmatively states there are no tenants.
+    if tenants or _tenant_ocr_text_indicates_no_tenants(tenant_ocr_text):
+        return NO_TENANTS_TEXT if tenant_source_complete else PARTIAL_NO_TENANTS_TEXT
     if tenant_texts:
         return "\n".join(f"인수여부: {text}" for text in tenant_texts)
     if tenant_ocr_text:
@@ -958,21 +2002,44 @@ def _tenant_name_indicates_no_tenants(name: str) -> bool:
 
 
 def _tenant_ocr_text_indicates_no_tenants(text: str) -> bool:
-    no_tenant_phrases = (
-        "점유자성명없음",
-        "점유자없음",
-        "임차인없음",
-        "조사된임차인없음",
-        "해당사항없음",
-        "해당없음",
+    label_pattern = (
+        r"(?:조사된)?(?:임차인|임차내역|임대차관계|점유자(?:성명)?|점유관계)"
     )
+    absent_pattern = r"(?:없음|없습니다|해당없음|해당사항없음|무)"
+    clauses: list[str] = []
     for raw_line in (text or "").splitlines():
-        line = re.sub(r"\s+", "", raw_line)
-        if line and any(phrase in line for phrase in no_tenant_phrases):
+        clauses.extend(
+            compact for compact in (
+                re.sub(r"^[※*#·ㆍ\-–—]+", "", re.sub(r"\s+", "", part))
+                for part in re.split(r"[|,，;/]+", raw_line)
+            ) if compact
+        )
+
+    for index, clause in enumerate(clauses):
+        # The absence value must belong to the tenant/occupancy label itself.
+        # A broad substring check would misread e.g. "임차인 홍길동, 확정일자
+        # 해당없음" as proof that no tenant exists.
+        if re.fullmatch(
+            rf"{label_pattern}(?:은|는|이|가)?[:：=\-]?{absent_pattern}[.!。]?",
+            clause,
+        ):
             return True
-        if "없" in line and any(keyword in line for keyword in ("점유자성명", "점유자", "임차인", "임대차관계")):
-            return True
+        if re.fullmatch(rf"{label_pattern}[:：=\-]?", clause) and index + 1 < len(clauses):
+            if re.fullmatch(rf"{absent_pattern}[.!。]?", clauses[index + 1]):
+                return True
     return False
+
+
+def _tenant_ocr_text_confirms_no_surveyed_tenants(text: str) -> bool:
+    """Recognize the site's explicit surveyed-result sentence.
+
+    This is stronger than a generic OCR fragment such as ``임차인 없음``:
+    it supports the scoped conclusion that the site's 조사 결과 contains no
+    tenant rows even when another document (for example a 준비중 sale spec)
+    was unavailable.
+    """
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return bool(re.search(r"(?:※|\*)?조사된임차(?:인)?내역(?:이|은|는)?없(?:습니다|음)", compact))
 
 
 def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None, deadline: Optional[float] = None) -> dict:
@@ -983,6 +2050,7 @@ def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
     image_paths = []
     texts = []
     timed_out = False
+    capture_failed = False
     for h3_text, suffix in (
         ("건물 등기부현황", "building_registry"),
         ("토지 등기부현황", "land_registry"),
@@ -993,6 +2061,7 @@ def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
             captured = capturer.capture_table_split_by_rows(driver, h3_text, prefix, rows_per_page=8, timeout=5)
         except Exception as e:
             logger.info(f"{h3_text} 문서 확인 생략: {e}")
+            capture_failed = True
             continue
         image_paths.extend(captured)
         for image_path in captured:
@@ -1008,13 +2077,22 @@ def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
 
     raw_text = normalize_ocr_text("\n".join(texts))
     if not raw_text:
-        return {"rights_ocr_images": image_paths, "_timed_out": timed_out}
+        return {
+            "rights_ocr_images": image_paths,
+            "_timed_out": timed_out,
+            "_incomplete": timed_out or capture_failed or bool(image_paths),
+            "_source_complete": False,
+        }
 
     return {
         "rights": parse_rights_from_ocr(raw_text),
         "rights_ocr_text": raw_text,
         "rights_ocr_images": image_paths,
         "_timed_out": timed_out,
+        # OCR text is positive evidence, but completeness is not provable from
+        # a partial table capture; absence-based conclusions remain disabled.
+        "_incomplete": timed_out or capture_failed,
+        "_source_complete": False,
     }
 
 
@@ -1039,6 +2117,9 @@ def parse_rights_from_ocr(text: str) -> list[dict]:
                 "note": _extract_right_note([], line),
                 "isBaseRight": _is_base_right_row(line),
                 "rawText": line,
+                "source": "registry_ocr",
+                "isAuctionProcedure": _is_auction_procedure_type(right_type),
+                "amountKind": "application_claim" if _is_auction_procedure_type(right_type) else "registered_right",
             }
         )
     return _dedupe_by(rights, ("date", "type", "creditor", "amount"))
@@ -1071,7 +2152,9 @@ def extract_tenant_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
         image_paths = capturer.capture_table_split_by_rows(driver, "임차인현황", prefix, rows_per_page=8, timeout=8)
     except Exception as e:
         logger.warning(f"임차인현황 문서 확인 실패: {e}")
-        return sale_spec_context
+        result = dict(sale_spec_context)
+        result["_incomplete"] = True
+        return result
 
     texts = []
     timed_out = False
@@ -1092,6 +2175,7 @@ def extract_tenant_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
             *image_paths,
         ]))
         result["_timed_out"] = bool(sale_spec_context.get("_timed_out")) or timed_out
+        result["_incomplete"] = True
         return result
 
     result = dict(sale_spec_context)
@@ -1099,11 +2183,13 @@ def extract_tenant_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
         "tenants": parse_tenants_from_ocr(raw_text),
         "tenant_source": "tenant_status_ocr",
         "tenant_ocr_text": "\n".join(filter(None, [sale_spec_context.get("tenant_ocr_text", ""), raw_text])),
+        "tenant_status_text": raw_text,
         "tenant_ocr_images": list(dict.fromkeys([
             *(sale_spec_context.get("tenant_ocr_images") or []),
             *image_paths,
         ])),
         "_timed_out": bool(sale_spec_context.get("_timed_out")) or timed_out,
+        "_incomplete": bool(sale_spec_context.get("_incomplete")) or timed_out,
     })
     return result
 
@@ -1112,10 +2198,15 @@ def extract_sale_spec_tenant_context_by_ocr(driver, task_id: Optional[str] = Non
     safe_task_id = re.sub(r"[^0-9A-Za-z._-]", "_", task_id or datetime.now().strftime("%Y%m%d_%H%M%S"))
     pdf_text, image_paths = collect_sale_spec_text_and_images(driver, safe_task_id, deadline=deadline)
     if not image_paths and not pdf_text:
-        return {}
+        return {
+            "_incomplete": True,
+            "_sale_spec_incomplete": True,
+            "_sale_spec_complete": False,
+        }
 
     pdf_text = normalize_ocr_text(pdf_text)
     texts = []
+    page_text_checks = []
     timed_out = False
     for image_path in image_paths:
         remaining = (deadline - time.monotonic()) if deadline else 30
@@ -1123,12 +2214,20 @@ def extract_sale_spec_tenant_context_by_ocr(driver, task_id: Optional[str] = Non
             timed_out = True
             break
         text = ocr_image_to_text(image_path, timeout_seconds=min(30, max(1, int(remaining))))
+        page_text_checks.append(_sale_spec_page_text_is_substantive(text))
         if text:
             texts.append(text)
 
     raw_text = normalize_ocr_text("\n".join([pdf_text, *texts]))
     if not raw_text:
-        return {"tenant_source": "sale_spec_ocr", "tenant_ocr_images": image_paths, "_timed_out": timed_out}
+        return {
+            "tenant_source": "sale_spec_ocr",
+            "tenant_ocr_images": image_paths,
+            "_timed_out": timed_out,
+            "_incomplete": True,
+            "_sale_spec_incomplete": True,
+            "_sale_spec_complete": False,
+        }
 
     tenants = parse_sale_spec_tenants_from_pdf_text(pdf_text) or parse_sale_spec_tenants_from_ocr(raw_text)
     # Embedded PDF text can be incomplete even when non-empty. Use the combined
@@ -1139,16 +2238,53 @@ def extract_sale_spec_tenant_context_by_ocr(driver, task_id: Optional[str] = Non
         if dividend_deadline and not tenant.get("depositDeadline"):
             tenant["depositDeadline"] = dividend_deadline
 
+    page_text_complete = bool(image_paths) and len(page_text_checks) == len(image_paths) and all(page_text_checks)
+    source_complete = bool(
+        not timed_out
+        and page_text_complete
+        and _sale_spec_required_sections_present(raw_text)
+    )
+    page_collection_failed = bool(image_paths) and not page_text_complete
+
     return {
         "tenants": tenants,
         "tenant_source": "sale_spec_ocr",
         "tenant_ocr_text": raw_text,
         "tenant_ocr_images": image_paths,
+        "sale_spec_ocr_text": raw_text,
+        "sale_spec_ocr_images": image_paths,
         "sale_spec_base_right": sale_spec_context.get("baseRight") or {},
         "sale_spec_dividend_deadline": dividend_deadline,
         "sale_spec_remarks": sale_spec_context.get("remarks") or "",
         "_timed_out": timed_out,
+        "_incomplete": timed_out or page_collection_failed,
+        "_sale_spec_incomplete": timed_out or page_collection_failed,
+        # Complete means every rendered page produced text and the core sections
+        # needed for absence review are present. A non-empty title/text layer is
+        # only partial evidence because scanned or mixed PDFs can hide pages.
+        "_sale_spec_complete": source_complete,
     }
+
+
+def _sale_spec_required_sections_present(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return False
+    required_groups = (
+        ("점유", "임차"),
+        ("비고", "특별매각조건", "매각에서제외"),
+        ("최선순위", "말소기준"),
+    )
+    return all(any(keyword in compact for keyword in group) for group in required_groups)
+
+
+def _sale_spec_page_text_is_substantive(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if len(compact) < 20:
+        return False
+    return any(keyword in compact for keyword in (
+        "점유", "임차", "비고", "최선순위", "말소기준", "배당요구", "소재지", "사건",
+    ))
 
 
 def extract_status_survey_context_by_ocr(driver, task_id: Optional[str] = None) -> dict:
@@ -1159,10 +2295,12 @@ def extract_status_survey_context_by_ocr(driver, task_id: Optional[str] = None) 
     text = collect_status_survey_text(driver, safe_task_id)
     raw_text = normalize_ocr_text(text)
     if not raw_text:
-        return {}
+        return {"_incomplete": True, "_source_complete": False}
     return {
         "status_survey_text": raw_text,
         "status_survey_etc": _extract_status_survey_etc_from_text(raw_text),
+        "_incomplete": False,
+        "_source_complete": False,
     }
 
 
@@ -1885,10 +3023,19 @@ def _guess_sale_spec_tenant_name(line: str) -> str:
 def parse_tenants_from_ocr(text: str) -> list[dict]:
     tenants = []
     current_deadline = ""
+    explicit_survey_none = _tenant_ocr_text_confirms_no_surveyed_tenants(text)
 
     for raw_line in (text or "").splitlines():
         line = raw_line.strip()
         if not line:
+            continue
+        if _tenant_ocr_text_indicates_no_tenants(line):
+            continue
+        compact_line = re.sub(r"\s+", "", line)
+        if (
+            any(token in compact_line for token in ("채무자(소유자)세대전입", "소유자세대전입"))
+            and not any(token in compact_line for token in ("임차인", "보증금", "임대차"))
+        ):
             continue
         if "배당요구종기" in line or "종기" in line:
             current_deadline = normalize_date(_first_date(line) or "")
@@ -1918,7 +3065,22 @@ def parse_tenants_from_ocr(text: str) -> list[dict]:
             }
         )
 
-    return _dedupe_by(tenants, ("name", "moveInDate", "deposit"))
+    deduped = _dedupe_by(tenants, ("name", "moveInDate", "deposit"))
+    if not deduped and explicit_survey_none:
+        return [{
+            "name": "조사된 임차내역 없음",
+            "occupancyType": "없음",
+            "type": "없음",
+            "moveInDate": "",
+            "fixedDate": "",
+            "depositClaimDate": "",
+            "depositDeadline": current_deadline,
+            "deposit": 0,
+            "rent": 0,
+            "isHUG": False,
+            "isVacant": False,
+        }]
+    return deduped
 
 
 def _guess_ocr_tenant_name(line: str) -> str:
@@ -1939,6 +3101,8 @@ def analyze_tenants(
     dividend_requests: list[dict],
     dividend_deadline: str = "",
     property_address: str = "",
+    *,
+    tenant_source_complete: bool = False,
 ) -> list[str]:
     descriptions = []
     for tenant in tenants:
@@ -1952,13 +3116,22 @@ def analyze_tenants(
             deadline = deadline or (req or {}).get("deadline") or ""
 
         base_date = (base_right or {}).get("date") or ""
-        case = _tenant_takeover_case(move_in, fixed_date, request_date, base_date, deadline)
+        case = _tenant_takeover_case(
+            move_in,
+            fixed_date,
+            request_date,
+            base_date,
+            deadline,
+            tenant_source_complete=tenant_source_complete,
+        )
         text = case["text"]
         priority_text = _tenant_priority_repayment_text(
             tenant,
             base_date,
             property_address,
-            bool(case.get("takeover")),
+            case.get("takeover"),
+            deadline,
+            request_date,
         )
         if priority_text:
             text = f"{text}\n{priority_text}"
@@ -1970,14 +3143,47 @@ def analyze_tenants(
     return descriptions
 
 
-def _tenant_takeover_case_text(move_in: str, fixed_date: str, request_date: str, base_date: str, deadline: str) -> str:
-    return _tenant_takeover_case(move_in, fixed_date, request_date, base_date, deadline)["text"]
+def _tenant_takeover_case_text(
+    move_in: str,
+    fixed_date: str,
+    request_date: str,
+    base_date: str,
+    deadline: str,
+    *,
+    tenant_source_complete: bool = False,
+) -> str:
+    return _tenant_takeover_case(
+        move_in,
+        fixed_date,
+        request_date,
+        base_date,
+        deadline,
+        tenant_source_complete=tenant_source_complete,
+    )["text"]
 
 
-def _tenant_takeover_case(move_in: str, fixed_date: str, request_date: str, base_date: str, deadline: str) -> dict:
-    no_takeover = "최선순위 설정보다 앞서 대항력을 갖춘 임차인이 없으므로,낙찰자에게 인수되는 임차권리는 없습니다."
-    if not base_date or not _has_valid_date(move_in) or not _date_before(move_in, base_date):
-        return {"text": no_takeover, "takeover": False}
+def _tenant_takeover_case(
+    move_in: str,
+    fixed_date: str,
+    request_date: str,
+    base_date: str,
+    deadline: str,
+    *,
+    tenant_source_complete: bool = False,
+) -> dict:
+    if not _has_valid_date(base_date):
+        return {
+            "text": "말소기준권리 일자가 확인되지 않아 임차인의 대항력과 보증금 인수 여부를 확정할 수 없습니다.",
+            "takeover": None,
+        }
+    if not _has_valid_date(move_in):
+        return {
+            "text": "임차인의 전입일이 확인되지 않아 말소기준권리와의 선후 및 보증금 인수 여부를 확정할 수 없습니다.",
+            "takeover": None,
+        }
+    if not _date_before(move_in, base_date):
+        text = "확인된 임차인은 말소기준권리보다 후순위이므로, 낙찰자에게 인수되는 임차권리는 없습니다."
+        return {"text": text, "takeover": False}
 
     fixed_before_base = _date_before(fixed_date, base_date)
     request_on_time = _date_on_or_before(request_date, deadline)
@@ -1990,7 +3196,10 @@ def _tenant_takeover_case(move_in: str, fixed_date: str, request_date: str, base
 
     if fixed_before_base and _date_after(request_date, deadline):
         return {
-            "text": "최선순위 설정 보다 앞선 대항력을 갖춘 임차인이 있습니다. 배당 받지 못한 잔액은 낙찰자에게 인수 됩니다.",
+            "text": (
+                "최선순위 설정보다 앞선 대항력을 갖춘 임차인이 있습니다. 배당요구일이 종기보다 늦은 것으로 확인되어, "
+                "적법한 배당요구의 효과가 인정되지 않을 경우 미회수 보증금 잔액이 낙찰자에게 인수될 가능성이 있습니다."
+            ),
             "takeover": True,
         }
 
@@ -2001,18 +3210,59 @@ def _tenant_takeover_case(move_in: str, fixed_date: str, request_date: str, base
         }
 
     return {
-        "text": "최선순위 설정 보다 앞선 대항력을 갖춘 임차인이 있으므로, 임차권리는 낙찰자에게 인수 됩니다.",
+        "text": (
+            "최선순위 설정보다 앞선 대항력을 갖춘 임차인이 있으나 확정일자·배당요구 효과가 충분히 확인되지 않아, "
+            "미회수 보증금의 낙찰자 인수 가능성을 배제할 수 없습니다."
+        ),
         "takeover": True,
     }
 
 
-def _tenant_priority_repayment_text(tenant: dict, base_date: str, property_address: str, residual_takeover: bool) -> str:
+def _tenant_priority_repayment_text(
+    tenant: dict,
+    base_date: str,
+    property_address: str,
+    residual_takeover: Optional[bool],
+    dividend_deadline: str = "",
+    dividend_request_date: str = "",
+) -> str:
     occupancy = f"{tenant.get('occupancyType') or ''} {tenant.get('type') or ''}"
     if "상가" in occupancy or "사업자" in occupancy:
         return ""
     deposit = parse_money(tenant.get("deposit"))
     if deposit <= 0:
         return ""
+
+    missing = []
+    if not occupancy.strip():
+        missing.append("점유관계")
+    if not str(property_address or "").strip():
+        missing.append("소재지")
+    if not _has_valid_date(base_date):
+        missing.append("말소기준일")
+    if not _has_valid_date(tenant.get("moveInDate") or ""):
+        missing.append("전입일")
+    if not _has_valid_date(tenant.get("fixedDate") or ""):
+        missing.append("확정일자")
+    request_date = dividend_request_date or tenant.get("depositClaimDate") or ""
+    if not _has_valid_date(request_date):
+        missing.append("배당요구일")
+    deadline = dividend_deadline or tenant.get("depositDeadline") or ""
+    if not _has_valid_date(deadline):
+        missing.append("배당요구종기")
+    if residual_takeover is None:
+        missing.append("보증금 인수 판단")
+    if missing:
+        return (
+            f"소액임차인 최우선변제 여부는 다음 정보가 확인되지 않아 판단을 유보합니다: {_join_korean_names(missing)}. "
+            "요건을 원본으로 확인하기 전에는 최우선변제금과 잔존 보증금을 산정하지 않습니다."
+        )
+    if _date_after(request_date, deadline):
+        return (
+            "확인된 배당요구일이 배당요구종기보다 늦어 적법한 배당요구 요건을 충족한 것으로 볼 수 없습니다. "
+            "종기 준수 여부와 별도 구제사유를 원본으로 확인하기 전에는 최우선변제금과 잔존 보증금을 산정하지 않습니다."
+        )
+
     priority = _housing_lease_priority_repayment(base_date, property_address, deposit)
     if not priority:
         return ""
@@ -2020,14 +3270,18 @@ def _tenant_priority_repayment_text(tenant: dict, base_date: str, property_addre
     priority_amount = min(deposit, priority["priority_amount"])
     remaining = max(deposit - priority_amount, 0)
     text = (
-        f"주택임대차보호법상 소액임차인 최우선변제 대상입니다. "
-        f"최우선변제금액 {fmt_money(priority_amount)}은 최우선 변제됩니다."
+        "확인된 입력값을 기준으로 소액임차인 금액 범위에 해당합니다. "
+        f"점유·전입·배당요구 등 법정 요건이 모두 충족될 경우 {fmt_money(priority_amount)} 한도에서 "
+        "우선변제 가능성이 있습니다."
     )
     if remaining <= 0:
-        return f"{text} 남은 잔존 금액은 없습니다."
+        return f"{text} 금액 기준 잔존 보증금은 0원으로 계산되며 최종 배당 결과를 다시 확인해야 합니다."
     if residual_takeover:
-        return f"{text} 잔존 금액 {fmt_money(remaining)}은 낙찰자에게 인수됩니다."
-    return f"{text} 잔존 금액 {fmt_money(remaining)}은 낙찰자에게 인수되지 않습니다."
+        return f"{text} 잔존 금액 {fmt_money(remaining)}은 낙찰자 인수 가능성을 반영해야 합니다."
+    return (
+        f"{text} 현재 입력값의 선후 비교에서는 잔존 금액 {fmt_money(remaining)}이 인수되지 않는 방향으로 검토되나, "
+        "최신 원본과 배당 결과로 확정해야 합니다."
+    )
 
 
 HOUSING_LEASE_PRIORITY_RULES = [
@@ -2221,11 +3475,26 @@ def calculate_senior_debt_total(rights: list[dict], base_right: Optional[dict]) 
         return 0, False
 
     total = 0
-    for right in rights or []:
+    for right in substantive_registered_rights(rights):
         right_date = right.get("date") or ""
-        amount = parse_money(right.get("amount"))
-        if amount <= 0 or not _date_before(right_date, base_date):
+        if not _has_valid_date(right_date):
+            # 날짜가 없는 실체 권리는 신청담보권보다 선순위인지 판별할 수 없다.
+            return 0, False
+        if _same_date(right_date, base_date):
+            same_as_base = (
+                str(right.get("type") or "") == str((base_right or {}).get("type") or "")
+                and _normalize_creditor_name(right.get("creditor") or "")
+                == _normalize_creditor_name((base_right or {}).get("creditor") or "")
+            )
+            if not same_as_base:
+                # 같은 날짜의 다른 권리는 접수번호 없이는 선후를 확정할 수 없다.
+                return 0, False
             continue
+        amount = parse_money(right.get("amount"))
+        if not _date_before(right_date, base_date):
+            continue
+        if amount <= 0:
+            return 0, False
         total += amount
     return total, True
 
@@ -2233,18 +3502,41 @@ def calculate_senior_debt_total(rights: list[dict], base_right: Optional[dict]) 
 def calculate_surplus_basis(data: dict, rights: list[dict], base_right: Optional[dict]) -> dict:
     base_date = (base_right or {}).get("date") or ""
     min_bid = parse_money(data.get("min_price"))
-    execution_values = forced_execution_estimator.build_eviction_cost_values(data)
-    execution_cost = int(execution_values.get("normal_execution_cost") or 0)
+    court_cost_fields = (
+        ("court_auction_cost", "court_auction_cost_source_complete"),
+        ("court_auction_procedure_cost", "court_auction_procedure_cost_source_complete"),
+        ("auction_procedure_cost", "auction_procedure_cost_source_complete"),
+    )
+    court_auction_cost = 0
+    court_cost_available = False
+    for value_key, complete_key in court_cost_fields:
+        amount = parse_money(data.get(value_key))
+        if amount > 0 and data.get(complete_key) is True:
+            court_auction_cost = amount
+            court_cost_available = True
+            break
+
     senior_debt_total, senior_debt_available = calculate_senior_debt_total(rights, base_right)
-    remainder = min_bid - execution_cost - senior_debt_total
-    can_calculate = min_bid > 0 and execution_cost >= 0 and senior_debt_available
+    applicant_is_base_creditor = _base_right_creditor_is_auction_applicant(
+        base_right,
+        data.get("auction_applicant_creditors") or [],
+    )
+    remainder = min_bid - court_auction_cost - senior_debt_total
+    can_calculate = bool(
+        min_bid > 0
+        and court_cost_available
+        and senior_debt_available
+        and applicant_is_base_creditor
+    )
     return {
         "min_bid": min_bid,
-        "execution_cost": execution_cost,
+        "court_auction_cost": court_auction_cost,
+        "court_cost_available": court_cost_available,
         "senior_debt_total": senior_debt_total,
         "remainder": remainder,
         "can_calculate": can_calculate,
         "base_date": base_date,
+        "applicant_is_base_creditor": applicant_is_base_creditor,
     }
 
 
@@ -2268,54 +3560,114 @@ def build_no_surplus_judgment_text(data: dict, rights: list[dict], base_right: O
     basis = calculate_surplus_basis(data, rights, base_right)
     if not basis.get("can_calculate"):
         return (
-            "최저매각가격, 집행비용 또는 선순위 채권총액 확인이 필요하여 "
+            "최저매각가격, 신청채권자의 담보권 순위, 법원 경매절차비용 또는 선순위 채권총액 확인이 필요하여 "
             "무잉여 가능성을 확정하지 못했습니다."
         )
 
     if basis["remainder"] <= 0:
-        return "경매신청채권자에게 배당될 금액이 남지 않는 것으로 판단되어 무잉여 가능성이 있습니다."
-    return "경매신청채권자에게 배당될 금액이 남는 것으로 판단되어 무잉여 가능성은 낮습니다."
+        return (
+            "확보된 선순위 채권액과 법원 경매절차비용을 반영한 산식상 경매신청채권자의 배당재원이 남지 않아 "
+            "무잉여 가능성이 있습니다. 실제 채권잔액과 조세 등 법정 우선채권은 법원 기록으로 최종 확인해야 합니다."
+        )
+    return (
+        "확보된 선순위 채권액과 법원 경매절차비용을 반영한 산식상 경매신청채권자의 배당재원이 남아 "
+        "무잉여 가능성은 낮습니다. 실제 채권잔액과 조세 등 법정 우선채권은 법원 기록으로 최종 확인해야 합니다."
+    )
 
 
-def analyze_surplus(data: dict, rights: list[dict], base_right: Optional[dict], related_cases: list[dict]) -> str:
+def analyze_surplus(
+    data: dict,
+    rights: list[dict],
+    base_right: Optional[dict],
+    related_cases: list[dict],
+    *,
+    rights_source_complete: bool = False,
+) -> str:
     min_bid = parse_money(data.get("min_price"))
-    appraised = parse_money(data.get("appraised_price"))
-    total_debt = sum(int(r.get("amount") or 0) for r in rights if r.get("amount"))
-    expected_dividend = data.get("expected_dividend") or {}
-    applicant_creditors = data.get("auction_applicant_creditors") or []
+    total_debt = registered_right_amount_total(rights)
     case_text = ", ".join(
         f"{c.get('type', '관련사건')} {c.get('caseNumber', '')}".strip()
         for c in related_cases
     )
 
-    expected_amount = int(expected_dividend.get("auctionApplicantDividendAmount") or 0)
-    if _has_duplicate_auction_case(related_cases):
-        no_surplus_text = "중복경매 신청 사건이 확인되므로, 단순 무잉여를 이유로 한 절차 기각 가능성은 낮습니다."
-    elif expected_dividend.get("auctionApplicantDividendFound") and expected_amount > 0:
-        no_surplus_text = "경매신청채권자는 배당을 받을 수 있으므로 무잉여 가능성은 없습니다."
-    elif _base_right_creditor_is_auction_applicant(base_right, applicant_creditors):
-        no_surplus_text = "최선순위 설정권자와 경매신청채권자가 동일하여 우선 배당 가능성이 높으므로 무잉여 가능성은 없습니다."
-    else:
-        no_surplus_text = build_no_surplus_judgment_text(data, rights, base_right)
-
-    if not appraised or not rights:
-        withdrawal_text = (
-            "감정가 또는 채권 내역 확인이 필요하여 경매취하 가능성을 확정하지 못했습니다. "
-            "등기부 채권 총액과 감정가 대비 비율을 담당자가 확인해야 합니다."
+    disclosed_voluntary_basis = (
+        _disclosed_voluntary_auction_surplus_basis(data, rights)
+        if rights_source_complete
+        else None
+    )
+    expected_dividend_amount = _expected_dividend_amount(data)
+    if expected_dividend_amount > 0:
+        no_surplus_text = (
+            f"예상배당표상 말소기준권리 또는 경매신청채권자에게 채권배당금 {fmt_money(expected_dividend_amount)}이 기재되어 있습니다. "
+            "경매신청채권자에게 1원 이상 배당이 예정된 구조이므로 현재 예상배당표 기준 무잉여 가능성은 없습니다. "
+            "입찰 직전 예상배당표와 법원 사건진행내역의 변동 여부만 다시 확인하면 됩니다."
+        )
+    elif disclosed_voluntary_basis and disclosed_voluntary_basis["remainder_before_court_cost"] > 0:
+        claim_amount = disclosed_voluntary_basis["claim_amount"]
+        prior_total = disclosed_voluntary_basis["prior_registered_total"]
+        remainder = disclosed_voluntary_basis["remainder_before_court_cost"]
+        no_surplus_text = (
+            f"임의경매 청구금액 {fmt_money(claim_amount)}은 경매개시 절차의 청구액이므로 등기상 담보권 "
+            "기재금액에 중복 합산하지 않았습니다. 청구액과 근접한 담보권이 확인되며, 공개된 담보권 중 가장 "
+            "후순위 담보권을 신청담보권으로 보는 보수적 기준에서도 그보다 선순위인 기재금액은 "
+            f"{fmt_formula_money(prior_total)}이고 최저매각가격 "
+            f"{fmt_money(min_bid)}에서 법원 경매절차비용을 차감하기 전 배당재원은 {fmt_money(remainder)}입니다. "
+            f"따라서 법원 경매절차비용이 이 금액보다 적다면 신청담보권에도 1원 이상 배당될 수 있어 무잉여 가능성은 사실상 없습니다. "
+            "다만 실제 채권잔액, "
+            "조세 등 법정 우선채권과 법원 경매절차비용은 법원 기록으로 최종 확인해야 합니다."
         )
     else:
-        debt_rate = total_debt / appraised
-        debt_rate_text = _format_percent(debt_rate * 100)
-        if debt_rate < 0.7:
-            withdrawal_text = (
-                f"확인된 채권 총액 ({fmt_money(total_debt)})은 감정가({fmt_money(appraised)}) 대비 "
-                f"{debt_rate_text}로 70% 미만이므로 취하 가능성이 있습니다."
-            )
+        calculated_basis = calculate_surplus_basis(data, rights, base_right)
+        if calculated_basis.get("can_calculate"):
+            no_surplus_text = build_no_surplus_judgment_text(data, rights, base_right)
         else:
-            withdrawal_text = (
-                f"확인된 채권 총액 ({fmt_money(total_debt)})은 감정가({fmt_money(appraised)}) 대비 "
-                f"{debt_rate_text}로 70% 이상이므로 취하 가능성은 낮습니다."
-            )
+            application_context = _auction_application_context(data, rights, base_right)
+            if application_context and min_bid > 0:
+                creditor_text = application_context["creditor"]
+                claim_text = (
+                    f"(청구금액 {fmt_money(application_context['claim_amount'])})"
+                    if application_context["claim_amount"] > 0
+                    else ""
+                )
+                auction_kind = application_context["auction_kind"]
+                no_surplus_text = (
+                    f"본 경매는 {creditor_text}{claim_text}이 {auction_kind}를 신청한 사건입니다. "
+                    f"현재 최저매각가격은 {fmt_money(min_bid)}이고, 등기상 권리 기재금액 합계는 {fmt_money(total_debt)}입니다. "
+                    "현재 가격 구조상 신청채권자에게 배당될 가능성이 있어 무잉여 가능성은 낮게 판단됩니다. "
+                    "입찰 직전 예상배당표와 법원 사건진행내역의 변동 여부만 다시 확인하면 됩니다."
+                )
+            else:
+                no_surplus_text = (
+                    "신청채권자와 청구금액을 특정할 자료가 부족해 무잉여 여부를 결론내리지 않았습니다. "
+                    "입찰 직전 예상배당표, 법원 경매절차비용과 법원 사건진행내역을 확인해야 합니다."
+                )
+
+    # 채권액/감정가 비율은 채권자의 취하 의사를 예측하는 근거가 아니다.
+    # 실제 취하서나 절차종료 기재만 사건 상태로 판단한다.
+    myungseung_labels = {
+        str(item.get("label") or "")
+        for item in (data.get("myungseung_analysis") or [])
+        if isinstance(item, dict)
+    }
+    application_context = _auction_application_context(data, rights, base_right)
+    if "재진행" in myungseung_labels:
+        withdrawal_text = (
+            "마이옥션 상세페이지의 법무법인 명승 권리분석에서 이 사건은 중단되었던 매각절차가 재개된 ‘재진행’ "
+            "물건으로 확인됩니다. 공개된 담보권 기재금액 합계가 최저매각가격보다 큰 사건이므로 경제적 회수 가능성이 있어 취하 가능성은 낮은 편으로 판단됩니다. "
+            "다만 실제 채권잔액과 채권자의 의사는 별개이므로, 입찰 직전 법원 "
+            "사건진행내역에서 취하서 또는 집행정지 접수 여부를 확인해야 합니다."
+        )
+    elif application_context and min_bid > 0:
+        withdrawal_text = (
+            "현재 최저매각가격과 신청채권 구조를 기준으로 보면 신청채권자가 배당을 받을 가능성이 있어 "
+            "경매 취하 가능성은 낮은 편으로 판단됩니다. 다만 취하는 채권자와 소유자의 대응에 따라 달라질 수 있으므로 "
+            "입찰 직전 법원 사건진행내역에서 취하서 또는 집행정지 접수 여부를 확인해야 합니다."
+        )
+    else:
+        withdrawal_text = (
+            "채권액과 감정가의 단순 비율로 채권자의 향후 취하 여부를 예측하지 않습니다. 입찰 직전 법원 "
+            "사건진행내역에서 취하서·집행정지 또는 절차종료 접수 여부를 확인해야 합니다."
+        )
 
     parts = [
         f"무잉여 가능성: {no_surplus_text}",
@@ -2326,18 +3678,145 @@ def analyze_surplus(data: dict, rights: list[dict], base_right: Optional[dict], 
     return "\n".join(parts)
 
 
-def _format_percent(value: float) -> str:
-    if abs(value - round(value)) < 0.05:
-        return f"{round(value)}%"
-    return f"{value:.1f}%"
+def _auction_application_context(data: dict, rights: list[dict], base_right: Optional[dict]) -> Optional[dict]:
+    auction_type = re.sub(r"\s+", "", str(data.get("auction_type") or ""))
+    procedures = auction_procedure_entries(rights)
+    if "임의경매" in auction_type or any("임의경매" in str(item.get("type") or "") for item in procedures):
+        auction_kind = "임의경매"
+    elif "강제경매" in auction_type or any("강제경매" in str(item.get("type") or "") for item in procedures):
+        auction_kind = "강제경매"
+    else:
+        return None
+
+    claim_amount = parse_money(data.get("claim_amount"))
+    if claim_amount <= 0:
+        procedure_amounts = [parse_money(item.get("amount")) for item in procedures if parse_money(item.get("amount")) > 0]
+        claim_amount = max(procedure_amounts) if procedure_amounts else 0
+
+    applicant_names = [
+        str(name or "").strip()
+        for name in (data.get("auction_applicant_creditors") or [])
+        if str(name or "").strip()
+    ]
+    creditor = applicant_names[0] if applicant_names else ""
+    if not creditor:
+        creditor = str((base_right or {}).get("creditor") or "").strip()
+    if not creditor:
+        for item in procedures:
+            creditor = str(item.get("creditor") or "").strip()
+            if creditor:
+                break
+
+    base_type = str((base_right or {}).get("type") or "").strip()
+    if creditor and "저당" in base_type:
+        creditor_label = f"{base_type}자인 {creditor}"
+    elif creditor:
+        creditor_label = creditor
+    elif auction_kind == "강제경매":
+        creditor_label = "경매신청채권자"
+    else:
+        creditor_label = "신청채권자"
+    return {
+        "auction_kind": auction_kind,
+        "claim_amount": claim_amount,
+        "creditor": creditor_label,
+    }
 
 
-def _has_duplicate_auction_case(related_cases: list[dict]) -> bool:
-    for case in related_cases or []:
-        case_type = str(case.get("type") or "")
-        if "중복" in case_type:
-            return True
-    return False
+def _expected_dividend_amount(data: dict) -> int:
+    expected = data.get("expected_dividend") or {}
+    if not isinstance(expected, dict) or expected.get("auctionApplicantDividendFound") is not True:
+        return 0
+    return parse_money(expected.get("auctionApplicantDividendAmount"))
+
+
+def _disclosed_voluntary_auction_surplus_basis(data: dict, rights: list[dict]) -> Optional[dict]:
+    """Build the site's disclosed-rights surplus basis for voluntary auction.
+
+    A procedural 청구금액 is never a third registered burden.  When that
+    amount closely identifies one disclosed mortgage, calculate a conservative
+    upper bound by treating the most junior disclosed pre-application mortgage
+    as the applicant's security and totaling every earlier disclosed burden.
+    The conclusion is explicitly scoped to the captured registry summary.
+    """
+    auction_type = re.sub(r"\s+", "", str(data.get("auction_type") or ""))
+    procedures = [
+        item for item in auction_procedure_entries(rights)
+        if "임의경매" in str(item.get("type") or "")
+    ]
+    if "임의경매" not in auction_type or not procedures:
+        return None
+
+    detail_claim_amount = parse_money(data.get("claim_amount"))
+    procedure_claim_amounts = {
+        parse_money(item.get("amount"))
+        for item in procedures
+        if parse_money(item.get("amount")) > 0
+    }
+    if detail_claim_amount <= 0 or len(procedure_claim_amounts) != 1:
+        return None
+    procedure_claim_amount = next(iter(procedure_claim_amounts))
+    if abs(detail_claim_amount - procedure_claim_amount) / max(detail_claim_amount, 1) > 0.01:
+        return None
+    claim_amount = detail_claim_amount
+
+    procedure_dates = [
+        item.get("date") or ""
+        for item in procedures
+        if _has_valid_date(item.get("date") or "")
+    ]
+    if len(procedure_dates) != len(procedures):
+        return None
+    application_date = min(procedure_dates, key=_date_sort_key)
+
+    mortgages = [
+        right for right in substantive_registered_rights(rights)
+        if (
+            "저당" in str(right.get("type") or "")
+            and parse_money(right.get("amount")) > 0
+            and _has_valid_date(right.get("date") or "")
+            and _date_before(right.get("date") or "", application_date)
+        )
+    ]
+    if not mortgages:
+        return None
+    matched_candidates = [
+        right for right in mortgages
+        if abs(parse_money(right.get("amount")) - claim_amount) / max(claim_amount, 1) <= 0.05
+    ]
+    if len(matched_candidates) != 1:
+        return None
+    claim_matched_right = matched_candidates[0]
+    worst_case_applicant_right = max(mortgages, key=lambda right: _date_sort_key(right.get("date") or ""))
+    worst_case_date = worst_case_applicant_right.get("date") or ""
+    if sum(_same_date(right.get("date") or "", worst_case_date) for right in mortgages) != 1:
+        return None
+
+    prior_total = 0
+    for right in substantive_registered_rights(rights):
+        if right is worst_case_applicant_right:
+            continue
+        right_date = right.get("date") or ""
+        if not _has_valid_date(right_date):
+            return None
+        if _same_date(right_date, worst_case_date):
+            # 동일일자 접수순위가 없으면 신청담보권보다 앞서는지 알 수 없다.
+            return None
+        if _date_before(right_date, worst_case_date):
+            amount = parse_money(right.get("amount"))
+            if amount <= 0:
+                return None
+            prior_total += amount
+    min_bid = parse_money(data.get("min_price"))
+    if min_bid <= 0:
+        return None
+    return {
+        "claim_amount": claim_amount,
+        "claim_matched_right": claim_matched_right,
+        "worst_case_applicant_right": worst_case_applicant_right,
+        "prior_registered_total": prior_total,
+        "remainder_before_court_cost": min_bid - prior_total,
+    }
 
 
 def _base_right_creditor_is_auction_applicant(base_right: Optional[dict], applicant_creditors: list[str]) -> bool:
@@ -2352,15 +3831,15 @@ def _base_right_creditor_is_auction_applicant(base_right: Optional[dict], applic
 
 def build_misc_items(tenants: list[dict], management_fee: dict, market_data: dict) -> list[str]:
     items = []
+    fee_status = _management_fee_status(management_fee)
     unpaid = int(management_fee.get("unpaidAmount") or 0)
-    if management_fee:
-        if unpaid > 0:
-            items.append(build_unpaid_management_fee_text(management_fee))
-        else:
-            note = management_fee.get("note") or "미납관리비 없음 또는 미확인"
-            items.append(f"관리비 현황은 {_polite_confirmation(note)}")
+    if fee_status == "confirmed" and unpaid > 0:
+        items.append(build_unpaid_management_fee_text(management_fee))
+    elif fee_status == "none":
+        note = management_fee.get("note") or "확인자료상 체납관리비 없음"
+        items.append(f"관리비 현황은 {_polite_confirmation(note)}")
     else:
-        items.append("관리비 미납 금액 및 개월수는 관리사무소에 직접 확인해 주시기 바랍니다.")
+        items.append("미납관리비는 확인되지 않습니다. 입찰 전 관리사무소에 최신 미납 내역을 확인하시기 바랍니다.")
 
     if any(t.get("isVacant") for t in tenants):
         items.append("임차권등기 또는 현황자료상 공실 가능성이 있으므로 점유 현황을 현장에서 확인해 주시기 바랍니다.")
@@ -2376,24 +3855,27 @@ def build_misc_items(tenants: list[dict], management_fee: dict, market_data: dic
 
 
 def build_unpaid_management_fee_text(management_fee: dict) -> str:
+    fee_status = _management_fee_status(management_fee)
     unpaid = int(management_fee.get("unpaidAmount") or 0)
-    if unpaid > 0:
+    if fee_status == "confirmed" and unpaid > 0:
         due_text = management_fee.get("dueThroughText") or _extract_management_fee_due_text(management_fee.get("note") or "")
-        if due_text:
-            return (
-                f"미납관리비 {due_text} 약 {fmt_money(unpaid)}이 존재합니다. "
-                "낙찰시 명도시점까지 미납관리비가 추가로 더 발생 될 수 있으며, "
-                "미납관리비는 낙찰자에게 인수됩니다. 자세한 내용은 뒷장에 참조 바랍니다."
-            )
+        amount_text = f"{due_text} 약 {fmt_money(unpaid)}" if due_text else f"약 {fmt_money(unpaid)}"
         return (
-            f"미납관리비 약 {fmt_money(unpaid)}이 존재합니다. "
-            "낙찰시 명도시점까지 미납관리비가 추가로 더 발생 될 수 있으며, "
-            "미납관리비는 낙찰자에게 인수됩니다. 자세한 내용은 뒷장에 참조 바랍니다."
+            f"체납관리비 총액은 {amount_text}으로 기재되어 있습니다. "
+            "해당 총액 전부를 낙찰자 부담으로 단정하지 않고 공용부분·전유부분·연체료와 기준일을 구분해 확인해야 합니다."
         )
-    if management_fee:
-        note = management_fee.get("note") or "미납관리비 없음 또는 미확인"
-        return f"{_polite_confirmation(note)} 최종 입찰 전 관리사무소에 재확인해 주시기 바랍니다."
-    return "미납관리비 금액 및 개월수는 관리사무소에 직접 확인해 주시기 바랍니다."
+    if fee_status == "none":
+        note = management_fee.get("note") or "확인자료상 체납관리비 없음"
+        return f"{_polite_confirmation(note)} 입찰 직전 관리사무소에서 변동 여부를 재확인해 주시기 바랍니다."
+    return "미납관리비는 확인되지 않습니다. 입찰 전 관리사무소에 최신 미납 내역을 확인하시기 바랍니다."
+
+
+def _management_fee_status(management_fee: dict) -> str:
+    try:
+        from .rights_checklist import management_fee_amount_status
+    except ImportError:  # 단독 실행 대비
+        from rights_checklist import management_fee_amount_status
+    return management_fee_amount_status(management_fee)
 
 
 def _polite_optional_note(value: str, fallback: str) -> str:
@@ -2445,8 +3927,7 @@ def render_certificate_template(template_path: str, data: dict) -> str:
     rendered = _replace_each(rendered, "tenantAnalyses", data.get("tenantAnalyses") or [])
     rendered = _replace_each(rendered, "miscItems", data.get("miscItems") or [])
     rendered = _replace_each(rendered, "reviewItems", data.get("reviewItems") or [])
-    rendered = _replace_each(rendered, "checklistRows", data.get("checklistRows") or [])
-    rendered = _replace_each(rendered, "checklistDetails", data.get("checklistDetails") or [])
+    rendered = rendered.replace("{{narrativeReportHtml}}", str(data.get("narrativeReportHtml") or ""))
 
     rendered = _replace_if(rendered, "noTenants", bool(data.get("noTenants")))
     rendered = _replace_if(rendered, "hasUnpaidFee", bool(data.get("hasUnpaidFee")))
@@ -2465,7 +3946,6 @@ def render_certificate_pptx_template(template_path: Path, output_path: Path, dat
         raise FileNotFoundError(f"권리분석 보증서 PPT 템플릿을 찾을 수 없습니다: {template_path}")
 
     prs = Presentation(str(template_path))
-    special_summary_chunks = _prepare_special_summary_slides(prs, data)
     mapping = {
         "{{" + key + "}}": _ppt_value(value)
         for key, value in data.items()
@@ -2474,82 +3954,210 @@ def render_certificate_pptx_template(template_path: Path, output_path: Path, dat
     mapping["{{address}}"] = ""
     mapping["{{adress}}"] = ""
 
-    special_slide_index = 0
-    for slide in prs.slides:
-        slide_mapping = mapping
-        if special_summary_chunks and _slide_contains_text(slide, "{{specialSummaryText}}"):
-            chunk = special_summary_chunks[min(special_slide_index, len(special_summary_chunks) - 1)]
-            slide_mapping = dict(mapping)
-            slide_mapping["{{specialSummaryText}}"] = chunk
-            slide_mapping["{{특이사항요약}}"] = chunk
-            special_slide_index += 1
-        _replace_placeholders_in_shapes(slide.shapes, slide_mapping)
+    # The paid certificate's established first page stays in place.  All legacy
+    # slides after it are replaced with the case-specific narrative report.
+    if len(prs.slides):
+        _replace_placeholders_in_shapes(prs.slides[0].shapes, mapping)
 
-    _render_checklist_slides(prs, data)
+    _render_narrative_slides(prs, data)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path))
 
 
-def _render_checklist_slides(prs: Presentation, data: dict) -> None:
-    """Append the checklist as native PPT shapes so PPTX and PDF outputs match.
-
-    The production template currently ends with a deliberately empty fourth slide.
-    Reusing it preserves the established certificate slides and removes the otherwise
-    blank PDF page. Custom templates without an empty final slide get a new slide.
-    """
-    rows = [item for item in (data.get("checklistRows") or []) if isinstance(item, dict)]
-    if not rows:
+def _render_narrative_slides(prs: Presentation, data: dict) -> None:
+    pages = [page for page in (data.get("narrativePages") or []) if isinstance(page, dict)]
+    if not pages:
         return
-    _validate_checklist_slide_size(prs)
+    _validate_narrative_slide_size(prs)
+    if len(prs.slides) < 3:
+        raise ValueError("권리분석 PPT 템플릿에는 첫 장, 특이사항 원본 장, 마지막 안내 장이 필요합니다.")
 
-    rows_per_slide = CHECKLIST_ROWS_PER_COLUMN * 2
-    row_pages = [rows[index:index + rows_per_slide] for index in range(0, len(rows), rows_per_slide)]
-    reusable_slide = prs.slides[-1] if len(prs.slides) and len(prs.slides[-1].shapes) == 0 else None
+    original_slides = list(prs.slides)
+    prototype = original_slides[1]
+    closing_slide = original_slides[-1]
+    original_canvases = original_slides[1:-1]
+    prototype_background = deepcopy(prototype.element.cSld.bg) if prototype.element.cSld.bg is not None else None
+    prototype_background_rels = _slide_background_relationships(prototype)
+    prototype_chrome = [deepcopy(shape._element) for shape in prototype.shapes]
 
-    for page_index, page_rows in enumerate(row_pages):
-        if page_index == 0 and reusable_slide is not None:
-            slide = reusable_slide
-        else:
-            slide = prs.slides.add_slide(_blank_slide_layout(prs))
-        _render_checklist_overview_slide(
-            prs,
+    narrative_slides = list(original_canvases[: len(pages)])
+    while len(narrative_slides) < len(pages):
+        slide = prs.slides.add_slide(prototype.slide_layout)
+        _copy_slide_background(
             slide,
-            page_rows,
-            data,
-            page_index=page_index,
-            page_count=len(row_pages),
+            prototype_background,
+            prototype_background_rels,
         )
+        _move_slide_before(prs, slide, closing_slide)
+        narrative_slides.append(slide)
 
-    details = [item for item in (data.get("checklistDetails") or []) if isinstance(item, dict)]
-    detail_pages = [
-        details[index:index + CHECKLIST_DETAILS_PER_SLIDE]
-        for index in range(0, len(details), CHECKLIST_DETAILS_PER_SLIDE)
-    ]
-    for page_index, page_details in enumerate(detail_pages):
-        slide = prs.slides.add_slide(_blank_slide_layout(prs))
-        _render_checklist_detail_slide(
-            prs,
-            slide,
-            page_details,
-            data,
-            page_index=page_index,
-            page_count=len(detail_pages),
-        )
+    for slide in original_canvases[len(pages):]:
+        _remove_slide_object(prs, slide)
+
+    for slide in narrative_slides:
+        _clear_slide_shapes(slide)
+        for element in prototype_chrome:
+            slide.shapes._spTree.insert_element_before(deepcopy(element), "p:extLst")
+
+    _move_slide_to_end(prs, closing_slide)
+    for page_index, page in enumerate(pages):
+        slide = narrative_slides[page_index]
+        _render_narrative_page(prs, slide, page, data)
 
 
-def _validate_checklist_slide_size(prs: Presentation) -> None:
-    if prs.slide_width >= CHECKLIST_MIN_SLIDE_WIDTH and prs.slide_height >= CHECKLIST_MIN_SLIDE_HEIGHT:
+def _slide_id_element(prs: Presentation, slide):
+    for slide_id in prs.slides._sldIdLst:
+        if prs.part.related_part(slide_id.rId) is slide.part:
+            return slide_id
+    raise ValueError("PPT 슬라이드 관계를 찾을 수 없습니다.")
+
+
+def _remove_slide_object(prs: Presentation, slide) -> None:
+    slide_id = _slide_id_element(prs, slide)
+    relationship_id = slide_id.rId
+    prs.part.drop_rel(relationship_id)
+    prs.slides._sldIdLst.remove(slide_id)
+
+
+def _move_slide_before(prs: Presentation, slide, before_slide) -> None:
+    slide_id = _slide_id_element(prs, slide)
+    before_id = _slide_id_element(prs, before_slide)
+    slide_ids = prs.slides._sldIdLst
+    slide_ids.remove(slide_id)
+    slide_ids.insert(list(slide_ids).index(before_id), slide_id)
+
+
+def _move_slide_to_end(prs: Presentation, slide) -> None:
+    slide_id = _slide_id_element(prs, slide)
+    slide_ids = prs.slides._sldIdLst
+    slide_ids.remove(slide_id)
+    slide_ids.append(slide_id)
+
+
+def _slide_background_relationships(slide) -> dict[str, object]:
+    relationships = {}
+    background = slide.element.cSld.bg
+    if background is None:
+        return relationships
+    for element in background.iter():
+        for attr in (qn("r:embed"), qn("r:link")):
+            relationship_id = element.get(attr)
+            if relationship_id and relationship_id in slide.part.rels:
+                relationships[relationship_id] = slide.part.rels[relationship_id]
+    return relationships
+
+
+def _copy_slide_background(slide, background, relationships: dict[str, object]) -> None:
+    if background is None:
         return
+    copied = deepcopy(background)
+    for element in copied.iter():
+        for attr in (qn("r:embed"), qn("r:link")):
+            old_id = element.get(attr)
+            relation = relationships.get(old_id or "")
+            if relation is None:
+                continue
+            new_id = slide.part.relate_to(
+                relation.target_ref if relation.is_external else relation.target_part,
+                relation.reltype,
+                relation.is_external,
+            )
+            element.set(attr, new_id)
+    existing = slide.element.cSld.bg
+    if existing is not None:
+        slide.element.cSld.remove(existing)
+    slide.element.cSld.insert(0, copied)
 
+
+def _clear_slide_shapes(slide) -> None:
+    shape_tree = slide.shapes._spTree
+    for shape in list(slide.shapes):
+        shape_tree.remove(shape._element)
+
+
+def _validate_narrative_slide_size(prs: Presentation) -> None:
+    if prs.slide_width >= REPORT_MIN_SLIDE_WIDTH and prs.slide_height >= REPORT_MIN_SLIDE_HEIGHT:
+        return
     width_inches = prs.slide_width / Inches(1)
     height_inches = prs.slide_height / Inches(1)
     raise ValueError(
-        "권리분석 체크표 PPTX는 슬라이드 크기가 최소 7.5 x 10.8인치여야 합니다"
-        f"(현재 {width_inches:.2f} x {height_inches:.2f}인치). 가로형 또는 작은 템플릿은 지원하지 않습니다. "
-        "Rights checklist requires slides at least 7.5 x 10.8 inches; "
-        "landscape or smaller templates are not supported."
+        "권리분석 서술 보고서는 슬라이드 크기가 최소 7.5 x 10.8인치여야 합니다"
+        f"(현재 {width_inches:.2f} x {height_inches:.2f}인치). 글자 축소 없이 페이지를 나누기 위해 "
+        "가로형 또는 작은 템플릿은 지원하지 않습니다. "
+        "Narrative report requires slides at least 7.5 x 10.8 inches."
     )
+
+
+def _render_narrative_page(prs: Presentation, slide, page: dict, data: dict) -> None:
+    blocks = [block for block in (page.get("blocks") or []) if isinstance(block, dict)]
+    _set_original_narrative_header(slide, page, data)
+
+    font_points = _narrative_page_font_points(blocks)
+    text_box = slide.shapes.add_textbox(Inches(1.08), Inches(3.58), Inches(5.34), Inches(4.98))
+    frame = text_box.text_frame
+    frame.clear()
+    frame.word_wrap = True
+    frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+    frame.vertical_anchor = MSO_ANCHOR.TOP
+    frame.margin_left = Inches(0.02)
+    frame.margin_right = Inches(0.02)
+    frame.margin_top = Inches(0.02)
+    frame.margin_bottom = Inches(0.02)
+    for index, block in enumerate(blocks):
+        paragraph = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
+        paragraph.alignment = PP_ALIGN.LEFT
+        paragraph.level = 0
+        paragraph.space_after = Pt(8 if index < len(blocks) - 1 else 0)
+        paragraph.line_spacing = 1.12
+        heading = _narrative_display_heading(block, str(page.get("title") or ""))
+        number = block.get("number") or index + 1
+        run = paragraph.add_run()
+        run.text = f"{number}) {heading}. "
+        run.font.name = "바탕체"
+        run.font.size = Pt(font_points)
+        run.font.bold = True
+        run.font.color.rgb = RGBColor(43, 37, 29)
+        body_run = paragraph.add_run()
+        body_run.text = str(block.get("body") or "")
+        body_run.font.name = "바탕체"
+        body_run.font.size = Pt(font_points)
+        body_run.font.bold = False
+        body_run.font.color.rgb = RGBColor(43, 37, 29)
+
+
+def _set_original_narrative_header(slide, page: dict, data: dict) -> None:
+    tables = sorted(
+        (shape for shape in slide.shapes if getattr(shape, "has_table", False)),
+        key=lambda shape: shape.top,
+    )
+    header = next((shape for shape in tables if shape.top < Inches(5)), None)
+    if header is None or len(header.table.rows) < 2:
+        raise ValueError("원본 특이사항 페이지의 제목 표를 찾을 수 없습니다.")
+    _set_table_cell_text(header.table.cell(0, 0), "4. 특이사항", size=12, bold=True)
+    _set_table_cell_text(
+        header.table.cell(1, 0),
+        f"사건번호 {data.get('caseNumber') or '담당자 확인 필요'}  ·  "
+        f"{page.get('pageIndex') or ''}/{page.get('pageCount') or ''}",
+        size=9.5,
+        bold=False,
+    )
+
+
+def _set_table_cell_text(cell, value: str, *, size: float, bold: bool) -> None:
+    frame = cell.text_frame
+    frame.clear()
+    frame.word_wrap = True
+    frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    paragraph = frame.paragraphs[0]
+    paragraph.alignment = PP_ALIGN.LEFT
+    paragraph.space_after = Pt(0)
+    run = paragraph.add_run()
+    run.text = str(value or "")
+    run.font.name = "바탕체"
+    run.font.size = Pt(size)
+    run.font.bold = bold
+    run.font.color.rgb = RGBColor(43, 37, 29)
 
 
 def _blank_slide_layout(prs: Presentation):
@@ -2562,227 +4170,7 @@ def _blank_slide_layout(prs: Presentation):
     return min(prs.slide_layouts, key=lambda layout: len(layout.placeholders))
 
 
-def _render_checklist_overview_slide(
-    prs: Presentation,
-    slide,
-    rows: list[dict],
-    data: dict,
-    *,
-    page_index: int,
-    page_count: int,
-) -> None:
-    _add_checklist_page_frame(prs, slide)
-    suffix = f" ({page_index + 1}/{page_count})" if page_count > 1 else ""
-    _add_ppt_textbox(
-        slide,
-        Inches(0.5),
-        Inches(0.42),
-        prs.slide_width - Inches(1.0),
-        Inches(0.4),
-        f"특이사항 종합 체크표{suffix}",
-        font_size=Pt(20),
-        bold=True,
-        color=RGBColor(37, 45, 55),
-        alignment=PP_ALIGN.CENTER,
-    )
-    _add_ppt_textbox(
-        slide,
-        Inches(0.55),
-        Inches(0.86),
-        prs.slide_width - Inches(1.1),
-        Inches(0.28),
-        f"사건번호 {data.get('caseNumber') or '담당자 확인 필요'} · 자동 권리분석 {len(data.get('checklistRows') or rows)}개 항목",
-        font_size=Pt(9),
-        color=RGBColor(105, 112, 122),
-        alignment=PP_ALIGN.CENTER,
-    )
-    _add_ppt_textbox(
-        slide,
-        Inches(0.55),
-        Inches(1.12),
-        prs.slide_width - Inches(1.1),
-        Inches(0.28),
-        f"판정 요약: {data.get('checklistSummaryText') or '-'}",
-        font_size=Pt(9),
-        bold=True,
-        color=RGBColor(66, 72, 80),
-        alignment=PP_ALIGN.CENTER,
-    )
-
-    table_top = Inches(1.52)
-    side_margin = Inches(0.48)
-    gap = Inches(0.14)
-    table_width = int((prs.slide_width - side_margin * 2 - gap) / 2)
-    columns = (
-        rows[:CHECKLIST_ROWS_PER_COLUMN],
-        rows[CHECKLIST_ROWS_PER_COLUMN:],
-    )
-    for column_index, column_rows in enumerate(columns):
-        if not column_rows:
-            continue
-        left = side_margin + column_index * (table_width + gap)
-        _add_checklist_table(slide, column_rows, left, table_top, table_width)
-
-    _add_checklist_footer(prs, slide, data)
-
-
-def _add_checklist_table(slide, rows: list[dict], left, top, width) -> None:
-    row_height = Inches(0.46)
-    height = row_height * (len(rows) + 1)
-    table = slide.shapes.add_table(len(rows) + 1, 3, left, top, width, height).table
-    table.columns[0].width = int(width * 0.23)
-    table.columns[1].width = int(width * 0.52)
-    table.columns[2].width = width - table.columns[0].width - table.columns[1].width
-
-    for row in table.rows:
-        row.height = row_height
-
-    for column_index, label in enumerate(("분류", "검사항목", "판정")):
-        _style_checklist_cell(
-            table.cell(0, column_index),
-            label,
-            fill_color=RGBColor(76, 68, 45),
-            font_color=RGBColor(255, 255, 255),
-            font_size=Pt(8),
-            bold=True,
-            alignment=PP_ALIGN.CENTER,
-        )
-
-    for row_index, item in enumerate(rows, start=1):
-        body_fill = RGBColor(255, 255, 255) if row_index % 2 else RGBColor(250, 248, 242)
-        _style_checklist_cell(
-            table.cell(row_index, 0),
-            str(item.get("category") or ""),
-            fill_color=RGBColor(245, 239, 220),
-            font_color=RGBColor(67, 63, 52),
-            font_size=Pt(7),
-            bold=True,
-            alignment=PP_ALIGN.CENTER,
-        )
-        _style_checklist_cell(
-            table.cell(row_index, 1),
-            str(item.get("name") or ""),
-            fill_color=body_fill,
-            font_color=RGBColor(40, 47, 55),
-            font_size=Pt(7.5),
-        )
-        state = str(item.get("state") or "미확인")
-        state_color, state_font_color = _checklist_state_colors(state)
-        _style_checklist_cell(
-            table.cell(row_index, 2),
-            state,
-            fill_color=state_color,
-            font_color=state_font_color,
-            font_size=Pt(7.5),
-            bold=True,
-            alignment=PP_ALIGN.CENTER,
-        )
-
-
-def _render_checklist_detail_slide(
-    prs: Presentation,
-    slide,
-    details: list[dict],
-    data: dict,
-    *,
-    page_index: int,
-    page_count: int,
-) -> None:
-    _add_checklist_page_frame(prs, slide)
-    suffix = f" ({page_index + 1}/{page_count})" if page_count > 1 else ""
-    _add_ppt_textbox(
-        slide,
-        Inches(0.5),
-        Inches(0.42),
-        prs.slide_width - Inches(1.0),
-        Inches(0.4),
-        f"위험 · 확인필요 항목 상세{suffix}",
-        font_size=Pt(19),
-        bold=True,
-        color=RGBColor(37, 45, 55),
-        alignment=PP_ALIGN.CENTER,
-    )
-    _add_ppt_textbox(
-        slide,
-        Inches(0.55),
-        Inches(0.88),
-        prs.slide_width - Inches(1.1),
-        Inches(0.28),
-        f"사건번호 {data.get('caseNumber') or '담당자 확인 필요'} · 판정 근거와 참조 자료",
-        font_size=Pt(9),
-        color=RGBColor(105, 112, 122),
-        alignment=PP_ALIGN.CENTER,
-    )
-
-    panel_left = Inches(0.55)
-    panel_width = prs.slide_width - Inches(1.1)
-    panel_height = Inches(1.86)
-    panel_gap = Inches(0.16)
-    panel_top = Inches(1.28)
-    for item_index, item in enumerate(details):
-        top = panel_top + item_index * (panel_height + panel_gap)
-        panel = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, panel_left, top, panel_width, panel_height)
-        panel.fill.solid()
-        panel.fill.fore_color.rgb = RGBColor(251, 250, 246)
-        panel.line.color.rgb = RGBColor(220, 208, 169)
-        panel.line.width = Pt(1)
-
-        state = str(item.get("state") or "미확인")
-        state_color, state_font_color = _checklist_state_colors(state)
-        badge = slide.shapes.add_shape(
-            MSO_SHAPE.ROUNDED_RECTANGLE,
-            panel_left + Inches(0.16),
-            top + Inches(0.14),
-            Inches(0.75),
-            Inches(0.3),
-        )
-        badge.fill.solid()
-        badge.fill.fore_color.rgb = state_color
-        badge.line.color.rgb = state_color
-        _set_shape_text(
-            badge,
-            state,
-            font_size=Pt(8),
-            bold=True,
-            color=state_font_color,
-            alignment=PP_ALIGN.CENTER,
-        )
-        _add_ppt_textbox(
-            slide,
-            panel_left + Inches(1.0),
-            top + Inches(0.11),
-            panel_width - Inches(1.2),
-            Inches(0.36),
-            str(item.get("name") or ""),
-            font_size=Pt(11),
-            bold=True,
-            color=RGBColor(42, 48, 56),
-        )
-        _add_ppt_textbox(
-            slide,
-            panel_left + Inches(0.18),
-            top + Inches(0.55),
-            panel_width - Inches(0.36),
-            Inches(0.7),
-            f"판단 근거: {item.get('basis') or '근거 자료 확인 필요'}",
-            font_size=Pt(8.5),
-            color=RGBColor(55, 62, 70),
-        )
-        _add_ppt_textbox(
-            slide,
-            panel_left + Inches(0.18),
-            top + Inches(1.32),
-            panel_width - Inches(0.36),
-            Inches(0.35),
-            f"참조: {item.get('sources') or '원본 문서 확인 필요'}",
-            font_size=Pt(7),
-            color=RGBColor(125, 126, 125),
-        )
-
-    _add_checklist_footer(prs, slide, data)
-
-
-def _add_checklist_page_frame(prs: Presentation, slide) -> None:
+def _add_report_page_frame(prs: Presentation, slide) -> None:
     background = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, prs.slide_width, prs.slide_height)
     background.fill.solid()
     background.fill.fore_color.rgb = RGBColor(255, 255, 255)
@@ -2804,33 +4192,6 @@ def _add_checklist_page_frame(prs: Presentation, slide) -> None:
         border.line.width = width
 
 
-def _add_checklist_footer(prs: Presentation, slide, data: dict) -> None:
-    _add_ppt_textbox(
-        slide,
-        Inches(0.55),
-        prs.slide_height - Inches(1.12),
-        prs.slide_width - Inches(1.1),
-        Inches(0.48),
-        "자동 분석 결과이며 현장·관청 미검증 항목은 미확인/해당없음으로 표시됩니다. "
-        "최종 입찰 전 원본 문서를 확인하십시오.",
-        font_size=Pt(7),
-        color=RGBColor(112, 112, 112),
-        alignment=PP_ALIGN.CENTER,
-    )
-    _add_ppt_textbox(
-        slide,
-        Inches(0.55),
-        prs.slide_height - Inches(0.67),
-        prs.slide_width - Inches(1.1),
-        Inches(0.24),
-        f"부동산경매 컨설팅 마이옥션 · {data.get('createdDate') or ''}",
-        font_size=Pt(7),
-        bold=True,
-        color=RGBColor(93, 82, 51),
-        alignment=PP_ALIGN.CENTER,
-    )
-
-
 def _add_ppt_textbox(
     slide,
     left,
@@ -2843,6 +4204,8 @@ def _add_ppt_textbox(
     bold: bool = False,
     color: RGBColor = RGBColor(40, 47, 55),
     alignment=PP_ALIGN.LEFT,
+    font_name: str = "맑은 고딕",
+    vertical_anchor=MSO_ANCHOR.MIDDLE,
 ):
     shape = slide.shapes.add_textbox(left, top, width, height)
     _set_shape_text(
@@ -2852,15 +4215,27 @@ def _add_ppt_textbox(
         bold=bold,
         color=color,
         alignment=alignment,
+        font_name=font_name,
+        vertical_anchor=vertical_anchor,
     )
     return shape
 
 
-def _set_shape_text(shape, text: str, *, font_size, bold: bool, color: RGBColor, alignment) -> None:
+def _set_shape_text(
+    shape,
+    text: str,
+    *,
+    font_size,
+    bold: bool,
+    color: RGBColor,
+    alignment,
+    font_name: str = "맑은 고딕",
+    vertical_anchor=MSO_ANCHOR.MIDDLE,
+) -> None:
     text_frame = shape.text_frame
     text_frame.clear()
     text_frame.word_wrap = True
-    text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    text_frame.vertical_anchor = vertical_anchor
     text_frame.margin_left = Inches(0.03)
     text_frame.margin_right = Inches(0.03)
     text_frame.margin_top = Inches(0.02)
@@ -2870,56 +4245,15 @@ def _set_shape_text(shape, text: str, *, font_size, bold: bool, color: RGBColor,
     paragraph.space_after = Pt(0)
     run = paragraph.add_run()
     run.text = str(text or "")
-    run.font.name = "맑은 고딕"
+    run.font.name = font_name
     run.font.size = font_size
     run.font.bold = bold
     run.font.color.rgb = color
 
 
-def _style_checklist_cell(
-    cell,
-    text: str,
-    *,
-    fill_color: RGBColor,
-    font_color: RGBColor,
-    font_size,
-    bold: bool = False,
-    alignment=PP_ALIGN.LEFT,
-) -> None:
-    cell.fill.solid()
-    cell.fill.fore_color.rgb = fill_color
-    cell.margin_left = Inches(0.035)
-    cell.margin_right = Inches(0.035)
-    cell.margin_top = Inches(0.02)
-    cell.margin_bottom = Inches(0.02)
-    text_frame = cell.text_frame
-    text_frame.clear()
-    text_frame.word_wrap = True
-    text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
-    paragraph = text_frame.paragraphs[0]
-    paragraph.alignment = alignment
-    paragraph.space_after = Pt(0)
-    run = paragraph.add_run()
-    run.text = text
-    run.font.name = "맑은 고딕"
-    run.font.size = font_size
-    run.font.bold = bold
-    run.font.color.rgb = font_color
-
-
-def _checklist_state_colors(state: str) -> tuple[RGBColor, RGBColor]:
-    colors = {
-        "위험": (RGBColor(198, 40, 40), RGBColor(255, 255, 255)),
-        "확인필요": (RGBColor(224, 134, 0), RGBColor(255, 255, 255)),
-        "이상없음": (RGBColor(44, 122, 75), RGBColor(255, 255, 255)),
-        "미확인": (RGBColor(107, 119, 137), RGBColor(255, 255, 255)),
-        "해당없음": (RGBColor(184, 188, 196), RGBColor(44, 48, 54)),
-    }
-    return colors.get(state, colors["미확인"])
-
-
 def export_pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> bool:
     try:
+        import pythoncom
         import win32com.client
     except Exception as e:
         logger.warning(f"PowerPoint PDF 변환 모듈을 사용할 수 없습니다: {e}")
@@ -2927,7 +4261,12 @@ def export_pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> bool:
 
     app = None
     presentation = None
+    com_initialized = False
     try:
+        # FastAPI jobs run in worker threads. Each thread that touches a COM
+        # object must initialize COM itself before creating PowerPoint.
+        pythoncom.CoInitialize()
+        com_initialized = True
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
         app = win32com.client.DispatchEx("PowerPoint.Application")
         try:
@@ -2951,157 +4290,11 @@ def export_pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> bool:
                 app.Quit()
             except Exception:
                 pass
-
-
-def _prepare_special_summary_slides(prs: Presentation, data: dict) -> list[str]:
-    text = _ppt_value(data.get("specialSummaryText") or data.get("특이사항요약") or "")
-    chunks = _split_special_summary_text(text)
-    if len(chunks) <= 1:
-        return chunks
-
-    base_index = _find_slide_index_with_text(prs, "{{specialSummaryText}}")
-    if base_index is None:
-        return chunks
-
-    base_slide = prs.slides[base_index]
-    for offset in range(1, len(chunks)):
-        new_slide = _duplicate_slide(prs, base_slide)
-        _move_slide(prs, prs.slides.index(new_slide), base_index + offset)
-    return chunks
-
-
-def _split_special_summary_text(text: str) -> list[str]:
-    lines = str(text or "").splitlines()
-    if not lines:
-        return [""]
-
-    chunks: list[str] = []
-    current: list[str] = []
-    current_chars = 0
-    current_weight = 0
-
-    for line in lines:
-        line_chars = len(line)
-        line_weight = _special_summary_line_weight(line)
-        should_split = (
-            bool(current)
-            and (
-                current_chars + line_chars > SPECIAL_SUMMARY_SLIDE_CHAR_LIMIT
-                or current_weight + line_weight > SPECIAL_SUMMARY_MAX_WEIGHTED_LINES
-            )
-        )
-        if should_split:
-            chunks.append("\n".join(current).strip())
-            current = []
-            current_chars = 0
-            current_weight = 0
-            if line.strip() and not re.match(r"^\d+\)", line.strip()):
-                current.append("(계속)")
-                current_chars += len("(계속)")
-                current_weight += 1
-
-        current.append(line)
-        current_chars += line_chars + 1
-        current_weight += line_weight
-
-    if current:
-        chunks.append("\n".join(current).strip())
-    return chunks or [""]
-
-
-def _special_summary_line_weight(line: str) -> int:
-    text = line.strip()
-    if not text:
-        return 1
-    return max(1, (len(text) + SPECIAL_SUMMARY_WRAP_WIDTH - 1) // SPECIAL_SUMMARY_WRAP_WIDTH)
-
-
-def _find_slide_index_with_text(prs: Presentation, needle: str) -> Optional[int]:
-    for idx, slide in enumerate(prs.slides):
-        if _slide_contains_text(slide, needle):
-            return idx
-    return None
-
-
-def _slide_contains_text(slide, needle: str) -> bool:
-    return any(needle in text for text in _iter_shape_texts(slide.shapes))
-
-
-def _iter_shape_texts(shapes):
-    for shape in shapes:
-        if hasattr(shape, "shapes"):
-            yield from _iter_shape_texts(shape.shapes)
-        if getattr(shape, "has_text_frame", False):
-            yield shape.text_frame.text
-        if getattr(shape, "has_table", False):
-            for row in shape.table.rows:
-                for cell in row.cells:
-                    yield cell.text
-
-
-def _duplicate_slide(prs: Presentation, slide):
-    new_slide = prs.slides.add_slide(slide.slide_layout)
-    rel_map = _copy_slide_relationships(slide, new_slide)
-    _copy_slide_background(slide, new_slide, rel_map)
-    for shape in slide.shapes:
-        new_el = deepcopy(shape._element)
-        _remap_relationship_ids(new_el, rel_map)
-        new_slide.shapes._spTree.insert_element_before(new_el, "p:extLst")
-    return new_slide
-
-
-def _copy_slide_background(source_slide, target_slide, rel_map: dict[str, str]) -> None:
-    source_c_sld = source_slide._element.find(qn("p:cSld"))
-    target_c_sld = target_slide._element.find(qn("p:cSld"))
-    if source_c_sld is None or target_c_sld is None:
-        return
-
-    source_bg = source_c_sld.find(qn("p:bg"))
-    if source_bg is None:
-        return
-
-    target_bg = target_c_sld.find(qn("p:bg"))
-    if target_bg is not None:
-        target_c_sld.remove(target_bg)
-
-    new_bg = deepcopy(source_bg)
-    _remap_relationship_ids(new_bg, rel_map)
-    target_c_sld.insert(0, new_bg)
-
-
-def _copy_slide_relationships(source_slide, target_slide) -> dict[str, str]:
-    rel_map: dict[str, str] = {}
-    relationships = sorted(
-        source_slide.part.rels.values(),
-        key=lambda rel: int(re.sub(r"\D+", "", rel.rId) or 0),
-    )
-    for rel in relationships:
-        if rel.reltype.endswith("/slideLayout"):
-            continue
-        if rel.is_external:
-            new_rid = target_slide.part.relate_to(rel.target_ref, rel.reltype, is_external=True)
-        else:
-            new_rid = target_slide.part.relate_to(rel.target_part, rel.reltype)
-        rel_map[rel.rId] = new_rid
-    return rel_map
-
-
-def _remap_relationship_ids(element, rel_map: dict[str, str]) -> None:
-    if not rel_map:
-        return
-    for node in element.iter():
-        for attr_name, attr_value in list(node.attrib.items()):
-            if attr_value in rel_map:
-                node.set(attr_name, rel_map[attr_value])
-
-
-def _move_slide(prs: Presentation, old_index: int, new_index: int) -> None:
-    xml_slides = prs.slides._sldIdLst
-    slide_id = xml_slides[old_index]
-    xml_slides.remove(slide_id)
-    if new_index > old_index:
-        new_index -= 1
-    xml_slides.insert(new_index, slide_id)
+        if com_initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 
 def _replace_placeholders_in_shapes(shapes, mapping: dict[str, str]) -> None:
@@ -3129,6 +4322,15 @@ def _replace_text_frame_placeholders(text_frame, mapping: dict[str, str]) -> Non
 
     if new_text == old_text:
         return
+
+    if case_info_font_size is not None:
+        # Keep the established first-page case-information box in its original
+        # geometry.  Growing the shape to fit a long real case number made
+        # LibreOffice expand it over the first section heading.  Two explicit
+        # lines plus shrink-to-fit stay inside the fixed box in both PowerPoint
+        # and LibreOffice.
+        text_frame.word_wrap = False
+        text_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
 
     font_template = _first_run_font(text_frame)
     text_frame.clear()
@@ -3227,7 +4429,7 @@ def _replace_if(template: str, key: str, enabled: bool) -> str:
 
 def _extract_rights(soup) -> list[dict]:
     rights = []
-    for table in soup.find_all("table"):
+    for table in _registry_tables(soup):
         table_text = table.get_text(" ", strip=True)
         if not any(t in table_text for t in RIGHT_TYPES):
             continue
@@ -3251,9 +4453,107 @@ def _extract_rights(soup) -> list[dict]:
                     "note": _extract_right_note(row, row_text),
                     "isBaseRight": _is_base_right_row(row_text),
                     "rawText": row_text,
+                    "source": "registry_html",
+                    "isAuctionProcedure": _is_auction_procedure_type(right_type),
+                    "amountKind": "application_claim" if _is_auction_procedure_type(right_type) else "registered_right",
                 }
             )
     return _dedupe_by(rights, ("date", "type", "creditor", "amount"))
+
+
+def _registry_tables(soup) -> list:
+    tables = []
+    seen = set()
+    for stock in soup.find_all("div", id="dtl_stock"):
+        heading = stock.select_one("div#dtl_title > h3") or stock.find("h3")
+        heading_text = re.sub(r"\s+", "", heading.get_text(" ", strip=True) if heading else "")
+        if "등기부현황" not in heading_text:
+            continue
+        for table in stock.find_all("table"):
+            marker = id(table)
+            if marker not in seen:
+                seen.add(marker)
+                tables.append(table)
+
+    # Older page variants do not wrap the registry table in dtl_stock. A
+    # strict header signature still excludes the basic-information table that
+    # merely contains 경매종류/매각기일/청구금액.
+    for table in soup.find_all("table"):
+        compact = re.sub(r"\s+", "", table.get_text(" ", strip=True))
+        header_match = (
+            "권리종류" in compact
+            and any(token in compact for token in ("권리자", "채권자"))
+            and any(token in compact for token in ("순위", "접수", "등기일", "말소기준"))
+        )
+        if not header_match or id(table) in seen:
+            continue
+        seen.add(id(table))
+        tables.append(table)
+    return tables
+
+
+def _structured_registry_summary_complete(soup, rights: list[dict]) -> bool:
+    if not rights:
+        return False
+    registry_tables = _registry_tables(soup)
+    registry_source_rows = [
+        right for right in rights
+        if str(right.get("source") or "") == "registry_html"
+        and _has_valid_date(right.get("date") or "")
+        and str(right.get("type") or "").strip()
+    ]
+    if registry_tables and registry_source_rows:
+        return True
+    for table in registry_tables:
+        compact = re.sub(r"\s+", "", table.get_text(" ", strip=True))
+        if (
+            "권리종류" in compact
+            and any(token in compact for token in ("권리자", "채권자"))
+            and any(token in compact for token in ("순위", "접수", "등기일", "설정일"))
+        ):
+            # The registry table is the site's complete structured source for
+            # this section.  Requiring a literal '말소기준/소멸/인수' badge
+            # incorrectly downgraded otherwise fully parseable tables to
+            # partial and produced repeated "전체 원본 미확보" caveats.
+            parsed_rows = [
+                right for right in rights
+                if _has_valid_date(right.get("date") or "")
+                and str(right.get("type") or "").strip()
+                and (
+                    str(right.get("creditor") or "").strip()
+                    or _is_auction_procedure_right(right)
+                )
+            ]
+            if parsed_rows:
+                return True
+    return False
+
+
+def _is_auction_procedure_type(value: str) -> bool:
+    compact = re.sub(r"\s+", "", str(value or ""))
+    return any(token in compact for token in AUCTION_PROCEDURE_TYPES)
+
+
+def _is_auction_procedure_right(right: dict) -> bool:
+    return bool(right.get("isAuctionProcedure")) or _is_auction_procedure_type(right.get("type") or "")
+
+
+def substantive_registered_rights(rights: list[dict]) -> list[dict]:
+    """Return rights that create a substantive registered burden.
+
+    Auction commencement entries remain in the evidence model but are excluded
+    from right counts and money totals because their 청구금액 repeats the
+    enforcement claim rather than creating another secured right.
+    """
+    return [right for right in (rights or []) if not _is_auction_procedure_right(right)]
+
+
+def auction_procedure_entries(rights: list[dict]) -> list[dict]:
+    return [right for right in (rights or []) if _is_auction_procedure_right(right)]
+
+
+def registered_right_amount_total(rights: list[dict]) -> int:
+    return sum(parse_money(right.get("amount")) for right in substantive_registered_rights(rights))
 
 
 def _strip_registry_sequence_text(text: str) -> str:
@@ -3298,7 +4598,12 @@ def _find_matching_right(rights: list[dict], target: dict) -> Optional[dict]:
             continue
         right_creditor = right.get("creditor") or ""
         if target_creditor and right_creditor and not _creditor_names_match(target_creditor, right_creditor):
-            continue
+            same_amount = parse_money(target.get("amount")) == parse_money(right.get("amount")) > 0
+            cross_source_ocr = {
+                str(target.get("source") or ""), str(right.get("source") or "")
+            } == {"registry_html", "registry_ocr"}
+            if not (same_amount and cross_source_ocr):
+                continue
         return right
     return None
 
@@ -3330,14 +4635,62 @@ def _extract_right_note(cells: list[str], row_text: str) -> str:
     return ""
 
 
-def _right_has_dividend_request(right: dict, dividend_requests: list[dict]) -> bool:
+def _right_dividend_request_assessment(
+    right: dict,
+    dividend_requests: list[dict],
+    *,
+    source_complete: bool = False,
+) -> str:
     raw_text = f"{right.get('rawText') or ''} {right.get('note') or ''}"
     compact = re.sub(r"\s+", "", raw_text)
-    if any(token in compact for token in ("배당요구없", "배당요구하지않", "배당요구안")):
-        return False
+    if any(token in compact for token in (
+        "배당요구없", "배당요구하지않", "배당요구안", "배당요구미제출", "배당요구미신청",
+    )):
+        return "absent"
     if "배당요구" in compact:
+        if any(token in compact for token in (
+            "배당요구여부", "배당요구확인필요", "배당요구미확인",
+            "배당요구예정", "배당요구신청예정", "배당요구제출예정",
+        )):
+            return "unknown"
+        if any(token in compact for token in (
+            "배당요구접수", "배당요구신청완료", "배당요구제출완료", "배당요구제출",
+            "배당요구있음", "배당요구완료",
+        )):
+            request_date = right.get("dividendRequestDate") or right.get("depositClaimDate") or ""
+            deadline = right.get("dividendDeadline") or right.get("depositDeadline") or ""
+            if not _has_valid_date(request_date) or not _has_valid_date(deadline):
+                return "unknown"
+            return "timely" if _date_on_or_before(request_date, deadline) else "late"
+        if re.search(r"배당요구(?:일자|일)?[:：]?\d{4}[.\-/년]\d{1,2}[.\-/월]\d{1,2}", compact):
+            return "unknown"
+        return "unknown"
+    matched_request = _find_dividend_request(right.get("creditor") or "", dividend_requests)
+    if matched_request is not None:
+        request_date = matched_request.get("requestDate") or ""
+        deadline = matched_request.get("deadline") or ""
+        if not _has_valid_date(request_date) or not _has_valid_date(deadline):
+            return "unknown"
+        return "timely" if _date_on_or_before(request_date, deadline) else "late"
+    return "absent" if source_complete else "unknown"
+
+
+def _right_dividend_request_status(
+    right: dict,
+    dividend_requests: list[dict],
+    *,
+    source_complete: bool = False,
+) -> Optional[bool]:
+    assessment = _right_dividend_request_assessment(
+        right,
+        dividend_requests,
+        source_complete=source_complete,
+    )
+    if assessment == "timely":
         return True
-    return _find_dividend_request(right.get("creditor") or "", dividend_requests) is not None
+    if assessment in {"late", "absent"}:
+        return False
+    return None
 
 
 def _extract_tenants(soup) -> list[dict]:
@@ -3379,6 +4732,8 @@ def _extract_dividend_requests(soup) -> list[dict]:
             continue
         for row in _iter_table_rows(table):
             row_text = " ".join(row)
+            if not _row_has_affirmative_dividend_request(row_text):
+                continue
             dates = [normalize_date(d) for d in re.findall(r"\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}", row_text)]
             if not dates:
                 continue
@@ -3391,6 +4746,22 @@ def _extract_dividend_requests(soup) -> list[dict]:
                 }
             )
     return _dedupe_by(requests, ("creditor", "requestDate", "deadline", "amount"))
+
+
+def _row_has_affirmative_dividend_request(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if "배당요구" not in compact:
+        return False
+    if any(token in compact for token in (
+        "배당요구종기", "배당요구예정", "배당요구신청예정", "배당요구제출예정",
+        "배당요구미제출", "배당요구미신청", "배당요구없", "배당요구미확인",
+        "배당요구여부", "배당예정", "예상배당", "배당표",
+    )):
+        return False
+    return any(token in compact for token in (
+        "배당요구접수", "배당요구서접수", "배당요구신청완료", "배당요구제출완료",
+        "배당요구서제출", "배당요구완료",
+    ))
 
 
 def _extract_expected_dividend(soup, case_number: str = "", applicant_creditors: Optional[list[str]] = None) -> dict:
@@ -3658,13 +5029,34 @@ def _extract_management_fee(soup) -> dict:
         candidates.append((0, 0, nearby))
 
     _, amount, nearby = max(candidates, key=lambda item: item[0])
+    amount_status = "confirmed" if amount > 0 else "none" if _management_fee_note_explicitly_clear(nearby) else "unknown"
     return {
         "unpaidAmount": amount,
+        "amountStatus": amount_status,
         "unpaidMonths": 0,
         "dueThroughText": _extract_management_fee_due_text(nearby),
         "checkDate": normalize_date(_first_date(nearby) or ""),
         "note": _clip_text(nearby, 160),
     }
+
+
+def _management_fee_note_explicitly_clear(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact or "미확인" in compact or "확인필요" in compact:
+        return False
+    return any(
+        phrase in compact
+        for phrase in (
+            "미납관리비없음",
+            "미납관리비없습니다",
+            "체납관리비없음",
+            "체납관리비없습니다",
+            "관리비미납없음",
+            "관리비체납없음",
+            "미납관리비0원",
+            "체납관리비0원",
+        )
+    )
 
 
 def _extract_management_fee_due_text(text: str) -> str:
@@ -3838,6 +5230,9 @@ def _clip_text(text: str, limit: int) -> str:
 def _guess_creditor(cells: list[str], right_type: str) -> str:
     for cell in cells:
         if right_type in cell or _first_date(cell) or parse_money(cell):
+            continue
+        compact = re.sub(r"\s+", "", cell or "")
+        if any(token in compact for token in ("말소기준", "소멸기준", "소멸", "인수", "비고")):
             continue
         if len(cell) <= 2:
             continue

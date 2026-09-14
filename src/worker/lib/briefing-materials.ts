@@ -7,29 +7,40 @@ export async function ensureBriefingMaterialSchema(db: D1Database): Promise<void
   const key = db as object;
   const existing = schemaPromises.get(key);
   if (existing) return existing;
-  const promise = db.batch([
-    db.prepare(`CREATE TABLE IF NOT EXISTS briefing_materials (
+  const promise = (async () => {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS briefing_materials (
       id TEXT PRIMARY KEY, uploaded_by TEXT NOT NULL, uploader_name TEXT NOT NULL DEFAULT '',
       branch TEXT NOT NULL DEFAULT '', assignee_user_id TEXT, assignee_name TEXT NOT NULL DEFAULT '',
       case_number TEXT NOT NULL DEFAULT '', material_month TEXT NOT NULL, object_key TEXT NOT NULL UNIQUE,
       file_name TEXT NOT NULL, file_type TEXT NOT NULL DEFAULT 'application/octet-stream', file_size INTEGER NOT NULL DEFAULT 0,
       sha256 TEXT NOT NULL DEFAULT '', drive_status TEXT NOT NULL DEFAULT 'pending', drive_file_id TEXT NOT NULL DEFAULT '',
       drive_folder_path TEXT NOT NULL DEFAULT '', drive_backed_up_at TEXT, drive_attempt_count INTEGER NOT NULL DEFAULT 0,
-      drive_error TEXT NOT NULL DEFAULT '', archived_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      drive_error TEXT NOT NULL DEFAULT '', archived_at TEXT, source_admin_note_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_briefing_materials_active ON briefing_materials(archived_at, created_at DESC)'),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_briefing_materials_drive ON briefing_materials(drive_status, drive_attempt_count, created_at)'),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_briefing_materials_scope ON briefing_materials(branch, assignee_user_id, created_at DESC)'),
-    db.prepare(`CREATE TABLE IF NOT EXISTS briefing_material_drive_logs (
+    )`).run();
+    await ensureBriefingMaterialColumn(db, 'source_admin_note_id', 'TEXT');
+    await db.batch([
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_briefing_materials_active ON briefing_materials(archived_at, created_at DESC)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_briefing_materials_drive ON briefing_materials(drive_status, drive_attempt_count, created_at)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_briefing_materials_scope ON briefing_materials(branch, assignee_user_id, created_at DESC)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_briefing_materials_source_note ON briefing_materials(source_admin_note_id)'),
+      db.prepare(`CREATE TABLE IF NOT EXISTS briefing_material_drive_logs (
       id TEXT PRIMARY KEY, material_id TEXT NOT NULL, status TEXT NOT NULL,
       drive_file_id TEXT NOT NULL DEFAULT '', drive_folder_path TEXT NOT NULL DEFAULT '', file_size INTEGER NOT NULL DEFAULT 0,
       error_message TEXT NOT NULL DEFAULT '', triggered_by TEXT NOT NULL DEFAULT 'cron', run_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_briefing_material_drive_logs_material ON briefing_material_drive_logs(material_id, run_at DESC)'),
-  ]).then(() => undefined);
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_briefing_material_drive_logs_material ON briefing_material_drive_logs(material_id, run_at DESC)'),
+    ]);
+  })();
   schemaPromises.set(key, promise);
   try { await promise; } catch (error) { schemaPromises.delete(key); throw error; }
+}
+
+async function ensureBriefingMaterialColumn(db: D1Database, name: string, definition: string): Promise<void> {
+  const info = await db.prepare('PRAGMA table_info(briefing_materials)').all<{ name: string }>();
+  const hasColumn = (info.results || []).some((column) => column.name === name);
+  if (!hasColumn) await db.prepare(`ALTER TABLE briefing_materials ADD COLUMN ${name} ${definition}`).run();
 }
 
 export function safeBriefingFileName(value: string): string {

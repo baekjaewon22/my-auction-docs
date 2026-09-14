@@ -435,13 +435,19 @@ def parse_myauction_detail(soup: BeautifulSoup, base_url: str, driver=None) -> d
         "building_area_m2": "", "building_area_py": "", "xx평형": "",
         "building_structure": "", "building_scale": "",
         "auction_date": "", "appraised_price": "", "min_price": "",
-        "min_rate": "", "deposit": "", "claim_amount": "",
+        "min_rate": "", "deposit": "", "claim_amount": "", "auction_type": "",
         "photo_url": "", "landplan_url": "",
         "property_overview": "", "물건개요": "", "입찰기일": "",
     }
 
     # 법원/사건번호
-    h2 = soup.find("h2")
+    # 전역 첫 h2에는 숨김/관련사건 제목이 먼저 올 수 있다. 현재 사건의
+    # 상세 헤더만 사용하여 법원·지원과 사건번호가 섞이지 않게 한다.
+    h2 = (
+        soup.select_one("#header_detailz h2")
+        or soup.select_one("#header_detail2 h2")
+        or soup.select_one("#header_detail h2")
+    )
     if h2:
         span_case = h2.find("span", class_="blue")
         if span_case:
@@ -479,6 +485,7 @@ def parse_myauction_detail(soup: BeautifulSoup, base_url: str, driver=None) -> d
 
     if basic_table:
         for field, th_text, extractor in [
+            ("auction_type", "경매종류", lambda td: td.get_text(" ", strip=True)),
             ("item_type", "물건종류", lambda td: td.get_text(" ", strip=True)),
             ("appraised_price", "감정가", lambda td: extract_number_before_won(td.get_text(" ", strip=True)) + "원"),
             ("deposit", "입찰보증금", lambda td: extract_number_before_won(td.get_text(" ", strip=True)) + "원"),
@@ -631,7 +638,9 @@ def _candidate_texts_for_auction_date(soup: BeautifulSoup) -> list[str]:
 
 def _has_auction_date_label(text: str) -> bool:
     compact = re.sub(r"\s+", "", text or "")
-    return any(label in compact for label in ("입찰기일", "매각기일", "입찰일시", "매각일시", "기일"))
+    if any(label in compact for label in ("배당요구종기", "배당요구기일", "종기일")):
+        return False
+    return any(label in compact for label in ("입찰기일", "매각기일", "입찰일시", "매각일시", "입찰일", "매각일"))
 
 
 def _extract_labeled_auction_date_text(text: str) -> str:
@@ -639,7 +648,7 @@ def _extract_labeled_auction_date_text(text: str) -> str:
     if not text:
         return ""
     if _has_auction_date_label(text):
-        text = re.sub(r"^.*?(?:입찰기일|매각기일|입찰일시|매각일시|기일)\s*[:：]?\s*", "", text)
+        text = re.sub(r"^.*?(?:입찰기일|매각기일|입찰일시|매각일시|입찰일|매각일)\s*[:：]?\s*", "", text)
     patterns = [
         r"\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}(?:\s*\([^)]*\))?(?:\s*\d{1,2}:\d{2})?",
         r"\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일(?:\s*\([^)]*\))?(?:\s*\d{1,2}:\d{2})?",
@@ -684,6 +693,8 @@ def _format_area_overview(area_m2: str, area_py: str) -> str:
 
 
 def _fill_basic_info_fallbacks(soup: BeautifulSoup, data: dict) -> None:
+    if not data.get("auction_type"):
+        data["auction_type"] = _find_labeled_value(soup, ("경매종류", "사건종류"))
     if not data.get("item_type"):
         data["item_type"] = _find_labeled_value(soup, ("물건종류", "용도", "종별"))
     if not data.get("appraised_price"):

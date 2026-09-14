@@ -129,6 +129,47 @@ def stop_existing_agent() -> None:
     time.sleep(1)
 
 
+def preserve_install_workspaces(install_dir: Path) -> Path | None:
+    source = install_dir / "workspaces"
+    if not source.exists():
+        return None
+
+    preservation_root = Path(
+        tempfile.mkdtemp(
+            prefix=f"{AGENT_NAME}-workspaces-",
+            dir=install_dir.parent,
+        )
+    )
+    preserved = preservation_root / "workspaces"
+    try:
+        shutil.move(str(source), str(preserved))
+    except Exception:
+        shutil.rmtree(preservation_root, ignore_errors=True)
+        raise
+    log(f"Preserved workspaces at {preserved}")
+    return preserved
+
+
+def restore_install_workspaces(preserved: Path | None, install_dir: Path) -> None:
+    if preserved is None or not preserved.exists():
+        return
+
+    target = install_dir / "workspaces"
+    install_dir.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        if any(target.iterdir()):
+            raise RuntimeError(
+                f"Workspace restore target is not empty; preserved data remains at {preserved}"
+            )
+        target.rmdir()
+    shutil.move(str(preserved), str(target))
+    try:
+        preserved.parent.rmdir()
+    except OSError:
+        pass
+    log(f"Restored workspaces to {target}")
+
+
 def write_startup_runner(install_dir: Path) -> Path:
     runner = install_dir / f"Start-{AGENT_NAME}.ps1"
     runner.write_text(
@@ -428,40 +469,43 @@ def main() -> int:
         raise FileNotFoundError(f"Bundled agent archive was not found: {bundled_zip}")
 
     stop_existing_agent()
+    preserved_workspaces = preserve_install_workspaces(install_dir)
+    try:
+        with tempfile.TemporaryDirectory(prefix="myauction_agent_setup_") as tmp:
+            extract_dir = Path(tmp) / "agent"
+            log(f"Extracting {bundled_zip} to {extract_dir}")
+            with zipfile.ZipFile(bundled_zip, "r") as archive:
+                archive.extractall(extract_dir)
+            version_path = extract_dir / VERSION_FILE
+            if not version_path.is_file():
+                raise FileNotFoundError(f"Bundled version marker was not found: {version_path}")
+            expected_version = version_path.read_text(encoding="ascii").strip()
+            if not expected_version:
+                raise RuntimeError("Bundled agent version is empty")
 
-    with tempfile.TemporaryDirectory(prefix="myauction_agent_setup_") as tmp:
-        extract_dir = Path(tmp) / "agent"
-        log(f"Extracting {bundled_zip} to {extract_dir}")
-        with zipfile.ZipFile(bundled_zip, "r") as archive:
-            archive.extractall(extract_dir)
-        version_path = extract_dir / VERSION_FILE
-        if not version_path.is_file():
-            raise FileNotFoundError(f"Bundled version marker was not found: {version_path}")
-        expected_version = version_path.read_text(encoding="ascii").strip()
-        if not expected_version:
-            raise RuntimeError("Bundled agent version is empty")
-
-        if install_dir.exists():
-            log(f"Removing old install directory {install_dir}")
-            for attempt in range(3):
-                shutil.rmtree(install_dir, ignore_errors=True)
-                if not install_dir.exists():
-                    break
-                stop_existing_agent()
-                time.sleep(attempt + 1)
             if install_dir.exists():
-                log(
-                    "Old installation directory still contains locked files; "
-                    "continuing with an in-place update"
-                )
-        install_dir.mkdir(parents=True, exist_ok=True)
+                log(f"Removing old install directory {install_dir}")
+                for attempt in range(3):
+                    shutil.rmtree(install_dir, ignore_errors=True)
+                    if not install_dir.exists():
+                        break
+                    stop_existing_agent()
+                    time.sleep(attempt + 1)
+                if install_dir.exists():
+                    log(
+                        "Old installation directory still contains locked files; "
+                        "continuing with an in-place update"
+                    )
+            install_dir.mkdir(parents=True, exist_ok=True)
 
-        for item in extract_dir.iterdir():
-            target = install_dir / item.name
-            if item.is_dir():
-                shutil.copytree(item, target, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, target)
+            for item in extract_dir.iterdir():
+                target = install_dir / item.name
+                if item.is_dir():
+                    shutil.copytree(item, target, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, target)
+    finally:
+        restore_install_workspaces(preserved_workspaces, install_dir)
 
     runner = write_startup_runner(install_dir)
     launcher = write_manual_launcher(install_dir)

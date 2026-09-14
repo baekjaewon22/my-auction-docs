@@ -10,11 +10,12 @@ export default function ReviewList() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
+  const shouldUseAssignedApprovalOnly = isFreelancer || user?.role === 'director';
   const isCeoPlus = !!user && !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(user.role);
 
   const load = () => {
     setLoading(true);
-    api.documents.list(isFreelancer
+    api.documents.list(shouldUseAssignedApprovalOnly
       ? { status: 'submitted', approval_only: true }
       : 'submitted')
       .then((res) => setDocuments(res.documents))

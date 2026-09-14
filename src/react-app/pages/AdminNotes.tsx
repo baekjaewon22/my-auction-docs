@@ -950,7 +950,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
         }
         if (isBidHistoryMode && isBriefingSchedule) {
           for (const file of [...briefingFiles]) {
-            await api.briefingMaterials.upload(file, formAssigneeId, briefingCaseNumber);
+            await api.briefingMaterials.upload(file, formAssigneeId, briefingCaseNumber, registeredNoteId);
             setBriefingFiles(previous => previous.filter(candidate => candidate !== file));
           }
         }

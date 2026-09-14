@@ -1417,11 +1417,12 @@ export const api = {
 
   briefingMaterials: {
     uploadOptions: () => request<{ current_user_id: string; users: Array<{ id: string; name: string; branch: string }> }>('/briefing-materials/upload-options'),
-    upload: (file: File, assigneeUserId: string, caseNumber = '') => {
+    upload: (file: File, assigneeUserId: string, caseNumber = '', sourceAdminNoteId = '') => {
       const form = new FormData();
       form.append('file', file);
       form.append('assignee_user_id', assigneeUserId);
       form.append('case_number', caseNumber);
+      if (sourceAdminNoteId) form.append('source_admin_note_id', sourceAdminNoteId);
       return formRequest<{ success: boolean; id: string; file_name: string; file_size: number; drive_status: string }>('/briefing-materials', form);
     },
     list: (params: { month?: string; branch?: string; assignee?: string; search?: string; page?: number; page_size?: number } = {}) => {

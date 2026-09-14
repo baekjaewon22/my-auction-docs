@@ -1,14 +1,16 @@
 import { normalizeBranchName } from './branchAliases.ts';
 
 export const PROPERTY_REPORT_TEMPLATE_ID = 'tpl-work-008';
+export const JEONG_MINHO_USER_ID = '2b6b3606-e425-4361-a115-9283cfef842f';
 
 type PropertyReportApproverRule = {
   name: string;
-  role: 'admin' | 'director';
+  role?: 'admin' | 'director';
+  userId?: string;
 };
 
 export const PROPERTY_REPORT_APPROVERS: Record<string, PropertyReportApproverRule> = {
-  '의정부본사': { name: '정민호', role: 'admin' },
+  '의정부본사': { name: '정민호', userId: JEONG_MINHO_USER_ID },
   '대전지사': { name: '진성헌', role: 'admin' },
   '서초지사': { name: '진성헌', role: 'admin' },
   '부산지사': { name: '서정수', role: 'director' },
@@ -33,16 +35,27 @@ export async function buildPropertyReportApprovalChain(
   const rule = PROPERTY_REPORT_APPROVERS[normalizeBranchName(documentBranch)];
   if (!rule) return [];
 
-  const approver = await db.prepare(
-    `SELECT id, name, role, approved, login_type
-     FROM users
-     WHERE name = ?
-       AND role = ?
-       AND approved = 1
-       AND COALESCE(login_type, 'employee') != 'freelancer'
-     ORDER BY id ASC
-     LIMIT 1`,
-  ).bind(rule.name, rule.role).first<ApprovalUser>();
+  const approver = rule.userId
+    ? await db.prepare(
+      `SELECT id, name, role, approved, login_type
+       FROM users
+       WHERE id = ?
+         AND name = ?
+         AND approved = 1
+         AND COALESCE(login_type, 'employee') != 'freelancer'
+       ORDER BY id ASC
+       LIMIT 1`,
+    ).bind(rule.userId, rule.name).first<ApprovalUser>()
+    : await db.prepare(
+      `SELECT id, name, role, approved, login_type
+       FROM users
+       WHERE name = ?
+         AND role = ?
+         AND approved = 1
+         AND COALESCE(login_type, 'employee') != 'freelancer'
+       ORDER BY id ASC
+       LIMIT 1`,
+    ).bind(rule.name, rule.role).first<ApprovalUser>();
 
   return approver ? [approver.id] : [];
 }

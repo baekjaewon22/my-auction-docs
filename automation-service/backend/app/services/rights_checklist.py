@@ -59,6 +59,7 @@ class RightFact:
     type: str = ""                          # 권리종류(전세권/가처분/가등기 등)
     date: Optional[str] = None
     is_before_base: Optional[bool] = None   # 말소기준보다 선순위인가. None=선후 미상
+    is_same_base_date: bool = False         # 같은 날짜는 접수번호 없이는 선후 확정 불가
 
 
 @dataclass
@@ -75,6 +76,10 @@ class ChecklistInputs:
     doc_mismatch: Optional[bool] = None     # 문서 간 불일치 탐지(명세서 vs 산출 말소기준 등)
     bid_deposit_rate: Optional[int] = None  # 입찰보증금율(%) . 20~30 = 재매각 신호
     supported_tags: set[str] = field(default_factory=set)  # 탐지가 실제 구현된 코드(빈 set = 전부 지원 가정)
+    rights_source_available: bool = False   # 등기 권리내역 원문/구조화 데이터 확보
+    tenant_source_available: bool = False   # 명세서·현황조사 임차/점유 원문 확보
+    signal_source_available: bool = False   # 특이사항 탐지 대상 원문 확보
+    signal_source_codes: Optional[set[str]] = None  # 코드별 부존재 판단이 가능한 완전 자료 범위
 
 
 # ── 물건종별 판별(N/A 처리용 휴리스틱) ─────────────────────────────
@@ -108,15 +113,24 @@ def _opposing_power(inp: ChecklistInputs) -> ChecklistItem:
     src = "권리분석_규칙.json 대항력.판정(전입 다음날 0시 vs 말소기준) · review-standard B-1"
     ts = inp.tenants
     if not ts:
+        if not inp.tenant_source_available:
+            return ChecklistItem("임차·점유", "대항력", Method.RULE, State.UNKNOWN,
+                                 "임차·점유 원문 미확보 — 임차인 부존재 및 대항력 판정 불가", src)
         return ChecklistItem("임차·점유", "대항력", Method.RULE, State.SAFE, "조사된 임차인 없음 — 인수되는 임차권리 없음", src)
     if inp.base_right_date is None or any(t.has_opposing_power is None or t.move_in is None for t in ts):
         return ChecklistItem("임차·점유", "대항력", Method.RULE, State.UNKNOWN, "전입일 또는 말소기준일 결측 — 선후 판정 불가", src)
     opposing = [t for t in ts if t.has_opposing_power]
     if not opposing:
+        if not inp.tenant_source_available:
+            return ChecklistItem("임차·점유", "대항력", Method.RULE, State.UNKNOWN,
+                                 "임차·점유 자료 일부만 확보 — 미확인 임차인 존재 여부 판정 불가", src)
         return ChecklistItem("임차·점유", "대항력", Method.RULE, State.SAFE, "임차인 전원 후순위 — 매각으로 소멸", src)
     if any(t.fully_paid is False for t in opposing):
         return ChecklistItem("임차·점유", "대항력", Method.RULE, State.RISK, "선순위 대항력 임차인이 배당 부족 — 미배당 잔액 낙찰자 인수", src)
     if all(t.fully_paid for t in opposing):
+        if not inp.tenant_source_available:
+            return ChecklistItem("임차·점유", "대항력", Method.RULE, State.UNKNOWN,
+                                 "확인된 임차인은 전액 배당 예상이나 임차·점유 자료 전체성 미확인", src)
         return ChecklistItem("임차·점유", "대항력", Method.RULE, State.SAFE, "선순위 대항력 임차인이나 우선변제로 전액 배당 확보", src)
     return ChecklistItem("임차·점유", "대항력", Method.RULE, State.UNKNOWN, "배당 충족 여부 미확정 — 보수적으로 인수 가능성 잔존", src)
 
@@ -125,6 +139,9 @@ def _move_fixed(inp: ChecklistInputs) -> ChecklistItem:
     src = "권리분석_규칙.json 우선변제권.배당기준일(max(대항력일,확정일자))"
     ts = inp.tenants
     if not ts:
+        if not inp.tenant_source_available:
+            return ChecklistItem("임차·점유", "전입일·확정일자", Method.RULE, State.UNKNOWN,
+                                 "임차·점유 원문 미확보 — 전입일·확정일자 판정 불가", src)
         return ChecklistItem("임차·점유", "전입일·확정일자", Method.RULE, State.SAFE, "조사된 임차인 없음", src)
     opposing = [t for t in ts if t.has_opposing_power]
     scope = opposing or ts
@@ -132,18 +149,33 @@ def _move_fixed(inp: ChecklistInputs) -> ChecklistItem:
         return ChecklistItem("임차·점유", "전입일·확정일자", Method.RULE, State.UNKNOWN, "전입일 결측 — 우선변제권 판정 불가", src)
     if any(t.has_opposing_power and not t.fixed_date for t in scope):
         return ChecklistItem("임차·점유", "전입일·확정일자", Method.RULE, State.CHECK, "선순위 임차인 확정일자 부재 — 우선변제권 미확보(대항력과 연동)", src)
+    if not inp.tenant_source_available:
+        return ChecklistItem("임차·점유", "전입일·확정일자", Method.RULE, State.UNKNOWN,
+                             "확인된 임차인 날짜는 있으나 임차·점유 자료 전체성 미확인", src)
     return ChecklistItem("임차·점유", "전입일·확정일자", Method.RULE, State.SAFE, "전입·확정일자 확보 — 우선변제권 성립", src)
 
 
 def _dividend_demand(inp: ChecklistInputs) -> ChecklistItem:
     src = "기준표_소액임차인.json 판정규칙(배당요구일>종기→무효) · 규칙 최우선변제 판정순서"
+    if not inp.tenants and not inp.tenant_source_available:
+        return ChecklistItem("임차·점유", "배당요구", Method.RULE, State.UNKNOWN,
+                             "임차·점유 원문 미확보 — 배당요구 대상 및 제출 여부 판정 불가", src)
+    if any(t.has_opposing_power is None for t in inp.tenants):
+        return ChecklistItem("임차·점유", "배당요구", Method.RULE, State.UNKNOWN,
+                             "전입일 또는 말소기준일 결측 — 배당요구 효과 판정 불가", src)
     opposing = [t for t in inp.tenants if t.has_opposing_power]
     if not opposing:
+        if not inp.tenant_source_available:
+            return ChecklistItem("임차·점유", "배당요구", Method.RULE, State.UNKNOWN,
+                                 "임차·점유 자료 일부만 확보 — 배당요구 대상 전체 범위 판정 불가", src)
         return ChecklistItem("임차·점유", "배당요구", Method.RULE, State.SAFE, "대항력 임차인 없음 — 배당요구 여부 무관(소멸)", src)
     if any(t.demanded_dividend is None for t in opposing):
         return ChecklistItem("임차·점유", "배당요구", Method.RULE, State.UNKNOWN, "배당요구 여부·종기 불명", src)
     if any(t.demanded_dividend is False for t in opposing):
         return ChecklistItem("임차·점유", "배당요구", Method.RULE, State.RISK, "대항력 임차인 배당요구 미제출/종기 경과 — 보증금 인수 확대", src)
+    if not inp.tenant_source_available:
+        return ChecklistItem("임차·점유", "배당요구", Method.RULE, State.UNKNOWN,
+                             "확인된 임차인의 배당요구는 있으나 임차·점유 자료 전체성 미확인", src)
     return ChecklistItem("임차·점유", "배당요구", Method.RULE, State.SAFE, "적법한 배당요구 제출", src)
 
 
@@ -151,11 +183,17 @@ def _deposit_takeover(inp: ChecklistInputs) -> ChecklistItem:
     src = "권리분석_규칙.json 임차인_4형태 매트릭스 · review-standard B-1(일부배당→차액 인수)"
     ts = inp.tenants
     if not ts:
+        if not inp.tenant_source_available:
+            return ChecklistItem("임차·점유", "보증금 인수", Method.RULE, State.UNKNOWN,
+                                 "임차·점유 원문 미확보 — 인수 보증금 존재 여부 판정 불가", src)
         return ChecklistItem("임차·점유", "보증금 인수", Method.RULE, State.SAFE, "조사된 임차인 없음 — 인수 보증금 없음", src)
     opposing = [t for t in ts if t.has_opposing_power]
     if inp.base_right_date is None or any(t.has_opposing_power is None for t in ts):
         return ChecklistItem("임차·점유", "보증금 인수", Method.RULE, State.UNKNOWN, "말소기준·대항력 미확정 — 인수 범주 판정 불가", src)
     if not opposing:
+        if not inp.tenant_source_available:
+            return ChecklistItem("임차·점유", "보증금 인수", Method.RULE, State.UNKNOWN,
+                                 "임차·점유 자료 일부만 확보 — 추가 임차인의 인수 보증금 판정 불가", src)
         return ChecklistItem("임차·점유", "보증금 인수", Method.RULE, State.SAFE, "선순위 대항력 임차인 없음 — 보증금 전부 소멸", src)
     if any(t.fully_paid is False or (t.has_opposing_power and not t.fixed_date) for t in opposing):
         return ChecklistItem("임차·점유", "보증금 인수", Method.RULE, State.RISK,
@@ -172,15 +210,21 @@ def _senior_registered(name: str, keywords: tuple[str, ...], code: str, src: str
     """
     matched = _rights_matching(inp.rights, *keywords)
     if not matched:
-        if fallback_tag and fallback_tag in inp.tags:
-            return ChecklistItem("권리관계", name, Method.RULE, State.RISK,
-                                 "등기 텍스트에서 탐지 — 말소기준 선후 판독 실패, 보수적 인수 위험", src)
+        if not inp.rights_source_available:
+            if fallback_tag and fallback_tag in inp.tags:
+                return ChecklistItem("권리관계", name, Method.RULE, State.RISK,
+                                     "등기 텍스트에서 탐지 — 말소기준 선후 판독 실패, 보수적 인수 위험", src)
+            return ChecklistItem("권리관계", name, Method.RULE, State.UNKNOWN,
+                                 "등기 권리내역 미확보 — 해당 권리의 존재 및 선후 판정 불가", src)
         if fallback_tag and inp.supported_tags and fallback_tag not in inp.supported_tags:
             return ChecklistItem("권리관계", name, Method.RULE, State.UNKNOWN,
                                  "자동 탐지 미구현 — 등기부 확인 권고", src)
         return ChecklistItem("권리관계", name, Method.RULE, absent_state, "등기부에 해당 권리 미발견", src)
     if any(r.is_before_base is None for r in matched):
         return ChecklistItem("권리관계", name, Method.RULE, State.UNKNOWN, "등기 존재하나 말소기준과 선후 판독 실패 — 보수적으로 인수 위험 잔존", src)
+    if any(r.is_same_base_date for r in matched):
+        return ChecklistItem("권리관계", name, Method.RULE, State.CHECK,
+                             "말소기준권리와 같은 날짜에 등기 — 접수번호·순위 확인 전 선후 확정 불가", src)
     if any(r.is_before_base for r in matched):
         return ChecklistItem("권리관계", name, Method.RULE, State.RISK, "말소기준보다 선순위 — 낙찰자 인수(소멸되지 않음)", src)
     return ChecklistItem("권리관계", name, Method.RULE, State.SAFE, "말소기준보다 후순위 — 매각으로 소멸", src)
@@ -192,11 +236,20 @@ def _tag_item(category: str, name: str, code: str, present_state: State, present
               absent_state: State, absent_basis: str, src: str, inp: ChecklistInputs) -> ChecklistItem:
     if code in inp.tags:
         return ChecklistItem(category, name, Method.SIGNAL, present_state, present_basis, src)
+    if not _signal_source_available(inp, code):
+        return ChecklistItem(category, name, Method.SIGNAL, State.UNKNOWN,
+                             "특이사항 탐지 대상 원문 미확보 — 관련 기재 여부 판정 불가", src)
     if inp.supported_tags and code not in inp.supported_tags:
         # 탐지 로직이 없는 항목을 '이상없음'으로 두면 거짓 음성 → 미확인 처리(부작위 오인 차단).
         return ChecklistItem(category, name, Method.SIGNAL, State.UNKNOWN,
                              "자동 탐지 미구현 — 원본 문서 확인 권고", src)
     return ChecklistItem(category, name, Method.SIGNAL, absent_state, absent_basis, src)
+
+
+def _signal_source_available(inp: ChecklistInputs, code: str) -> bool:
+    if inp.signal_source_codes is not None:
+        return code in inp.signal_source_codes
+    return inp.signal_source_available
 
 
 # ── 32개 조립 ─────────────────────────────────────────────────────
@@ -238,10 +291,16 @@ def build_checklist(inp: ChecklistInputs) -> list[ChecklistItem]:
                                     "집합건물 아님 — 판정 대상 아님",
                                     "YAML BLD-03 · briefing-rights(대법2010다71578)"))
     else:
-        items.append(ChecklistItem("권리관계", "대지권 미등기", Method.SIGNAL,
-                                    State.CHECK if dae else State.SAFE,
-                                    "대지권 미등기 정황 탐지 — 감정가 대지권 포함 여부 확인(미포함 시 추가 매입 부담)" if dae
-                                    else "대지권 미등기 신호 미발견",
+        dae_source_available = _signal_source_available(inp, "BLD-03")
+        dae_state = State.CHECK if dae else State.SAFE if dae_source_available else State.UNKNOWN
+        dae_basis = (
+            "대지권 미등기 정황 탐지 — 감정가 대지권 포함 여부 확인(미포함 시 추가 매입 부담)"
+            if dae else
+            "대지권 미등기 신호 미발견"
+            if dae_source_available else
+            "특이사항 탐지 대상 원문 미확보 — 대지권 미등기 여부 판정 불가"
+        )
+        items.append(ChecklistItem("권리관계", "대지권 미등기", Method.SIGNAL, dae_state, dae_basis,
                                     "YAML BLD-03 · briefing-rights(대법2010다71578) · review-standard B-15"))
     items.append(_tag_item(
         "권리관계", "공유지분 매각", "OWN-01", State.RISK,
@@ -281,9 +340,9 @@ def build_checklist(inp: ChecklistInputs) -> list[ChecklistItem]:
     _hard_eviction = any(t.has_opposing_power for t in inp.tenants) or ("ENC-01" in inp.tags)
     items.append(ChecklistItem(
         "임차·점유", "명도 난이도", Method.KB,
-        State.CHECK if _hard_eviction else State.SAFE,
+        State.CHECK if _hard_eviction else State.UNKNOWN,
         "저항 점유(대항력 임차인/유치권) 정황 — 정성 추정(정량 미확인)" if _hard_eviction
-        else "공실·자진명도 협조 예상(정성 추정)",
+        else "실제 점유·협조 여부 미확인 — 명도 난이도 단정 불가",
         "교재 명도 실무 · 사례 Q056"))
 
     # 3. 물건 위험
@@ -343,10 +402,14 @@ def build_checklist(inp: ChecklistInputs) -> list[ChecklistItem]:
     else:
         items.append(ChecklistItem("입찰·비용", "무잉여", Method.KB, State.SAFE,
                                     "잉여 충분 — 무잉여 위험 낮음", "용어 T009 산식"))
+    withdrawal_state = State.UNKNOWN if inp.withdrawal_signal is None else State.CHECK if inp.withdrawal_signal else State.SAFE
     items.append(ChecklistItem("입찰·비용", "취하 가능성", Method.KB,
-                               State.CHECK if inp.withdrawal_signal else State.SAFE,
+                               withdrawal_state,
                                "취하 신호(청구액≪감정가·단독채권자/취하서 접수) — 절차 무산 가능(실제 취하는 예측 불가)"
-                               if inp.withdrawal_signal else "취하 신호 미발견(실제 취하는 예측 불가)",
+                               if inp.withdrawal_signal else
+                               "취하 가능성 산정자료 미확보 — 실제 취하는 예측 불가"
+                               if inp.withdrawal_signal is None else
+                               "취하 신호 미발견(실제 취하는 예측 불가)",
                                "교재 취하 · 사례 Q036/Q069"))
     if inp.unpaid_fee is None:
         items.append(ChecklistItem("입찰·비용", "체납관리비", Method.KB, State.UNKNOWN,
@@ -365,10 +428,16 @@ def build_checklist(inp: ChecklistInputs) -> list[ChecklistItem]:
     items.append(ChecklistItem("입찰·비용", "부대비용(취득세 등)", Method.KB, State.CHECK,
                                "취득세·법무사·설정비 등 반영 필요 — 세율표 기준 개산(확정 아님)",
                                "교재 실질취득원가 · 용어 T095"))
+    disapproval_signal = "AGR-01" in inp.tags or "OWN-01" in inp.tags
+    disapproval_source_available = (
+        _signal_source_available(inp, "AGR-01") and _signal_source_available(inp, "OWN-01")
+    )
+    disapproval_state = State.CHECK if disapproval_signal else State.SAFE if disapproval_source_available else State.UNKNOWN
     items.append(ChecklistItem("입찰·비용", "매각불허가 사유", Method.KB,
-                               State.CHECK if ("AGR-01" in inp.tags or "OWN-01" in inp.tags) else State.SAFE,
+                               disapproval_state,
                                "탐지된 불허가 유발 사유(농취증 미제출·공유자 우선매수 등) 확인 필요" if ("AGR-01" in inp.tags or "OWN-01" in inp.tags)
-                               else "탐지된 불허가 사유 없음(통합 판정 아님)",
+                               else "특정 불허가 유발 신호 미발견(통합 판정 아님)" if disapproval_source_available
+                               else "특별매각조건·절차 자료 미확보 — 불허가 유발 사유 판정 불가",
                                "YAML AGR-01 · review-standard B-7 · 사례 Q058/Q060"))
     rate = inp.bid_deposit_rate
     if rate is None:
@@ -406,7 +475,11 @@ import re as _re
 # special_situations.py에 탐지 로직이 실제 구현된 코드(그 외는 미확인 처리)
 _SUPPORTED_CODES = {
     "OWN-01", "OWN-02", "OWN-03", "OWN-04", "OWN-06",
-    "ENC-01", "BLD-01", "BLD-03", "LND-01", "LND-03", "LIM-07",
+    "ENC-01", "BLD-01", "BLD-02", "BLD-03", "LND-01", "LND-03", "LIM-07",
+}
+
+_LOCAL_SIGNAL_KEYWORDS = {
+    "BLD-02": ("제시외 건물", "제시외건물"),
 }
 
 _STATE_CLASS = {
@@ -434,17 +507,62 @@ def _before(a, b) -> Optional[bool]:
     return ka < kb
 
 
+def _same_date(a, b) -> bool:
+    ka, kb = _parse_ymd(a), _parse_ymd(b)
+    return ka is not None and kb is not None and ka == kb
+
+
+def _on_or_before(a, b) -> Optional[bool]:
+    ka, kb = _parse_ymd(a), _parse_ymd(b)
+    if ka is None or kb is None:
+        return None
+    return ka <= kb
+
+
+def management_fee_amount_status(management_fee: Optional[dict]) -> str:
+    """Return confirmed/none/unknown without treating a parser fallback zero as no debt."""
+    fee = management_fee or {}
+    try:
+        amount = int(fee.get("unpaidAmount") or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    if amount > 0:
+        return "confirmed"
+
+    explicit_status = str(fee.get("amountStatus") or "").strip().lower()
+    if explicit_status in {"confirmed", "present"}:
+        return "confirmed"
+    if explicit_status in {"none", "clear", "absent"} or fee.get("confirmedAbsent") is True:
+        return "none"
+
+    note = _re.sub(r"\s+", "", str(fee.get("note") or ""))
+    if not note or "미확인" in note or "확인필요" in note:
+        return "unknown"
+    explicit_none = (
+        "미납관리비없" in note
+        or "체납관리비없" in note
+        or "관리비미납없" in note
+        or "관리비체납없" in note
+        or bool(_re.search(r"(?:미납|체납)관리비(?:금액)?(?:은|는|가|이)?0원", note))
+    )
+    return "none" if explicit_none else "unknown"
+
+
 def detect_situation_codes(text: str) -> set[str]:
     """special_situations.py 규칙으로 텍스트에서 특이사항 코드 집합을 추출(무인 탐지)."""
     try:
-        from .special_situations import SPECIAL_SITUATION_RULES, detect_building_violation
+        from .special_situations import SPECIAL_SITUATION_RULES, detect_affirmative_signal, detect_building_violation
     except ImportError:  # 단독 실행(테스트)
-        from special_situations import SPECIAL_SITUATION_RULES, detect_building_violation
-    compact = _re.sub(r"\s+", "", text or "")
+        from special_situations import SPECIAL_SITUATION_RULES, detect_affirmative_signal, detect_building_violation
     codes: set[str] = set()
     for rule in SPECIAL_SITUATION_RULES:
-        if any(_re.sub(r"\s+", "", kw) in compact for kw in rule["keywords"]):
+        detected, _ = detect_affirmative_signal(text or "", rule["keywords"])
+        if detected:
             codes.add(rule["code"])
+    for code, keywords in _LOCAL_SIGNAL_KEYWORDS.items():
+        detected, _ = detect_affirmative_signal(text or "", keywords)
+        if detected:
+            codes.add(code)
     violated, _ = detect_building_violation(text or "")
     if violated:
         codes.add("BLD-01")
@@ -454,13 +572,18 @@ def detect_situation_codes(text: str) -> set[str]:
 def build_checklist_from_pipeline(*, data: dict, rights: list, base_right: Optional[dict],
                                   valid_tenants: list, management_fee: Optional[dict],
                                   surplus_description: str = "",
-                                  texts: Optional[list] = None) -> list[ChecklistItem]:
+                                  texts: Optional[list] = None,
+                                  tenant_source_confirmed: Optional[bool] = None,
+                                  signal_source_confirmed: Optional[bool] = None,
+                                  rights_source_confirmed: Optional[bool] = None,
+                                  signal_source_codes: Optional[set[str]] = None) -> list[ChecklistItem]:
     """rights_certificate.py 파이프라인 산출값을 ChecklistInputs로 매핑해 체크표를 만든다."""
     base_date = (base_right or {}).get("date") if base_right else None
 
     right_facts = [
         RightFact(type=r.get("type") or "", date=r.get("date"),
-                  is_before_base=_before(r.get("date"), base_date))
+                  is_before_base=_before(r.get("date"), base_date),
+                  is_same_base_date=_same_date(r.get("date"), base_date))
         for r in (rights or [])
     ]
 
@@ -469,15 +592,19 @@ def build_checklist_from_pipeline(*, data: dict, rights: list, base_right: Optio
         mv = t.get("moveInDate") or None
         fx = t.get("fixedDate") or None
         claim = t.get("depositClaimDate") or None
+        deadline = t.get("depositDeadline") or None
         tenant_facts.append(TenantFact(
             name=t.get("name") or "",
             move_in=mv, fixed_date=fx,
             has_opposing_power=(_before(mv, base_date) if (mv and base_date) else None),
-            demanded_dividend=(True if claim else None),
+            # A filed date after the demand deadline is not an effective demand.
+            # Missing either date remains unknown; presence of a date alone must
+            # never be interpreted as timely filing.
+            demanded_dividend=_on_or_before(claim, deadline),
             fully_paid=None,  # 배당 시뮬레이션 미구현 → 인수 여부는 보수적으로 유보
         ))
 
-    joined = " \n ".join(str(x or "") for x in (texts or []))
+    joined = " \n ".join(str(x or "") for x in (texts or []) if str(x or "").strip())
     tags = detect_situation_codes(joined)
 
     # analyze_surplus는 서술 텍스트만 반환하므로 무잉여/취하 판정은 미확정으로 둔다
@@ -485,8 +612,23 @@ def build_checklist_from_pipeline(*, data: dict, rights: list, base_right: Optio
     surplus_deficit = None
     withdrawal = None
 
+    fee_status = management_fee_amount_status(management_fee)
     amt = (management_fee or {}).get("unpaidAmount")
-    unpaid = int(amt) if amt not in (None, "") else None
+    unpaid = int(amt or 0) if fee_status == "confirmed" else 0 if fee_status == "none" else None
+
+    # A non-empty OCR blob alone does not prove that every registry row parsed.  A
+    # structured right is required before absence of another right can be stated.
+    rights_source_available = bool(rights_source_confirmed) if rights_source_confirmed is not None else False
+    tenant_source_available = (
+        False
+        if tenant_source_confirmed is None
+        else bool(tenant_source_confirmed)
+    )
+    signal_source_available = (
+        False
+        if signal_source_confirmed is None
+        else bool(signal_source_confirmed)
+    )
 
     inp = ChecklistInputs(
         item_type=(data or {}).get("item_type") or "",
@@ -495,6 +637,10 @@ def build_checklist_from_pipeline(*, data: dict, rights: list, base_right: Optio
         tags=tags, supported_tags=set(_SUPPORTED_CODES),
         surplus_deficit=surplus_deficit, withdrawal_signal=withdrawal,
         unpaid_fee=unpaid,
+        rights_source_available=rights_source_available,
+        tenant_source_available=tenant_source_available,
+        signal_source_available=signal_source_available,
+        signal_source_codes=signal_source_codes,
     )
     return build_checklist(inp)
 

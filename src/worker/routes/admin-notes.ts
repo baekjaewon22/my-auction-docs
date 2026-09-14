@@ -14,6 +14,7 @@ import {
   sha256Hex,
 } from '../lib/article-pdfs.ts';
 import { ensureBidAnalysisTable, makeBidDedupeKey, normalizeAmount, normalizeBidResult } from '../lib/bid-analysis.ts';
+import { ensureBriefingMaterialSchema } from '../lib/briefing-materials.ts';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases.ts';
 import { sendWebPushToUser } from '../lib/web-push-delivery.ts';
 import { canAccessEvictionQuote, EVICTION_QUOTE_VISIBILITY } from '../../shared/eviction-quote-access.ts';
@@ -222,6 +223,34 @@ async function ensureAdminNoteExtensions(db: D1Database): Promise<void> {
     adminNoteSchemaPromises.delete(key);
     throw error;
   }
+}
+
+async function archiveBriefingMaterialsForDeletedSchedule(db: D1Database, note: {
+  id: string;
+  author_id: string;
+  assignee_id?: string | null;
+  case_number?: string | null;
+  category?: string | null;
+}): Promise<number> {
+  if (note.category !== 'briefing_schedule') return 0;
+  await ensureBriefingMaterialSchema(db);
+  const caseNumber = String(note.case_number || '').trim().replace(/\s+/g, '');
+  const assigneeId = String(note.assignee_id || '').trim();
+  const result = await db.prepare(`UPDATE briefing_materials
+    SET archived_at = ${KST_NOW_SQL}, updated_at = ${KST_NOW_SQL}
+    WHERE archived_at IS NULL
+      AND (
+        source_admin_note_id = ?
+        OR (
+          COALESCE(source_admin_note_id, '') = ''
+          AND uploaded_by = ?
+          AND COALESCE(assignee_user_id, '') = ?
+          AND COALESCE(case_number, '') = ?
+        )
+      )`)
+    .bind(note.id, note.author_id, assigneeId, caseNumber)
+    .run();
+  return Number(result.meta?.changes || 0);
 }
 
 function normalizeCategory(category: unknown): NoteCategory {
@@ -1958,6 +1987,8 @@ adminNotes.delete('/:id', async (c) => {
   if (note.author_id !== user.sub && user.role !== 'master') {
     return c.json({ error: '본인 글만 삭제할 수 있습니다.' }, 403);
   }
+
+  await archiveBriefingMaterialsForDeletedSchedule(db, note);
 
   if (note.category === 'briefing_schedule' && note.journal_entry_id) {
     const entry = await db.prepare('SELECT user_id, target_date FROM journal_entries WHERE id = ?')

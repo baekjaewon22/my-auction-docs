@@ -124,13 +124,13 @@ function openAnnouncementWindow(popup: any): boolean {
     .wrap { min-height: 100vh; padding: 22px; display: flex; align-items: stretch; }
     .card { width: 100%; background: #fff; border: 1px solid #d8dee8; box-shadow: 0 10px 26px rgba(18, 31, 56, .12); border-radius: 8px; display: flex; flex-direction: column; }
     .head { padding: 20px 22px 14px; border-bottom: 1px solid #e7ebf1; }
-    .kicker { display: block; font-size: 12px; font-weight: 700; color: #1a73e8; margin-bottom: 7px; }
-    h1 { margin: 0; font-size: 20px; line-height: 1.35; letter-spacing: 0; color: #101828; }
-    .body { padding: 18px 22px 14px; flex: 1; overflow: auto; }
-    p { margin: 0 0 11px; font-size: 14px; line-height: 1.75; color: #334155; word-break: keep-all; }
+    .kicker { display: block; font-size: 13px; font-weight: 800; color: #1a73e8; margin-bottom: 7px; }
+    h1 { margin: 0; font-size: 21px; line-height: 1.38; letter-spacing: 0; color: #101828; }
+    .body { padding: 19px 22px 15px; flex: 1; overflow: auto; }
+    p { margin: 0 0 12px; font-size: 15.5px; line-height: 1.78; color: #263244; word-break: keep-all; }
     .gap { height: 8px; }
     .foot { padding: 14px 22px 18px; border-top: 1px solid #e7ebf1; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-    label { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: #475569; user-select: none; }
+    label { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; color: #475569; user-select: none; }
     input { width: 15px; height: 15px; }
     button { border: 0; border-radius: 6px; padding: 8px 15px; background: #1a73e8; color: #fff; font-weight: 700; cursor: pointer; }
   </style>
@@ -218,7 +218,7 @@ function BidHistoryRoute({ children }: { children: React.ReactNode }) {
 
 function ApproverRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'];
+  const allowed = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant'];
   const isFreelancer = (user as any)?.login_type === 'freelancer' && user?.role !== 'master';
   if (!user || (!isFreelancer && !allowed.includes(user.role))) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;

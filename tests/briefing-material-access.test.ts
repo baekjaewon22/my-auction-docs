@@ -135,12 +135,21 @@ async function setup() {
   insertMaterial.run('seoul-material', '서울', '2026타경1', 'briefing-materials/seoul.pdf', '서울자료.pdf', 'hash-seoul');
   insertMaterial.run('busan-material', '부산', '2026타경2', 'briefing-materials/busan.pdf', '부산자료.pdf', 'hash-busan');
 
+  const bucketObjects = new Map<string, ArrayBuffer>();
   const articleBucket = {
     get: async (key: string) => ({
       body: new Blob([key]).stream(),
       size: new TextEncoder().encode(key).byteLength,
       httpMetadata: { contentType: 'application/pdf' },
     }),
+    put: async (key: string, value: ArrayBuffer) => {
+      bucketObjects.set(key, value);
+      return undefined;
+    },
+    delete: async (key: string) => {
+      bucketObjects.delete(key);
+      return undefined;
+    },
   };
   const env = { DB: db, ARTICLE_BUCKET: articleBucket, JWT_SIGNING_SECRET: JWT_SECRET } as unknown as Env;
   const materialsApp = new Hono<AuthEnv>().route('/api/briefing-materials', briefingMaterials);
@@ -164,6 +173,19 @@ async function setup() {
     }, env);
   }
 
+  async function uploadMaterialAs(id: string, fileName: string, content: string, assigneeId: string, caseNumber: string, sourceAdminNoteId?: string): Promise<Response> {
+    const form = new FormData();
+    form.append('file', new File([content], fileName, { type: 'application/pdf' }));
+    form.append('assignee_user_id', assigneeId);
+    form.append('case_number', caseNumber);
+    if (sourceAdminNoteId) form.append('source_admin_note_id', sourceAdminNoteId);
+    return materialsApp.request('/api/briefing-materials', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await token(id)}` },
+      body: form,
+    }, env);
+  }
+
   async function requestAdminNotesAs(id: string, path: string, method = 'GET', body?: unknown): Promise<Response> {
     return adminNotesApp.request(`/api/admin-notes${path}`, {
       method,
@@ -178,7 +200,7 @@ async function setup() {
     } as ExecutionContext);
   }
 
-  return { sqlite, env, authApp, requestAs, requestAdminNotesAs };
+  return { sqlite, env, authApp, requestAs, requestAdminNotesAs, uploadMaterialAs };
 }
 
 test('브리핑자료 공용 권한은 관리자 3역할·정민호·명도팀 열람과 관리자 3역할·정민호 등록을 구분한다', () => {
@@ -296,5 +318,47 @@ test('브리핑 제출 일정 API는 기존 이력 조회와 새 등록 권한�
   assert.equal((await requestAdminNotesAs(JEONG_MINHO_USER_ID, `/${noteId}`)).status, 200);
   assert.equal((await requestAdminNotesAs('admin', `/${noteId}`)).status, 200);
   assert.equal((await requestAdminNotesAs('member', `/${noteId}`)).status, 403);
+  sqlite.close();
+});
+
+test('briefing schedule delete archives its submitted material so the same file can be resubmitted', async () => {
+  const { sqlite, requestAdminNotesAs, uploadMaterialAs } = await setup();
+  const briefing = {
+    category: 'briefing_schedule',
+    assignee_id: 'member',
+    target_date: '2026-09-30',
+    court: 'court',
+    case_number: '2026T123',
+    client_name: 'client',
+  };
+
+  const firstCreated = await requestAdminNotesAs('master', '', 'POST', briefing);
+  assert.equal(firstCreated.status, 200, await firstCreated.clone().text());
+  const { id: firstNoteId } = await firstCreated.json() as { id: string };
+  const firstUpload = await uploadMaterialAs('master', 'briefing.pdf', 'same briefing bytes', 'member', '2026T123', firstNoteId);
+  assert.equal(firstUpload.status, 200, await firstUpload.clone().text());
+  const firstMaterial = sqlite.prepare('SELECT source_admin_note_id, archived_at FROM briefing_materials WHERE source_admin_note_id = ?')
+    .get(firstNoteId) as { source_admin_note_id: string; archived_at: string | null };
+  assert.equal(firstMaterial.source_admin_note_id, firstNoteId);
+  assert.equal(firstMaterial.archived_at, null);
+
+  const duplicateBeforeDelete = await uploadMaterialAs('master', 'briefing.pdf', 'same briefing bytes', 'member', '2026T123', firstNoteId);
+  assert.equal(duplicateBeforeDelete.status, 409);
+
+  const deleted = await requestAdminNotesAs('master', `/${firstNoteId}`, 'DELETE');
+  assert.equal(deleted.status, 200, await deleted.clone().text());
+  const archived = sqlite.prepare('SELECT archived_at FROM briefing_materials WHERE source_admin_note_id = ?')
+    .get(firstNoteId) as { archived_at: string | null };
+  assert.ok(archived.archived_at);
+
+  const secondCreated = await requestAdminNotesAs('master', '', 'POST', briefing);
+  assert.equal(secondCreated.status, 200, await secondCreated.clone().text());
+  const { id: secondNoteId } = await secondCreated.json() as { id: string };
+  sqlite.prepare(`UPDATE briefing_materials SET source_admin_note_id = NULL, archived_at = NULL WHERE source_admin_note_id = ?`)
+    .run(firstNoteId);
+  const secondUpload = await uploadMaterialAs('master', 'briefing.pdf', 'same briefing bytes', 'member', '2026T123', secondNoteId);
+  assert.equal(secondUpload.status, 200, await secondUpload.clone().text());
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS count FROM briefing_materials WHERE archived_at IS NULL')
+    .get() as { count: number }).count, 4);
   sqlite.close();
 });

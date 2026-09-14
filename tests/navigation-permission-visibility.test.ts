@@ -10,9 +10,23 @@ const payroll = readFileSync(new URL('../src/react-app/pages/Payroll.tsx', impor
 
 test('support does not see the document approval management category', () => {
   const canApproveDeclaration = layout.match(/const canApprove = ([^;]+);/)?.[1] || '';
+  const approverRoute = app.slice(
+    app.indexOf('function ApproverRoute'),
+    app.indexOf('function BidListAdminRoute'),
+  );
 
   assert.match(canApproveDeclaration, /'master'/);
+  assert.match(canApproveDeclaration, /'director'/);
   assert.doesNotMatch(canApproveDeclaration, /'support'/);
+  assert.match(approverRoute, /'director'/);
+  assert.doesNotMatch(approverRoute, /'support'/);
+});
+
+test('director document approval page is limited to assigned approval documents', () => {
+  const reviewList = readFileSync(new URL('../src/react-app/pages/ReviewList.tsx', import.meta.url), 'utf8');
+
+  assert.match(reviewList, /user\?\.role === 'director'/);
+  assert.match(reviewList, /shouldUseAssignedApprovalOnly[\s\S]*approval_only: true/);
 });
 
 test('general admin does not see the phone directory card, while the approved extra user does', () => {

@@ -95,42 +95,29 @@
     font-size: 10.5px;
     line-height: 1.6;
   }
-  .chk-summary { margin: 0 0 3mm; font-weight: 700; font-size: 11pt; }
-  .chk-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
-  .chk-table td { border: 1px solid #e2d4a7; padding: 1mm 2mm; }
-  .chk-table td.c { text-align: center; white-space: nowrap; width: 20mm; }
-  .chip {
-    display: inline-block; min-width: 13mm; text-align: center;
-    padding: 0.4mm 1.5mm; border-radius: 3px; font-weight: 700; font-size: 9pt; color: #fff;
+  .narrative-page { padding-top: 9mm; }
+  .narrative-title { font-size: 22px; letter-spacing: 1.2px; }
+  .special-list {
+    margin: 10mm 6mm 0 9mm;
+    padding-left: 0;
+    list-style-position: inside;
+    font-family: BatangChe, Batang, serif;
+    color: #2f271f;
+    font-size: 11pt;
+    line-height: 1.72;
   }
-  .st-risk { background: #c62828; } .st-check { background: #e08600; } .st-safe { background: #2c7a4b; }
-  .st-unknown { background: #6b7789; } .st-na { background: #b8bcc4; color: #333; }
-  .chk-detail { margin-top: 4mm; }
-  .chk-detail .d-item {
-    border-left: 3px solid #c8a84b; padding: 1.5mm 2.5mm; margin-bottom: 2mm;
-    background: #fbfaf6; line-height: 1.5;
+  .special-list li {
+    margin-bottom: 4mm;
+    break-inside: avoid;
   }
-  .chk-src { color: #999; font-size: 8.5pt; }
-  .flow {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 3mm;
-    margin: 5mm 0;
+  .special-list strong {
+    font-weight: 700;
   }
-  .circle {
-    width: 26mm;
-    height: 26mm;
-    border: 2px solid #4a90d9;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    font-weight: 800;
-    line-height: 1.35;
+  .narrative-footnote {
+    margin-top: 4mm; padding-top: 3mm; border-top: 1px solid #ddd;
+    color: #6b7280; font-size: 8pt; line-height: 1.55; text-align: center;
   }
-  .arrow { color: #555; font-weight: 800; }
+  .narrative-page-number { margin-top: 2mm; color: #5d5233; font-size: 8pt; font-weight: 700; text-align: center; }
 </style>
 </head>
 <body>
@@ -163,7 +150,7 @@
       <p>{{this.description}}</p>
       {{/each}}
       {{#if noTenants}}
-      <p>조사된 임차인이 없으므로, 낙찰자에게 인수되는 임차권리는 없습니다.</p>
+      <p>조사된 임차인이 없으므로, 매수인에게 인수되는 임차권리는 없습니다.</p>
       {{/if}}
     </div>
 
@@ -172,28 +159,9 @@
       <p>{{surplusDescription}}</p>
     </div>
 
-    <div class="section">
-      <h2>4. 기타사항</h2>
-      <p>{{specialSummaryText}}</p>
-    </div>
-
-    <div class="section">
-      <h2>담당자 검토 체크리스트</h2>
-      <ul>
-        {{#each reviewItems}}
-        <li>{{this}}</li>
-        {{/each}}
-      </ul>
-    </div>
-
-    <p style="font-weight:700;">
-      본 권리분석의 내용은 감정평가서, 법원현황조사서, 매각물건명세서, 등기부등본, 건축물대장 등의 내용을 참조하여 작성되었습니다.
-    </p>
-    <p>담당자 : {{authorName}} {{authorTitle}} {{authorPhone}}</p>
-
     <div class="footer">
       <div class="company">부동산경매 컨설팅 마이옥션</div>
-      <div class="muted">법률자문 : 법률사무소 명승</div>
+      <div class="muted">권리분석 자문 : 법무법인 명승</div>
       <div class="muted">(주)엘앤씨부동산중개법인</div>
     </div>
 
@@ -204,55 +172,6 @@
   </div>
 </div>
 
-<div class="page">
-  <div class="gold-border">
-    <h1 style="font-size:24px; letter-spacing:2px;">특이사항 종합 체크표</h1>
-    <div class="subtitle">공적 자료 기반 자동 분석 — 현장·관청 미검증 항목 포함</div>
-    <p class="chk-summary">판정 요약: {{checklistSummaryText}}</p>
-    <table class="chk-table">
-      {{#each checklistRows}}
-      <tr><td>{{this.category}}</td><td>{{this.name}}</td><td class="c"><span class="chip {{this.stateClass}}">{{this.state}}</span></td></tr>
-      {{/each}}
-    </table>
-    <div class="chk-detail">
-      <h2>위험 · 확인필요 상세</h2>
-      {{#each checklistDetails}}
-      <div class="d-item"><span class="chip {{this.stateClass}}">{{this.state}}</span> <strong>{{this.name}}</strong><br>{{this.basis}}<br><span class="chk-src">근거: {{this.sources}}</span></div>
-      {{/each}}
-    </div>
-    <div class="disclaimer">
-      ※ 본 체크표는 등기부·매각물건명세서·현황조사서·감정평가서 등 공적 자료를 자동 분석한 결과이며, 현장·관청 미검증 항목(성립·금액·발급 가능성 등)은 '미확인'으로 표기됩니다. 최종 판단 및 입찰 책임은 이용자에게 있습니다.
-    </div>
-  </div>
-</div>
-
-<div class="page">
-  <div class="gold-border">
-    <h1 style="font-size:24px; letter-spacing:2px;">낙찰 후 명도절차 안내</h1>
-    <div class="flow">
-      <div class="circle">낙찰</div><div class="arrow">→</div>
-      <div class="circle">매각허가<br>결정</div><div class="arrow">→</div>
-      <div class="circle">매각허가<br>확정</div><div class="arrow">→</div>
-      <div class="circle">잔금납부<br>소유권이전</div><div class="arrow">→</div>
-      <div class="circle">명도<br>강제집행</div>
-    </div>
-
-    <div class="section">
-      <h2>낙찰 이후 절차 안내</h2>
-      <p>낙찰 후 법원은 매각허가결정 여부를 판단하고, 이해관계인의 항고가 없으면 매각허가가 확정됩니다. 이후 잔금납부기일까지 잔금을 납부하면 소유권이전촉탁등기를 통해 부동산을 이전받게 됩니다.</p>
-    </div>
-
-    <div class="section">
-      <p><strong>경매명도</strong>는 점유관계 파악, 배당여부 판단, 점유자 협상, 인도명령신청, 강제집행신청 및 집행 등 다양한 법률절차가 따릅니다.</p>
-      <p><strong>법률사무소 명승 명도상담: <span class="highlight">1877-6542</span></strong></p>
-    </div>
-
-    <div class="footer">
-      <div class="company">부동산경매 컨설팅 마이옥션</div>
-      <div class="muted">법률자문 : 법률사무소 명승</div>
-      <div class="muted">(주)엘앤씨부동산중개법인</div>
-    </div>
-  </div>
-</div>
+{{narrativeReportHtml}}
 </body>
 </html>

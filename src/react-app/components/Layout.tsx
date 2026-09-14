@@ -17,6 +17,7 @@ import {
   Users, UserCog, LogOut, CalendarDays, BarChart3,
   PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
   Scale, ExternalLink, Activity, Send, ShieldCheck,
+  Moon, Sun,
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
@@ -40,6 +41,16 @@ export default function Layout() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    if (typeof window === 'undefined') return 'light';
+    try {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+      return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
   // 명승 진단 박스 펼침 상태 — 기본값 접힘, 사용자 선택은 localStorage 유지
   const [diagnosisOpen, setDiagnosisOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
@@ -54,6 +65,15 @@ export default function Layout() {
   const isActive = (path: string) => location.pathname.startsWith(path);
   const isAccountingBookActive = location.pathname === '/accounting' || location.pathname.startsWith('/accounting/');
   const navTo = (path: string) => { navigate(path); setMobileOpen(false); };
+  const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'));
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    themeColor?.setAttribute('content', theme === 'dark' ? '#0f172a' : '#174ea6');
+    try { localStorage.setItem('theme', theme); } catch { /* */ }
+  }, [theme]);
 
   useEffect(() => {
     const mobileViewport = window.matchMedia('(max-width: 1024px)');
@@ -84,7 +104,7 @@ export default function Layout() {
   const isFreelancer = (user as any)?.login_type === 'freelancer' && role !== 'master';
   const isSupport = role === 'support';
   const isRestrictedAsst = role === 'accountant_asst' && isRestrictedAccountingAsstBranch(user?.branch);
-  const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'manager', 'accountant'].includes(role);
+  const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant'].includes(role);
   const canViewOrg = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst'].includes(role);
   const canManageUsers = !isFreelancer && ['master', 'ceo', 'admin', 'manager', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
@@ -359,6 +379,14 @@ export default function Layout() {
           <div className="user-avatar" style={{ margin: '0 auto 8px' }}>{user?.name?.charAt(0)}</div>
         )}
         <div className="sidebar-footer-btns">
+          <button
+            onClick={toggleTheme}
+            className="btn-footer theme-toggle-btn"
+            title={theme === 'dark' ? '라이트모드로 변경' : '다크모드로 변경'}
+            aria-pressed={theme === 'dark'}
+          >
+            {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />} {!collapsed && (theme === 'dark' ? '라이트모드' : '다크모드')}
+          </button>
           <button onClick={() => navTo('/profile')} className="btn-footer" title="내 정보 수정">
             <UserPen size={14} /> {!collapsed && '내 정보 수정'}
           </button>
@@ -390,6 +418,15 @@ export default function Layout() {
           <Menu size={22} />
         </button>
         <span className="mobile-title">마이옥션 오피스</span>
+        <button
+          type="button"
+          className="mobile-theme-btn"
+          onClick={toggleTheme}
+          aria-label={theme === 'dark' ? '라이트모드로 변경' : '다크모드로 변경'}
+          aria-pressed={theme === 'dark'}
+        >
+          {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
         <div className="mobile-avatar" onClick={() => navTo('/profile')}>
           {user?.name?.charAt(0)}
         </div>

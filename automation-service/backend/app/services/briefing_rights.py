@@ -156,7 +156,9 @@ def extract_context(
         except Exception as exc:
             warnings.append(f"등기 권리정보 OCR 생략: {exc}")
             logger.warning(warnings[-1])
-    rights = rc.merge_rights(rc._extract_rights(soup), rights_ocr_context.get("rights") or [])
+    html_rights = rc._extract_rights(soup)
+    rights = rc.merge_rights(html_rights, rights_ocr_context.get("rights") or [])
+    registry_summary_complete = rc._structured_registry_summary_complete(soup, html_rights)
     tenant_context = {}
     if driver and has_budget("매각물건명세서·임차인 OCR"):
         report("매각물건명세서·임차인 OCR 확인 중...", 18.7)
@@ -203,6 +205,12 @@ def extract_context(
         "management_fee": rc._extract_management_fee(soup),
         "market_data": rc._extract_market_data(soup),
         "rights_extraction_warnings": warnings,
+        "source_completeness": {
+            "registry": bool(
+                registry_summary_complete
+                or rights_ocr_context.get("_source_complete") is True
+            ),
+        },
     }
     if rights_selector_text:
         context["rights_selector_text"] = rights_selector_text
@@ -449,58 +457,13 @@ def _build_base_right_description(
 
 
 def _build_surplus_description(data: dict, rights: list[dict], related_cases: list[dict], base_right: Optional[dict] = None) -> str:
-    appraised = rc.parse_money(data.get("appraised_price"))
-    total_debt = sum(int(r.get("amount") or 0) for r in rights if r.get("amount"))
-
-    lines: list[str] = []
-    if not appraised or not rights:
-        lines.append("감정가 또는 등기부상 채권 총액 확인이 필요하여 취하 가능성을 확정하지 못했습니다.")
-    else:
-        debt_rate = total_debt / appraised
-        debt_rate_text = _format_percent(debt_rate * 100)
-        if debt_rate < 0.7:
-            lines.append(
-                f"확인된 채권 총액은 {rc.fmt_money(total_debt)}으로 감정가 {rc.fmt_money(appraised)} 대비 "
-                f"{debt_rate_text}이며, 70% 미만이므로 취하 가능성이 있습니다."
-            )
-        else:
-            lines.append(
-                f"확인된 채권 총액은 {rc.fmt_money(total_debt)}으로 감정가 {rc.fmt_money(appraised)} 대비 "
-                f"{debt_rate_text}이며, 70% 이상이므로 취하 가능성은 낮습니다."
-            )
-
-    expected_dividend = data.get("expected_dividend") or {}
-    expected_amount = int(expected_dividend.get("auctionApplicantDividendAmount") or 0)
-    applicant_creditors = data.get("auction_applicant_creditors") or []
-    if _has_duplicate_auction_case(related_cases):
-        lines.append("중복경매 신청 사건이 확인되므로, 단순 무잉여를 이유로 한 절차 기각 가능성은 낮습니다.")
-    elif expected_dividend.get("auctionApplicantDividendFound") and expected_amount > 0:
-        lines.append("경매신청채권자는 배당을 받을 수 있으므로 무잉여 가능성은 없습니다.")
-    elif rc._base_right_creditor_is_auction_applicant(base_right, applicant_creditors):
-        lines.append("최선순위 설정권자와 경매신청채권자가 동일하여 우선 배당 가능성이 높으므로 무잉여 가능성은 없습니다.")
-    else:
-        lines.append(rc.build_no_surplus_judgment_text(data, rights, base_right))
-
-    case_text = ", ".join(
-        f"{c.get('type', '관련사건')} {c.get('caseNumber', '')}".strip()
-        for c in related_cases
+    return rc.analyze_surplus(
+        data,
+        rights,
+        base_right,
+        related_cases,
+        rights_source_complete=rc._source_completeness(data)["registry"],
     )
-    if case_text:
-        lines.append(f"관련 사건은 {case_text}입니다.")
-    return "\n".join(lines)
-
-
-def _format_percent(value: float) -> str:
-    if abs(value - round(value)) < 0.05:
-        return f"{round(value)}%"
-    return f"{value:.1f}%"
-
-
-def _has_duplicate_auction_case(related_cases: list[dict]) -> bool:
-    for case in related_cases or []:
-        if "중복" in str(case.get("type") or ""):
-            return True
-    return False
 
 
 def _build_special_summary_text(

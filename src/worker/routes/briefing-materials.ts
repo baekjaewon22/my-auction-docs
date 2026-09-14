@@ -19,6 +19,15 @@ const briefingMaterials = new Hono<AuthEnv>();
 
 briefingMaterials.use('*', authMiddleware);
 
+const ACTIVE_LINKED_SCHEDULE_MATERIAL_CONDITION = `bm.archived_at IS NULL
+  AND COALESCE(bm.source_admin_note_id, '') != ''
+  AND EXISTS (
+    SELECT 1 FROM admin_notes n
+    WHERE n.id = bm.source_admin_note_id
+      AND n.category = 'briefing_schedule'
+  )
+`;
+
 function attachmentDisposition(fileName: string): string {
   const fallback = safeBriefingFileName(fileName).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_') || 'briefing-material';
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
@@ -64,14 +73,25 @@ briefingMaterials.post('/', async (c) => {
     WHERE id = ? AND approved = 1 AND role != 'resigned'`).bind(assigneeId).first<any>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 400);
   const caseNumber = String(form.get('case_number') || '').trim().slice(0, 100);
+  const sourceAdminNoteId = String(form.get('source_admin_note_id') || '').trim();
   const month = briefingMaterialMonth();
   const id = crypto.randomUUID();
   const objectKey = briefingMaterialObjectKey(month, id, fileName);
   const sha256 = await sha256BriefingMaterial(buffer);
   await ensureBriefingMaterialSchema(c.env.DB);
-  const duplicate = await c.env.DB.prepare(`SELECT id, file_name, created_at FROM briefing_materials
-    WHERE sha256 = ? AND uploaded_by = ? AND assignee_user_id = ? AND COALESCE(case_number, '') = ?
-      AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1`)
+  if (sourceAdminNoteId) {
+    const sourceNote = await c.env.DB.prepare(`SELECT id, author_id, assignee_id, case_number, category
+      FROM admin_notes WHERE id = ? LIMIT 1`).bind(sourceAdminNoteId).first<{
+        id: string; author_id: string; assignee_id: string | null; case_number: string | null; category: string | null;
+      }>();
+    if (!sourceNote || sourceNote.category !== 'briefing_schedule' || sourceNote.author_id !== profile.id
+      || sourceNote.assignee_id !== assignee.id || String(sourceNote.case_number || '') !== caseNumber) {
+      return c.json({ error: '釉뚮━?묒옄猷??쒖텧 ?깅줉怨??뚯씪 ?뺣낫媛 ?쇱튂?섏? ?딆뒿?덈떎.' }, 400);
+    }
+  }
+  const duplicate = await c.env.DB.prepare(`SELECT bm.id, bm.file_name, bm.created_at FROM briefing_materials bm
+    WHERE bm.sha256 = ? AND bm.uploaded_by = ? AND bm.assignee_user_id = ? AND COALESCE(bm.case_number, '') = ?
+      AND ${ACTIVE_LINKED_SCHEDULE_MATERIAL_CONDITION} ORDER BY bm.created_at DESC LIMIT 1`)
     .bind(sha256, profile.id, assignee.id, caseNumber).first<any>();
   if (duplicate) return c.json({ error: '이미 제출한 동일한 파일입니다.', duplicate }, 409);
 
@@ -82,10 +102,10 @@ briefingMaterials.post('/', async (c) => {
   try {
     await c.env.DB.prepare(`INSERT INTO briefing_materials
       (id, uploaded_by, uploader_name, branch, assignee_user_id, assignee_name, case_number, material_month,
-       object_key, file_name, file_type, file_size, sha256, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+       object_key, file_name, file_type, file_size, sha256, source_admin_note_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, profile.id, profile.name || '', assignee.branch || profile.branch || '', assignee.id, assignee.name || '', caseNumber,
-        month, objectKey, fileName, file.type || 'application/octet-stream', buffer.byteLength, sha256,
+        month, objectKey, fileName, file.type || 'application/octet-stream', buffer.byteLength, sha256, sourceAdminNoteId || null,
         new Date().toISOString(), new Date().toISOString()).run();
   } catch (error) {
     await c.env.ARTICLE_BUCKET.delete(objectKey).catch(() => undefined);

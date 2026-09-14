@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS briefing_materials (
   drive_attempt_count INTEGER NOT NULL DEFAULT 0,
   drive_error TEXT NOT NULL DEFAULT '',
   archived_at TEXT,
+  source_admin_note_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (uploaded_by) REFERENCES users(id),
@@ -31,6 +32,8 @@ CREATE INDEX IF NOT EXISTS idx_briefing_materials_drive
 ON briefing_materials(drive_status, drive_attempt_count, created_at);
 CREATE INDEX IF NOT EXISTS idx_briefing_materials_scope
 ON briefing_materials(branch, assignee_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_briefing_materials_source_note
+ON briefing_materials(source_admin_note_id);
 
 CREATE TABLE IF NOT EXISTS briefing_material_drive_logs (
   id TEXT PRIMARY KEY,

@@ -1,13 +1,48 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import Database from 'better-sqlite3';
 import {
   automationArtifactContentType,
+  ensureAutomationJobQueueSchema,
   safeAutomationFileName,
   secureTextEqual,
 } from '../src/worker/lib/automation-job-queue.ts';
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
+
+class TestStatement {
+  private readonly sqlite: Database.Database;
+  private readonly sql: string;
+  private readonly params: unknown[];
+
+  constructor(
+    sqlite: Database.Database,
+    sql: string,
+    params: unknown[] = [],
+  ) {
+    this.sqlite = sqlite;
+    this.sql = sql;
+    this.params = params;
+  }
+
+  bind(...params: unknown[]) { return new TestStatement(this.sqlite, this.sql, params); }
+  async all<T>() { return { results: this.sqlite.prepare(this.sql).all(...this.params) as T[] }; }
+  execute() {
+    const result = this.sqlite.prepare(this.sql).run(...this.params);
+    return { success: true, meta: { changes: result.changes } };
+  }
+  async run() { return this.execute(); }
+}
+
+class TestD1 {
+  readonly sqlite: Database.Database;
+  constructor(sqlite: Database.Database) { this.sqlite = sqlite; }
+  prepare(sql: string) { return new TestStatement(this.sqlite, sql); }
+  async batch(statements: TestStatement[]) {
+    return this.sqlite.transaction((items: TestStatement[]) => items.map((statement) => statement.execute()))(statements);
+  }
+}
 
 test('중앙 큐는 임대·재시도·예약·소유자·결과 저장소를 명시한다', () => {
   const migration = read('../d1/migrate-automation-job-queue.sql');
@@ -17,6 +52,27 @@ test('중앙 큐는 임대·재시도·예약·소유자·결과 저장소를 �
   assert.match(migration, /available_at TEXT NOT NULL/);
   assert.match(migration, /UNIQUE \(owner_user_id, idempotency_key\)/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS automation_job_artifacts/);
+});
+
+test('구형 큐 스키마는 available_at 추가 후 관련 인덱스를 생성한다', async () => {
+  const sqlite = new Database(':memory:');
+  sqlite.exec(`CREATE TABLE automation_jobs (
+    id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    priority INTEGER NOT NULL DEFAULT 100,
+    lease_expires_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
+  const db = new TestD1(sqlite);
+
+  await ensureAutomationJobQueueSchema(db as unknown as D1Database);
+
+  const columns = sqlite.prepare("SELECT name FROM pragma_table_info('automation_jobs')").all() as Array<{ name: string }>;
+  const indexes = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as Array<{ name: string }>;
+  assert.ok(columns.some((column) => column.name === 'available_at'));
+  assert.ok(indexes.some((index) => index.name === 'idx_automation_jobs_queue'));
+  sqlite.close();
 });
 
 test('브라우저가 실행기 비밀번호나 consultant 식별자를 전달하지 않는다', () => {

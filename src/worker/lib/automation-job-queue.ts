@@ -8,7 +8,7 @@ export async function ensureAutomationJobQueueSchema(db: D1Database): Promise<vo
   if (existing) return existing;
   const promise = (async () => {
     await db.batch([
-    db.prepare(`CREATE TABLE IF NOT EXISTS automation_jobs (
+      db.prepare(`CREATE TABLE IF NOT EXISTS automation_jobs (
       id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, output_type TEXT NOT NULL,
       is_batch INTEGER NOT NULL DEFAULT 0, request_object_key TEXT NOT NULL,
       idempotency_key TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued',
@@ -24,24 +24,20 @@ export async function ensureAutomationJobQueueSchema(db: D1Database): Promise<vo
       created_at TEXT NOT NULL DEFAULT (datetime('now')), started_at TEXT, completed_at TEXT,
       updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (owner_user_id, idempotency_key)
     )`),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_jobs_queue ON automation_jobs(status, available_at, priority, created_at, id)'),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_jobs_owner ON automation_jobs(owner_user_id, created_at DESC)'),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_jobs_lease ON automation_jobs(status, lease_expires_at)'),
-    db.prepare(`CREATE TABLE IF NOT EXISTS automation_job_events (
+      db.prepare(`CREATE TABLE IF NOT EXISTS automation_job_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL,
       step INTEGER NOT NULL DEFAULT 0, total_steps INTEGER NOT NULL DEFAULT 1,
       title TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'running', percent REAL NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`),
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_job_events_job ON automation_job_events(job_id, id)'),
-    db.prepare(`CREATE TABLE IF NOT EXISTS automation_job_artifacts (
+      db.prepare(`CREATE TABLE IF NOT EXISTS automation_job_artifacts (
       id TEXT PRIMARY KEY, job_id TEXT NOT NULL, format TEXT NOT NULL,
       object_key TEXT NOT NULL UNIQUE, file_name TEXT NOT NULL,
       content_type TEXT NOT NULL DEFAULT 'application/octet-stream', file_size INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (job_id, format)
     )`),
-    db.prepare(`CREATE TABLE IF NOT EXISTS automation_agents (
+      db.prepare(`CREATE TABLE IF NOT EXISTS automation_agents (
       id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '', version TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'offline', current_job_id TEXT NOT NULL DEFAULT '',
       last_seen_at TEXT NOT NULL DEFAULT (datetime('now')), created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -53,6 +49,12 @@ export async function ensureAutomationJobQueueSchema(db: D1Database): Promise<vo
       await db.prepare("ALTER TABLE automation_jobs ADD COLUMN available_at TEXT NOT NULL DEFAULT '1970-01-01 00:00:00'").run();
       await db.prepare("UPDATE automation_jobs SET available_at = created_at WHERE available_at = '1970-01-01 00:00:00'").run();
     }
+    await db.batch([
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_jobs_queue ON automation_jobs(status, available_at, priority, created_at, id)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_jobs_owner ON automation_jobs(owner_user_id, created_at DESC)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_jobs_lease ON automation_jobs(status, lease_expires_at)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_automation_job_events_job ON automation_job_events(job_id, id)'),
+    ]);
   })();
   schemaPromises.set(key, promise);
   try { await promise; } catch (error) { schemaPromises.delete(key); throw error; }

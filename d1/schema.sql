@@ -431,13 +431,15 @@ CREATE TABLE IF NOT EXISTS briefing_materials (
   file_name TEXT NOT NULL, file_type TEXT NOT NULL DEFAULT 'application/octet-stream', file_size INTEGER NOT NULL DEFAULT 0,
   sha256 TEXT NOT NULL DEFAULT '', drive_status TEXT NOT NULL DEFAULT 'pending', drive_file_id TEXT NOT NULL DEFAULT '',
   drive_folder_path TEXT NOT NULL DEFAULT '', drive_backed_up_at TEXT, drive_attempt_count INTEGER NOT NULL DEFAULT 0,
-  drive_error TEXT NOT NULL DEFAULT '', archived_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  drive_error TEXT NOT NULL DEFAULT '', archived_at TEXT, source_admin_note_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (uploaded_by) REFERENCES users(id),
   FOREIGN KEY (assignee_user_id) REFERENCES users(id)
 );
 CREATE INDEX IF NOT EXISTS idx_briefing_materials_active ON briefing_materials(archived_at, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_briefing_materials_drive ON briefing_materials(drive_status, drive_attempt_count, created_at);
 CREATE INDEX IF NOT EXISTS idx_briefing_materials_scope ON briefing_materials(branch, assignee_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_briefing_materials_source_note ON briefing_materials(source_admin_note_id);
 CREATE TABLE IF NOT EXISTS briefing_material_drive_logs (
   id TEXT PRIMARY KEY, material_id TEXT NOT NULL, status TEXT NOT NULL,
   drive_file_id TEXT NOT NULL DEFAULT '', drive_folder_path TEXT NOT NULL DEFAULT '', file_size INTEGER NOT NULL DEFAULT 0,

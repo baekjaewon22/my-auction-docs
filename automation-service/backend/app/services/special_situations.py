@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import re
 
 
@@ -104,34 +105,219 @@ _BUILDING_VIOLATION_KEYWORDS = (
     "위반건축물", "위반 건축물", "무단증축", "무단 증축", "불법증축", "불법 증축",
     "무허가", "이행강제금", "시정명령",
 )
-_BUILDING_VIOLATION_NEGATIVE = (
-    "해당없음", "해당 없음", "아님", "아니오", "없음", "미해당", "정상", "부존재",
+
+
+_CLAUSE_BREAK_RE = re.compile(r"[\r\n.!?。！？;；,，|/]+")
+_CONTRAST_BREAK_RE = re.compile(
+    r"(없으나|없지만|없고|아니나|아니지만|아니고|않으나|않지만|않고|"
+    r"미해당이나|미해당이지만|부존재이나|부존재이지만|"
+    r"말소되었으나|말소됐으나|취하되었으나|취하됐으나|"
+    r"해제되었으나|해제됐으나|소멸되었으나|소멸됐으나)"
 )
+_DISCOURSE_BREAK_RE = re.compile(r"\s*(?:다만|그러나|하지만|반면)\s*")
+
+# A source line often has the shape "유치권 신고 여부: 없음".  Only words
+# that can grammatically sit between the matched keyword and its value belong
+# here.  Keeping this list narrow prevents an unrelated "없음" later in the
+# same line (for example "유치권 신고 있음, 배제신청 없음") from suppressing
+# an affirmative signal.
+_SIGNAL_QUALIFIER = (
+    r"(?:등기|신고|표시|표기|성립|존재|소재|발견|확인|해당|등록|기재|"
+    r"주장|가능성|사실|내용|여부|정황|이력|사항|처리|분류|판단|"
+    r"매각|채권|청구|권리|상태|현재|은|는|이|가|을|를|도|에|에는|"
+    r"으로|으로는|로|로는|의|및|[:：=\-–—()\[\]{}])*"
+)
+_NEGATIVE_VALUE = (
+    r"(?:"
+    r"해당(?:사항)?없(?:음|다|는|으며|고|었(?:음|다)?|어)|"
+    r"없(?:음|다|는|으며|고|었(?:음|다)?|어)|"
+    r"아님|아니(?:다|오|며|고|었(?:음|다)?)|미해당|부존재|정상|"
+    r"해당하지않(?:음|는다|았(?:음|다)?|는|고)|"
+    r"(?:존재|발견|확인|성립|신고|기재|등록|표시|표기|분류|판단)"
+    r"되지않(?:음|는다|았(?:음|다)?|는|고)|"
+    r"(?:말소|취하|해제|소멸)(?:완료|됨|되었(?:음|다)?|되어|됐(?:음|다)?|"
+    r"처리(?:됨|완료)?|등기|된(?:상태)?|$)"
+    r")"
+)
+_NEGATIVE_SUFFIX_RE = re.compile(rf"^{_SIGNAL_QUALIFIER}{_NEGATIVE_VALUE}")
+_NEGATIVE_PREFIX_RE = re.compile(
+    r"(?:해당없(?:는|음)?|없(?:는|음)|미해당(?:인)?|부존재(?:인)?|"
+    r"아닌|아님|(?:말소|취하|해제|소멸)(?:완료)?(?:된|처리된))"
+    r"(?:선순위|후순위|등기|신고|권리|표시|사항|[:：=\-–—()\[\]{}])*$"
+)
+_AFFIRMATIVE_DOUBLE_NEGATIVE_RE = re.compile(
+    rf"^{_SIGNAL_QUALIFIER}(?:"
+    r"없(?:음)?(?:이|은)?아니|해당없지않|미해당(?:이|은)?아니|"
+    r"부존재(?:가|는|이)?아니|(?:말소|취하|해제|소멸)되지않"
+    r")"
+)
+_LABEL_ONLY_RE = re.compile(rf"^{_SIGNAL_QUALIFIER}$")
+_BARE_NEGATIVE_RE = re.compile(rf"^(?:[□☐☑✓✔○●]|\[[vVxX○● ]*\])*{_NEGATIVE_VALUE}$")
+_UNKNOWN_VALUE = (
+    r"(?:확인필요|확인요망|검토필요|조사필요|미상|불명|미확인|"
+    r"확인불가|판단불가|판단보류|확인중|조사중|알수없(?:음|다))"
+)
+_UNKNOWN_SUFFIX_RE = re.compile(
+    rf"^{_SIGNAL_QUALIFIER}"
+    rf"(?:(?:말소|취하|해제|소멸)(?:등기|처리)?(?:여부|유무)?)?"
+    rf"{_UNKNOWN_VALUE}(?:함|임|상태)?$"
+)
+_QUESTION_LABEL_RE = re.compile(
+    rf"^{_SIGNAL_QUALIFIER}"
+    r"(?:(?:말소|취하|해제|소멸)(?:등기|처리)?)?"
+    r"(?:여부|유무)[:：=?\-–—()\[\]{}]*$"
+)
+_BARE_UNKNOWN_RE = re.compile(
+    rf"^(?:[□☐☑✓✔○●]|\[[vVxX○● ]*\])*{_UNKNOWN_VALUE}(?:함|임|상태)?$"
+)
+_BARE_AFFIRMATIVE_RE = re.compile(
+    r"^(?:[□☐☑✓✔○●]|\[[vVxX○● ]*\])*"
+    r"(?:있음|있다|존재|존속|설정|접수|등록|기재|확인됨|발견됨|성립|"
+    r"신고됨|표시됨|표기됨|해당|예|[yY])$"
+)
+
+
+def _compact(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def _split_signal_clauses(line: str) -> list[str]:
+    prepared = _CONTRAST_BREAK_RE.sub(r"\1\n", str(line or ""))
+    prepared = _DISCOURSE_BREAK_RE.sub("\n", prepared)
+    return [part.strip() for part in _CLAUSE_BREAK_RE.split(prepared) if part.strip()]
+
+
+def _adjacent_value_state(next_line: str, previous_line: str) -> str:
+    # A field value normally follows its label.  Fall back to the previous line
+    # only for OCR that reversed the label/value order.
+    for value in (next_line, previous_line):
+        if not value or len(value) > 24:
+            continue
+        if _BARE_AFFIRMATIVE_RE.fullmatch(value):
+            return "affirmative"
+        if _BARE_NEGATIVE_RE.fullmatch(value) or _BARE_UNKNOWN_RE.fullmatch(value):
+            return "non_affirmative"
+    return ""
+
+
+def _keyword_occurrences(compact_clause: str, keywords: tuple[str, ...]) -> list[tuple[int, int]]:
+    candidates: list[tuple[int, int]] = []
+    for keyword in keywords:
+        start = 0
+        while True:
+            index = compact_clause.find(keyword, start)
+            if index < 0:
+                break
+            candidates.append((index, index + len(keyword)))
+            start = index + 1
+
+    # Prefer the longest keyword when aliases overlap ("유치권" and
+    # "유치권신고"), otherwise a shorter match would leave "신고" outside the
+    # occurrence and make the scope calculation unnecessarily ambiguous.
+    candidates.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    occurrences: list[tuple[int, int]] = []
+    for start, end in candidates:
+        if occurrences and start < occurrences[-1][1]:
+            continue
+        occurrences.append((start, end))
+    return occurrences
+
+
+def _is_negated_occurrence(
+    compact_clause: str,
+    start: int,
+    end: int,
+    previous_end: int,
+    next_start: int,
+    previous_line: str,
+    next_line: str,
+) -> bool:
+    before = compact_clause[max(previous_end, start - 24):start]
+    after = compact_clause[end:min(next_start, end + 36)]
+
+    # "말소되지 않음", "없음이 아님" and similar double negatives mean the
+    # right/situation remains present, so they must win over generic negation.
+    if _AFFIRMATIVE_DOUBLE_NEGATIVE_RE.match(after):
+        return False
+    if _NEGATIVE_SUFFIX_RE.match(after) or _NEGATIVE_PREFIX_RE.search(before):
+        return True
+    if _UNKNOWN_SUFFIX_RE.fullmatch(after):
+        return True
+
+    adjacent_state = _adjacent_value_state(next_line, previous_line)
+    if _QUESTION_LABEL_RE.fullmatch(after):
+        return adjacent_state != "affirmative"
+
+    # OCR/table extraction may place a label and its value on adjacent lines.
+    # Consult the next line only when nothing except label grammar follows the
+    # keyword; this avoids borrowing an unrelated negative value.
+    if _LABEL_ONLY_RE.fullmatch(after):
+        if adjacent_state == "non_affirmative":
+            return True
+    return False
+
+
+def detect_affirmative_signal(text: str, keywords: Iterable[str]) -> tuple[bool, str]:
+    """Find a genuinely affirmative keyword occurrence in auction source text.
+
+    Matching is occurrence-based rather than a whole-document substring check.
+    Negative values close to a keyword (``없음``, ``해당없음``, ``아님``,
+    ``미해당``, ``부존재`` or a completed ``말소/취하/해제/소멸``) are
+    excluded.  A later affirmative clause still wins, which prevents false
+    negatives in mixed source text.
+
+    Returns ``(True, evidence_clause)`` for the first affirmative occurrence or
+    ``(False, "")`` when every occurrence is absent/negated.
+    """
+    keyword_values = (keywords,) if isinstance(keywords, str) else keywords
+    normalized_keywords = tuple(dict.fromkeys(
+        compact_keyword
+        for keyword in keyword_values
+        if (compact_keyword := _compact(keyword))
+    ))
+    if not normalized_keywords:
+        return False, ""
+
+    lines = [re.sub(r"\s+", " ", line).strip() for line in str(text or "").splitlines()]
+    lines = [line for line in lines if line]
+    for line_index, line in enumerate(lines):
+        previous_line = _compact(lines[line_index - 1]) if line_index else ""
+        next_line = _compact(lines[line_index + 1]) if line_index + 1 < len(lines) else ""
+        clauses = _split_signal_clauses(line)
+        for clause_index, clause in enumerate(clauses):
+            compact_clause = _compact(clause)
+            occurrences = _keyword_occurrences(compact_clause, normalized_keywords)
+            for occurrence_index, (start, end) in enumerate(occurrences):
+                previous_end = occurrences[occurrence_index - 1][1] if occurrence_index else 0
+                next_start = (
+                    occurrences[occurrence_index + 1][0]
+                    if occurrence_index + 1 < len(occurrences)
+                    else len(compact_clause)
+                )
+                adjacent_line = next_line if clause_index == len(clauses) - 1 else ""
+                if not _is_negated_occurrence(
+                    compact_clause,
+                    start,
+                    end,
+                    previous_end,
+                    next_start,
+                    previous_line,
+                    adjacent_line,
+                ):
+                    return True, re.sub(r"\s+", " ", clause).strip()[:180]
+    return False, ""
 
 
 def detect_building_violation(text: str) -> tuple[bool, str]:
     """Return an affirmative violation marker while excluding negative checkbox/label text."""
-    normalized_lines = [re.sub(r"\s+", " ", line).strip() for line in str(text or "").splitlines()]
-    normalized_lines = [line for line in normalized_lines if line]
-    for index, line in enumerate(normalized_lines):
-        compact = re.sub(r"\s+", "", line)
-        matched = next((keyword for keyword in _BUILDING_VIOLATION_KEYWORDS if re.sub(r"\s+", "", keyword) in compact), "")
-        if not matched:
-            continue
-        nearby = " ".join(normalized_lines[max(0, index - 1):index + 2])
-        nearby_compact = re.sub(r"\s+", "", nearby)
-        if any(re.sub(r"\s+", "", negative) in nearby_compact for negative in _BUILDING_VIOLATION_NEGATIVE):
-            continue
-        evidence = re.sub(r"\s+", " ", line).strip()[:180]
-        return True, evidence or matched
-    return False, ""
+    return detect_affirmative_signal(text, _BUILDING_VIOLATION_KEYWORDS)
 
 
 def build_special_issue_lines(source_text: str, max_items: int = 8, verbose: bool = True) -> list[str]:
-    compact = re.sub(r"\s+", "", source_text or "")
     matched = []
     for rule in SPECIAL_SITUATION_RULES:
-        if any(re.sub(r"\s+", "", keyword) in compact for keyword in rule["keywords"]):
+        detected, _ = detect_affirmative_signal(source_text, rule["keywords"])
+        if detected:
             matched.append(rule)
 
     matched.sort(key=lambda item: (RISK_ORDER.get(item["risk"], 9), item["code"]))
