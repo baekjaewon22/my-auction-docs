@@ -572,6 +572,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const extraPayNum = Number(extraPay) || 0;
   const extraDeductionNum = Number(extraDeduction) || 0;
   const unpaidDeduction = s?.unpaid_leave_deduction || 0;
+  const unpaidLeaveAbsence = s?.unpaid_leave_absence_settlement || null;
   const joining = data?.joining_settlement || null;
   const joiningBaseDeduction = joining?.base_deduction || 0;
   const termination = data?.termination_settlement || null;
@@ -1408,7 +1409,11 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
               </div>
               {(s.unpaid_leave_days > 0) && (
                 <div className="payroll-bonus-row" style={{ color: '#d93025' }}>
-                  <span>무급휴가 공제 ({s.unpaid_leave_days}일)</span>
+                  <span>
+                    {unpaidLeaveAbsence
+                      ? `무급휴직 일할 공제 (${unpaidLeaveAbsence.paid_days}/${unpaidLeaveAbsence.payroll_base_days}일 지급)`
+                      : `무급휴가 공제 (${s.unpaid_leave_days}일)`}
+                  </span>
                   <span className="num">-{fmtWon(unpaidDeduction)}</span>
                 </div>
               )}

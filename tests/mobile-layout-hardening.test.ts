@@ -35,7 +35,15 @@ test('dense inline grids expose mobile stacking hooks', () => {
 
   assert.ok(sources.some((source) => source.includes('mobile-stack-grid')));
   assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*?\.mobile-stack-grid\s*{[\s\S]*?grid-template-columns:\s*1fr\s*!important/);
-  assert.match(css, /@media \(max-width:\s*480px\)[\s\S]*?\.dashboard-page \.stats-grid\s*{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(css, /@media \(max-width:\s*768px\)[\s\S]*?\.dashboard-page \.stats-grid\s*{[\s\S]*?display:\s*none/);
+});
+
+test('mobile community tabs and lawitgo progress timeline cannot stretch into broken columns', () => {
+  assert.match(css, /@media \(max-width:\s*768px\)[\s\S]*?\.admin-notes-page \.admin-notes-section-tabs\s*{[\s\S]*?align-items:\s*center\s*!important/);
+  assert.match(css, /@media \(max-width:\s*768px\)[\s\S]*?\.admin-notes-page \.admin-notes-section-tabs > \.btn\s*{[\s\S]*?max-height:\s*52px\s*!important/);
+  assert.match(css, /@media \(max-width:\s*640px\)[\s\S]*?\.lawitgo-stage-track\s*{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s*!important/);
+  assert.match(css, /@media \(max-width:\s*640px\)[\s\S]*?\.lawitgo-stage-track > div::after,[\s\S]*?\.lawitgo-stage-track::before,[\s\S]*?\.lawitgo-stage-track::after\s*{[\s\S]*?content:\s*none\s*!important/);
+  assert.match(css, /@media \(max-width:\s*640px\)[\s\S]*?\.lawitgo-stage-track > div\s*{[\s\S]*?position:\s*static\s*!important/);
 });
 
 test('tablet shell keeps the sidebar in a drawer until content has safe desktop width', () => {

@@ -130,6 +130,7 @@ export default function Leave() {
   const [specialSubtype, setSpecialSubtype] = useState<SpecialLeaveSubtype>('특별유급휴가');
   const [specialItem, setSpecialItem] = useState(0); // SPECIAL_LEAVE_ITEMS index
   const [specialEtcReason, setSpecialEtcReason] = useState('');
+  const [unpaidNoAnnualDeduction, setUnpaidNoAnnualDeduction] = useState(true);
   // 여름휴가 폼
   const [summerDays, setSummerDays] = useState(1); // 1~3 (잔여에 따라 제한)
   const [summerChain, setSummerChain] = useState(0); // 0/1/2 연차 연결
@@ -271,6 +272,10 @@ export default function Leave() {
       if ((specialSubtype === '기타' || specialSubtype === '무급휴가') && !specialEtcReason.trim()) {
         alert(`${specialSubtype} 사유를 입력하세요.`); return;
       }
+      if (specialSubtype === '무급휴가' && !unpaidNoAnnualDeduction) {
+        alert('무급휴가는 연차/월차에서 차감하지 않는 조건으로만 신청할 수 있습니다. 체크 후 신청하세요.');
+        return;
+      }
       if (specialSubtype === '여름휴가') {
         if (holidayLoading || holidayError) {
           alert(holidayError || '공휴일 정보를 확인하고 있습니다. 잠시 후 다시 신청해주세요.'); return;
@@ -331,7 +336,7 @@ export default function Leave() {
           client_annual_start_date: plan.annualStartDate || undefined,
           client_annual_end_date: plan.annualEndDate || undefined,
         });
-        setShowForm(false); setFormReason(''); setSpecialEtcReason('');
+        setShowForm(false); setFormReason(''); setSpecialEtcReason(''); setUnpaidNoAnnualDeduction(true);
         setSummerChain(0); setSummerDays(1);
         if (requestUserId) loadFormUser(requestUserId);
         load();
@@ -347,7 +352,9 @@ export default function Leave() {
         const item = SPECIAL_LEAVE_ITEMS[specialItem];
         reason = `[특별유급] ${item.label} (${item.days}일)${item.noFamilyProof ? '' : ' ※ 가족관계증명원 전제'}`;
       } else if (specialSubtype === '무급휴가') {
-        reason = `[무급] ${specialEtcReason}`;
+        reason = unpaidNoAnnualDeduction
+          ? `[무급][연차차감제외] ${specialEtcReason}`
+          : `[무급] ${specialEtcReason}`;
       } else {
         reason = `[기타] ${specialEtcReason}`;
       }
@@ -382,6 +389,7 @@ export default function Leave() {
       setShowForm(false);
       setFormReason('');
       setSpecialEtcReason('');
+      setUnpaidNoAnnualDeduction(true);
       if (requestUserId) loadFormUser(requestUserId);
       load();
     } catch (err: any) { alert(err.message); }
@@ -504,7 +512,7 @@ export default function Leave() {
               />
             </div>
           )}
-          <button className="btn btn-primary" onClick={() => { setShowForm(true); if (!canRequestForOthers) { setFormUserId(''); setFormUserBalance(null); setFormUserRequests([]); } }}>
+          <button className="btn btn-primary" onClick={() => { setShowForm(true); setUnpaidNoAnnualDeduction(true); if (!canRequestForOthers) { setFormUserId(''); setFormUserBalance(null); setFormUserRequests([]); } }}>
             <Plus size={14} /> 휴가 신청
           </button>
         </div>
@@ -774,7 +782,7 @@ export default function Leave() {
                 <label className="form-label">휴가 유형</label>
                 <div className="leave-type-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
                   {FORM_LEAVE_TYPES.filter(t => canViewHourly || t.value !== '시간차').map(t => (
-                    <button key={t.value} type="button" onClick={() => { setFormType(t.value); setSpecialSubtype('특별유급휴가'); setSpecialItem(0); setSpecialEtcReason(''); }}
+                    <button key={t.value} type="button" onClick={() => { setFormType(t.value); setSpecialSubtype('특별유급휴가'); setSpecialItem(0); setSpecialEtcReason(''); setUnpaidNoAnnualDeduction(true); }}
                       style={{ padding: '10px 6px', borderRadius: 8, border: formType === t.value ? `2px solid ${t.color}` : '1px solid #dadce0', background: formType === t.value ? t.color + '10' : '#fff', cursor: 'pointer', textAlign: 'center' }}>
                       <div style={{ fontWeight: 600, fontSize: '0.85rem', color: formType === t.value ? t.color : '#202124' }}>{t.label}</div>
                       <div style={{ fontSize: '0.65rem', color: '#9aa0a6', marginTop: 2 }}>{t.desc}</div>
@@ -789,7 +797,7 @@ export default function Leave() {
                   <label className="form-label">구분</label>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
                     {(['특별유급휴가', '여름휴가', '무급휴가', '기타'] as SpecialLeaveSubtype[]).map(s => (
-                      <button key={s} type="button" onClick={() => setSpecialSubtype(s)}
+                      <button key={s} type="button" onClick={() => { setSpecialSubtype(s); if (s === '무급휴가') setUnpaidNoAnnualDeduction(true); }}
                         style={{ padding: '6px 14px', borderRadius: 6, border: specialSubtype === s ? '2px solid #7b1fa2' : '1px solid #dadce0', background: specialSubtype === s ? '#f3e5f5' : '#fff', cursor: 'pointer', fontWeight: specialSubtype === s ? 600 : 400, fontSize: '0.85rem', color: specialSubtype === s ? '#7b1fa2' : '#202124' }}>
                         {s}
                       </button>
@@ -881,8 +889,17 @@ export default function Leave() {
                   {specialSubtype === '무급휴가' && (
                     <div>
                       <div style={{ marginBottom: 8, padding: '8px 12px', borderRadius: 6, background: '#fce4ec', fontSize: '0.75rem', color: '#d93025', lineHeight: 1.4 }}>
-                        ※ 무급휴가는 연차에서 차감되지 않으며, 승인 시 급여에서 해당 시간만큼 공제됩니다.
+                        ※ 무급휴가는 승인 시 급여에서 해당 시간만큼 공제됩니다.
                       </div>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '10px 12px', border: '1px solid #f3b6c8', borderRadius: 8, background: unpaidNoAnnualDeduction ? '#fff7fb' : '#fff', color: '#5f172f', fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={unpaidNoAnnualDeduction}
+                          onChange={(e) => setUnpaidNoAnnualDeduction(e.target.checked)}
+                        />
+                        <span>연차/월차에서 차감하지 않음</span>
+                        <small style={{ marginLeft: 'auto', color: '#d93025', fontWeight: 600 }}>급여 공제만 적용</small>
+                      </label>
                       <label className="form-label">사유</label>
                       <textarea className="form-input" value={specialEtcReason} onChange={(e) => setSpecialEtcReason(e.target.value)} rows={3} placeholder="무급휴가 사유를 입력하세요" style={{ width: '100%', resize: 'vertical' }} />
                     </div>
@@ -965,8 +982,11 @@ export default function Leave() {
 
               {/* 차감 미리보기 */}
               <div style={{ padding: '10px 14px', borderRadius: 8, background: '#f8f9fa', marginBottom: 16, fontSize: '0.85rem' }}>
-                <span style={{ color: '#5f6368' }}>차감시간: </span>
+                <span style={{ color: '#5f6368' }}>{formType === '특별휴가' && specialSubtype === '무급휴가' ? '급여 공제 시간: ' : '차감시간: '}</span>
                 <strong style={{ color: '#d93025' }}>{formatLeaveHours(previewHours())}</strong>
+                {formType === '특별휴가' && specialSubtype === '무급휴가' && unpaidNoAnnualDeduction && (
+                  <span style={{ color: '#188038', marginLeft: 8, fontSize: '0.78rem' }}>연차/월차 차감 없음</span>
+                )}
                 {holidayLoading && <span style={{ color: '#5f6368', marginLeft: 8, fontSize: '0.78rem' }}>공휴일 확인 중</span>}
                 {holidayError && <span style={{ color: '#d93025', marginLeft: 8, fontSize: '0.78rem' }}>공휴일 확인 실패</span>}
                 {formType === '특별휴가' && specialSubtype === '특별유급휴가' && (

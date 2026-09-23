@@ -21,6 +21,13 @@ export function normalizeArticleDate(raw: unknown, kstToday: string): string | n
   return isRealIsoDate(value) && value <= kstToday ? value : null;
 }
 
+export function isExpiredArticleDate(articleDate: string, kstToday: string, retentionDays = 31): boolean {
+  if (!isRealIsoDate(articleDate) || !isRealIsoDate(kstToday)) return false;
+  const expiry = new Date(`${articleDate}T00:00:00Z`);
+  expiry.setUTCDate(expiry.getUTCDate() + retentionDays);
+  return expiry.toISOString().slice(0, 10) <= kstToday;
+}
+
 function cp949DecodedKoreanCount(bytes: Uint8Array): number {
   try {
     const decoded = new TextDecoder('euc-kr', { fatal: true, ignoreBOM: false }).decode(bytes);
@@ -116,9 +123,7 @@ export function isCanonicalArticleObjectExpired(objectKey: string, kstToday: str
   if (!isRealIsoDate(kstToday)) return false;
   const articleDate = articleDateFromCanonicalObjectKey(objectKey);
   if (!articleDate) return false;
-  const expiry = new Date(`${articleDate}T00:00:00Z`);
-  expiry.setUTCDate(expiry.getUTCDate() + 31);
-  return expiry.toISOString().slice(0, 10) <= kstToday;
+  return isExpiredArticleDate(articleDate, kstToday);
 }
 
 function kstDateAt(now: Date): string {

@@ -128,6 +128,22 @@ test('프론트엔드에는 API 키 헤더가 없고 lawitgo UI는 sandbox ifram
   assert.match(routeSource, /Cache-Control', 'no-store, private/);
 });
 
+test('lawitgo embedded detail forcibly normalizes body wrapper layout to prevent fixed-width breakage', () => {
+  const pageSource = readFileSync('src/react-app/pages/LawitgoProgress.tsx', 'utf8');
+  const routeSource = readFileSync('src/worker/routes/lawitgo-progress.ts', 'utf8');
+  const cssSource = readFileSync('src/react-app/index.css', 'utf8');
+
+  for (const source of [pageSource, routeSource]) {
+    assert.match(source, /LAWITGO_EMBED_LAYOUT_FIX_CSS/);
+    assert.match(source, /body>div,body>div>div/);
+    assert.match(source, /width:100%!important/);
+    assert.match(source, /overflow-x:hidden!important/);
+    assert.match(source, /\$\{css\}\$\{LAWITGO_EMBED_LAYOUT_FIX_CSS\}/);
+  }
+  assert.match(cssSource, /@media \(max-width: 640px\)[\s\S]*?\.lawitgo-stage-track\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(cssSource, /html\[data-theme='dark'\] \.lawitgo-case-sidebar/);
+});
+
 test('lawitgo render 프록시도 동일한 서버측 담당자 매핑과 Secret을 사용한다', () => {
   const routeSource = readFileSync('src/worker/routes/lawitgo-progress.ts', 'utf8');
   const renderStart = routeSource.indexOf("lawitgoProgress.get('/:id/render'");

@@ -929,7 +929,8 @@ documents.post('/:id/approve', requireDocumentApprover, async (c) => {
   if (doc.status !== 'submitted') return c.json({ error: '제출된 문서만 승인할 수 있습니다.' }, 400);
   if (doc.cancelled) return c.json({ error: '취소된 문서는 승인할 수 없습니다.' }, 409);
 
-  // 물건분석보고서는 지정된 지사 관리자 본인만 대표 직인을 사용해 결재한다.
+  // 물건분석보고서는 원칙적으로 지정된 지사 관리자 본인이 대표 직인을 사용해 결재한다.
+  // 단, human master는 모든 지사 문서의 운영상 최종 대리 승인 권한을 가진다.
   if (isExpenseReceiptTemplate(doc.template_id)) {
     if (user.auth_type !== 'user') {
       return c.json({ error: '영수증 첨부 신청서는 사용자 로그인으로만 승인할 수 있습니다.' }, 403);
@@ -983,7 +984,8 @@ documents.post('/:id/approve', requireDocumentApprover, async (c) => {
     const assigned = await db.prepare(
       "SELECT approver_id FROM approval_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order ASC LIMIT 1"
     ).bind(id).first<{ approver_id: string }>();
-    if (!assigned || assigned.approver_id !== user.sub) {
+    const isHumanMaster = user.auth_type === 'user' && user.role === 'master';
+    if (!assigned || (assigned.approver_id !== user.sub && !isHumanMaster)) {
       return c.json({ error: '물건분석보고서는 해당 지사의 지정 관리자만 승인할 수 있습니다.' }, 403);
     }
   }

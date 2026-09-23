@@ -81,8 +81,10 @@ test('지정되지 않은 지사 또는 비활성·프리랜서 관리자는 결
   ]), '대전지사'), []);
 });
 
-test('지정 관리자만 승인하고 완료 시 그 관리자 명의로 대표 직인을 기록한다', () => {
+test('지정 관리자가 승인하되 human master는 전체 지사 문서를 대리 승인할 수 있다', () => {
   const source = readFileSync('src/worker/routes/documents.ts', 'utf8');
-  assert.match(source, /PROPERTY_REPORT_TEMPLATE_ID[\s\S]*?assigned\.approver_id !== user\.sub/);
+  assert.match(source, /const isHumanMaster = user\.auth_type === 'user' && user\.role === 'master'/);
+  assert.match(source, /assigned\.approver_id !== user\.sub && !isHumanMaster/);
+  assert.match(source, /물건분석보고서는 해당 지사의 지정 관리자만 승인할 수 있습니다/);
   assert.match(source, /property-report-stamp-[\s\S]*?'\/LNCstemp\.png'[\s\S]*?branch-manager-representative-stamp/);
 });

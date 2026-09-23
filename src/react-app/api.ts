@@ -288,6 +288,7 @@ export interface AuctionStoryAnomaly {
   inspection_date: string;
   briefing_date: string;
   bid_date: string;
+  bid_result: 'won' | 'failed';
   missing_stages: AuctionStoryStage[];
 }
 
@@ -435,17 +436,20 @@ export const api = {
       { method: 'DELETE', body: JSON.stringify(data) },
     ),
     todayBids: () => request<{ date: string; bids: TodayBidDashboardEntry[] }>('/personal-calendar/today-bids'),
-    storyAnomalies: (params: { month?: string; branch?: string } = {}) => {
+    storyAnomalies: (params: { month?: string; date?: string; branch?: string } = {}) => {
       const query = new URLSearchParams();
       if (params.month) query.set('month', params.month);
+      if (params.date) query.set('date', params.date);
       if (params.branch) query.set('branch', params.branch);
       return request<{
         month: string;
+        date: string;
         from: string;
         to: string;
         selected_branch: string;
         available_branches: string[];
-        counts: { total: number; missing_inspection: number; missing_briefing: number };
+        counts: { total: number; missing_inspection: number; missing_briefing: number; won: number; failed: number };
+        daily_counts: Record<string, { total: number; missing_inspection: number; missing_briefing: number; won: number; failed: number }>;
         anomalies: AuctionStoryAnomaly[];
       }>(`/personal-calendar/story-anomalies${query.toString() ? `?${query}` : ''}`);
     },
@@ -1077,6 +1081,10 @@ export const api = {
       request('/sales/' + id + '/unconfirm', { method: 'POST' }),
     refundRequest: (id: string) =>
       request('/sales/' + id + '/refund-request', { method: 'POST' }),
+    refundRequestCancel: (id: string) =>
+      request<{ success: boolean; status: 'confirmed' | 'card_pending' }>('/sales/' + id + '/refund-request-cancel', { method: 'POST' }),
+    refundRevert: (id: string) =>
+      request<{ success: boolean; status: 'confirmed' | 'card_pending' }>('/sales/' + id + '/refund-revert', { method: 'POST' }),
     refundApprove: (id: string) =>
       request('/sales/' + id + '/refund-approve', { method: 'POST' }),
     partialRefund: (id: string, refund_amount: number) =>

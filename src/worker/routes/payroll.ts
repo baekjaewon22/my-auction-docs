@@ -7,6 +7,7 @@ import { normalizeBranchName } from '../lib/branchAliases';
 import { ensurePayTypeHistoryTable, getPayTypeHistoryRows, getPayTypeSnapshotForMonth, payTypeAtMonthSql, resolvePayTypeFromHistory } from '../lib/pay-type-history';
 import { calculateRefundRecoveryAmount, payrollPeriodLabelFromMonth } from '../../shared/refund-recovery';
 import { nextPayrollMonth } from '../../shared/payroll-carryover';
+import { calculateUnpaidLeavePayrollSettlement } from '../../shared/unpaid-leave-settlement';
 import { confirmedSalesSql, payrollRecognizedOrRefundedSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 import { buildBranchSummaryQueryScope } from '../../shared/payroll-branch-summary';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
@@ -702,18 +703,19 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
   const bonusStandardSales = isPayoutMonth ? payrollMoney(standardSales * (salaryBonusMonths.length / 2), month) : standardSales;
   const positionAllowance = accounting?.position_allowance || 0;
 
-  // 무급휴가 공제 계산: 해당 월 내 승인된 무급휴가 조회
-  // 기존 데이터 호환을 위해 과거 [기타] 특별휴가도 무급 공제 대상으로 유지한다.
-  const unpaidLeaveResult = await db.prepare(`
-    SELECT COALESCE(SUM(COALESCE(hours, days * 8)), 0) as total_hours FROM leave_requests
-    WHERE user_id = ? AND status = 'approved'
-      AND leave_type = '특별휴가'
-      AND (instr(reason, '[무급]') > 0 OR instr(reason, '[기타]') > 0)
-      AND start_date >= ? AND start_date <= ?
-  `).bind(userId, monthStart, monthEnd).first<any>();
-  const unpaidLeaveHours = unpaidLeaveResult?.total_hours || 0;
-  const unpaidLeaveDays = unpaidLeaveHours / 8;
-  const unpaidLeaveDeduction = salary > 0 ? truncMoney((salary / 209) * unpaidLeaveHours) : 0;
+  // 무급휴가 공제 계산:
+  // - 일반 단기 무급휴가는 해당 월과 겹치는 영업일만 시간제로 공제한다.
+  // - 육아휴직처럼 장기 무급휴직은 급여 기준 30일 중 실제 근무한 일수만 일할 지급한다.
+  const unpaidLeaveSettlement = await calculateUnpaidLeavePayrollSettlement(
+    db,
+    userId,
+    month,
+    salary,
+    positionAllowance,
+  );
+  const unpaidLeaveHours = unpaidLeaveSettlement.unpaid_leave_hours;
+  const unpaidLeaveDays = unpaidLeaveSettlement.unpaid_leave_days;
+  const unpaidLeaveDeduction = unpaidLeaveSettlement.unpaid_leave_deduction;
 
   // 본사관리 인원은 실적 기반 성과금 없음
   const isHQ = normalizeBranchName(user.branch) === '본사관리' || ['ceo', 'cc_ref', 'accountant', 'accountant_asst'].includes(user.role);
@@ -931,8 +933,20 @@ payroll.get('/:userId', requirePayrollAccess, async (c) => {
       salary,
       position_allowance: positionAllowance,
       base_pay: salary + positionAllowance,
+      unpaid_leave_hours: unpaidLeaveHours,
       unpaid_leave_days: unpaidLeaveDays,
       unpaid_leave_deduction: unpaidLeaveDeduction,
+      unpaid_leave_settlement: unpaidLeaveSettlement,
+      unpaid_leave_absence_settlement: unpaidLeaveSettlement.leave_of_absence ? {
+        paid_days: unpaidLeaveSettlement.absence_paid_days,
+        unpaid_days: unpaidLeaveSettlement.absence_unpaid_days,
+        payroll_base_days: unpaidLeaveSettlement.payroll_base_days,
+        prorated_base_pay: unpaidLeaveSettlement.absence_prorated_base_pay,
+        base_deduction: unpaidLeaveSettlement.absence_base_deduction,
+        periods: unpaidLeaveSettlement.periods.filter((period) => period.mode === 'leave_of_absence'),
+      } : null,
+      hourly_unpaid_leave_hours: unpaidLeaveSettlement.hourly_unpaid_leave_hours,
+      hourly_unpaid_leave_deduction: unpaidLeaveSettlement.hourly_unpaid_leave_deduction,
       company_profit: totalSales - totalRefund - salary - positionAllowance - bonus + unpaidLeaveDeduction,
     },
   };

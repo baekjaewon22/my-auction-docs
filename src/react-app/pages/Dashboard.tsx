@@ -240,7 +240,7 @@ function FreelancerDashboard() {
       if (newsRes) {
         const latestNews = (newsRes.notes || [])
           .slice()
-          .sort((a: any, b: any) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+          .sort((a: any, b: any) => String(b.article_date || b.updated_at || b.created_at || '').localeCompare(String(a.article_date || a.updated_at || a.created_at || '')));
         setTodayNews(latestNews);
       }
       if (legalFactsRes) setLegalFacts(legalFactsRes.notes || []);
@@ -355,7 +355,7 @@ function FreelancerDashboard() {
                   <Link key={note.id} to={`/admin-notes?section=article_news&note=${note.id}`} className="dashboard-today-news-item">
                     <div className="dashboard-today-news-title">{note.title}</div>
                     {preview && <div className="dashboard-today-news-preview">{preview.length > 72 ? preview.slice(0, 72) + '...' : preview}</div>}
-                    <div className="dashboard-today-news-date">{dashboardNewsDate(note.updated_at || note.created_at)}</div>
+                    <div className="dashboard-today-news-date">{dashboardNewsDate(note.article_date || note.updated_at || note.created_at)}</div>
                   </Link>
                 );
               })}
@@ -850,7 +850,7 @@ export default function Dashboard() {
         if (newsRes) {
           const latestNews = (newsRes.notes || [])
             .slice()
-            .sort((a: any, b: any) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))
+            .sort((a: any, b: any) => String(b.article_date || b.updated_at || b.created_at || '').localeCompare(String(a.article_date || a.updated_at || a.created_at || '')))
             .slice(0, 4);
           setTodayNews(latestNews);
         }
@@ -920,7 +920,7 @@ export default function Dashboard() {
               <Link key={note.id} to={`/admin-notes?section=article_news&note=${note.id}`} className="dashboard-today-news-item">
                 <div className="dashboard-today-news-title">{note.title}</div>
                 {preview && <div className="dashboard-today-news-preview">{preview.length > 72 ? preview.slice(0, 72) + '...' : preview}</div>}
-                <div className="dashboard-today-news-date">{newsDate(note.updated_at || note.created_at)}</div>
+                <div className="dashboard-today-news-date">{newsDate(note.article_date || note.updated_at || note.created_at)}</div>
               </Link>
             );
           })}

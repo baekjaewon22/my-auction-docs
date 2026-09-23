@@ -9,6 +9,7 @@ import Select from '../components/Select';
 import { isRestrictedAccountingBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import { normalizeSalesRecognition } from '../../shared/sales-recognition';
+import { canCancelSalesRefundRequest, canRevertCompletedSalesRefund } from '../../shared/sales-refund-request-cancel';
 import {
   BookOpenCheck, ChevronLeft, ChevronRight, CalendarDays, TrendingDown, TrendingUp, AlertTriangle,
   ArrowDownCircle, Plus, X, Pencil, RotateCcw, Users as UsersIcon
@@ -35,6 +36,8 @@ const AUDIT_ACTION_TONE: Record<string, ChipTone> = {
   delete: 'danger',
   status_change: 'success',
   refund_approve: 'warn',
+  refund_request_cancel: 'warn',
+  refund_revert: 'warn',
   deposit_claim_approve: 'success',
   deposit_delete: 'danger',
   payment_method_change: 'info',
@@ -172,6 +175,8 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
   // canApprove: 최종승인만 (총무담당만, 보조 불가)
   const canModify = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(currentUser?.role || '');
   const canApprove = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
+  const canCancelRefundRequest = canCancelSalesRefundRequest(currentUser?.role);
+  const canRevertCompletedRefund = canRevertCompletedSalesRefund(currentUser?.role);
   const canDeleteCard = ['master', 'ceo', 'cc_ref', 'admin', 'accountant'].includes(currentUser?.role || '');
   const canViewAuditLog = currentUser?.role === 'master' || currentUser?.role === 'accountant';
 
@@ -482,6 +487,18 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
   const handleRefundApprove = async (id: string) => {
     if (!confirm('환불을 승인하시겠습니까?')) return;
     try { await api.sales.refundApprove(id); loadSales(); }
+    catch (err: any) { alert(err.message); }
+  };
+
+  const handleRefundRequestCancel = async (id: string) => {
+    if (!confirm('환불신청을 취소하고 매출 상태로 되돌리시겠습니까?')) return;
+    try { await api.sales.refundRequestCancel(id); loadSales(); }
+    catch (err: any) { alert(err.message); }
+  };
+
+  const handleRefundRevert = async (id: string) => {
+    if (!confirm('환불완료를 되돌리고 매출 상태로 복원하시겠습니까?\n환불금액과 환불 승인일/승인자는 초기화됩니다.\n이미 급여에서 환불 회수 처리된 건은 되돌릴 수 없습니다.')) return;
+    try { await api.sales.refundRevert(id); loadSales(); }
     catch (err: any) { alert(err.message); }
   };
 
@@ -1043,6 +1060,12 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                           {r.status === 'refund_requested' && canApprove && (
                             <button className="btn btn-sm btn-danger" onClick={() => handleRefundApprove(r.id)}><RotateCcw size={13} /> 환불승인</button>
+                          )}
+                          {r.status === 'refund_requested' && canCancelRefundRequest && (
+                            <button className="btn btn-sm" onClick={() => handleRefundRequestCancel(r.id)} style={{ color: '#e65100', border: '1px solid #e65100' }}><RotateCcw size={13} /> 환불신청 취소</button>
+                          )}
+                          {r.status === 'refunded' && canRevertCompletedRefund && (
+                            <button className="btn btn-sm" onClick={() => handleRefundRevert(r.id)} style={{ color: '#e65100', border: '1px solid #e65100' }}><RotateCcw size={13} /> 환불완료 되돌리기</button>
                           )}
                           {canEdit && !isConfirming && (
                             <button className="btn btn-sm" onClick={() => { setEditingMemo(r.id); setMemoText(r.memo); }}><Pencil size={12} /></button>
@@ -1769,6 +1792,8 @@ export default function Accounting({ initialTab = 'sales' }: { initialTab?: Acco
           delete: '삭제',
           status_change: '상태변경',
           refund_approve: '환불승인',
+          refund_request_cancel: '환불신청 취소',
+          refund_revert: '환불완료 되돌리기',
           deposit_claim_approve: '입금신청승인',
           deposit_delete: '입금등록삭제',
           payment_method_change: '결제방법변경',

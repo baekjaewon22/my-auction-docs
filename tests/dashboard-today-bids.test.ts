@@ -56,3 +56,10 @@ test('today bid list changes from seven desktop columns to responsive cards', ()
   assert.match(css, /@media \(max-width: 600px\)[\s\S]*?\.dashboard-today-bids-list[\s\S]*?minmax\(0, 1fr\)/);
   assert.match(css, /content: attr\(data-label\)/);
 });
+
+test('dashboard today news ranks and displays by article_date before upload timestamp', () => {
+  assert.match(dashboard, /b\.article_date \|\| b\.updated_at \|\| b\.created_at/);
+  assert.match(dashboard, /a\.article_date \|\| a\.updated_at \|\| a\.created_at/);
+  assert.match(dashboard, /dashboardNewsDate\(note\.article_date \|\| note\.updated_at \|\| note\.created_at\)/);
+  assert.match(dashboard, /newsDate\(note\.article_date \|\| note\.updated_at \|\| note\.created_at\)/);
+});

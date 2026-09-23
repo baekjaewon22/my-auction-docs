@@ -9,6 +9,7 @@ import {
   decodeArticleUploadHeader,
   ensureArticlePdfTable,
   hasObviousArticleTextEncodingDamage,
+  isExpiredArticleDate,
   normalizeArticleDate,
   safePdfFileName,
   sha256Hex,
@@ -337,6 +338,10 @@ function addDays(date: string, days: number): string {
   const d = new Date(`${date}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+function normalizeArticleIdentityPart(value: unknown): string {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 }
 
 function pdfContentDisposition(fileName: string): string {
@@ -744,6 +749,47 @@ adminNotes.get('/', async (c) => {
     return c.json(paged(rows.results || []));
   }
   // visibility 필터링 — master만 전체 열람, 그 외는 전부 visibility 조건 적용
+  if (category === 'article_news') {
+    const articleSelect = `
+      SELECT n.*, u.position_title as author_position,
+        ap.article_date as article_date,
+        ap.source_name as article_source_name,
+        ap.file_name as article_file_name,
+        ap.expires_at as article_expires_at,
+        (SELECT COUNT(*) FROM admin_note_comments WHERE note_id = n.id) as comment_count,
+        (SELECT COUNT(*) FROM article_pdf_uploads ap2 WHERE ap2.note_id = n.id AND ap2.deleted_at IS NULL) as attachment_count
+      FROM admin_notes n
+      LEFT JOIN users u ON n.author_id = u.id
+      LEFT JOIN article_pdf_uploads ap ON ap.note_id = n.id AND ap.deleted_at IS NULL
+      WHERE n.category = 'article_news'
+        AND (? = '' OR n.title LIKE ? OR n.content LIKE ? OR n.author_name LIKE ? OR COALESCE(ap.source_name, '') LIKE ? OR COALESCE(ap.file_name, '') LIKE ? OR COALESCE(ap.article_date, '') LIKE ?)
+    `;
+    const articleOrder = `
+      ORDER BY COALESCE(ap.article_date, substr(n.created_at, 1, 10)) DESC, n.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+    if (role === 'master') {
+      const rows = await db.prepare(`
+        ${articleSelect}
+        ${articleOrder}
+      `).bind(search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, pageSize + 1, offset).all();
+      return c.json(paged(rows.results || []));
+    }
+    const rows = await db.prepare(`
+      ${articleSelect}
+        AND (
+          n.visibility = 'all'
+          OR (n.visibility = 'branch' AND n.author_branch = ?)
+          OR (n.visibility = 'department' AND n.author_branch = ? AND n.author_department = ?)
+          OR (n.visibility LIKE 'team:%' AND n.visibility = ?)
+          OR (n.visibility LIKE 'user:%' AND n.visibility = ?)
+          OR n.author_id = ?
+        )
+      ${articleOrder}
+    `).bind(search, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, viewerInfo.branch, viewerInfo.branch, viewerInfo.department, 'team:' + viewerInfo.department, 'user:' + viewer.sub, viewer.sub, pageSize + 1, offset).all();
+    return c.json(paged(rows.results || []));
+  }
+
   let notes;
   if (role === 'master') {
     // master: 전체 보기
@@ -927,8 +973,12 @@ adminNotes.post('/articles/upload-pdf', async (c) => {
   const magic = new TextDecoder().decode(buffer.slice(0, 5));
   if (magic !== '%PDF-') return c.json({ error: 'PDF 파일만 업로드할 수 있습니다.' }, 400);
 
-  const articleDate = normalizeArticleDate(articleDateRaw, kstDateString());
+  const kstToday = kstDateString();
+  const articleDate = normalizeArticleDate(articleDateRaw, kstToday);
   if (!articleDate) return c.json({ error: 'article_date는 YYYY-MM-DD 형식이어야 합니다.' }, 400);
+  if (isExpiredArticleDate(articleDate, kstToday)) {
+    return c.json({ error: '31일이 지난 오늘의 뉴스 PDF는 업로드할 수 없습니다.', article_date: articleDate }, 400);
+  }
   const expiresAt = addDays(articleDate, 31);
 
   const author = await resolveArticleApiAuthor(db, user);
@@ -939,6 +989,33 @@ adminNotes.post('/articles/upload-pdf', async (c) => {
     'SELECT id, note_id, file_name, created_at FROM article_pdf_uploads WHERE sha256 = ? AND deleted_at IS NULL LIMIT 1'
   ).bind(sha256).first<{ id: string; note_id: string; file_name: string; created_at: string }>();
   if (duplicate) return c.json({ error: '이미 업로드된 PDF입니다.', duplicate }, 409);
+
+  const normalizedSourceName = normalizeArticleIdentityPart(sourceName);
+  const normalizedTitle = normalizeArticleIdentityPart(title);
+  const normalizedFileName = normalizeArticleIdentityPart(fileName);
+  const identityDuplicate = await db.prepare(`
+    SELECT ap.id, ap.note_id, ap.file_name, ap.created_at, n.title
+    FROM article_pdf_uploads ap
+    JOIN admin_notes n ON n.id = ap.note_id
+    WHERE ap.deleted_at IS NULL
+      AND ap.article_date = ?
+      AND lower(trim(COALESCE(ap.source_name, ''))) = ?
+      AND (
+        (? != '' AND lower(trim(COALESCE(n.title, ''))) = ?)
+        OR (? != '' AND lower(trim(COALESCE(ap.file_name, ''))) = ?)
+      )
+    LIMIT 1
+  `).bind(
+    articleDate,
+    normalizedSourceName,
+    normalizedTitle,
+    normalizedTitle,
+    normalizedFileName,
+    normalizedFileName,
+  ).first<{ id: string; note_id: string; file_name: string; created_at: string; title: string }>();
+  if (identityDuplicate) {
+    return c.json({ error: '같은 날짜·출처·제목/파일명으로 이미 등록된 오늘의 뉴스입니다.', duplicate: identityDuplicate }, 409);
+  }
 
   const objectKey = articleObjectKey(articleDate, articleId, fileName);
   const finalTitle = title || `${articleDate} 기사 PDF${sourceName ? ` - ${sourceName}` : ''}`;

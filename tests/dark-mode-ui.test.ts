@@ -65,6 +65,10 @@ test('dark theme keeps dashboard notice surfaces and text readable', () => {
   assert.match(css, /:root\[data-theme='dark'\] \.expense-receipt-archive-item \.status-badge[\s\S]*?color: #f8fafc !important/);
   assert.match(css, /:root\[data-theme='dark'\] \.expense-receipt-archive-actions \.btn,[\s\S]*?:root\[data-theme='dark'\] \.expense-receipt-pagination \.btn[\s\S]*?color: #f8fafc !important/);
   assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.expense-receipt-page-header h2[\s\S]*?\.expense-receipt-archive-header h2[\s\S]*?\)[\s\S]*?color: #f8fafc !important/);
+  assert.match(css, /:root\[data-theme='dark'\] \.auction-bid-result-dashboard-alert[\s\S]*?background: #94a3b8 !important/);
+  assert.match(css, /:root\[data-theme='dark'\] \.auction-bid-result-dashboard-alert \.missing-alert-item[\s\S]*?background: #a8b5c6 !important/);
+  assert.match(css, /:root\[data-theme='dark'\] \.auction-bid-result-dashboard-alert \.missing-alert-main[\s\S]*?color: #06101f !important/);
+  assert.match(css, /:root\[data-theme='dark'\] \.auction-bid-result-dashboard-alert \.missing-alert-doc[\s\S]*?color: #991b1b !important/);
 });
 
 test('announcement popup window uses larger readable text', () => {

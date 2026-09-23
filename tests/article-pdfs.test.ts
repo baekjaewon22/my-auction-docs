@@ -10,6 +10,7 @@ import {
   ensureArticlePdfTable,
   hasObviousArticleTextEncodingDamage,
   isCanonicalArticleObjectExpired,
+  isExpiredArticleDate,
   normalizeArticleDate,
   safePdfFileName,
 } from '../src/worker/lib/article-pdfs.ts';
@@ -235,6 +236,25 @@ test('only canonical dated article object keys are eligible for orphan expiry', 
   assert.equal(articleDateFromCanonicalObjectKey(`articles/2000/02/2000-02-30_${id}_a.pdf`), null);
   assert.equal(articleDateFromCanonicalObjectKey('articles/2000/01/2000-01-01_not-a-uuid_a.pdf'), null);
   assert.equal(articleDateFromCanonicalObjectKey(`${valid}/extra.pdf`), null);
+  assert.equal(isExpiredArticleDate('2000-01-01', '2000-02-01'), true);
+  assert.equal(isExpiredArticleDate('2000-01-01', '2000-01-31'), false);
+});
+
+test('article upload rejects expired dates and duplicate article identity before R2 writes', () => {
+  const source = readFileSync('src/worker/routes/admin-notes.ts', 'utf8');
+  const uploadStart = source.indexOf("adminNotes.post('/articles/upload-pdf'");
+  const expiryCheck = source.indexOf('isExpiredArticleDate(articleDate, kstToday)', uploadStart);
+  const shaDuplicate = source.indexOf('WHERE sha256 = ?', uploadStart);
+  const identityDuplicate = source.indexOf('const identityDuplicate = await db.prepare', uploadStart);
+  const r2Write = source.indexOf('ARTICLE_BUCKET.put(objectKey', uploadStart);
+  assert.ok(uploadStart >= 0);
+  assert.ok(expiryCheck > uploadStart && expiryCheck < r2Write);
+  assert.ok(shaDuplicate > uploadStart && shaDuplicate < identityDuplicate);
+  assert.ok(identityDuplicate < r2Write);
+  assert.match(source.slice(identityDuplicate, r2Write), /ap\.article_date = \?/);
+  assert.match(source.slice(identityDuplicate, r2Write), /lower\(trim\(COALESCE\(ap\.source_name, ''\)\)\) = \?/);
+  assert.match(source.slice(identityDuplicate, r2Write), /lower\(trim\(COALESCE\(n\.title, ''\)\)\) = \?/);
+  assert.match(source.slice(identityDuplicate, r2Write), /lower\(trim\(COALESCE\(ap\.file_name, ''\)\)\) = \?/);
 });
 
 test('multipart and raw article upload metadata converge on damage rejection before any R2 or DB write', () => {

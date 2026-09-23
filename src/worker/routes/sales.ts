@@ -10,6 +10,12 @@ import { resolveRefundRecovery } from '../lib/refund-recovery';
 import { accountingEntryInitialStatus, effectiveSalesStatus, normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 import { canUseRequestedSalesOwner } from '../../shared/sales-assignment';
+import {
+  canCancelSalesRefundRequest,
+  canRevertCompletedSalesRefund,
+  restoredSalesStatusAfterRefundRequestCancel,
+  restoredSalesStatusAfterRefundRevert,
+} from '../../shared/sales-refund-request-cancel';
 import { isValidCustomerPhone, normalizeCustomerName, normalizeCustomerPhone } from '../../shared/sales-customer-identity';
 import { resolveSalesCustomer, searchSalesCustomers } from '../lib/sales-customer-master';
 import { resolveSalesAttributionBranch } from '../lib/sales-attribution';
@@ -80,7 +86,7 @@ function hasAlimtalkBranch(settings: string | null | undefined, branch: string |
 
 type LogUser = { sub: string; name?: string; role: string };
 type LogInput = {
-  action: 'update' | 'delete' | 'status_change' | 'refund_approve' | 'refund_recovery_resolve' | 'deposit_claim_approve' | 'deposit_delete' | 'payment_method_change' | 'memo_add' | 'memo_update' | 'memo_delete';
+  action: 'update' | 'delete' | 'status_change' | 'refund_approve' | 'refund_request_cancel' | 'refund_revert' | 'refund_recovery_resolve' | 'deposit_claim_approve' | 'deposit_delete' | 'payment_method_change' | 'memo_add' | 'memo_update' | 'memo_delete';
   target_type?: string;
   target_id: string;
   target_label: string;
@@ -1072,6 +1078,102 @@ sales.post('/:id/refund-request', async (c) => {
   `).bind(id).run();
 
   return c.json({ success: true });
+});
+
+// POST /api/sales/:id/refund-request-cancel — 환불 신청 취소 (총무·마스터·대표)
+sales.post('/:id/refund-request-cancel', async (c) => {
+  const id = c.req.param('id');
+  const user = c.get('user');
+  const db = c.env.DB;
+
+  if (!canCancelSalesRefundRequest(user.role)) {
+    return c.json({ error: '환불신청 취소는 총무, 마스터, 대표만 할 수 있습니다.' }, 403);
+  }
+
+  const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
+  if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
+  if (record.status !== 'refund_requested') return c.json({ error: '환불 신청 상태인 건만 취소할 수 있습니다.' }, 400);
+
+  const restoredStatus = restoredSalesStatusAfterRefundRequestCancel(record);
+  await db.prepare(`
+    UPDATE sales_records
+    SET status = ?, refund_requested_at = NULL, updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+  `).bind(restoredStatus, id).run();
+
+  await logActivity(db, user as LogUser, {
+    action: 'refund_request_cancel',
+    target_id: id,
+    target_label: recordLabel(record),
+    diff_summary: `환불신청 취소: ${record.status} → ${restoredStatus}`,
+    before: { status: record.status, refund_requested_at: record.refund_requested_at },
+    after: { status: restoredStatus, refund_requested_at: null },
+  }, getSourcePage(c));
+
+  return c.json({ success: true, status: restoredStatus });
+});
+
+// POST /api/sales/:id/refund-revert — 환불완료 되돌리기 (총무담당·마스터·대표)
+sales.post('/:id/refund-revert', async (c) => {
+  const id = c.req.param('id');
+  const user = c.get('user');
+  const db = c.env.DB;
+
+  if (!canRevertCompletedSalesRefund(user.role)) {
+    return c.json({ error: '환불완료 되돌리기는 총무담당, 마스터, 대표만 처리할 수 있습니다.' }, 403);
+  }
+
+  const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
+  if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
+  if (record.status !== 'refunded') return c.json({ error: '환불완료 상태인 건만 되돌릴 수 있습니다.' }, 400);
+
+  const recovery = await db.prepare(`
+    SELECT payroll_month
+    FROM refund_recovery_resolutions
+    WHERE sales_record_id = ?
+    LIMIT 1
+  `).bind(id).first<{ payroll_month?: string | null }>();
+  if (recovery) {
+    return c.json({
+      error: '이미 급여정산에서 환불 회수 처리완료된 건은 되돌릴 수 없습니다. 먼저 급여 회수 처리 상태를 확인해 주세요.',
+      payroll_month: recovery.payroll_month || null,
+    }, 409);
+  }
+
+  const restoredStatus = restoredSalesStatusAfterRefundRevert(record);
+  await db.prepare(`
+    UPDATE sales_records
+    SET status = ?,
+        refund_amount = 0,
+        refund_requested_at = NULL,
+        refund_approved_at = NULL,
+        refund_approved_by = NULL,
+        updated_at = datetime('now', '+9 hours')
+    WHERE id = ?
+  `).bind(restoredStatus, id).run();
+
+  await logActivity(db, user as LogUser, {
+    action: 'refund_revert',
+    target_id: id,
+    target_label: recordLabel(record),
+    diff_summary: `환불완료 되돌리기: ${record.status} → ${restoredStatus}`,
+    before: {
+      status: record.status,
+      refund_amount: Number(record.refund_amount) || 0,
+      refund_requested_at: record.refund_requested_at || null,
+      refund_approved_at: record.refund_approved_at || null,
+      refund_approved_by: record.refund_approved_by || null,
+    },
+    after: {
+      status: restoredStatus,
+      refund_amount: 0,
+      refund_requested_at: null,
+      refund_approved_at: null,
+      refund_approved_by: null,
+    },
+  }, getSourcePage(c));
+
+  return c.json({ success: true, status: restoredStatus });
 });
 
 // POST /api/sales/:id/refund-approve — 환불 승인 (회계)

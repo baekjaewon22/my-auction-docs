@@ -33,10 +33,12 @@ function StageState({ label, date, missing }: { label: string; date: string; mis
 
 export default function AuctionStoryAnomalies() {
   const [month, setMonth] = useState(currentKstMonth);
+  const [selectedDate, setSelectedDate] = useState('');
   const [selectedBranch, setSelectedBranch] = useState('');
   const [availableBranches, setAvailableBranches] = useState<string[]>([]);
   const [anomalies, setAnomalies] = useState<AuctionStoryAnomaly[]>([]);
-  const [counts, setCounts] = useState({ total: 0, missing_inspection: 0, missing_briefing: 0 });
+  const [counts, setCounts] = useState({ total: 0, missing_inspection: 0, missing_briefing: 0, won: 0, failed: 0 });
+  const [dailyCounts, setDailyCounts] = useState<Record<string, { total: number; missing_inspection: number; missing_briefing: number; won: number; failed: number }>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -44,23 +46,49 @@ export default function AuctionStoryAnomalies() {
     setLoading(true);
     setError('');
     try {
-      const result = await api.personalCalendar.storyAnomalies({ month, branch: selectedBranch || undefined });
+      const result = await api.personalCalendar.storyAnomalies({ month, date: selectedDate || undefined, branch: selectedBranch || undefined });
       setAvailableBranches(result.available_branches || []);
       setSelectedBranch(result.selected_branch || '');
       setAnomalies(result.anomalies || []);
-      setCounts(result.counts || { total: 0, missing_inspection: 0, missing_briefing: 0 });
+      setCounts(result.counts || { total: 0, missing_inspection: 0, missing_briefing: 0, won: 0, failed: 0 });
+      setDailyCounts(result.daily_counts || {});
     } catch (err) {
       setError(err instanceof Error ? err.message : '관리자 페이지를 불러오지 못했습니다.');
     } finally {
       setLoading(false);
     }
-  }, [month, selectedBranch]);
+  }, [month, selectedDate, selectedBranch]);
 
   useEffect(() => { void load(); }, [load]);
 
   const branchOptions = useMemo(() => (
     availableBranches.length === 4 ? ['all', ...availableBranches] : availableBranches
   ), [availableBranches]);
+  const calendarDays = useMemo(() => {
+    const [year, monthNumber] = month.split('-').map(Number);
+    if (!year || !monthNumber) return [];
+    const firstWeekday = new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay();
+    const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+    const cells: Array<{
+      key: string;
+      date: string;
+      day: number;
+      inMonth: boolean;
+      counts: { total: number; missing_inspection: number; missing_briefing: number; won: number; failed: number };
+    }> = [];
+    for (let index = 0; index < firstWeekday; index += 1) {
+      cells.push({ key: `blank-start-${index}`, date: '', day: 0, inMonth: false, counts: { total: 0, missing_inspection: 0, missing_briefing: 0, won: 0, failed: 0 } });
+    }
+    for (let day = 1; day <= lastDay; day += 1) {
+      const date = `${month}-${String(day).padStart(2, '0')}`;
+      cells.push({ key: date, date, day, inMonth: true, counts: dailyCounts[date] || { total: 0, missing_inspection: 0, missing_briefing: 0, won: 0, failed: 0 } });
+    }
+    while (cells.length % 7 !== 0) {
+      cells.push({ key: `blank-end-${cells.length}`, date: '', day: 0, inMonth: false, counts: { total: 0, missing_inspection: 0, missing_briefing: 0, won: 0, failed: 0 } });
+    }
+    return cells;
+  }, [month, dailyCounts]);
+  const hasDailyCounts = useMemo(() => Object.values(dailyCounts).some(day => day.total > 0), [dailyCounts]);
 
   return (
     <div className="page auction-story-anomaly-page">
@@ -71,7 +99,8 @@ export default function AuctionStoryAnomalies() {
           <p>입찰 일정은 있으나 임장 또는 브리핑자료 제출이 누락된 사건만 표시합니다.</p>
         </div>
         <div className="auction-story-controls">
-          <label><CalendarDays size={16} /><input type="month" value={month} onChange={event => setMonth(event.target.value)} /></label>
+          <label><CalendarDays size={16} /><input type="month" value={month} onChange={event => { setMonth(event.target.value); setSelectedDate(''); }} /></label>
+          {selectedDate && <button type="button" onClick={() => setSelectedDate('')}>월 전체 보기</button>}
           <button type="button" onClick={() => void load()} disabled={loading}><RefreshCw size={15} /> 새로고침</button>
         </div>
       </div>
@@ -99,6 +128,50 @@ export default function AuctionStoryAnomalies() {
         <div><span>브리핑자료 누락</span><strong>{counts.missing_briefing}</strong></div>
       </div>
 
+      <div className="auction-story-summary auction-story-result-summary">
+        <div><span>낙찰 결과</span><strong>{counts.won}</strong></div>
+        <div><span>실패 결과</span><strong>{counts.failed}</strong></div>
+      </div>
+
+      <div className="auction-story-day-panel" aria-label="일자별 이상행위">
+        <div className="auction-story-day-panel-head">
+          <strong>{selectedDate ? `${selectedDate} 상세` : `${month} 일자별 현황`}</strong>
+          <span>낙찰·실패 결과가 확정된 입찰만 수집</span>
+        </div>
+        {calendarDays.length === 0 ? (
+          <div className="auction-story-day-empty">선택한 범위에 일자별 이상행위가 없습니다.</div>
+        ) : (
+          <div className="auction-story-calendar-grid" role="grid" aria-label={`${month} 이상행위 달력`}>
+            {['일', '월', '화', '수', '목', '금', '토'].map(weekday => (
+              <div key={weekday} className="auction-story-calendar-weekday">{weekday}</div>
+            ))}
+            {calendarDays.map(cell => cell.inMonth ? (
+              <button
+                key={cell.key}
+                type="button"
+                className={`auction-story-calendar-day ${selectedDate === cell.date ? 'active' : ''} ${cell.counts.total > 0 ? 'has-anomaly' : ''}`}
+                onClick={() => setSelectedDate(cell.date)}
+                aria-pressed={selectedDate === cell.date}
+                aria-label={`${cell.date} 이상행위 ${cell.counts.total}건`}
+              >
+                <span className="auction-story-calendar-date">{cell.day}</span>
+                {cell.counts.total > 0 ? (
+                  <span className="auction-story-calendar-count">
+                    <strong>{cell.counts.total}건</strong>
+                    <small>낙찰 {cell.counts.won} · 실패 {cell.counts.failed}</small>
+                  </span>
+                ) : (
+                  <small className="auction-story-calendar-zero">-</small>
+                )}
+              </button>
+            ) : (
+              <div key={cell.key} className="auction-story-calendar-day outside" aria-hidden="true" />
+            ))}
+          </div>
+        )}
+        {!hasDailyCounts && <div className="auction-story-day-empty">이 달에는 낙찰·실패 결과 기준 이상행위가 없습니다.</div>}
+      </div>
+
       {error && <div className="auction-story-error">{error}</div>}
       {loading ? (
         <div className="page-loading">관리 대상을 확인하는 중입니다.</div>
@@ -114,7 +187,7 @@ export default function AuctionStoryAnomalies() {
                   <strong>{item.assignee_name}</strong>
                   <small>{item.position_title || '직책 미등록'}</small>
                 </div>
-                <time>{item.reference_date}</time>
+                <time>{item.reference_date} · {item.bid_result === 'won' ? '낙찰' : '실패'}</time>
               </header>
               <div className="auction-story-case">
                 <div><span>물건</span><strong>{item.property_category || '-'}</strong></div>

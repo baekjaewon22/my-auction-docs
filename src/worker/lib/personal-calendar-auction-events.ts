@@ -242,6 +242,17 @@ function propertyClassification(typeValue: unknown): string {
   return `[${auctionPropertyDetailLabel(typeValue)}]`;
 }
 
+const CALENDAR_CATEGORY_DETAIL_FALLBACKS = new Set(['숙박시설']);
+
+function calendarPropertyType(data: Record<string, unknown>): string {
+  const rawPropertyType = String(data.propertyType || '');
+  const propertyType = rawPropertyType.trim();
+  const propertyCategory = String(data.propertyCategory || '').trim();
+  if (propertyType && propertyType !== '기타') return rawPropertyType;
+  if (CALENDAR_CATEGORY_DETAIL_FALLBACKS.has(propertyCategory)) return propertyCategory;
+  return rawPropertyType;
+}
+
 function hashRevisionPart(value: string, seed: number): number {
   let hash = seed >>> 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -431,7 +442,7 @@ export function buildPersonalCalendarAuctionEvents(rows: CalendarAuctionSchedule
 
   return [...groups.values()].flat().map(({ row, data, sources }) => {
     const propertyCategory = String(data.propertyCategory || '');
-    const propertyType = String(data.propertyType || '');
+    const propertyType = calendarPropertyType(data);
     const sourceSnapshots = sources.map(({ row: source }) => ({
       id: source.id,
       user_id: source.user_id,
@@ -505,7 +516,7 @@ export function buildPersonalCalendarInspectionEvents(rows: CalendarAuctionSched
   return rows.map((row) => {
     const data = parseData(row.data);
     const propertyCategory = String(data.propertyCategory || '');
-    const propertyType = String(data.propertyType || '');
+    const propertyType = calendarPropertyType(data);
     return {
       id: `auction-inspection:${row.id}`,
       event_date: row.event_date,

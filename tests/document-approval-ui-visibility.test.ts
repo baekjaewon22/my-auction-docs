@@ -31,18 +31,20 @@ test('물건분석보고서 저장과 제출 UI는 서버의 작성자·마스�
   assert.match(propertyReport, /\{canSubmit && \([\s\S]*?onClick=\{handleSubmit\}/);
 });
 
-test('물건분석보고서는 역할 기반 대리 결재 UI를 끄고 실제 pending 결재자만 표시한다', () => {
+test('물건분석보고서는 지정 결재자와 master 대리 결재 UI를 표시한다', () => {
   assert.match(approvalBar, /allowProxyApproval = true/);
   assert.match(approvalBar, /const isSuperApprover = allowProxyApproval &&/);
-  assert.match(propertyReport, /allowProxyApproval=\{false\}/);
+  assert.match(propertyReport, /allowProxyApproval=\{user\?\.role === 'master'\}/);
 
   const rejectionPolicy = propertyReport.slice(
     propertyReport.indexOf('const myPendingStep'),
     propertyReport.indexOf('// A4 미리보기'),
   );
+  assert.match(rejectionPolicy, /const pendingApprovalStep = approvalSteps\.find\(s => s\.status === 'pending'\)/);
+  assert.match(rejectionPolicy, /const actionableStep = myPendingStep \|\| \(user\?\.role === 'master' \? pendingApprovalStep : undefined\)/);
   assert.match(
     rejectionPolicy,
-    /const canReject = status === 'submitted' && Boolean\(myPendingStep && prevAllApproved\)/,
+    /const canReject = status === 'submitted' && Boolean\(actionableStep && prevAllApproved\)/,
   );
-  assert.doesNotMatch(rejectionPolicy, /\['master', 'ceo'/);
+  assert.doesNotMatch(rejectionPolicy, /\['ceo', 'cc_ref'/);
 });

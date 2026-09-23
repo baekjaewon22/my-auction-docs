@@ -47,8 +47,18 @@ async function currentViewerScope(c: any): Promise<ViewerScope | null> {
   };
 }
 
+const LAWITGO_EMBED_LAYOUT_FIX_CSS = `
+html,body{width:100%!important;max-width:100%!important;overflow-x:hidden!important}
+body{padding:12px!important;background:#fff!important;color:#202124!important}
+body>div,body>div>div{width:100%!important;max-width:100%!important;min-width:0!important;margin-left:auto!important;margin-right:auto!important;box-sizing:border-box!important;overflow-x:hidden!important}
+body *{max-width:100%;box-sizing:border-box}
+table{width:100%!important;max-width:100%!important;table-layout:auto!important;border-collapse:collapse}
+img,video,canvas,svg{max-width:100%!important;height:auto!important}
+pre,code,p,span,div,td,th{overflow-wrap:anywhere;word-break:keep-all}
+`;
+
 function cachedUiDocument(css: string, html: string): string {
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: https://www.lawitgo.com; font-src data: https://www.lawitgo.com; base-uri 'none'; form-action 'none'"><style>html,body{margin:0;padding:0;background:#f7f8fa}${css}</style></head><body>${html}</body></html>`;
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: https://www.lawitgo.com; font-src data: https://www.lawitgo.com; base-uri 'none'; form-action 'none'"><style>html,body{margin:0;padding:0;background:#f7f8fa}${css}${LAWITGO_EMBED_LAYOUT_FIX_CSS}</style></head><body>${html}</body></html>`;
 }
 
 lawitgoProgress.get('/', async (c) => {

@@ -30,6 +30,7 @@ export interface AuctionStoryAnomaly {
   inspection_date: string;
   briefing_date: string;
   bid_date: string;
+  bid_result: 'won' | 'failed';
   missing_stages: AuctionStoryStage[];
 }
 
@@ -54,6 +55,7 @@ function stageOf(activityType: AuctionStoryStageRow['activity_type']): AuctionSt
 
 function fieldsOf(row: AuctionStoryStageRow) {
   const data = parseData(row.data);
+  const bidResult = data.bidWon ? 'won' : data.bidFailed ? 'failed' : '';
   return {
     data,
     stage: stageOf(row.activity_type),
@@ -67,6 +69,7 @@ function fieldsOf(row: AuctionStoryStageRow) {
     clientName: String(data.client || data.clientName || data.bidder || ''),
     propertyCategory: String(data.propertyCategory || ''),
     propertyType: String(data.propertyType || ''),
+    bidResult,
     inspectionBidDate: row.activity_type === '임장' ? String(data.bidDate || '') : '',
   };
 }
@@ -115,8 +118,9 @@ export function buildAuctionStoryAnomalies(
       const inspection = stages.get('inspection');
       const briefing = stages.get('briefing');
       const bid = stages.get('bid');
-      // 결과 중심 검사: 실제 입찰 일정이 없는 임장·브리핑 기록은 이상행위로 보지 않는다.
+      // 결과가 확정되지 않은 입찰은 이상행위 수집 대상에서 제외한다.
       if (!bid) continue;
+      if (bid.fields.bidResult !== 'won' && bid.fields.bidResult !== 'failed') continue;
       const referenceDate = bid.row.target_date;
       if (!referenceDate || referenceDate < from || referenceDate > to) continue;
 
@@ -148,6 +152,7 @@ export function buildAuctionStoryAnomalies(
         inspection_date: inspection?.row.target_date || '',
         briefing_date: briefing?.row.target_date || '',
         bid_date: bid.row.target_date,
+        bid_result: bid.fields.bidResult,
         missing_stages: missingStages,
       });
     }

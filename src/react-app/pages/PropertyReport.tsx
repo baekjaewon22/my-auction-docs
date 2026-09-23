@@ -300,12 +300,15 @@ export default function PropertyReport() {
   const [mobileScale, setMobileScale] = useState(1);
   const mySigned = signatures.some(s => s.user_id === user?.id);
 
-  // 물건분석보고서는 서버가 지정한 실제 pending 결재자만 결재·반려 UI를 사용한다.
+  // 물건분석보고서는 원칙적으로 서버가 지정한 실제 pending 결재자가 결재한다.
+  // 단, master는 모든 지사 문서의 현재 pending 단계를 대리 승인/반려할 수 있다.
   const myPendingStep = approvalSteps.find(s => s.approver_id === user?.id && s.status === 'pending');
-  const prevAllApproved = myPendingStep
-    ? approvalSteps.filter(s => s.step_order < myPendingStep.step_order).every(s => s.status === 'approved')
+  const pendingApprovalStep = approvalSteps.find(s => s.status === 'pending');
+  const actionableStep = myPendingStep || (user?.role === 'master' ? pendingApprovalStep : undefined);
+  const prevAllApproved = actionableStep
+    ? approvalSteps.filter(s => s.step_order < actionableStep.step_order).every(s => s.status === 'approved')
     : false;
-  const canReject = status === 'submitted' && Boolean(myPendingStep && prevAllApproved);
+  const canReject = status === 'submitted' && Boolean(actionableStep && prevAllApproved);
 
   // A4 미리보기를 실제 콘텐츠 영역(사이드바 제외)에 맞춰 자동 축소한다.
   useEffect(() => {
@@ -449,7 +452,7 @@ export default function PropertyReport() {
             docStatus={status}
             authorName={documentAuthorName || (isDocumentAuthor ? user?.name : undefined)}
             representativeStampStepIds={approvalSteps.length === 1 ? [approvalSteps[0].id] : []}
-            allowProxyApproval={false}
+            allowProxyApproval={user?.role === 'master'}
             onSign={handleSignRequest}
           />
         </div>

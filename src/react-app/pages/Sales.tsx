@@ -20,6 +20,7 @@ import { normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { canAssignSalesToAnotherUser } from '../../shared/sales-assignment';
 import { dashboardFocusKey, shouldPrepareDashboardFocus } from '../../shared/dashboard-focus';
 import { salesDirectorManagedBranch } from '../../shared/sales-record-scope';
+import { canCancelSalesRefundRequest, canRevertCompletedSalesRefund } from '../../shared/sales-refund-request-cancel';
 import {
   findContractByCustomerIdentity,
   isValidCustomerPhone,
@@ -546,6 +547,8 @@ export default function Sales() {
   const isMaster = role === 'master' || role === 'accountant' || role === 'accountant_asst'; // 총무/총무보조 = master 동급 (유형변경/확인취소)
   const canModifyAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 수정 권한
   const canApproveAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 입금확인/결제확인
+  const canCancelRefundRequest = canCancelSalesRefundRequest(role);
+  const canRevertCompletedRefund = canRevertCompletedSalesRefund(role);
   const canEditInvoiceInfo = role === 'master' || role === 'accountant' || role === 'accountant_asst'; // 증빙일자/증빙구분 입력
   const canDepositUpload = ['master', 'accountant', 'accountant_asst'].includes(role); // 입금등록/엑셀업로드 (총무 전용)
   const canDeleteAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 삭제/유형변경 (총무보조 로그 강제)
@@ -1792,6 +1795,8 @@ export default function Sales() {
           delete: '삭제',
           status_change: '상태변경',
           refund_approve: '환불승인',
+          refund_request_cancel: '환불신청 취소',
+          refund_revert: '환불완료 되돌리기',
           deposit_claim_approve: '입금신청승인',
           deposit_delete: '입금등록삭제',
           payment_method_change: '결제방법변경',
@@ -1801,7 +1806,7 @@ export default function Sales() {
         };
         const ACTION_COLOR: Record<string, string> = {
           update: '#1a73e8', delete: '#d93025', status_change: '#188038',
-          refund_approve: '#f9ab00', deposit_claim_approve: '#188038',
+          refund_approve: '#f9ab00', refund_request_cancel: '#e65100', refund_revert: '#e65100', deposit_claim_approve: '#188038',
           deposit_delete: '#d93025', payment_method_change: '#1a73e8',
           memo_add: '#9333ea', memo_update: '#9333ea', memo_delete: '#d93025',
         };
@@ -3073,7 +3078,27 @@ export default function Sales() {
                   <RotateCcw size={12} /> 환불승인
                 </button>
               )}
+              {detailRecord.status === 'refund_requested' && canCancelRefundRequest && (
+                <button className="btn btn-sm" style={{ fontSize: '0.78rem', marginBottom: 12, color: '#e65100', border: '1px solid #e65100' }}
+                  onClick={async () => {
+                    if (!confirm('환불신청을 취소하고 매출 상태로 되돌리시겠습니까?\n실제 환불 승인/회수 처리는 진행되지 않습니다.')) return;
+                    try { await api.sales.refundRequestCancel(detailRecord.id); setDetailRecord(null); load(); }
+                    catch (err: any) { alert(err.message); }
+                  }}>
+                  <RotateCcw size={12} /> 환불신청 취소
+                </button>
+              )}
               {/* 메모 */}
+              {detailRecord.status === 'refunded' && canRevertCompletedRefund && (
+                <button className="btn btn-sm" style={{ fontSize: '0.78rem', marginBottom: 12, color: '#e65100', border: '1px solid #e65100' }}
+                  onClick={async () => {
+                    if (!confirm('환불완료를 되돌리고 매출 상태로 복원하시겠습니까?\n환불금액과 환불 승인일/승인자는 초기화됩니다.\n이미 급여에서 환불 회수 처리된 건은 되돌릴 수 없습니다.')) return;
+                    try { await api.sales.refundRevert(detailRecord.id); setDetailRecord(null); load(); }
+                    catch (err: any) { alert(err.message); }
+                  }}>
+                  <RotateCcw size={12} /> 환불완료 되돌리기
+                </button>
+              )}
               <div style={{ borderTop: '1px solid #e8eaed', paddingTop: 12 }}>
                 <div style={{ fontSize: '0.78rem', color: '#9aa0a6', marginBottom: 6 }}>메모</div>
                 <textarea

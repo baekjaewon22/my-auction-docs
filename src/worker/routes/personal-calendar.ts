@@ -194,8 +194,17 @@ personalCalendar.get('/story-anomalies', async (c) => {
   const [year, monthNumber] = month.split('-').map(Number);
   if (monthNumber < 1 || monthNumber > 12) return c.json({ error: '유효하지 않은 조회 월입니다.' }, 400);
   const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
-  const from = `${month}-01`;
-  const to = `${month}-${String(lastDay).padStart(2, '0')}`;
+  const requestedDate = String(c.req.query('date') || '').trim();
+  if (requestedDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+    return c.json({ error: '조회 일자는 YYYY-MM-DD 형식이어야 합니다.' }, 400);
+  }
+  if (requestedDate && requestedDate.slice(0, 7) !== month) {
+    return c.json({ error: '조회 일자는 선택한 월 안에 있어야 합니다.' }, 400);
+  }
+  const monthFrom = `${month}-01`;
+  const monthTo = `${month}-${String(lastDay).padStart(2, '0')}`;
+  const from = requestedDate || monthFrom;
+  const to = requestedDate || monthTo;
 
   const requested = String(c.req.query('branch') || '').trim();
   const normalizedRequested = requested && requested !== 'all' ? normalizeBranchName(requested) : requested;
@@ -217,14 +226,29 @@ personalCalendar.get('/story-anomalies', async (c) => {
   const queryBranches = Array.from(new Set(canonicalBranches.flatMap(branch => branchAliases(branch))));
   const db = c.env.DB;
   await ensureAuctionScheduleTable(db);
-  const rows = await loadAuctionStoryStageRows(db, from, to, queryBranches);
-  const anomalies = buildAuctionStoryAnomalies(rows, from, to);
+  const rows = await loadAuctionStoryStageRows(db, monthFrom, monthTo, queryBranches);
+  const monthAnomalies = buildAuctionStoryAnomalies(rows, monthFrom, monthTo);
+  const anomalies = requestedDate
+    ? monthAnomalies.filter(item => item.reference_date === requestedDate)
+    : monthAnomalies;
+  const daily_counts = monthAnomalies.reduce((acc, item) => {
+    const current = acc[item.reference_date] || { total: 0, missing_inspection: 0, missing_briefing: 0, won: 0, failed: 0 };
+    current.total += 1;
+    if (item.missing_stages.includes('inspection')) current.missing_inspection += 1;
+    if (item.missing_stages.includes('briefing')) current.missing_briefing += 1;
+    if (item.bid_result === 'won') current.won += 1;
+    if (item.bid_result === 'failed') current.failed += 1;
+    acc[item.reference_date] = current;
+    return acc;
+  }, {} as Record<string, { total: number; missing_inspection: number; missing_briefing: number; won: number; failed: number }>);
   const counts = {
     total: anomalies.length,
     missing_inspection: anomalies.filter(item => item.missing_stages.includes('inspection')).length,
     missing_briefing: anomalies.filter(item => item.missing_stages.includes('briefing')).length,
+    won: anomalies.filter(item => item.bid_result === 'won').length,
+    failed: anomalies.filter(item => item.bid_result === 'failed').length,
   };
-  return c.json({ month, from, to, selected_branch: selectedBranch, available_branches: allowedBranches, counts, anomalies });
+  return c.json({ month, date: requestedDate, from, to, selected_branch: selectedBranch, available_branches: allowedBranches, counts, daily_counts, anomalies });
 });
 
 export default personalCalendar;
