@@ -11,6 +11,10 @@ import {
   type WithholdingSettlementItem,
 } from '../../shared/withholding-settlement';
 import { calculateFreelancerSettlement } from '../../shared/freelancer-settlement';
+import {
+  calculateVideoProductionWithholding,
+  isExternalVideoProductionAssignee,
+} from '../../shared/video-production';
 import { payrollContractAwardAmount } from '../lib/contractAwardUi';
 
 type PayrollListRow = {
@@ -145,6 +149,11 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
           // 잠긴(지급완료) 월만 안건 수당 유지 — 미잠금/신규는 0(제외).
           const caseAllowance = (isCommission || !userLocked) ? 0 : (savedCaseAllowance || liveCaseAllowance);
           const contractAward = payrollContractAwardAmount(payroll);
+          const videoProductionIncome = Number(payroll.video_production?.total_amount || 0);
+          const externalVideoProductionIncome = !isCommission && isExternalVideoProductionAssignee(payroll.user || user)
+            ? videoProductionIncome
+            : 0;
+          const externalVideoProductionWithholding = calculateVideoProductionWithholding(externalVideoProductionIncome);
           const manualExtraPay = parseMoney(saved.extraPay);
           const commExtraRaw = Array.isArray(saved.commExtras)
             ? saved.commExtras.reduce((sum: number, item: any) => sum + parseMoney(item?.amount), 0)
@@ -170,8 +179,8 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
           let rowPerformanceBonus = performanceBonus;
           let rowCaseAllowance = caseAllowance;
           let rowContractAward = contractAward;
-          let rowExtraPay = manualExtraPay + commExtraRaw + terminationLeavePayout;
-          let rowDeduction = deduction;
+          let rowExtraPay = manualExtraPay + commExtraRaw + terminationLeavePayout + externalVideoProductionIncome;
+          let rowDeduction = deduction + externalVideoProductionWithholding;
           let totalPay = payrollMoney(rowBasePay - rowDeduction + rowPerformanceBonus + rowCaseAllowance + rowContractAward + rowExtraPay + lawitgoNewSettlement, month);
 
           if (isCommission) {
@@ -220,6 +229,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
               // 신 안건수당은 기존 정산수익 구성에 그대로 두고, 새 합산 대상은 계약포상만이다.
               settlementIncome: commissionAmount + proxyIncome + positionAllowanceIncome + lawitgoNewSettlement,
               contractAward,
+              videoProductionIncome,
               taxableExtraIncome,
               taxExemptIncome,
               preTaxDeduction: preTaxDeductions,
@@ -229,7 +239,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             rowPerformanceBonus = 0;
             rowCaseAllowance = caseAllowance;
             rowContractAward = settlement.contractAward;
-            rowExtraPay = settlement.taxableExtraIncome + settlement.taxExemptIncome;
+            rowExtraPay = settlement.videoProductionIncome + settlement.taxableExtraIncome + settlement.taxExemptIncome;
             rowDeduction = settlement.preTaxDeduction + settlement.withholdingTax + settlement.postTaxDeduction;
             const lockedSavedNetPay = userLocked
               ? savedPayrollNetPay(saved.net_pay ?? saved.payroll_snapshot?.manual?.net_pay)
@@ -237,6 +247,7 @@ export default function EmployeePayrollListTab({ month, users }: { month: string
             const legacyLockedNetPay = userLocked && lockedSavedNetPay === null
               ? calculateFreelancerSettlement({
                   settlementIncome: commissionAmount + proxyIncome + positionAllowanceIncome + lawitgoNewSettlement,
+                  videoProductionIncome,
                   taxableExtraIncome,
                   taxExemptIncome,
                   preTaxDeduction: preTaxDeductions,

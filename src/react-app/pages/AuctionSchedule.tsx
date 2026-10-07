@@ -8,7 +8,7 @@ import { useAuthStore } from '../store';
 import JournalForm from '../journal/JournalForm';
 import { ACTIVITY_COLORS, type ActivityType } from '../journal/types';
 import { ROLE_LABELS, type Role } from '../types';
-import { auctionScheduleBidResult, getKoreanWeekLabel, type AuctionScheduleActivityType } from '../../shared/auction-schedule';
+import { auctionScheduleBidResult, getKoreanWeekLabel, isPublicAuctionPriceEditOpen, type AuctionScheduleActivityType } from '../../shared/auction-schedule';
 import AuctionBidResultEditor from '../components/AuctionBidResultEditor';
 import { useSearchParams } from 'react-router-dom';
 import { AUCTION_SCHEDULE_BRANCH_OPTIONS, canSelectAuctionScheduleBranch, defaultAuctionScheduleBranch } from '../../shared/auction-schedule-branch';
@@ -253,6 +253,12 @@ export default function AuctionSchedule() {
 
   const selectedData = selected ? parseData(selected) : {};
   const selectedBidResult = auctionScheduleBidResult(selectedData);
+  const isPublicSelected = selectedData.auctionKind === 'public';
+  const publicPriceEditOpen = Boolean(
+    selected
+    && selected.activity_type === '입찰'
+    && isPublicAuctionPriceEditOpen(selectedData, selected.target_date),
+  );
   const canWriteSelected = Boolean(selected && !selected.read_only && canManageAuctionBidResult(
     { id: user?.id, role: user?.role },
     selected.user_id,
@@ -448,7 +454,8 @@ export default function AuctionSchedule() {
               {DETAIL_LABELS.map(([key, label]) => {
                 const value = selectedData[key];
                 if (value === undefined || value === null || value === '' || typeof value === 'boolean') return null;
-                return <div className="auction-schedule-detail-row" key={key}><span>{label}</span><strong>{String(value)}</strong></div>;
+                const resolvedLabel = key === 'caseNo' && selectedData.auctionKind === 'public' ? '물건번호' : label;
+                return <div className="auction-schedule-detail-row" key={key}><span>{resolvedLabel}</span><strong>{String(value)}</strong></div>;
               })}
             </div>
             {!selected.read_only && !canManageSelected && (
@@ -499,9 +506,13 @@ export default function AuctionSchedule() {
                 </button>
               </div>
             )}
-            {selected.activity_type === '입찰' && canWriteSelected && ['pending', 'failed'].includes(selectedBidResult) && (
+            {selected.activity_type === '입찰' && canWriteSelected && (
+              isPublicSelected
+                ? publicPriceEditOpen && ['pending', 'failed', 'won'].includes(selectedBidResult)
+                : ['pending', 'failed'].includes(selectedBidResult)
+            ) && (
               <button type="button" className="btn btn-secondary btn-full auction-schedule-write-prices" onClick={() => setPriceEditorEntry(selected)}>
-                입찰가 작성
+                {publicPriceEditOpen ? '입찰가·낙찰가 입력/수정 (7일 이내)' : '입찰가 작성'}
               </button>
             )}
             {(canEditSelected || canDeleteSelected) && (

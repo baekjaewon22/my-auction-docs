@@ -176,7 +176,7 @@ export default function BidAnalysis() {
         bid_datetime: parseExcelDate(readCell(row, ['입찰일시', '입찰일', '입찰일자', '일시'])),
         assignee_name: String(readCell(row, ['담당자', '담당자명'])).trim(),
         branch_name: String(readCell(row, ['지사', '지점', '소속'])).trim(),
-        case_number: String(readCell(row, ['사건번호', '사건 번호'])).trim(),
+        case_number: String(readCell(row, ['사건번호', '사건 번호', '물건번호', '공매 물건번호'])).trim(),
         property_type: String(readCell(row, ['물건종류', '물건 종류', '종류'])).trim(),
         suggested_bid_price: parseAmount(readCell(row, ['예상낙찰가', '예상 낙찰가', '제시입찰가', '제시 입찰가'])),
         actual_bid_price: parseAmount(readCell(row, ['입찰가', '실제입찰가', '실제 입찰가'])),
@@ -233,7 +233,7 @@ export default function BidAnalysis() {
   const saveManual = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!form.bid_datetime || !form.case_number) {
-      alert('입찰일과 사건번호는 필수입니다.');
+      alert('입찰일과 사건번호 또는 공매 물건번호는 필수입니다.');
       return;
     }
     setSaving(true);
@@ -312,7 +312,7 @@ export default function BidAnalysis() {
             <label><span>입찰일</span><input type="date" value={form.bid_datetime} onChange={(e) => setFormField('bid_datetime', e.target.value)} /></label>
             <label><span>지사</span><input value={form.branch_name} onChange={(e) => setFormField('branch_name', e.target.value)} /></label>
             <label><span>담당자</span><input value={form.assignee_name} onChange={(e) => setFormField('assignee_name', e.target.value)} /></label>
-            <label><span>사건번호</span><input value={form.case_number} onChange={(e) => setFormField('case_number', e.target.value)} /></label>
+            <label><span>사건번호 / 공매 물건번호</span><input value={form.case_number} onChange={(e) => setFormField('case_number', e.target.value)} /></label>
             <label><span>물건종류</span><input value={form.property_type} onChange={(e) => setFormField('property_type', e.target.value)} /></label>
             <label><span>고객명</span><input value={form.client_name} onChange={(e) => setFormField('client_name', e.target.value)} /></label>
             <label><span>예상낙찰가</span><input value={form.suggested_bid_price} onChange={(e) => setFormField('suggested_bid_price', e.target.value)} /></label>
@@ -334,7 +334,7 @@ export default function BidAnalysis() {
               <th>번호</th>
               <th>입찰일시</th>
               <th>지사/담당자</th>
-              <th>사건번호</th>
+              <th>사건번호 / 공매 물건번호</th>
               <th>물건종류</th>
               <th>예상낙찰가</th>
               <th>입찰가</th>

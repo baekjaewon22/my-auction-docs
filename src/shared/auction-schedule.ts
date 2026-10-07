@@ -59,6 +59,22 @@ export function isAuctionScheduleBidResultDue(targetDate: string, now: Date = ne
   return targetDate === today && Number(kst.slice(11, 13)) >= 15;
 }
 
+export function isPublicAuctionPriceEditOpen(
+  data: Record<string, unknown>,
+  targetDate: string,
+  now: Date = new Date(),
+): boolean {
+  if (data.auctionKind !== 'public' || !/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) return false;
+  const target = new Date(`${targetDate}T00:00:00Z`);
+  if (
+    Number.isNaN(target.getTime())
+    || target.toISOString().slice(0, 10) !== targetDate
+  ) return false;
+  target.setUTCDate(target.getUTCDate() + 7);
+  const todayKst = new Date(now.getTime() + KST_OFFSET_MS).toISOString().slice(0, 10);
+  return todayKst <= target.toISOString().slice(0, 10);
+}
+
 export function auctionScheduleSalesExternalId(scheduleId: string): string {
   return `auction-schedule:${String(scheduleId || '').trim()}`;
 }
@@ -123,12 +139,13 @@ export function getAuctionScheduleValidationError(
   data: Record<string, unknown>,
 ): string | null {
   const text = (key: string) => String(data[key] || '').trim();
+  const isPublicAuction = data.auctionKind === 'public';
   if (activityType === '입찰' && (
-    !text('caseNo') || !text('court') || !(text('client') || text('bidder')) || !text('propertyType')
-  )) return '입찰은 사건번호·법원·계약자명·물건종류를 입력해 주세요.';
+    !text('caseNo') || (!isPublicAuction && !text('court')) || !(text('client') || text('bidder')) || !text('propertyType')
+  )) return `입찰은 ${isPublicAuction ? '물건번호' : '사건번호·법원'}·계약자명·물건종류를 입력해 주세요.`;
   if (activityType === '임장' && (
-    !text('caseNo') || !text('court') || !text('propertyType') || !(text('client') || text('inspEtcReason'))
-  )) return '임장은 사건번호·법원·대상·물건종류를 입력해 주세요.';
+    !text('caseNo') || (!isPublicAuction && !text('court')) || !text('propertyType') || !(text('client') || text('inspEtcReason'))
+  )) return `임장은 ${isPublicAuction ? '물건번호' : '사건번호·법원'}·대상·물건종류를 입력해 주세요.`;
   return null;
 }
 

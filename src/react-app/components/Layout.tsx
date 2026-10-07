@@ -11,13 +11,14 @@ import {
   canUploadBriefingMaterial,
   canViewBriefingMaterial,
 } from '../../shared/briefing-material-access';
+import { canManageVideoProduction } from '../../shared/video-production';
 import WebPushConsentPrompt from './WebPushConsentPrompt';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
   Users, UserCog, LogOut, CalendarDays, BarChart3,
   PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
   Scale, ExternalLink, Activity, Send, ShieldCheck,
-  Moon, Sun,
+  Moon, Sun, Video,
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
@@ -130,6 +131,7 @@ export default function Layout() {
   const canUseDocumentGeneration = canUseBusinessAutomation(user);
   const canViewBriefingArchive = canViewBriefingMaterial(user);
   const canUseMasterAutomationTools = role === 'master';
+  const canManageVideoProductionRequests = canManageVideoProduction(user);
 
   const sidebarContent = (
     <>
@@ -199,6 +201,11 @@ export default function Layout() {
         <Link to="/personal-calendar" className={`nav-item ${isActive('/personal-calendar') ? 'active' : ''}`} title="캘린더" onClick={() => setMobileOpen(false)}>
           <CalendarDays size={18} /> {!collapsed && '캘린더'}
         </Link>
+        {canManageVideoProductionRequests && (
+          <Link to="/video-production" className={`nav-item ${isActive('/video-production') ? 'active' : ''}`} title="영상제작 의뢰" onClick={() => setMobileOpen(false)}>
+            <Video size={18} /> {!collapsed && '영상제작 의뢰'}
+          </Link>
+        )}
         <Link to="/rooms" className={`nav-item ${isActive('/rooms') ? 'active' : ''}`} title="회의실 예약" onClick={() => setMobileOpen(false)}>
           <DoorOpen size={18} /> {!collapsed && '회의실 예약'}
         </Link>

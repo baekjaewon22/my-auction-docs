@@ -79,6 +79,40 @@ const base = {
   schedule_data: null, analysis_case_number: null, analysis_property_type: null, analysis_bid_datetime: null,
 };
 
+test('공매는 법원과 Lawitgo 매핑 없이 저장하고 기존 미발송 전송건을 제외한다', async () => {
+  const sqlite = createSourceDatabase();
+  const db = d1FromSqlite(sqlite);
+  sqlite.exec(`
+    INSERT INTO users (id, name, branch) VALUES ('public-user', '공매 담당자', '서초지사');
+    INSERT INTO freelancer_auction_schedules VALUES
+      ('public-schedule', 'public-user', '2026-10-01', '서초지사', '{"auctionKind":"public","caseNo":"2026-12345-001","propertyType":"아파트"}');
+    INSERT INTO sales_records VALUES
+      ('public-sale','public-user','서초지사','공매 고객','01012345678','2026-10-01','물건번호 원본',NULL,'auction-schedule:public-schedule','낙찰',2200000,'income','pending','2026-10-01 10:00:00'),
+      ('manual-public-sale','public-user','서초지사','공매 고객','01012345678','2026-10-01','[공매] · 물건번호: 2026-12345-002',NULL,NULL,'낙찰',2200000,'income','pending','2026-10-01 10:00:00');
+  `);
+  try {
+    const validated = await validateLawitgoWinningOverrideInput(db, {
+      auctionKind: 'public', customerName: '공매 고객', customerPhone: '01012345678',
+      court: '', caseNumber: '2026-12345-002', propertyType: '아파트',
+      winningDate: '2026-10-01', assigneeUserId: 'public-user',
+    });
+    assert.equal(validated.court, '');
+    assert.equal(validated.consultantId, '');
+    await upsertLawitgoWinningOverride(db, 'manual-public-sale', validated, 'public-user');
+    assert.equal(sqlite.prepare('SELECT auction_kind FROM lawitgo_winning_overrides').pluck().get(), 'public');
+    sqlite.prepare("UPDATE sales_records SET type_detail = '담당자 메모 변경' WHERE id = 'manual-public-sale'").run();
+    sqlite.exec(`INSERT INTO lawitgo_winning_outbox (id,sales_record_id,status)
+      VALUES ('old-public','public-sale','blocked'), ('old-manual-public','manual-public-sale','pending')`);
+    assert.deepEqual(await stageLawitgoWinningOutbox(db), { staged: 0, blocked: 0 });
+    assert.equal(sqlite.prepare('SELECT COUNT(*) FROM lawitgo_winning_outbox').pluck().get(), 0);
+    assert.equal(sqlite.prepare('SELECT COUNT(*) FROM sales_records').pluck().get(), 2);
+    assert.equal(sqlite.prepare('SELECT case_number FROM lawitgo_winning_overrides').pluck().get(), '2026-12345-002');
+    await assert.rejects(validateLawitgoWinningOverrideInput(db, { ...validated, auctionKind: 'court' }), /법원/);
+  } finally {
+    sqlite.close();
+  }
+});
+
 test('낙찰 전송 payload는 합의된 사건 정보만 포함하고 수수료·정산정보를 포함하지 않는다', () => {
   const result = buildLawitgoWinningItem(base);
   assert.deepEqual(result.missingFields, []);

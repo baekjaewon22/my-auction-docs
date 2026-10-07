@@ -14,6 +14,7 @@ import {
   getKoreanWeekLabel,
   isAuctionScheduleActivityType,
   isAuctionScheduleBidResultDue,
+  isPublicAuctionPriceEditOpen,
   normalizeAuctionCaseSearch,
   parseAuctionCaseNumber,
   redactSuggestedBidPrice,
@@ -190,7 +191,39 @@ test('활동별 필수 일정 정보를 검증한다', () => {
     caseNo: '2026타경1234', court: '서울중앙지방법원', client: '홍길동', propertyType: '아파트',
   }), null);
   assert.match(getAuctionScheduleValidationError('임장', {}) || '', /임장은/);
+  assert.equal(getAuctionScheduleValidationError('입찰', {
+    auctionKind: 'public', caseNo: '온비드 123가456', client: '홍길동', propertyType: '아파트',
+  }), null);
+  assert.equal(getAuctionScheduleValidationError('임장', {
+    auctionKind: 'public', caseNo: '온비드 123가456', client: '홍길동', propertyType: '아파트',
+  }), null);
+  assert.match(getAuctionScheduleValidationError('입찰', {
+    auctionKind: 'public', court: '한국자산관리공사', client: '홍길동', propertyType: '아파트',
+  }) || '', /물건번호/);
   assert.equal(getAuctionScheduleValidationError('미팅', { client: '홍길동' }), null);
+});
+
+test('공매 입찰가 수정은 입찰기일부터 7일째까지 허용한다', () => {
+  const data = { auctionKind: 'public' };
+  assert.equal(isPublicAuctionPriceEditOpen(data, '2026-10-07', new Date('2026-10-14T14:59:59Z')), true);
+  assert.equal(isPublicAuctionPriceEditOpen(data, '2026-10-07', new Date('2026-10-14T15:00:00Z')), false);
+  assert.equal(isPublicAuctionPriceEditOpen({ auctionKind: 'auction' }, '2026-10-07', new Date('2026-10-08T00:00:00Z')), false);
+});
+
+test('입찰 일정 등록은 경매와 공매 선택 및 공매 물건번호 입력을 제공한다', () => {
+  const form = readFileSync(new URL('../src/react-app/journal/JournalForm.tsx', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../src/react-app/index.css', import.meta.url), 'utf8');
+  assert.match(form, /aria-label="경매 또는 공매 선택"/);
+  assert.match(form, />경매<\/button>/);
+  assert.match(form, />공매<\/button>/);
+  assert.match(form, /publicBidItemNo/);
+  assert.match(form, /auctionKind: bidAuctionKind/);
+  assert.match(form, /aria-label="임장 경매 또는 공매 선택"/);
+  assert.match(form, /publicInspItemNo/);
+  assert.match(form, /auctionKind: inspAuctionKind/);
+  assert.match(form, /maxLength=\{30\}/);
+  assert.match(css, /\.auction-kind-slider/);
+  assert.match(css, /\.public-auction-item-field input/);
 });
 
 test('프리랜서 스케줄은 정규직 일지와 별도 테이블·라우트로 저장한다', () => {
@@ -282,7 +315,8 @@ test('화면은 주말과 공휴일을 포함한 7일이며 카드 텍스트를 
   assert.match(page, /aria-label="날짜를 선택하여 경매 스케줄 이동"/);
   assert.match(page, /auction-schedule-calendar-dropdown/);
   assert.match(page, /applyFinalBidResult\(selected, 'failed'\)/);
-  assert.match(page, />\s*입찰가 작성\s*</);
+  assert.match(page, /'입찰가 작성'/);
+  assert.match(page, /입찰가·낙찰가 입력\/수정 \(7일 이내\)/);
   assert.match(resultEditor, /priceOnly \? '입찰가 저장' : '입찰 결과 저장'/);
   assert.doesNotMatch(resultEditor, /회사 낙찰 수수료 매출액/);
   assert.doesNotMatch(resultEditor, /입금자명/);

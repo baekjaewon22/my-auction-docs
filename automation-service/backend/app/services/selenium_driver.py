@@ -572,12 +572,40 @@ def login_myauction(driver: webdriver.Chrome, user_id: str, user_pw: str):
                 raise RuntimeError(f"로그인 실패: {e}")
 
 
+def myauction_document_url(current_url: str, document_type: str) -> str:
+    from urllib.parse import urlparse, parse_qs
+    parsed = urlparse(current_url)
+    if parsed.hostname not in ("www.my-auction.co.kr", "my-auction.co.kr"):
+        return ""
+    match = re.match(r"/view(?:3)?/(\d+)(?:/|$)", parsed.path)
+    case_id = match.group(1) if match else parse_qs(parsed.query).get("idx", [""])[0]
+    if not re.fullmatch(r"\d+", case_id) or document_type not in ("mul", "status", "aceeaea1", "aceeair", "mun"):
+        return ""
+    return f"https://www.my-auction.co.kr/auction/auction_detail_view.php?type={document_type}&idx={case_id}"
+
+
 def click_tab_safe(wait: WebDriverWait, driver: webdriver.Chrome, candidates: list):
     last_err = None
     for text in candidates:
         try:
             el = wait.until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, text)))
-            safe_click(driver, el)
+            # Document tabs expose their exact URL. Do not depend on a click
+            # being dispatched in an off-screen Chrome window.
+            from urllib.parse import urlparse, parse_qs
+            href = el.get_attribute("href") or ""
+            target = urlparse(href)
+            current = urlparse(driver.current_url)
+            query = parse_qs(target.query)
+            if (target.scheme in ("http", "https")
+                    and target.hostname in ("www.my-auction.co.kr", "my-auction.co.kr")
+                    and current.hostname in ("www.my-auction.co.kr", "my-auction.co.kr")
+                    and target.path == "/auction/auction_detail_view.php"
+                    and re.fullmatch(r"\d+", query.get("idx", [""])[0])):
+                logger.info(f"공시문서 탭 URL 직접 이동: {href}")
+                driver.get(href)
+                wait_document_ready(driver)
+            else:
+                safe_click(driver, el)
             return text
         except Exception as e:
             last_err = e

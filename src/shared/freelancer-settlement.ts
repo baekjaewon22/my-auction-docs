@@ -3,6 +3,8 @@ export interface FreelancerSettlementInput {
   settlementIncome: number;
   /** 계약 랭킹에 따라 지급하는 계약포상 */
   contractAward?: number;
+  /** 영상제작 외주 결과물 확정 금액 */
+  videoProductionIncome?: number;
   /** 비율제 추가정산 중 원천세 과세 대상 금액 */
   taxableExtraIncome?: number;
   /** 비율제 추가정산 중 원천세 면제 금액 */
@@ -16,6 +18,7 @@ export interface FreelancerSettlementInput {
 export interface FreelancerSettlementResult {
   settlementIncome: number;
   contractAward: number;
+  videoProductionIncome: number;
   taxableExtraIncome: number;
   taxExemptIncome: number;
   grossIncome: number;
@@ -45,11 +48,12 @@ function nonNegativeMoney(value: unknown): number {
 export function calculateFreelancerSettlement(input: FreelancerSettlementInput): FreelancerSettlementResult {
   const settlementIncome = finiteMoney(input.settlementIncome);
   const contractAward = nonNegativeMoney(input.contractAward);
+  const videoProductionIncome = nonNegativeMoney(input.videoProductionIncome);
   const taxableExtraIncome = finiteMoney(input.taxableExtraIncome);
   const taxExemptIncome = finiteMoney(input.taxExemptIncome);
   const preTaxDeduction = nonNegativeMoney(input.preTaxDeduction);
   const postTaxDeduction = nonNegativeMoney(input.postTaxDeduction);
-  const grossIncome = settlementIncome + contractAward + taxableExtraIncome + taxExemptIncome;
+  const grossIncome = settlementIncome + contractAward + videoProductionIncome + taxableExtraIncome + taxExemptIncome;
   const taxableIncome = Math.max(grossIncome - taxExemptIncome - preTaxDeduction, 0);
   const withholdingTax = Math.trunc((taxableIncome * 0.033) / 10) * 10;
   const netPay = grossIncome - preTaxDeduction - withholdingTax - postTaxDeduction;
@@ -57,6 +61,7 @@ export function calculateFreelancerSettlement(input: FreelancerSettlementInput):
   return {
     settlementIncome,
     contractAward,
+    videoProductionIncome,
     taxableExtraIncome,
     taxExemptIncome,
     grossIncome,
@@ -87,17 +92,17 @@ function parseManualMoney(value: unknown): number {
   return Number(String(value || '').replace(/[^0-9]/g, '')) || 0;
 }
 
-/**
- * 저장 요청에 담긴 정산 응답과 수동 입력을 서버에서도 동일하게 계산한다.
- * 구·신 안건수당은 기존 별도 정책을 유지하므로 여기에서 새로 합산하지 않는다.
- */
-export function calculateFreelancerSavedSettlement(
-  response: Record<string, any>,
-  saveData: Record<string, any>,
+export function calculateFreelancerSalesIncome(
+  records: readonly Record<string, any>[],
+  rate: number,
   month: string,
-): FreelancerSettlementResult {
-  const rate = Number(response?.accounting?.commission_rate) || 0;
-  const records = Array.isArray(response?.records) ? response.records : [];
+): {
+  normalSupply: number;
+  normalRefundSupply: number;
+  commissionIncome: number;
+  proxyIncome: number;
+  totalIncome: number;
+} {
   const normalRecords = records.filter((record: any) => record?.type !== '매수신청대리');
   const normalSupply = normalRecords.reduce(
     (sum: number, record: any) => sum + (Number(record?.supply_amount) || vatSupplyAmount(record?.amount, month)),
@@ -113,8 +118,36 @@ export function calculateFreelancerSavedSettlement(
     .reduce((sum: number, record: any) => {
       const supplied = Number(record?.supply_amount);
       if (Number.isFinite(supplied)) return sum + Math.max(supplied, 0);
-      return sum + Math.max(vatSupplyAmount(record?.amount, month) - (Number(record?.proxy_cost) || 0), 0);
+      const remainingAmount = Math.max(
+        (Number(record?.amount) || 0) - (Number(record?.refund_amount) || 0),
+        0,
+      );
+      return sum + Math.max(
+        vatSupplyAmount(remainingAmount, month) - (Number(record?.proxy_cost) || 0),
+        0,
+      );
     }, 0);
+  return {
+    normalSupply,
+    normalRefundSupply,
+    commissionIncome,
+    proxyIncome,
+    totalIncome: commissionIncome + proxyIncome,
+  };
+}
+
+/**
+ * 저장 요청에 담긴 정산 응답과 수동 입력을 서버에서도 동일하게 계산한다.
+ * 구·신 안건수당은 기존 별도 정책을 유지하므로 여기에서 새로 합산하지 않는다.
+ */
+export function calculateFreelancerSavedSettlement(
+  response: Record<string, any>,
+  saveData: Record<string, any>,
+  month: string,
+): FreelancerSettlementResult {
+  const rate = Number(response?.accounting?.commission_rate) || 0;
+  const records = Array.isArray(response?.records) ? response.records : [];
+  const salesIncome = calculateFreelancerSalesIncome(records, rate, month);
   const positionAllowance = month >= '2026-08'
     ? Number(response?.summary?.position_allowance || response?.accounting?.position_allowance) || 0
     : 0;
@@ -137,10 +170,12 @@ export function calculateFreelancerSavedSettlement(
   const contractAward = isContractAwardMonth && response?.contract_award?.rank
     ? Number(response.contract_award.award) || 0
     : 0;
+  const videoProductionIncome = Number(response?.video_production?.total_amount) || 0;
 
   return calculateFreelancerSettlement({
-    settlementIncome: commissionIncome + proxyIncome + positionAllowance,
+    settlementIncome: salesIncome.totalIncome + positionAllowance,
     contractAward,
+    videoProductionIncome,
     taxableExtraIncome: extraDetails
       .filter((item) => !item.taxExempt)
       .reduce((sum, item) => sum + item.amount, 0),

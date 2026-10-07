@@ -109,6 +109,24 @@ test('임장 입찰기일 또는 입찰 일정 중 하나만 있어도 캘린더
   assert.equal(bid[0].title, '[김민수] [미분류]');
 });
 
+test('법원이 없는 공매 임장도 입찰기일과 임장일에 캘린더 일정으로 표시한다', () => {
+  const data = JSON.stringify({
+    auctionKind: 'public', bidDate: '2026-09-15', caseNo: '온비드 물건 123가456',
+    client: '홍길동', propertyCategory: '주거시설', propertyType: '아파트',
+  });
+  const [bidEvent] = buildPersonalCalendarAuctionEvents([auctionRow({ data })]);
+  const [inspectionEvent] = buildPersonalCalendarInspectionEvents([auctionRow({
+    event_date: '2026-09-10', source_target_date: '2026-09-10', data,
+  })]);
+  const publicBid = toPublicPersonalCalendarAuctionEvent(bidEvent, { id: 'user-1', role: 'member' });
+  assert.equal(bidEvent.event_date, '2026-09-15');
+  assert.equal(bidEvent.case_no, '온비드 물건 123가456');
+  assert.equal(bidEvent.court, '');
+  assert.equal(publicBid.can_edit_bid_result, 1);
+  assert.equal(inspectionEvent.event_date, '2026-09-10');
+  assert.equal(inspectionEvent.source_type, 'auction_inspection');
+});
+
 test('캘린더는 대분류를 숨기고 세부 물건종류만 표시하며 누락 시 미분류로 표시한다', () => {
   const events = buildPersonalCalendarAuctionEvents([
     auctionRow({

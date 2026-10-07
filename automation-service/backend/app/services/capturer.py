@@ -13,8 +13,8 @@ import re
 import time
 import base64
 import logging
+from urllib.parse import urljoin, urlparse
 from io import BytesIO
-from urllib.parse import urljoin
 
 from PIL import Image, ImageChops
 from selenium.webdriver.common.by import By
@@ -233,7 +233,20 @@ def open_court_guide_popup(driver, timeout=15):
         By.XPATH,
         "//a[contains(normalize-space(.),'관할법원안내') or contains(@onclick,'court_layer')]"
     )))
-    safe_click(driver, btn)
+    onclick = btn.get_attribute("onclick") or ""
+    match = re.search(r"windowOpen\(\s*['\"]([^'\"]+)['\"]", onclick)
+    direct_url = urljoin(driver.current_url, match.group(1)) if match else ""
+    target = urlparse(direct_url)
+    if target.hostname in ("www.my-auction.co.kr", "my-auction.co.kr") and target.path == "/auction/court_layer.php":
+        driver.switch_to.new_window("tab")
+        try:
+            driver.get(direct_url)
+        except Exception:
+            driver.close()
+            driver.switch_to.window(base_handle)
+            raise
+    else:
+        safe_click(driver, btn)
 
     end = time.time() + timeout
     popup_handle = None
@@ -409,12 +422,21 @@ def capture_land_use_plan(driver, out_path: str, timeout=20):
     btn = wait.until(EC.element_to_be_clickable((
         By.XPATH, "//a[contains(normalize-space(.),'토지이용계획')]"
     )))
-    safe_click(driver, btn)
-
     new_handle = None
     opened_in_current_tab = False
+    direct_url = btn.get_attribute("href") or ""
+    target = urlparse(direct_url)
+    if target.scheme in ("http", "https") and target.hostname in ("www.aceauction.net", "aceauction.net", "www.eum.go.kr", "eum.go.kr"):
+        try:
+            driver.get(direct_url)
+            opened_in_current_tab = True
+        except Exception:
+            driver.get(base_url)
+            raise
+    else:
+        safe_click(driver, btn)
     end = time.time() + timeout
-    while time.time() < end:
+    while not opened_in_current_tab and time.time() < end:
         diff = set(driver.window_handles) - before_handles
         if diff:
             new_handle = diff.pop()
@@ -708,6 +730,26 @@ def _parse_eviction_cost_rows(rows: list[str], body_text: str = "") -> dict:
     return parsed
 
 
+def _extract_eviction_flat_rate_main_price(driver) -> int:
+    """Read the fixed-fee total shown on the MyAuction detail page."""
+    try:
+        text = driver.execute_script("""
+            const selectors = [
+              '#detail_left > div.ma-eviction-cost-cards > div:nth-child(6) > p.ma-eviction-discount.ma-eviction-main-price',
+              '#detail_left .ma-eviction-cost-cards .ma-eviction-discount.ma-eviction-main-price',
+              '.ma-eviction-cost-cards .ma-eviction-main-price'
+            ];
+            for (const selector of selectors) {
+              const el = document.querySelector(selector);
+              if (el) return `${el.innerText || el.textContent || ''}`.trim();
+            }
+            return '';
+        """) or ""
+    except Exception:
+        return 0
+    return _parse_won_amount(str(text))
+
+
 def extract_eviction_cost_values(driver, detail_url: str = "", timeout: int = 15) -> dict:
     """Read MyAuction's eviction-cost calculation and return normalized won values."""
     base_url = driver.current_url
@@ -715,6 +757,7 @@ def extract_eviction_cost_values(driver, detail_url: str = "", timeout: int = 15
     if not case_idx:
         raise RuntimeError("예상명도비용 사건번호를 URL에서 찾지 못했습니다.")
     popup_url = f"https://www.my-auction.co.kr/auction/execution_pop.php?idx={case_idx}"
+    flat_rate_main_price = _extract_eviction_flat_rate_main_price(driver)
     try:
         logger.info(f"마이옥션 예상명도비용 계산값 확인: {popup_url}")
         driver.get(popup_url)
@@ -734,6 +777,8 @@ def extract_eviction_cost_values(driver, detail_url: str = "", timeout: int = 15
             };
         """) or {}
         parsed = _parse_eviction_cost_rows(payload.get("rows") or [], payload.get("bodyText") or "")
+        if flat_rate_main_price > 0:
+            parsed["flatRateMainPrice"] = flat_rate_main_price
         if not int(parsed.get("grandTotal") or 0):
             raise RuntimeError("마이옥션 예상명도비용 총액을 판독하지 못했습니다.")
         logger.info(f"마이옥션 예상명도비용 계산값 판독 완료: {parsed}")

@@ -90,11 +90,13 @@ test('임장 입찰기일은 필수이며 모바일에서도 인라인 오류를
   assert.match(form, /aria-label="입찰기일 일자"[\s\S]*?aria-invalid=\{!!inspBidDateError\}[\s\S]*?required/);
   assert.match(form, /onInvalid=\{\(\) => setInspBidDateError/);
   assert.match(form, /className="auction-inspection-bid-date-error" role="alert"/);
-  assert.match(form, /일반 일정 수정·삭제는 관리자급\(마스터·총무·총무보조·대표\)만 가능/);
-  assert.match(form, /담당자는 등록 후 기본정보를 변경할 수 없으니 저장 전에 내용을 다시 확인/);
-  assert.match(form, /mode === 'auction-schedule' && !editingSchedule && \(/);
   assert.doesNotMatch(form, /!editingSchedule && isPastAuctionScheduleDate/);
   assert.match(css, /\.auction-inspection-bid-date-selects select\[aria-invalid="true"\]/);
   assert.match(css, /@media \(max-width: 768px\)[\s\S]*?\.auction-inspection-bid-date-selects select[\s\S]*?min-height:\s*44px/);
   assert.match(css, /@media \(max-width: 360px\)[\s\S]*?\.auction-schedule-manage-actions[\s\S]*?grid-template-columns:\s*1fr/);
+});
+
+test('의도적으로 삭제한 일정 등록 안내문은 다시 표시하지 않는다', () => {
+  assert.doesNotMatch(form, /일반 일정 수정·삭제는 관리자급\(마스터·총무·총무보조·대표\)만 가능/);
+  assert.doesNotMatch(form, /담당자는 등록 후 기본정보를 변경할 수 없으니 저장 전에 내용을 다시 확인/);
 });

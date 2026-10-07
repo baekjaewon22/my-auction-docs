@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { winningAuctionDetail } from '../../shared/winning-auction.ts';
 import type { AuthEnv } from '../types.ts';
 import { authMiddleware, requireHumanUser } from '../middleware/auth.ts';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides.ts';
@@ -14,6 +15,7 @@ import {
   canViewSuggestedBidPrice,
   getAuctionScheduleValidationError,
   isAuctionScheduleBidResultDue,
+  isPublicAuctionPriceEditOpen,
   isAuctionScheduleActivityType,
   redactSuggestedBidPrice,
   sanitizeAuctionScheduleData,
@@ -108,6 +110,14 @@ function sanitizeClientAuctionScheduleData(value: unknown): Record<string, unkno
     ...data
   } = sanitizeAuctionScheduleData(value);
   return data;
+}
+
+function normalizeAuctionKindData(
+  activityType: string,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!['입찰', '임장'].includes(activityType) || data.auctionKind !== 'public') return data;
+  return { ...data, court: '', itemNo: '' };
 }
 
 async function auctionScheduleTableExists(db: D1Database, table: string): Promise<boolean> {
@@ -240,7 +250,7 @@ type AuctionBidResultRow = {
 };
 
 const BID_RESULT_EDITOR_DATA_FIELDS = [
-  'caseNo', 'court', 'itemNo', 'propertyCategory', 'propertyType',
+  'auctionKind', 'caseNo', 'court', 'itemNo', 'propertyCategory', 'propertyType',
   'client', 'bidder', 'clientPhone',
   'suggestedPrice', 'bidPrice', 'winPrice',
   'bidWon', 'bidFailed', 'bidCancelled', 'bidResultCancelled',
@@ -308,7 +318,10 @@ function sameBidIdentity(
   const candidateData = parseJsonObject(candidate.data);
   const candidateClient = normalizeAuctionBidIdentity(candidateData.client || candidateData.bidder);
   const sourceClient = normalizeAuctionBidIdentity(sourceData.client || sourceData.bidder);
-  return normalizeAuctionBidIdentity(candidateData.court) === normalizeAuctionBidIdentity(sourceData.court)
+  const candidateKind = candidateData.auctionKind === 'public' ? 'public' : 'auction';
+  const sourceKind = sourceData.auctionKind === 'public' ? 'public' : 'auction';
+  return candidateKind === sourceKind
+    && normalizeAuctionBidIdentity(candidateData.court) === normalizeAuctionBidIdentity(sourceData.court)
     && normalizeAuctionBidIdentity(candidateData.caseNo) === normalizeAuctionBidIdentity(sourceData.caseNo)
     && canonicalAuctionBidItemMarker(candidateData.itemNo) === canonicalAuctionBidItemMarker(sourceData.itemNo)
     && !!candidateClient
@@ -635,7 +648,7 @@ auctionSchedule.post('/', async (c) => {
   if (!isValidAuctionScheduleDate(targetDate) || !isAuctionScheduleActivityType(activityType)) {
     return c.json({ error: '날짜와 활동유형(입찰·임장)을 확인해 주세요.' }, 400);
   }
-  const rawData = sanitizeClientAuctionScheduleData(body.data);
+  const rawData = normalizeAuctionKindData(activityType, sanitizeClientAuctionScheduleData(body.data));
   const data = activityType === '입찰'
     ? { ...rawData, bidWon: false, bidFailed: false, bidCancelled: false, bidResultCancelled: false, winPrice: '' }
     : rawData;
@@ -741,7 +754,7 @@ auctionSchedule.put('/:id', async (c) => {
   const incomingData = body.data === undefined
     ? existingData
     : mergeGeneralScheduleEditData(existingData, sanitizeClientAuctionScheduleData(body.data));
-  const parsedData = incomingData;
+  const parsedData = normalizeAuctionKindData(activityType, incomingData);
   const data = JSON.stringify(parsedData);
   const validationError = getRequiredInspectionBidDateError(activityType, parsedData)
     || getAuctionScheduleValidationError(activityType, parsedData);
@@ -830,15 +843,39 @@ auctionSchedule.put('/:id/bid-prices', async (c) => {
     String(data.client || data.bidder || ''),
     String(data.court || ''),
   );
-  if (linkedSale) return c.json({ error: '입금신청이 연결된 낙찰 건의 입찰가는 변경할 수 없습니다.' }, 409);
+  const isPublicAuction = data.auctionKind === 'public';
+  if (isPublicAuction && !isPublicAuctionPriceEditOpen(data, existing.target_date)) {
+    return c.json({ error: '공매 입찰가와 낙찰가는 입찰기일부터 7일 이내에만 수정할 수 있습니다.' }, 409);
+  }
+  if (linkedSale && (!isPublicAuction || linkedSale.source !== 'schedule')) {
+    return c.json({ error: '입금신청이 연결된 낙찰 건의 입찰가는 변경할 수 없습니다.' }, 409);
+  }
+  if (linkedSale && !winningPrice) {
+    return c.json({ error: '낙찰 처리된 공매 일정은 최종 낙찰가를 입력해 주세요.' }, 400);
+  }
+  const commissionKeys = Array.from(new Set([
+    ...auctionScheduleSalesExternalIds(id),
+    linkedSale?.external_id,
+  ].filter((value): value is string => !!value)));
+  const commissionRows = linkedSale && commissionKeys.length > 0
+    ? await db.prepare(`
+      SELECT id, journal_entry_id, status, win_price FROM commissions
+      WHERE journal_entry_id IN (${commissionKeys.map(() => '?').join(', ')})
+    `).bind(...commissionKeys).all<AuctionBusinessCommissionSnapshot>()
+    : { results: [] as AuctionBusinessCommissionSnapshot[] };
+  if ((commissionRows.results || []).length > 1) {
+    return c.json({ error: '연결된 수수료 항목이 여러 건이어서 입찰가를 수정할 수 없습니다.' }, 409);
+  }
+  const linkedCommission = (commissionRows.results || [])[0] || null;
 
   const bidPriceBusinessGate = await auctionBusinessSnapshotGate(db, {
     schedule: existing,
     data,
     externalId,
-    linkedSale: null,
-    linkedCommission: null,
-    commissionKeys: auctionScheduleSalesExternalIds(id),
+    linkedSale,
+    linkedCommission,
+    commissionKeys,
+    requireUnlockedLawitgo: !!linkedSale,
   });
   const nextData = {
     ...data,
@@ -846,17 +883,55 @@ auctionSchedule.put('/:id/bid-prices', async (c) => {
     bidPrice: actualBidPrice ? String(actualBidPrice) : '',
     winPrice: winningPrice ? String(winningPrice) : '',
   };
-  const updated = await db.prepare(`
-    UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-      AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
-      ${bidPriceBusinessGate.sql}
-  `).bind(JSON.stringify(nextData), id, id, mutationClaim, ...bidPriceBusinessGate.params).run();
-  if (Number(updated.meta?.changes || 0) !== 1) {
+  const encodedNextData = JSON.stringify(nextData);
+  const statements = [db.prepare(`
+      UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours')
+      WHERE id = ?
+        AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+        ${bidPriceBusinessGate.sql}
+    `).bind(encodedNextData, id, id, mutationClaim, ...bidPriceBusinessGate.params)];
+  if (linkedSale) {
+    const updatedFee = calculateAuctionScheduleWinningFee(winningPrice);
+    const auditId = crypto.randomUUID();
+    statements.push(db.prepare(`
+      INSERT INTO accounting_activity_logs (
+        id, actor_id, actor_name, actor_role, action, target_type, target_id,
+        target_label, diff_summary, before_snapshot, after_snapshot, source_page, created_at
+      )
+      SELECT ?, ?, ?, ?, 'update', 'sales_record', ?, ?, ?, ?, ?, 'auction_schedule', datetime('now', '+9 hours')
+      WHERE EXISTS (
+        SELECT 1 FROM freelancer_auction_schedules current_schedule
+        WHERE current_schedule.id = ? AND current_schedule.data = ?
+          AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+      )
+    `).bind(
+      auditId, user.sub, user.name || '', user.role, linkedSale.id,
+      `[${existing.user_name || ''}] 공매 낙찰 금액 수정`,
+      `최종 낙찰가 ${linkedSale.winning_price} → ${winningPrice}, 수수료 ${linkedSale.amount} → ${updatedFee}`,
+      JSON.stringify(linkedSale),
+      JSON.stringify({ ...linkedSale, winning_price: winningPrice, amount: updatedFee }),
+      id, encodedNextData, id, mutationClaim,
+    ));
+    statements.push(db.prepare(`
+      UPDATE sales_records SET winning_price = ?, amount = ?
+      WHERE id = ? AND EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
+    `).bind(winningPrice, updatedFee, linkedSale.id, auditId));
+    if (linkedCommission) {
+      statements.push(db.prepare(`
+        UPDATE commissions SET win_price = ?
+        WHERE id = ? AND EXISTS (SELECT 1 FROM accounting_activity_logs WHERE id = ?)
+      `).bind(String(updatedFee), linkedCommission.id, auditId));
+    }
+  }
+  const batchResults = await db.batch(statements);
+  if (Number((batchResults[0] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1) {
     return c.json({ error: '일정이 변경되어 입찰가를 저장하지 못했습니다.' }, 409);
   }
+  if (linkedSale && batchResults.slice(1).some(result => Number((result as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1)) {
+    return c.json({ error: '연결된 입금신청 또는 수수료 정보가 변경되어 입찰가 수정을 중단했습니다.' }, 409);
+  }
 
-  if (data.bidFailed) {
+  if (data.bidFailed || data.bidWon) {
     await db.prepare("DELETE FROM bid_analysis_entries WHERE source_type = 'freelancer' AND source_id = ?").bind(externalId).run();
     await upsertBidAnalysisEntry(db, {
       bid_datetime: existing.target_date,
@@ -868,7 +943,7 @@ auctionSchedule.put('/:id/bid-prices', async (c) => {
       suggested_bid_price: suggestedPrice,
       actual_bid_price: actualBidPrice,
       winning_price: winningPrice,
-      bid_result: '실패',
+      bid_result: data.bidWon ? '낙찰' : '실패',
       client_name: String(data.client || data.bidder || ''),
       source_type: 'freelancer',
       source_id: externalId,
@@ -1109,7 +1184,8 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       `).bind(
         salesId,
         existing.user_id,
-        [data.court, data.caseNo, data.itemNo ? `${data.itemNo}번` : ''].filter(Boolean).join(' · '),
+        winningAuctionDetail({ auctionKind: data.auctionKind, court: data.court,
+          caseNumber: data.caseNo, propertyType: data.propertyType }, data.itemNo ? `${data.itemNo}번` : ''),
         clientName,
         normalized.depositor_name,
         normalized.depositor_name !== clientName ? 1 : 0,
@@ -1121,7 +1197,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         normalized.winning_price,
         clientPhone,
         customer?.id || null,
-        '경매 스케줄 낙찰 자동 입금신청',
+        `${data.auctionKind === 'public' ? '공매' : '경매'} 스케줄 낙찰 자동 입금신청`,
         externalId,
         operationAuditId,
       ));

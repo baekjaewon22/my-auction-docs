@@ -21,6 +21,7 @@ class ReportRequest(BaseModel):
     requester_role: str = "user"
     requester_permission: str = "basic"
     planner_snapshots: list[dict[str, Any]] = Field(default_factory=list)
+    briefing_cost_inputs: dict[str, Any] = Field(default_factory=dict)
     auction_references: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
 

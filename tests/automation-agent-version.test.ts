@@ -60,17 +60,16 @@ test('실행기 버전은 프런트·Worker·Python·빌드가 공용 원본을 
   assert.doesNotMatch(buildScript, /2026\.07\.28\.1/);
 });
 
-test('Python fallback version stays aligned with the shared automation version', () => {
+test('Python queue version uses the same bundled/shared source instead of a stale literal', () => {
   const config = readFileSync(
     new URL('../automation-service/backend/app/core/config.py', import.meta.url),
     'utf8',
   );
-  const escapedVersion = AUTOMATION_AGENT_VERSION.replaceAll('.', '\\.');
-
-  assert.match(
-    config,
-    new RegExp(`agent_version\\s*:\\s*str\\s*=\\s*["']${escapedVersion}["']`),
-  );
+  assert.match(config, /agent_version\s*:\s*str\s*=\s*_load_agent_version\(\)/);
+  assert.match(config, /agent-version\.txt/);
+  assert.match(config, /automation-agent-version\.ts/);
+  assert.match(config, /return "unknown"/);
+  assert.doesNotMatch(config, /agent_version\s*:\s*str\s*=\s*["']\d{4}\./);
 });
 
 test('Windows agent packages the PowerPoint PDF conversion dependencies', () => {

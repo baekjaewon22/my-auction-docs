@@ -23,6 +23,84 @@ type PlannerWorkspace = {
   selectedCalculator?: string;
   calculatorDrafts?: Record<string, PlannerMessage>;
 };
+type BriefingCostInputs = {
+  market_price: string;
+  bid_price_1: string;
+  bid_price_2: string;
+  bid_price_3: string;
+  property_tax_type: 'house' | 'non_house';
+  house_count: string;
+  regulated_area: boolean;
+  difference_amount: string;
+  unpaid_management_fee: string;
+  service_fee_basis: 'appraised' | 'bid' | 'manual';
+  service_fee_manual_amount: string;
+  service_fee_rate: string;
+  fixed_loan_amount: string;
+  loan_base_amount: string;
+  ltv_limit: string;
+  bid_price_loan_limit: string;
+  loan_room_deduction: string;
+  bank_loan_note: string;
+};
+
+const DEFAULT_BANK_LOAN_NOTE = '감정가 40%,낙찰가80% 중 낮은금액으로 대출이 가능합니다.';
+
+const DEFAULT_BRIEFING_COST_INPUTS: BriefingCostInputs = {
+  market_price: '',
+  bid_price_1: '',
+  bid_price_2: '',
+  bid_price_3: '',
+  property_tax_type: 'house',
+  house_count: '1',
+  regulated_area: false,
+  difference_amount: '',
+  unpaid_management_fee: '',
+  service_fee_basis: 'bid',
+  service_fee_manual_amount: '',
+  service_fee_rate: '1',
+  fixed_loan_amount: '',
+  loan_base_amount: '',
+  ltv_limit: '40',
+  bid_price_loan_limit: '80',
+  loan_room_deduction: '',
+  bank_loan_note: DEFAULT_BANK_LOAN_NOTE,
+};
+
+function numericInput(value: string): number | undefined {
+  const text = String(value || '').replace(/,/g, '').trim();
+  if (!text) return undefined;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function formatMoneyInput(value: string): string {
+  const digits = String(value || '').replace(/[^\d]/g, '');
+  return digits ? Number(digits).toLocaleString('ko-KR') : '';
+}
+
+function normalizeBriefingCostInputs(value: BriefingCostInputs) {
+  return {
+    market_price: numericInput(value.market_price),
+    bid_price_1: numericInput(value.bid_price_1),
+    bid_price_2: numericInput(value.bid_price_2),
+    bid_price_3: numericInput(value.bid_price_3),
+    property_tax_type: value.property_tax_type,
+    house_count: value.house_count,
+    regulated_area: value.regulated_area,
+    difference_amount: numericInput(value.difference_amount),
+    unpaid_management_fee: numericInput(value.unpaid_management_fee),
+    service_fee_basis: value.service_fee_basis,
+    service_fee_manual_amount: numericInput(value.service_fee_manual_amount),
+    service_fee_rate: numericInput(value.service_fee_rate),
+    fixed_loan_amount: numericInput(value.fixed_loan_amount),
+    loan_base_amount: numericInput(value.loan_base_amount),
+    ltv_limit: numericInput(value.ltv_limit),
+    bid_price_loan_limit: numericInput(value.bid_price_loan_limit),
+    loan_room_deduction: numericInput(value.loan_room_deduction),
+    bank_loan_note: value.bank_loan_note.trim(),
+  };
+}
 
 const BRIEFING_STEPS = ['브라우저 준비', '사이트 파싱', 'PPT 기본값 입력', '문서 캡처', 'PPT 이미지 삽입', '저장 완료'];
 const RIGHTS_STEPS = ['브라우저 준비', '물건정보 확인', '매각물건명세서 확인', '권리분석 문구 구성', '보증서 템플릿 입력', 'PDF/PPTX 변환', '저장 완료'];
@@ -58,6 +136,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   const [plannerOptionalNotice, setPlannerOptionalNotice] = useState<string[] | null>(null);
   const [plannerSnapshots, setPlannerSnapshots] = useState<PlannerSnapshot[]>([]);
   const [plannerWorkspace, setPlannerWorkspace] = useState<PlannerWorkspace>({});
+  const [briefingCostInputs, setBriefingCostInputs] = useState<BriefingCostInputs>(DEFAULT_BRIEFING_COST_INPUTS);
   const plannerHydratedUserRef = useRef('');
   const plannerExportAllRef = useRef<(() => Promise<PlannerSnapshot[]>) | null>(null);
   const plannerOptionalResolveRef = useRef<((proceed: boolean) => void) | null>(null);
@@ -275,6 +354,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
   const commonPayload = async (snapshots = plannerSnapshots) => ({
     remember_login: rememberLogin,
     requester_permission: reportPermission,
+    briefing_cost_inputs: isRights ? undefined : normalizeBriefingCostInputs(briefingCostInputs),
     planner_snapshots: snapshots.filter((item) => item.include),
     auction_references: await loadAutomationReferences(),
   });
@@ -295,8 +375,7 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
     const required = ['acquisition-tax', 'loan-bid-estimator', 'acquisition-cost-sheet'];
     const hasPlannerInput = Object.keys(plannerWorkspace.calculatorDrafts || {}).some((key) => required.includes(key));
     if (!hasPlannerInput) {
-      const proceed = await confirmWithoutPlanner(required.map((key) => PLANNER_CALCULATORS.find((item) => item.key === key)?.label || key));
-      return proceed ? [] : null;
+      return [];
     }
 
     const exported = plannerExportAllRef.current ? await plannerExportAllRef.current() : [];
@@ -547,6 +626,13 @@ export default function DocumentGeneration({ initialType = 'auction_report' }: P
                   </div>
                 )}
               </div>
+            )}
+
+            {!isRights && (
+              <BriefingCostInputPanel
+                value={briefingCostInputs}
+                onChange={(patch) => setBriefingCostInputs((prev) => ({ ...prev, ...patch }))}
+              />
             )}
 
             {isRights && (
@@ -1265,6 +1351,116 @@ function PlannerSnapshotList({
             <button className="btn btn-sm danger" type="button" onClick={() => onRemoveSnapshot(item.id)}>삭제</button>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function BriefingCostInputPanel({
+  value,
+  onChange,
+}: {
+  value: BriefingCostInputs;
+  onChange: (patch: Partial<BriefingCostInputs>) => void;
+}) {
+  const moneyField = (key: keyof BriefingCostInputs, label: string, placeholder = '예: 590000000') => (
+    <label style={{ display: 'grid', gap: 6 }}>
+      <span className="label">{label}</span>
+      <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #d1d5db', borderRadius: 10, background: '#fff', overflow: 'hidden' }}>
+        <input
+          className="form-input"
+          inputMode="numeric"
+          value={String(value[key] ?? '')}
+          onChange={(e) => onChange({ [key]: formatMoneyInput(e.target.value) } as Partial<BriefingCostInputs>)}
+          placeholder={placeholder}
+          style={{ border: 0, boxShadow: 'none', flex: 1, minWidth: 0 }}
+        />
+        <span style={{ padding: '0 12px', color: '#64748b', fontWeight: 700, whiteSpace: 'nowrap' }}>원</span>
+      </div>
+    </label>
+  );
+  const textField = (key: keyof BriefingCostInputs, label: string, placeholder = '') => (
+    <label style={{ display: 'grid', gap: 6 }}>
+      <span className="label">{label}</span>
+      <input
+        className="form-input"
+        value={String(value[key] ?? '')}
+        onChange={(e) => onChange({ [key]: e.target.value } as Partial<BriefingCostInputs>)}
+        placeholder={placeholder}
+      />
+    </label>
+  );
+  return (
+    <div className="card" style={{ display: 'grid', gap: 14, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+      <div>
+        <div style={{ fontWeight: 800, color: '#0f172a' }}>옥션플래너 자동 표 입력값</div>
+        <div style={{ marginTop: 4, fontSize: '0.86rem', color: '#64748b' }}>
+          입력값으로 취득세표·입찰가 산정표·취득비용계산표 이미지를 자동 생성해 05.담당자 의견 (6)~(8)에 삽입합니다.
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gap: 10 }}>
+        <div style={{ fontWeight: 700, color: '#334155' }}>입찰가·취득세 기준</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+          {moneyField('market_price', '시세', '예: 620000000')}
+          {moneyField('bid_price_1', '적정입찰가 1', '취득세 기준')}
+          {moneyField('bid_price_2', '적정입찰가 2')}
+          {moneyField('bid_price_3', '적정입찰가 3')}
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span className="label">부동산 유형</span>
+            <select className="form-input" value={value.property_tax_type} onChange={(e) => onChange({ property_tax_type: e.target.value as BriefingCostInputs['property_tax_type'] })}>
+              <option value="house">주택</option>
+              <option value="non_house">주택 외</option>
+            </select>
+          </label>
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span className="label">주택수</span>
+            <select className="form-input" value={value.house_count} onChange={(e) => onChange({ house_count: e.target.value })}>
+              <option value="1">1주택</option>
+              <option value="2">2주택</option>
+              <option value="3">3주택</option>
+              <option value="4_plus">4주택 이상</option>
+              <option value="corporation">법인</option>
+            </select>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 24, fontWeight: 700, color: '#334155' }}>
+            <input type="checkbox" checked={value.regulated_area} onChange={(e) => onChange({ regulated_area: e.target.checked })} />
+            조정지역
+          </label>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gap: 10 }}>
+        <div style={{ fontWeight: 700, color: '#334155' }}>비용·수익 입력값</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+          {moneyField('difference_amount', '차이금액', '미입력 시 시세-총비용')}
+          {moneyField('unpaid_management_fee', '미납관리비', '예: 300000')}
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span className="label">수수료 기준</span>
+            <select className="form-input" value={value.service_fee_basis} onChange={(e) => onChange({ service_fee_basis: e.target.value as BriefingCostInputs['service_fee_basis'] })}>
+              <option value="appraised">감정가</option>
+              <option value="bid">낙찰가</option>
+              <option value="manual">직접입력</option>
+            </select>
+          </label>
+          {value.service_fee_basis === 'manual' && moneyField('service_fee_manual_amount', '수수료 직접입력 기준금액')}
+          {textField('service_fee_rate', '수수료율(%)', '예: 1')}
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gap: 10 }}>
+        <div style={{ fontWeight: 700, color: '#334155' }}>대출·취득비용 계산표 입력값</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+          {moneyField('fixed_loan_amount', '고정값 대출금액', '입력 시 최우선 적용')}
+          {moneyField('loan_base_amount', '대출기준 금액')}
+          {textField('ltv_limit', 'LTV 한도(%)', '예: 40')}
+          {textField('bid_price_loan_limit', '낙찰가 기준 대출한도(%)', '예: 80')}
+          {moneyField('loan_room_deduction', '대출 방빼기금액')}
+          {textField('bank_loan_note', '은행대출 문구', DEFAULT_BANK_LOAN_NOTE)}
+        </div>
+        <div style={{ fontSize: '0.82rem', color: '#64748b' }}>
+          고정값 대출금액을 입력하면 대출기준 금액·LTV·낙찰가 기준 한도보다 우선 적용됩니다.
+        </div>
       </div>
     </div>
   );

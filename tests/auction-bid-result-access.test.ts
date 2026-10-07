@@ -803,6 +803,48 @@ test('낙찰 매출·수수료·분석은 계약자를 고객으로, 입찰자�
   sqlite.close();
 });
 
+test('공매 입찰가와 낙찰가는 7일 이내 수정하며 연결 매출·수수료·분석도 함께 갱신한다', async () => {
+  const { sqlite, request } = setup();
+  const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  sqlite.prepare(`INSERT INTO freelancer_auction_schedules
+    (id,user_id,target_date,activity_type,activity_subtype,data,branch,department)
+    VALUES ('public-bid','owner',?,'입찰','온비드 물건 123가456',?,'의정부지사','경매사업부')`)
+    .run(today, JSON.stringify({
+      auctionKind: 'public', caseNo: '온비드 물건 123가456', itemNo: '', court: '',
+      client: '공매고객', bidder: '공매고객', propertyCategory: '주거', propertyType: '아파트',
+      suggestedPrice: '100000000', bidPrice: '', winPrice: '',
+    }));
+
+  const won = await request('owner', '/public-bid/bid-result', 'POST', {
+    result: 'won', suggested_price: 100_000_000, actual_bid_price: 90_000_000, winning_price: 110_000_000,
+  });
+  assert.equal(won.status, 200, await won.clone().text());
+  assert.match(String(sqlite.prepare("SELECT type_detail FROM sales_records WHERE external_id = 'auction-schedule:public-bid'").pluck().get()), /^\[공매\].*물건번호: 온비드 물건 123가456/);
+
+  const updated = await request('owner', '/public-bid/bid-prices', 'PUT', {
+    suggested_price: 101_000_000, actual_bid_price: 91_000_000, winning_price: 120_000_000,
+  });
+  assert.equal(updated.status, 200, await updated.clone().text());
+  const scheduleData = JSON.parse(sqlite.prepare("SELECT data FROM freelancer_auction_schedules WHERE id = 'public-bid'").pluck().get() as string);
+  assert.equal(scheduleData.bidPrice, '91000000');
+  assert.equal(scheduleData.winPrice, '120000000');
+  assert.deepEqual(sqlite.prepare("SELECT amount, winning_price FROM sales_records WHERE external_id = 'auction-schedule:public-bid'").get(), {
+    amount: 2_200_000, winning_price: 120_000_000,
+  });
+  assert.equal(sqlite.prepare("SELECT win_price FROM commissions WHERE journal_entry_id = 'auction-schedule:public-bid'").pluck().get(), '2200000');
+  assert.deepEqual(sqlite.prepare("SELECT actual_bid_price, winning_price, bid_result FROM bid_analysis_entries WHERE source_id = 'auction-schedule:public-bid'").get(), {
+    actual_bid_price: 91_000_000, winning_price: 120_000_000, bid_result: '낙찰',
+  });
+
+  sqlite.prepare("UPDATE freelancer_auction_schedules SET target_date = '2000-01-01' WHERE id = 'public-bid'").run();
+  const expired = await request('owner', '/public-bid/bid-prices', 'PUT', {
+    suggested_price: 1, actual_bid_price: 1, winning_price: 1,
+  });
+  assert.equal(expired.status, 409);
+  assert.match(String((await expired.json() as any).error), /7일 이내/);
+  sqlite.close();
+});
+
 test('임장 source 입찰가 저장도 실제 입찰 일정을 한 번만 만들고 schedule_id를 반환한다', async () => {
   const { sqlite, request } = setup();
   const inspection = {

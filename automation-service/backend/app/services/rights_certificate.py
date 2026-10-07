@@ -54,6 +54,7 @@ from .selenium_driver import (
     navigate_with_retry,
     safe_click,
     wait_document_ready,
+    myauction_document_url,
 )
 
 try:
@@ -93,8 +94,7 @@ NARRATIVE_CONTENT_HEIGHT_INCHES = 4.90
 NARRATIVE_BODY_FONT_SIZE = Pt(10)
 NO_TENANTS_TEXT = "조사된 임차인이 없으므로, 매수인에게 인수되는 임차권리는 없습니다."
 PARTIAL_NO_TENANTS_TEXT = (
-    "법원에서 조사된 임차인 현황에는 ‘조사된 임차내역이 없습니다’라고 기재되어 있습니다. "
-    "따라서 조사 결과상 임차인은 없으며, 매수인에게 인수되는 임차권리는 없습니다."
+    "법원 현황조사서와 매각물건명세서 상 조사된 임차인은 없으므로, 낙찰자에게 인수되는 임차권리는 없습니다."
 )
 
 BASE_RIGHT_TYPES = ("근저당권", "근저당", "저당권", "저당", "가압류", "압류", "강제경매", "임의경매")
@@ -1399,8 +1399,7 @@ def _tenant_clean_narrative(
         )
     if not tenants:
         return (
-            "법원에서 조사된 임차인 현황에는 ‘조사된 임차내역이 없습니다’라고 명확히 기재되어 있습니다. "
-            "따라서 조사 결과상 임차인은 없으며, 매수인에게 인수되는 임차권리는 없습니다."
+            "법원 현황조사서와 매각물건명세서 상 조사된 임차인은 없으므로, 낙찰자에게 인수되는 임차권리는 없습니다."
         )
     safe_names = [
         item.name for item in items
@@ -1898,8 +1897,12 @@ def analyze_registered_takeover_rights(
                 "배당요구 자료가 충분히 확보되지 않아 신청 여부는 미확인 상태이며, 확인 전에는 낙찰자 인수 가능성을 "
                 "배제할 수 없습니다."
             )
-        if text not in descriptions:
-            descriptions.append(text)
+        # Keep one analysis string per tenant.  Even when multiple occupants
+        # share the same legal conclusion, build_tenant_analysis_text() pairs
+        # this list by index with the original tenant rows; de-duplicating here
+        # collapses many-tenant sale specs into one or shifts later occupants to
+        # the wrong conclusion.
+        descriptions.append(text)
     return descriptions
 
 
@@ -1987,9 +1990,29 @@ def _is_no_tenant_record(tenant: dict) -> bool:
         for key in ("moveInDate", "fixedDate", "depositClaimDate")
     )
     has_money = parse_money(tenant.get("deposit")) > 0 or parse_money(tenant.get("rent")) > 0
-    no_name = _tenant_name_indicates_no_tenants(name)
+    # 이름이 명시적 '없음'이거나, 공란/‘미확인’ 플레이스홀더인 경우 모두 '이름 없음'으로 본다.
+    # (다가구 명세서에서 이름을 못 읽은 행이 '미확인 점유자' 레코드로 생성되어, 임차인이 없는데도
+    #  가짜 임차인 여러 줄로 나열되던 회귀 방지. 보증금·차임·전입/확정/배당요구일이 전혀 없을 때만
+    #  적용하므로, 이름만 미확인인 실제 임차인(보증금/일자 있음)은 그대로 보존된다.)
+    no_name = _tenant_name_indicates_no_tenants(name) or name == "" or "미확인" in name
     no_occupancy = occupancy in ("", "없음", "해당없음", "해당사항없음", "공실", "미상", "미확인")
     return no_name and not has_dates and not has_money and (no_occupancy or "임차인" in occupancy or "점유자" in occupancy)
+
+
+def _no_tenant_record(deadline: str = "") -> dict:
+    return {
+        "name": "조사된 임차내역 없음",
+        "occupancyType": "없음",
+        "type": "없음",
+        "moveInDate": "",
+        "fixedDate": "",
+        "depositClaimDate": "",
+        "depositDeadline": deadline,
+        "deposit": 0,
+        "rent": 0,
+        "isHUG": False,
+        "isVacant": False,
+    }
 
 
 def _tenant_name_indicates_no_tenants(name: str) -> bool:
@@ -2042,6 +2065,51 @@ def _tenant_ocr_text_confirms_no_surveyed_tenants(text: str) -> bool:
     return bool(re.search(r"(?:※|\*)?조사된임차(?:인)?내역(?:이|은|는)?없(?:습니다|음)", compact))
 
 
+def _collect_registry_pdf_text(driver, safe_task_id: str, deadline: Optional[float]) -> tuple[str, bool]:
+    """Use the actual registry PDF when the HTML table is incomplete."""
+    base_url = driver.current_url
+    target = myauction_document_url(base_url, "aceeaea1")
+    if not target or (deadline and time.monotonic() >= deadline):
+        return "", False
+    try:
+        driver.get(target)
+        wait_document_ready(driver, timeout=15)
+        frame = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "detail_target")))
+        source = frame.get_attribute("src") or ""
+        if not source:
+            return "", False
+        pdf_path = pdf_processor.download_pdf_with_cookies(driver, source, f"rights_registry_{safe_task_id}")
+        with fitz.open(pdf_path) as doc:
+            if doc.page_count > 20:
+                return "\n".join(page.get_text() for page in list(doc)[:20]), False
+            page_texts = [page.get_text() for page in doc]
+        if page_texts and all(len(text.strip()) >= 30 for text in page_texts):
+            return "\n".join(page_texts), True
+        remaining = deadline - time.monotonic() if deadline else 90
+        if remaining <= 0:
+            return "\n".join(page_texts), False
+        pattern = str(CAPTURE_DIR / f"rights_registry_pdf_{safe_task_id}_{{page}}.png")
+        count = pdf_processor.pdf_to_images(pdf_path, pattern, dpi=220, timeout_seconds=min(90, max(1, int(remaining))))
+        complete = bool(count) and count == len(page_texts)
+        for index in range(count):
+            if index < len(page_texts) and len(page_texts[index].strip()) >= 30:
+                continue
+            remaining = deadline - time.monotonic() if deadline else 30
+            if remaining <= 0:
+                complete = False
+                break
+            text = ocr_image_to_text(pattern.format(page=index + 1), timeout_seconds=min(30, max(1, int(remaining))))
+            if index < len(page_texts):
+                page_texts[index] = text
+            else:
+                page_texts.append(text)
+            complete = complete and len(text.strip()) >= 30
+        return "\n".join(page_texts), complete
+    finally:
+        driver.get(base_url)
+        wait_document_ready(driver, timeout=15)
+
+
 def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None, deadline: Optional[float] = None) -> dict:
     if not driver or not pytesseract:
         return {}
@@ -2075,6 +2143,16 @@ def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
         if timed_out:
             break
 
+    registry_pdf_complete = False
+    if capture_failed and not timed_out:
+        try:
+            pdf_text, registry_pdf_complete = _collect_registry_pdf_text(driver, safe_task_id, deadline)
+            if pdf_text:
+                texts.append(pdf_text)
+            if registry_pdf_complete:
+                capture_failed = False
+        except Exception as exc:
+            logger.warning(f"등기부 PDF 재수집 실패: {exc}")
     raw_text = normalize_ocr_text("\n".join(texts))
     if not raw_text:
         return {
@@ -2089,10 +2167,10 @@ def extract_rights_context_by_ocr(driver, task_id: Optional[str] = None, deadlin
         "rights_ocr_text": raw_text,
         "rights_ocr_images": image_paths,
         "_timed_out": timed_out,
-        # OCR text is positive evidence, but completeness is not provable from
-        # a partial table capture; absence-based conclusions remain disabled.
+        # Partial HTML tables alone cannot establish completeness. Only the
+        # actual PDF with text from every page enables complete-source review.
         "_incomplete": timed_out or capture_failed,
-        "_source_complete": False,
+        "_source_complete": registry_pdf_complete,
     }
 
 
@@ -2229,11 +2307,24 @@ def extract_sale_spec_tenant_context_by_ocr(driver, task_id: Optional[str] = Non
             "_sale_spec_complete": False,
         }
 
-    tenants = parse_sale_spec_tenants_from_pdf_text(pdf_text) or parse_sale_spec_tenants_from_ocr(raw_text)
+    pdf_tenants = parse_sale_spec_tenants_from_pdf_text(pdf_text)
+    combined_table_tenants = parse_sale_spec_tenants_from_pdf_text(raw_text)
+    ocr_tenants = parse_sale_spec_tenants_from_ocr(raw_text)
+    tenants = _select_best_sale_spec_tenants(pdf_tenants, combined_table_tenants, ocr_tenants)
     # Embedded PDF text can be incomplete even when non-empty. Use the combined
     # embedded-text + OCR result so remarks and special-right signals are not lost.
     sale_spec_context = parse_sale_spec_document_context(raw_text)
     dividend_deadline = sale_spec_context.get("dividendDeadline") or ""
+    # 명세서가 '조사된 임차내역없음'을 명시하면, 보증금/차임 증거가 없는 추측성 임차인은
+    # (상단 메타데이터 오인 등) 신뢰할 수 없으므로 '임차인 없음'으로 확정한다.
+    if _tenant_ocr_text_confirms_no_surveyed_tenants(raw_text):
+        monetary = [
+            t for t in tenants
+            if not _is_no_tenant_record(t)
+            and (parse_money(t.get("deposit")) > 0 or parse_money(t.get("rent")) > 0)
+        ]
+        if not monetary:
+            tenants = [_no_tenant_record(dividend_deadline)]
     for tenant in tenants:
         if dividend_deadline and not tenant.get("depositDeadline"):
             tenant["depositDeadline"] = dividend_deadline
@@ -2282,6 +2373,12 @@ def _sale_spec_page_text_is_substantive(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
     if len(compact) < 20:
         return False
+    # Property-description appendices contain no occupancy/priority sections.
+    # Require the appendix heading and its actual structure, not merely a title.
+    if "부동산의표시" in compact and any(keyword in compact for keyword in (
+        "전유부분", "대지권", "1동의건물", "토지의표시",
+    )):
+        return True
     return any(keyword in compact for keyword in (
         "점유", "임차", "비고", "최선순위", "말소기준", "배당요구", "소재지", "사건",
     ))
@@ -2354,6 +2451,11 @@ def collect_status_survey_text(driver, safe_task_id: str) -> str:
 
 
 def _open_status_survey_document(driver) -> None:
+    direct_url = myauction_document_url(driver.current_url, "status")
+    if direct_url:
+        driver.get(direct_url)
+        wait_document_ready(driver)
+        return
     wait = WebDriverWait(driver, 8)
     candidates = [
         (By.PARTIAL_LINK_TEXT, "현황조사서"),
@@ -2579,6 +2681,11 @@ def capture_sale_spec_images(driver, safe_task_id: str) -> list[str]:
 
 
 def _open_sale_spec_document(driver) -> None:
+    direct_url = myauction_document_url(driver.current_url, "mul")
+    if direct_url:
+        driver.get(direct_url)
+        wait_document_ready(driver)
+        return
     wait = WebDriverWait(driver, 8)
     candidates = [
         (By.PARTIAL_LINK_TEXT, "매각물건명세서"),
@@ -2682,6 +2789,18 @@ def parse_sale_spec_tenants_from_pdf_text(text: str) -> list[dict]:
     if not lines:
         return []
 
+    table_tenants = _parse_sale_spec_tenant_table_lines(lines)
+    if table_tenants:
+        return table_tenants
+    # 셀이 세로로 쪼개진 점유자 표(다가구·상가 다수임차인)는 블록 파서로 임차인별 재구성.
+    block_tenants = _parse_sale_spec_occupancy_blocks(lines)
+    if len(block_tenants) >= 2:
+        return block_tenants
+    if _tenant_ocr_text_confirms_no_surveyed_tenants(text) or _tenant_ocr_text_indicates_no_tenants(text):
+        return [_no_tenant_record()]
+    if block_tenants:
+        return block_tenants
+
     name = _guess_sale_spec_name_from_lines(lines)
     occupancy_type = _guess_sale_spec_occupancy_type_from_lines(lines)
     money_entries = [
@@ -2719,15 +2838,508 @@ def parse_sale_spec_tenants_from_pdf_text(text: str) -> list[dict]:
         "depositDeadline": "",
         "isHUG": "주택도시보증공사" in text or "HUG" in text.upper(),
         "isVacant": "공실" in text,
+        "_parse_method": "summary_fallback",
     }
     tenant.update(_extract_increase_context(text))
 
+    if tenant["name"] and not _looks_like_person_name(tenant["name"]):
+        tenant["name"] = ""
     if not tenant["name"] and not tenant["deposit"] and not tenant["moveInDate"]:
+        return []
+    if not tenant["name"] and not tenant["deposit"]:
         return []
     tenant["name"] = tenant["name"] or "미확인 점유자"
     tenant["occupancyType"] = tenant["occupancyType"] or "미확인"
     tenant["type"] = tenant["occupancyType"]
     return [tenant]
+
+
+def _parse_sale_spec_tenant_table_lines(lines: list[str]) -> list[dict]:
+    """Parse sale-spec occupancy rows without collapsing the whole table to one tenant.
+
+    매각물건명세서의 점유자 표는 PDF text/OCR에서 한 줄에 한 행으로 나오기도
+    하고, 성명 셀이 rowspan 처리되어 다음 행(권리신고/등기사항전부증명서)에
+    이름이 빠져 나오기도 한다.  기존 단일 요약 파서는 이 표 전체에서 첫 이름과
+    첫 금액만 뽑아 한 명으로 압축했기 때문에 다수 임차인 사건의 권리분석이
+    첫 임차인만 표시되었다.  이 함수는 행 단위로 이름·출처·일자·금액을 읽고,
+    이름이 생략된 후속 행은 직전 이름에 병합한다.
+    """
+
+    tenants_by_name: dict[str, dict] = {}
+    order: list[str] = []
+    last_name = ""
+
+    for raw_line in lines:
+        line = _clean_inline_for_sale_spec_row(raw_line)
+        if not line or _is_tenant_header_line(line):
+            continue
+        if _line_is_sale_spec_notice(line):
+            break
+
+        parsed = _parse_sale_spec_tenant_table_line(line, last_name)
+        if not parsed:
+            continue
+
+        name = parsed.get("name") or ""
+        if not name:
+            continue
+        last_name = name
+
+        if name not in tenants_by_name:
+            tenants_by_name[name] = parsed
+            order.append(name)
+            continue
+
+        tenants_by_name[name] = _merge_sale_spec_tenant_rows(tenants_by_name[name], parsed)
+
+    tenants = [tenants_by_name[name] for name in order]
+    return _dedupe_by(tenants, ("name", "occupancyType", "moveInDate", "deposit", "rent"))
+
+
+# ── 세로로 쪼개진 점유자 표(열 구조) 전용 블록 파서 ───────────────────────────
+# 매각물건명세서 PDF/OCR이 점유자 표의 '셀'을 한 줄에 하나씩 세로로 뱉어, 한 줄에
+# 이름+정보출처+날짜가 함께 오지 않는 경우(다가구·상가 다수임차인)를 처리한다.
+# 정보출처(현황조사/권리신고/등기사항전부증명서)를 '행 앵커'로 삼고, 이름은 마커 앞
+# 토큰에서, 보증금·차임·전입·확정·배당요구는 마커 뒤에서 읽어 임차인별로 재구성한다.
+_OCC_SRC_MARKERS = ("현황조사", "권리신고", "등기사항전부증명서", "등기사항전")
+_OCC_TENURE = ("점포", "주거", "임차인", "임차권자", "임차권", "전차인")
+_OCC_LEGAL_PREFIX = ("주식회사", "유한회사", "사단법인", "재단법인", "협동조합", "농업회사법인", "합자회사", "합명회사", "유한책임회사")
+# 열 제목·정보출처 꼬리 등 '이름이 아닌' 고정 토큰 (가짜 임차인화 방지)
+_OCC_NOISE = {
+    "부증명서", "증명서", "점유개시일자", "점유개시", "개시일자", "점유개시일",
+    "전입신고일자", "확정일자", "배당요구일자", "배당요구", "사업자등록", "신청일자",
+    "점유부분", "정보출처", "점유자", "성명", "권원", "보증금", "임대차기간", "점유기간",
+}
+_OCC_DATE_RE = re.compile(r"^\d{4}[.\-/]\s?\d{1,2}[.\-/]\s?\d{1,2}")
+_OCC_MONEY_RE = re.compile(r"^\d{1,3}(?:,\d{3})+$|^\d{4,}$")
+
+
+def _occ_is_part(tok: str) -> bool:
+    """점유부분/부가정보(점유자 이름이 아님) 토큰 판별."""
+    t = str(tok).strip()
+    if not t:
+        return True
+    if re.match(r"^\d+\s*층", t) or re.match(r"^\d+\s*호", t):
+        return True
+    if t in ("전부", "지하", "지하실", "별지", "표시", "건물", "중", "면", "도면", "일부", "-", "~", "호", "층", "동"):
+        return True
+    if re.search(r"㎡|별지|도면|기타란|기재상|사보고|현황조$|^서$|항$|호\(|민등록|등본상|㉠|㉡", t):
+        return True
+    if re.fullmatch(r"[ㄱ-ㅎ,.·]+", t):
+        return True
+    return False
+
+
+def _occ_is_name_token(tok: str) -> bool:
+    t = str(tok).strip()
+    if not t or t in _OCC_TENURE or t in ("미상", "부터", "까지", "없음", "-", "소유자", "채무자"):
+        return False
+    if t in _OCC_SRC_MARKERS or t in _OCC_NOISE:
+        return False
+    if _OCC_DATE_RE.match(t) or _OCC_MONEY_RE.match(t):
+        return False
+    if _occ_is_part(t):
+        return False
+    if re.fullmatch(r"[가-힣]{1,}", t):
+        return True
+    if re.fullmatch(r"[A-Za-z]{2,}", t):  # 외국인 영문명(SUN YUN HAO 등)
+        return True
+    return False
+
+
+def _occ_join_name(toks: list[str]) -> str:
+    if not toks:
+        return ""
+    if all(re.fullmatch(r"[가-힣]+", x) for x in toks):
+        s = "".join(toks)
+    else:
+        s = " ".join(toks)
+    for p in _OCC_LEGAL_PREFIX:
+        if s.startswith(p) and len(s) > len(p):
+            return p + " " + s[len(p):]
+    return s
+
+
+def _parse_sale_spec_occupancy_blocks(lines: list[str]) -> list[dict]:
+    tokens: list[str] = []
+    for ln in lines:
+        tokens.extend(str(ln).split())
+
+    tenants: list[dict] = []
+    cur: Optional[dict] = None
+    name_buf: list[str] = []
+    name_locked = False
+
+    def _new(name: str) -> dict:
+        return {
+            "name": name, "occupancyType": "", "type": "", "deposit": 0, "rent": 0,
+            "moveInDate": "", "fixedDate": "", "depositClaimDate": "", "depositDeadline": "",
+            "isHUG": False, "isVacant": False,
+            "_after_money_dates": [], "_before_dates": [], "_parse_method": "table_row",
+        }
+
+    for i, tok in enumerate(tokens):
+        prev = tokens[i - 1] if i > 0 else ""
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+
+        if tok in _OCC_SRC_MARKERS:
+            name = _occ_join_name(name_buf)
+            name_buf = []
+            name_locked = False
+            if name:
+                cur = _new(name)
+                tenants.append(cur)
+            elif cur is None:
+                cur = _new("")
+                tenants.append(cur)
+            continue
+
+        if cur is not None:
+            if tok in ("부터", "까지"):
+                continue
+            if _OCC_MONEY_RE.match(tok):
+                value = int(tok.replace(",", ""))
+                if cur["deposit"] == 0:
+                    cur["deposit"] = value
+                elif cur["rent"] == 0:
+                    cur["rent"] = value
+                continue
+            if _OCC_DATE_RE.match(tok):
+                is_lease = nxt in ("부터", "까지") or prev in ("부터", "까지") or tok.endswith("~") or prev.endswith("~")
+                if not is_lease:
+                    norm = normalize_date(tok)
+                    (cur["_after_money_dates"] if cur["deposit"] > 0 else cur["_before_dates"]).append(norm)
+                continue
+            if any(keyword in tok for keyword in _OCC_TENURE):
+                cur["occupancyType"] = (cur["occupancyType"] + " " + tok).strip()
+                continue
+            if "주택도시보증공사" in tok or tok.upper() == "HUG":
+                cur["isHUG"] = True
+            if tok == "공실":
+                cur["isVacant"] = True
+            if tok == "미상":
+                continue
+
+        if _occ_is_part(tok):
+            if name_buf:
+                name_locked = True
+            continue
+        if (not name_locked) and _occ_is_name_token(tok):
+            name_buf.append(tok)
+
+    for tenant in tenants:
+        dates = tenant["_after_money_dates"] or tenant["_before_dates"]
+        tenant["moveInDate"] = dates[0] if len(dates) > 0 else ""
+        tenant["fixedDate"] = dates[1] if len(dates) > 1 else ""
+        tenant["depositClaimDate"] = dates[2] if len(dates) > 2 else ""
+        occ = tenant["occupancyType"]
+        if "점포" in occ or "상가" in occ:
+            tenant["occupancyType"] = "상가 임차인"
+        elif "주거" in occ:
+            tenant["occupancyType"] = "주거 임차인"
+        elif "임차" in occ:
+            tenant["occupancyType"] = "임차인"
+        else:
+            tenant["occupancyType"] = "미확인"
+        tenant["type"] = tenant["occupancyType"]
+        tenant["name"] = tenant["name"] or "미확인 점유자"
+        for key in ("_after_money_dates", "_before_dates"):
+            tenant.pop(key, None)
+
+    # 이름(사람 또는 법인) 또는 보증금·차임·전입/확정 중 아무 것도 없는 블록은 버린다.
+    # (법인명은 5자를 넘어 _looks_like_person_name을 통과하지 못하므로 이름 공백 여부로 판정)
+    def _has_signal(t: dict) -> bool:
+        name = str(t.get("name") or "").strip()
+        has_name = bool(name) and name != "미확인 점유자"
+        return (
+            has_name
+            or parse_money(t.get("deposit")) > 0
+            or parse_money(t.get("rent")) > 0
+            or any(_has_valid_date(t.get(k) or "") for k in ("moveInDate", "fixedDate", "depositClaimDate"))
+        )
+
+    tenants = [t for t in tenants if _has_signal(t)]
+    return _dedupe_by(tenants, ("name", "occupancyType", "moveInDate", "deposit", "rent"))
+
+
+def _select_best_sale_spec_tenants(*tenant_sets: list[dict]) -> list[dict]:
+    """Choose the richest sale-spec tenant parse instead of trusting first hit.
+
+    Some court PDFs expose an embedded text layer that collapses a multi-row
+    tenant table into one pseudo row.  In that case the old ``pdf or ocr``
+    selection returned the single fallback tenant and discarded the OCR result,
+    even when OCR had read all 현황조사 rows.  Prefer the parse with more real
+    occupant names; use the single summary fallback only when no richer table
+    parse exists.
+    """
+
+    candidates: list[list[dict]] = []
+    for tenants in tenant_sets:
+        cleaned = [
+            dict(tenant)
+            for tenant in (tenants or [])
+            if tenant and not _is_no_tenant_record(tenant)
+        ]
+        if cleaned:
+            candidates.append(_dedupe_by(cleaned, ("name", "occupancyType", "moveInDate", "deposit", "rent")))
+
+    if not candidates:
+        return []
+
+    structured_candidates = [
+        tenants
+        for tenants in candidates
+        if sum(1 for tenant in tenants if tenant.get("_parse_method") == "table_row") >= 2
+    ]
+    if structured_candidates:
+        candidates = structured_candidates
+
+    best = max(candidates, key=_sale_spec_tenant_parse_score)
+    # If OCR/table parsing found multiple occupants, do not merge values from a
+    # one-row summary fallback.  Such fallbacks commonly pair the first visible
+    # name with a later tenant's deposit and caused the production "one tenant"
+    # regression.
+    if len(best) > 1:
+        return best
+
+    return best
+
+
+def _sale_spec_tenant_parse_score(tenants: list[dict]) -> tuple[int, int, int, int, int]:
+    valid = [tenant for tenant in (tenants or []) if tenant and not _is_no_tenant_record(tenant)]
+    named = sum(1 for tenant in valid if _looks_like_person_name(tenant.get("name") or ""))
+    unknown = len(valid) - named
+    dated = sum(
+        1
+        for tenant in valid
+        if any(_has_valid_date(tenant.get(key) or "") for key in ("moveInDate", "fixedDate", "depositClaimDate"))
+    )
+    money = sum(
+        1
+        for tenant in valid
+        if parse_money(tenant.get("deposit")) > 0 or parse_money(tenant.get("rent")) > 0
+    )
+    table_rows = sum(1 for tenant in valid if tenant.get("_parse_method") == "table_row")
+    # 매각물건명세서 '점유자 영역'에서 읽은 결과(_parse_method 가 table_row 또는 summary_fallback)는
+    # 전문서 OCR(비고란·등기 문장까지 훑어 '가압류'·'전액'·'있는'·'변제' 같은 조각을 이름으로
+    # 만드는)보다 신뢰한다. 셀이 한 줄씩 쪼개져 table_row 가 안 잡혀도 summary_fallback 으로
+    # 점유자 영역만 읽은 결과가 전문서 OCR보다 정확하다. (서울서부 2024타경 사례 회귀 방지)
+    occupancy_region = sum(
+        1 for tenant in valid if tenant.get("_parse_method") in ("table_row", "summary_fallback")
+    )
+    if table_rows:
+        return (3, table_rows, named, dated + money, -unknown)
+    if occupancy_region:
+        return (2, occupancy_region, named, dated + money, -unknown)
+    if named:
+        return (1, named, dated + money, -unknown, 0)
+    return (0, len(valid), dated + money, 0, 0)
+
+
+def _looks_like_person_name(value: str) -> bool:
+    text = re.sub(r"\s+", "", str(value or ""))
+    if not re.fullmatch(r"[가-힣]{2,5}", text):
+        return False
+    blocked = {
+        "미확인",
+        "점유자",
+        "임차인",
+        "소유자",
+        "채무자",
+        "근저당권",
+        "최선순위",
+        "부증명서",
+        "차권등기",
+        "록신청일자",
+        "신고일자",
+        "전입일자",
+        "확정일자",
+        "배당일자",
+        "배당요구",
+        "사업자등",
+        "권원",
+        "기간",
+        "작성일자",
+        "담당법관",
+        "담당자확인",
+        "미확인점유자",
+        "조사된",
+        "가압류",
+        "압류",
+        "전액",
+        "대항력",
+        "우선변제",
+    }
+    return text not in blocked
+
+
+# 조사/연결어미로 끝나는 토큰은 사람 이름이 아니라 문장 조각이다.
+# (예: "대항요건을", "있고", "갖추고", "하였음", "하였습니다") — 산문에서 이름을 잘못 추출하는 회귀 방지.
+_NON_NAME_SUFFIX_CHARS = set("을를과와며고음함됨로다요할")
+_NON_NAME_SUFFIXES_MULTI = (
+    "으로", "에서", "에게", "까지", "부터", "보다", "처럼",
+    "라도", "든지", "이나", "거나", "지만", "는데", "면서",
+)
+
+# 문장(산문) 신호. 매각물건명세서 비고란·현황조사서 서술문에서 이름을 추측하지 않도록
+# 이 신호가 있으면 추측을 중단한다. (표 형태의 임차인 행에는 이런 종결/연결어미가 없다.)
+_PROSE_SIGNAL_RE = re.compile(
+    r"(습니다|합니다|됩니다|입니다|있고|없고|하였|되었|으며|하여|되어|때문|경우|바랍니다|않습|있으며|없으며|그리고|또한)"
+)
+
+
+def _is_name_like_token(value: str) -> bool:
+    """산문 토큰에서 임차인 이름 후보를 고를 때 쓰는 더 엄격한 판정.
+
+    라벨('성명')로 명시 추출된 이름을 검증하는 ``_looks_like_person_name`` 보다
+    보수적으로, 조사/연결어미로 끝나는 문장 조각을 배제한다. (라벨 추출 경로에는
+    적용하지 않으므로 '고/로' 등으로 끝나는 실제 이름이 손상되지 않는다.)
+    """
+    text = re.sub(r"\s+", "", str(value or ""))
+    if not _looks_like_person_name(text):
+        return False
+    if any(text.endswith(suffix) for suffix in _NON_NAME_SUFFIXES_MULTI):
+        return False
+    if len(text) >= 2 and text[-1] in _NON_NAME_SUFFIX_CHARS:
+        return False
+    return True
+
+
+def _clean_inline_for_sale_spec_row(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
+    text = text.replace("ㆍ", ".")
+    return text
+
+
+def _line_is_sale_spec_notice(line: str) -> bool:
+    compact = re.sub(r"\s+", "", line or "")
+    return any(token in compact for token in (
+        "최선순위설정일자보다",
+        "등기된부동산에관한권리",
+        "매각으로그효력",
+        "비고",
+    ))
+
+
+def _parse_sale_spec_tenant_table_line(line: str, previous_name: str = "") -> dict:
+    compact = re.sub(r"\s+", "", line or "")
+    if not compact:
+        return {}
+    # 서술형(산문) 문장은 매각물건명세서 점유자 '표의 행'이 아니다. 비고란·각주 문장
+    # ("...임차인은 대항요건을 갖추고 있고...")을 행으로 오인해 조각을 임차인으로
+    # 만들던 회귀 방지. (실제 표 행에는 종결/연결어미가 없다.)
+    if _PROSE_SIGNAL_RE.search(line or ""):
+        return {}
+    if not any(token in compact for token in ("현황조사", "권리신고", "등기사항전부증명서", "등기사항전", "임차인")):
+        return {}
+    if not any(token in compact for token in ("임차인", "전입", "현황조사", "권리신고", "등기사항전")):
+        return {}
+
+    source_match = re.search(r"(현황조사|권리신고|등기사항전부증명서|등기사항전\s*부증명서|등기사항전)", line)
+    if not source_match:
+        return {}
+    source_start = source_match.start()
+    before_source = line[:source_start].strip(" /,|")
+    name = _sale_spec_name_before_source(before_source) or previous_name
+
+    dates = [normalize_date(d) for d in re.findall(r"\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}", line)]
+    amounts = _sale_spec_money_amounts(line)
+    occupancy_type = _guess_occupancy_type(line) or _guess_sale_spec_occupancy_type_from_lines([line])
+    if "주거" in compact and "임차인" in compact:
+        occupancy_type = "주거 임차인"
+    elif "상가" in compact and "임차인" in compact:
+        occupancy_type = "상가 임차인"
+    elif "임차인" in compact and not occupancy_type:
+        occupancy_type = "임차인"
+
+    deposit = 0
+    rent = 0
+    if amounts:
+        # The largest/first large amount is normally the deposit.  Monthly rent
+        # follows it and is much smaller; keep order for table rows.
+        deposit = amounts[0]
+        if len(amounts) >= 2:
+            rent = amounts[1]
+
+    move_in = ""
+    fixed = ""
+    claim = ""
+    if deposit > 0 and len(dates) >= 3:
+        # In sale-spec rows with 보증금/차임 the first date is often 임대차기간
+        # start; the following dates are 전입, 확정, 배당요구일.
+        move_in = dates[1]
+        fixed = dates[2]
+        claim = dates[3] if len(dates) >= 4 else ""
+    elif dates:
+        move_in = dates[0]
+        fixed = dates[1] if len(dates) >= 2 else ""
+        claim = dates[2] if len(dates) >= 3 else ""
+
+    if not name and not move_in and deposit <= 0:
+        return {}
+
+    tenant = {
+        "name": name or "미확인 점유자",
+        "occupancyType": occupancy_type or "미확인",
+        "type": occupancy_type or "미확인",
+        "deposit": deposit,
+        "rent": rent,
+        "moveInDate": move_in,
+        "fixedDate": fixed,
+        "depositClaimDate": claim,
+        "depositDeadline": "",
+        "isHUG": "주택도시보증공사" in line or "HUG" in line.upper(),
+        "isVacant": "공실" in line,
+        "source": source_match.group(1).replace(" ", ""),
+        "_parse_method": "table_row",
+    }
+    tenant.update(_extract_increase_context(line))
+    return tenant
+
+
+def _sale_spec_name_before_source(value: str) -> str:
+    text = re.sub(r"\d+층|\d+호|\d+\s*층|\d+\s*호", " ", value or "")
+    text = re.sub(r"[0-9.,/|()]+", " ", text)
+    tokens = [token.strip() for token in text.split() if token.strip()]
+    blocked = {"주거", "상가", "임차인", "점유자", "성명", "점유", "부분", "권원", "전부", "일부"}
+    for token in reversed(tokens):
+        # 키워드에 조사가 붙은 토큰('임차인은', '점유자가' 등)도 제외한다.
+        if any(token.startswith(word) for word in blocked):
+            continue
+        # 조사/어미로 끝나는 문장 조각('대항요건을', '있고' 등)을 이름으로 뽑지 않는다.
+        if _is_name_like_token(token):
+            return token
+    return ""
+
+
+def _sale_spec_money_amounts(line: str) -> list[int]:
+    amounts: list[int] = []
+    for raw in re.findall(r"\d{1,3}(?:,\d{3})+|\d{4,}", line or ""):
+        # Dates can be fragmented as 2025 or 2020 when OCR drops separators.
+        if re.fullmatch(r"\d{4}", raw):
+            continue
+        try:
+            amount = int(raw.replace(",", ""))
+        except ValueError:
+            continue
+        if amount >= 10_000:
+            amounts.append(amount)
+    return amounts
+
+
+def _merge_sale_spec_tenant_rows(base: dict, incoming: dict) -> dict:
+    merged = dict(base)
+    for key in ("occupancyType", "type", "moveInDate", "fixedDate", "depositClaimDate", "depositDeadline", "source"):
+        if not merged.get(key) and incoming.get(key):
+            merged[key] = incoming[key]
+    for key in ("deposit", "rent"):
+        if parse_money(merged.get(key)) <= 0 and parse_money(incoming.get(key)) > 0:
+            merged[key] = incoming[key]
+    for key in ("isHUG", "isVacant", "hasIncrease"):
+        merged[key] = bool(merged.get(key) or incoming.get(key))
+    if not merged.get("increaseFixedDate") and incoming.get("increaseFixedDate"):
+        merged["increaseFixedDate"] = incoming["increaseFixedDate"]
+    return merged
 
 
 def parse_sale_spec_document_context(text: str) -> dict:
@@ -2888,7 +3500,7 @@ def _guess_sale_spec_name_from_lines(lines: list[str]) -> str:
             continue
         if any(word in line for word in ("점유", "보증금", "차임", "전입", "확정", "배당")):
             continue
-        if 1 < len(line) <= 30 and re.search(r"[가-힣A-Za-z]", line):
+        if _is_name_like_token(line):
             return line
     return ""
 
@@ -2910,18 +3522,32 @@ def _guess_sale_spec_occupancy_type_from_lines(lines: list[str]) -> str:
 
 def parse_sale_spec_tenants_from_ocr(text: str) -> list[dict]:
     tenants = []
+    current_deadline = ""
+    explicit_survey_none = _tenant_ocr_text_confirms_no_surveyed_tenants(text)
     for raw_line in (text or "").splitlines():
         line = raw_line.strip()
         if not line:
+            continue
+        if "배당요구종기" in line or "종기" in line:
+            current_deadline = normalize_date(_first_date(line) or "")
+        # 명세서 상단/하단 메타데이터(최선순위 설정·배당요구종기·근저당권·작성/법관 등)는
+        # 점유자 표의 행이 아니다. '설정 2018.6.11 근저당권 배당요구종기 …' 줄에서
+        # '설정'·'종기'를 임차인명으로 뽑던 회귀 방지.
+        if _is_sale_spec_metadata_line(line):
             continue
         if not _looks_like_sale_spec_tenant_line(line):
             continue
         if _is_tenant_header_line(line):
             continue
+        if _tenant_ocr_text_indicates_no_tenants(line):
+            continue
 
         dates = [normalize_date(d) for d in re.findall(r"\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}", line)]
+        labeled_name = _extract_labeled_value(line, ("점유자 성명", "점유자", "성명"))
+        raw_name = labeled_name or _guess_sale_spec_tenant_name(line)
+        name = raw_name if _looks_like_person_name(raw_name) else ""
         tenant = {
-            "name": _extract_labeled_value(line, ("점유자 성명", "점유자", "성명")) or _guess_sale_spec_tenant_name(line),
+            "name": name,
             "occupancyType": _extract_labeled_value(line, ("점유구분", "점유관계", "점유 부분", "점유")) or _guess_occupancy_type(line),
             "type": _guess_occupancy_type(line),
             "deposit": _extract_money_after_keywords(line, ("보증금", "임대차보증금", "전세금")),
@@ -2935,18 +3561,86 @@ def parse_sale_spec_tenants_from_ocr(text: str) -> list[dict]:
         }
         tenant.update(_extract_increase_context(line))
 
-        if not tenant["name"] and not tenant["moveInDate"] and not tenant["deposit"]:
+        if not _is_confident_sale_spec_ocr_tenant(
+            tenant,
+            line,
+            explicit_survey_none,
+            labeled_name=bool(labeled_name and _looks_like_person_name(labeled_name)),
+        ):
             continue
         tenant["name"] = tenant["name"] or "미확인 점유자"
         tenant["occupancyType"] = tenant["occupancyType"] or "미확인"
         tenants.append(tenant)
 
-    return _dedupe_by(tenants, ("name", "occupancyType", "moveInDate", "deposit", "rent"))
+    deduped = _dedupe_by(tenants, ("name", "occupancyType", "moveInDate", "deposit", "rent"))
+    if not deduped and explicit_survey_none:
+        return [_no_tenant_record(current_deadline)]
+    return deduped
 
 
 def _looks_like_sale_spec_tenant_line(line: str) -> bool:
     keywords = ("점유", "임차", "보증금", "차임", "월세", "전입", "확정", "배당요구")
     return any(k in line for k in keywords) or bool(re.search(r"\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}", line))
+
+
+def _is_sale_spec_metadata_line(line: str) -> bool:
+    """매각물건명세서의 점유자 표가 아닌 '메타데이터' 줄인지 판정한다.
+
+    최선순위 설정일·배당요구종기·작성일자/담임법관·감정평가액 같은 머리말/꼬리말 줄은
+    점유자 행이 아니다.  이런 줄에서 '설정'·'종기' 같은 단어나 설정일자를 임차인
+    이름·전입일로 뽑아 '조사된 임차내역없음'인데도 가짜 임차인을 만들던 회귀를 막는다.
+    """
+    compact = re.sub(r"\s+", "", line or "")
+    if not compact:
+        return False
+    if any(token in compact for token in (
+        "최선순위", "배당요구종기", "담임법관", "사법보좌관", "작성일자",
+        "감정평가액", "최저매각가격", "매각물건명세서", "부동산의표시", "전자서명",
+    )):
+        return True
+    # '설정 … 근저당권/전세권/지상권/가등기/(가)압류' 형태의 말소기준 설정 줄
+    if "설정" in compact and any(
+        token in compact for token in ("근저당권", "저당권", "전세권", "지상권", "가등기", "압류", "가압류")
+    ):
+        return True
+    return False
+
+
+def _is_confident_sale_spec_ocr_tenant(
+    tenant: dict,
+    line: str,
+    explicit_survey_none: bool = False,
+    labeled_name: bool = False,
+) -> bool:
+    name = str(tenant.get("name") or "").strip()
+    has_person_name = _looks_like_person_name(name)
+    has_money = parse_money(tenant.get("deposit")) > 0 or parse_money(tenant.get("rent")) > 0
+    has_dates = any(
+        _has_valid_date(tenant.get(key) or "")
+        for key in ("moveInDate", "fixedDate", "depositClaimDate")
+    )
+    compact = re.sub(r"\s+", "", line or "")
+    has_structured_source = any(
+        token in compact
+        for token in ("현황조사", "권리신고", "등기사항전부증명서", "등기사항전")
+    )
+    has_tenant_context = any(token in compact for token in ("임차인", "주거임차", "상가임차", "점유자"))
+
+    if explicit_survey_none and not (has_person_name or has_money):
+        return False
+    # 라벨('성명')로 명시 추출된 이름은 신뢰: 임차 맥락·구조적 출처만 있어도 임차인으로 인정한다.
+    if labeled_name and (has_tenant_context or has_structured_source or has_money or has_dates):
+        return True
+    # 산문에서 추측한 이름만 있는 경우, 보증금·차임 또는 전입/확정/배당요구일 같은 '구조적 증거'가
+    # 반드시 있어야 임차인으로 인정한다. (비고란·각주 문장에서 조각을 이름으로 뽑아 가짜 임차인을
+    # 만드는 회귀 방지 — md §6 D04: 트리거는 데이터 필드에만, 양식 고정문·각주 제외)
+    if has_person_name and (has_money or has_dates):
+        return True
+    if has_money and (has_structured_source or has_tenant_context):
+        return True
+    # A date by itself is often a deadline/header value; it is not enough to
+    # create an unidentified tenant row.
+    return False
 
 
 def _ocr_text_has_tenant_signals(text: str) -> bool:
@@ -3005,6 +3699,10 @@ def _guess_occupancy_type(line: str) -> str:
 
 
 def _guess_sale_spec_tenant_name(line: str) -> str:
+    # 서술형(산문) 라인에서는 이름을 추측하지 않는다. (비고란/각주 문장에서 '대항요건을',
+    #  '있고' 같은 문장 조각을 임차인명으로 뽑던 회귀 방지)
+    if _PROSE_SIGNAL_RE.search(line or ""):
+        return ""
     cleaned = re.sub(r"\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}", " ", line)
     cleaned = re.sub(r"\d{1,3}(?:,\d{3})+|\d{4,}\s*원?", " ", cleaned)
     cleaned = re.sub(
@@ -3015,7 +3713,7 @@ def _guess_sale_spec_tenant_name(line: str) -> str:
     cleaned = re.sub(r"[:：|()\[\],./]", " ", cleaned)
     tokens = [t.strip() for t in cleaned.split() if t.strip()]
     for token in tokens:
-        if 1 < len(token) <= 20 and re.search(r"[가-힣A-Za-z]", token):
+        if _is_name_like_token(token):
             return token
     return ""
 
@@ -3048,6 +3746,12 @@ def parse_tenants_from_ocr(text: str) -> list[dict]:
         deposit = parse_money(line)
         name = _guess_ocr_tenant_name(line)
 
+        if explicit_survey_none and not (_looks_like_person_name(name) or deposit > 0):
+            continue
+        if not _looks_like_person_name(name):
+            name = ""
+        if not name and deposit <= 0:
+            continue
         if not dates and not deposit and not name:
             continue
         tenants.append(
@@ -3067,30 +3771,20 @@ def parse_tenants_from_ocr(text: str) -> list[dict]:
 
     deduped = _dedupe_by(tenants, ("name", "moveInDate", "deposit"))
     if not deduped and explicit_survey_none:
-        return [{
-            "name": "조사된 임차내역 없음",
-            "occupancyType": "없음",
-            "type": "없음",
-            "moveInDate": "",
-            "fixedDate": "",
-            "depositClaimDate": "",
-            "depositDeadline": current_deadline,
-            "deposit": 0,
-            "rent": 0,
-            "isHUG": False,
-            "isVacant": False,
-        }]
+        return [_no_tenant_record(current_deadline)]
     return deduped
 
 
 def _guess_ocr_tenant_name(line: str) -> str:
+    if _PROSE_SIGNAL_RE.search(line or ""):
+        return ""
     cleaned = re.sub(r"\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}", " ", line)
     cleaned = re.sub(r"\d{1,3}(?:,\d{3})+|\d{4,}\s*원?", " ", cleaned)
     cleaned = re.sub(r"(임차인|전입일자?|전입|확정일자?|확정|배당요구일자?|배당요구|보증금|점유|월세|차임|없음|미상)", " ", cleaned)
     cleaned = re.sub(r"[:|()\[\],.]", " ", cleaned)
     tokens = [t.strip() for t in cleaned.split() if t.strip()]
     for token in tokens:
-        if 1 < len(token) <= 20 and re.search(r"[가-힣A-Za-z]", token):
+        if _is_name_like_token(token):
             return token
     return ""
 
@@ -3138,8 +3832,9 @@ def analyze_tenants(
         increase_text = _tenant_increase_takeover_text(tenant, base_date)
         if increase_text:
             text = f"{text}\n{increase_text}"
-        if text not in descriptions:
-            descriptions.append(text)
+        # 다가구·상가 다수임차인은 임차인마다 전입일이 달라 대항력 판정이 제각각이므로,
+        # 중복 제거하지 않고 임차인 순서대로 1:1로 인수여부를 매칭한다.
+        descriptions.append(text)
     return descriptions
 
 
@@ -3182,7 +3877,10 @@ def _tenant_takeover_case(
             "takeover": None,
         }
     if not _date_before(move_in, base_date):
-        text = "확인된 임차인은 말소기준권리보다 후순위이므로, 낙찰자에게 인수되는 임차권리는 없습니다."
+        text = (
+            f"전입일·사업자등록일({move_in})이 말소기준권리 설정일({base_date})보다 늦어 "
+            "대항력이 없으므로(대항력 X), 낙찰자에게 인수되는 임차권리는 없습니다."
+        )
         return {"text": text, "takeover": False}
 
     fixed_before_base = _date_before(fixed_date, base_date)
@@ -3190,14 +3888,14 @@ def _tenant_takeover_case(
 
     if fixed_before_base and request_on_time:
         return {
-            "text": "최선순위 설정 보다 앞선 대항력을 갖춘 임차인이 있으므로,순위 배당 시 배당 받지 못하는 잔액이 있다면, 잔액은 낙찰자에게 인수됩니다.",
+            "text": "최선순위 설정 보다 앞선 대항력을 갖춘(대항력 O) 임차인이 있으므로,순위 배당 시 배당 받지 못하는 잔액이 있다면, 잔액은 낙찰자에게 인수됩니다.",
             "takeover": True,
         }
 
     if fixed_before_base and _date_after(request_date, deadline):
         return {
             "text": (
-                "최선순위 설정보다 앞선 대항력을 갖춘 임차인이 있습니다. 배당요구일이 종기보다 늦은 것으로 확인되어, "
+                "최선순위 설정보다 앞선 대항력을 갖춘(대항력 O) 임차인이 있습니다. 배당요구일이 종기보다 늦은 것으로 확인되어, "
                 "적법한 배당요구의 효과가 인정되지 않을 경우 미회수 보증금 잔액이 낙찰자에게 인수될 가능성이 있습니다."
             ),
             "takeover": True,
@@ -3205,13 +3903,13 @@ def _tenant_takeover_case(
 
     if not _has_valid_date(fixed_date) and request_on_time:
         return {
-            "text": "최선순위 설정 보다 앞선 대항력을 갖춘 임차인이 있으므로,순위 배당 시 배당 받지 못하는 잔액이 있다면, 잔액은 낙찰자에게 인수됩니다.",
+            "text": "최선순위 설정 보다 앞선 대항력을 갖춘(대항력 O) 임차인이 있으므로,순위 배당 시 배당 받지 못하는 잔액이 있다면, 잔액은 낙찰자에게 인수됩니다.",
             "takeover": True,
         }
 
     return {
         "text": (
-            "최선순위 설정보다 앞선 대항력을 갖춘 임차인이 있으나 확정일자·배당요구 효과가 충분히 확인되지 않아, "
+            "최선순위 설정보다 앞선 대항력을 갖춘(대항력 O) 임차인이 있으나 확정일자·배당요구 효과가 충분히 확인되지 않아, "
             "미회수 보증금의 낙찰자 인수 가능성을 배제할 수 없습니다."
         ),
         "takeover": True,
@@ -5008,25 +5706,26 @@ def _extract_related_cases(soup) -> list[dict]:
 
 
 def _extract_management_fee(soup) -> dict:
-    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
-    if "관리비" not in text:
-        return {}
-
     candidates: list[tuple[int, int, str]] = []
-    for match in re.finditer(r"(?:미납\s*)?관리비|체납\s*관리비", text):
-        nearby = text[max(0, match.start() - 120): min(len(text), match.end() + 260)]
-        if "관리비" not in nearby:
+    for source_text in _management_fee_source_texts(soup):
+        text = re.sub(r"\s+", " ", source_text)
+        if "관리비" not in text:
             continue
-        unpaid_hint = any(word in nearby for word in ("미납", "체납"))
-        amount = _extract_management_fee_amount(nearby) if unpaid_hint else 0
-        keyword_score = 2 if re.search(r"미납\s*관리비|체납\s*관리비", match.group(0)) else 1
-        amount_score = 10 if amount > 0 else 0
-        candidates.append((amount_score + keyword_score, amount, nearby))
+        if _looks_contaminated_management_fee_text(text):
+            continue
+        for match in re.finditer(r"(?:미납\s*)?관리비|체납\s*관리비", text):
+            nearby = text[max(0, match.start() - 80): min(len(text), match.end() + 180)]
+            if "관리비" not in nearby or _looks_contaminated_management_fee_text(nearby):
+                continue
+            unpaid_hint = any(word in nearby for word in ("미납", "체납"))
+            amount = _extract_management_fee_amount(nearby) if unpaid_hint else 0
+            keyword_score = 2 if re.search(r"미납\s*관리비|체납\s*관리비", match.group(0)) else 1
+            amount_score = 10 if amount > 0 else 0
+            clear_score = 3 if _management_fee_note_explicitly_clear(nearby) else 0
+            candidates.append((amount_score + clear_score + keyword_score, amount, nearby))
 
     if not candidates:
-        idx = text.find("관리비")
-        nearby = text[max(0, idx - 120): min(len(text), idx + 240)]
-        candidates.append((0, 0, nearby))
+        return {}
 
     _, amount, nearby = max(candidates, key=lambda item: item[0])
     amount_status = "confirmed" if amount > 0 else "none" if _management_fee_note_explicitly_clear(nearby) else "unknown"
@@ -5038,6 +5737,54 @@ def _extract_management_fee(soup) -> dict:
         "checkDate": normalize_date(_first_date(nearby) or ""),
         "note": _clip_text(nearby, 160),
     }
+
+
+def _management_fee_source_texts(soup) -> list[str]:
+    sources: list[str] = []
+    seen: set[str] = set()
+
+    def add(text: str) -> None:
+        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not cleaned or "관리비" not in cleaned:
+            return
+        key = re.sub(r"\s+", "", cleaned)
+        if key in seen:
+            return
+        seen.add(key)
+        sources.append(cleaned)
+
+    for stock in soup.find_all("div", id="dtl_stock"):
+        heading = stock.select_one("div#dtl_title > h3") or stock.find("h3")
+        heading_text = heading.get_text(" ", strip=True) if heading else ""
+        stock_text = stock.get_text(" ", strip=True)
+        compact = re.sub(r"\s+", "", f"{heading_text} {stock_text}")
+        if "관리비" in heading_text or re.search(r"(미납|체납)관리비", compact):
+            add(stock_text)
+
+    for row in soup.find_all("tr"):
+        row_text = row.get_text(" ", strip=True)
+        compact = re.sub(r"\s+", "", row_text)
+        if re.search(r"(미납|체납)관리비|관리비(미납|체납|없음|0원)", compact):
+            add(row_text)
+
+    for text_node in soup.find_all(string=lambda s: s and re.search(r"(미납|체납)\s*관리비|관리비\s*(?:미납|체납|없음|0\s*원)", s)):
+        parent = getattr(text_node, "parent", None)
+        if parent:
+            add(parent.get_text(" ", strip=True))
+
+    return sources
+
+
+def _looks_contaminated_management_fee_text(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return True
+    contamination_tokens = ("기일내역", "감정평가현황", "저가비율", "유찰", "매각기일", "입찰기일")
+    if not any(token in compact for token in contamination_tokens):
+        return False
+    has_explicit_amount = _extract_management_fee_amount(text) > 0
+    has_clear_value = _management_fee_note_explicitly_clear(text)
+    return not (has_explicit_amount or has_clear_value)
 
 
 def _management_fee_note_explicitly_clear(text: str) -> bool:

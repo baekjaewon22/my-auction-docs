@@ -140,6 +140,8 @@ test('Cron 자동 취소는 pending만 조건부 갱신하고 확정 결과와 �
   const base = { caseNo: '2026타경12345', propertyType: '아파트', client: '고객', suggestedPrice: '10', bidPrice: '9' };
   insert.run('pending-due', '2026-08-14', JSON.stringify(base));
   insert.run('pending-new', '2026-08-15', JSON.stringify(base));
+  insert.run('public-within-seven-days', '2026-08-13', JSON.stringify({ ...base, auctionKind: 'public', caseNo: '공매물건1' }));
+  insert.run('public-after-seven-days', '2026-08-12', JSON.stringify({ ...base, auctionKind: 'public', caseNo: '공매물건2' }));
   insert.run('won', '2026-08-13', JSON.stringify({ ...base, bidWon: true }));
   insert.run('failed', '2026-08-13', JSON.stringify({ ...base, bidFailed: true }));
   insert.run('withdrawn', '2026-08-13', JSON.stringify({ ...base, bidCancelled: true }));
@@ -148,7 +150,7 @@ test('Cron 자동 취소는 pending만 조건부 갱신하고 확정 결과와 �
   const scheduledAt = new Date('2026-08-19T15:00:00.000Z');
   const first = await runAuctionScheduleAutoCancellation(env, scheduledAt);
   assert.equal(first.cutoff, '2026-08-14');
-  assert.equal(first.cancelled, 1);
+  assert.equal(first.cancelled, 2);
 
   const states = new Map((sqlite.prepare('SELECT id, data FROM freelancer_auction_schedules').all() as Array<{ id: string; data: string }>).map(row => [
     row.id,
@@ -156,6 +158,8 @@ test('Cron 자동 취소는 pending만 조건부 갱신하고 확정 결과와 �
   ]));
   assert.equal(states.get('pending-due'), 'cancelled');
   assert.equal(states.get('pending-new'), 'pending');
+  assert.equal(states.get('public-within-seven-days'), 'pending');
+  assert.equal(states.get('public-after-seven-days'), 'cancelled');
   assert.equal(states.get('won'), 'won');
   assert.equal(states.get('failed'), 'failed');
   assert.equal(states.get('withdrawn'), 'withdrawn');
@@ -168,6 +172,6 @@ test('Cron 자동 취소는 pending만 조건부 갱신하고 확정 결과와 �
 
   const second = await runAuctionScheduleAutoCancellation(env, scheduledAt);
   assert.equal(second.cancelled, 0);
-  assert.equal(sqlite.prepare('SELECT COUNT(*) FROM bid_analysis_entries').pluck().get(), 1);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) FROM bid_analysis_entries').pluck().get(), 2);
   sqlite.close();
 });

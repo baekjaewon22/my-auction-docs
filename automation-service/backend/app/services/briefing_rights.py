@@ -18,6 +18,7 @@ from .special_situations import (
     SPECIAL_SITUATION_RULES,
     build_special_issue_lines,
     dedupe_lines,
+    detect_affirmative_signal,
 )
 
 logger = logging.getLogger(__name__)
@@ -153,6 +154,8 @@ def extract_context(
             rights_ocr_context = rc.extract_rights_context_by_ocr(driver, task_id=task_id, deadline=deadline)
             if rights_ocr_context.pop("_timed_out", False):
                 warnings.append("등기 권리정보 OCR이 전체 제한시간에 도달해 나머지 페이지를 생략했습니다.")
+            elif rights_ocr_context.get("_incomplete") or not rights_ocr_context.get("rights_ocr_text"):
+                warnings.append("등기 권리정보 원자료가 일부 누락됐거나 OCR 판독 결과가 없습니다. 원본 확인이 필요합니다.")
         except Exception as exc:
             warnings.append(f"등기 권리정보 OCR 생략: {exc}")
             logger.warning(warnings[-1])
@@ -166,6 +169,8 @@ def extract_context(
             tenant_context = rc.extract_tenant_context_by_ocr(driver, task_id=task_id, deadline=deadline)
             if tenant_context.pop("_timed_out", False):
                 warnings.append("매각물건명세서·임차인 OCR이 전체 제한시간에 도달해 나머지 페이지를 생략했습니다.")
+            elif tenant_context.get("_incomplete") or not tenant_context.get("tenant_ocr_text"):
+                warnings.append("매각물건명세서·임차인 원자료 판독이 완전하지 않습니다. 원본 확인이 필요합니다.")
         except Exception as exc:
             warnings.append(f"매각물건명세서·임차인 OCR 생략: {exc}")
             logger.warning(warnings[-1])
@@ -299,8 +304,29 @@ def build_opinion_data(data: dict) -> dict:
     case_notice_text = rc._clean_document_note(data.get("case_notice"), limit=500)
     no_tenants = tenant_analysis_text == rc.NO_TENANTS_TEXT
 
+    base_right_description = _customer_safe_text(
+        _build_base_right_description(base_right, registered_takeover_texts, rights, valid_tenants)
+    )
+    tenant_analysis_text = _customer_safe_text(tenant_analysis_text)
+    surplus_description = _customer_safe_text(_build_surplus_description(data, rights, related_cases, base_right))
+    special_summary_text = _customer_safe_text(_build_special_summary_text(
+        data,
+        rights,
+        valid_tenants,
+        base_right,
+        tenant_texts,
+        tenant_analysis_text,
+        registered_takeover_texts,
+        management_fee,
+        market_data,
+        sale_spec_remarks_text,
+        status_survey_etc_text,
+        case_notice_text,
+        _data_quality_flags(data, rights, valid_tenants, base_right),
+    ))
+
     return {
-        "baseRightDescription": _build_base_right_description(base_right, registered_takeover_texts, rights, valid_tenants),
+        "baseRightDescription": base_right_description,
         "tenantAnalysisText": tenant_analysis_text,
         "tenantAnalyses": [] if no_tenants else [
             {"description": block.strip()}
@@ -308,22 +334,8 @@ def build_opinion_data(data: dict) -> dict:
             if block.strip()
         ],
         "noTenants": no_tenants,
-        "surplusDescription": _build_surplus_description(data, rights, related_cases, base_right),
-        "specialSummaryText": _build_special_summary_text(
-            data,
-            rights,
-            valid_tenants,
-            base_right,
-            tenant_texts,
-            tenant_analysis_text,
-            registered_takeover_texts,
-            management_fee,
-            market_data,
-            sale_spec_remarks_text,
-            status_survey_etc_text,
-            case_notice_text,
-            _data_quality_flags(data, rights, valid_tenants, base_right),
-        ),
+        "surplusDescription": surplus_description,
+        "specialSummaryText": special_summary_text,
         "caseNoticeText": case_notice_text,
         "주의사항": case_notice_text,
     }
@@ -444,7 +456,7 @@ def _build_base_right_description(
     elif registered_takeover_texts:
         sub_lines.append("다만 최선순위 설정일보다 앞선 전세권은 배당요구 여부에 따라 임차권리 인수사항에서 별도 검토가 필요합니다.")
     else:
-        sub_lines.append("그 이후의 권리는 모두 말소되어 등기부상 낙찰자가 인수하는 권리는 없는 구조로 판단됩니다.")
+        sub_lines.append("그 이후의 권리는 모두 말소되어 등기부상 낙찰자가 인수하는 권리는 없습니다.")
 
     subrogation_warning = _subrogation_warning(base_right, tenants)
     if subrogation_warning:
@@ -503,8 +515,8 @@ def _build_special_summary_text(
         status_survey_etc_text,
         case_notice_text,
     ))
-    lines.extend(rc._bid_check_lines(data, tenants, management_fee))
-    return "\n".join(lines)
+    lines.extend(_briefing_bid_check_lines(data, tenants, management_fee))
+    return "\n".join(_customer_safe_line(line) for line in lines if _customer_safe_line(line))
 
 
 def _tenant_extra_warnings(tenants: list[dict], rights: list[dict], data: dict) -> list[str]:
@@ -515,6 +527,7 @@ def _tenant_extra_warnings(tenants: list[dict], rights: list[dict], data: dict) 
             "미배당 보증금은 낙찰자에게 인수될 수 있습니다. {등기상 보증금과 배당 여부를 확인하여야 합니다.}"
         )
 
+    incomplete_present = False
     for tenant in tenants or []:
         name = tenant.get("name") or "임차인"
         deposit = rc.parse_money(tenant.get("deposit"))
@@ -525,10 +538,14 @@ def _tenant_extra_warnings(tenants: list[dict], rights: list[dict], data: dict) 
                 "{지역·담보물권 설정시점별 소액보증금 한도와 최우선변제액을 확인하여야 합니다.}"
             )
         if _tenant_data_incomplete(tenant):
-            warnings.append(
-                f"{name}의 전입일·확정일자·배당요구일 또는 보증금 중 일부가 확인되지 않아 임차권리 인수 여부를 단정할 수 없습니다. "
-                "{원본 매각물건명세서, 현황조사서, 전입세대 열람자료로 재확인하여야 합니다.}"
-            )
+            incomplete_present = True
+    if incomplete_present:
+        # 임차인마다 반복하지 않고 1줄로 집계한다. (md §4-3: '확인하여야 합니다' 남발 방지,
+        #  가짜/불완전 임차인이 줄 수를 폭증시켜 레이아웃이 2장으로 넘어가던 회귀 방지)
+        warnings.append(
+            "일부 임차인의 전입일·확정일자·배당요구일 또는 보증금이 확인되지 않아 해당 임차권리의 "
+            "인수 여부는 원본 매각물건명세서·현황조사서·전입세대 열람자료로 최종 확인이 필요합니다."
+        )
     return _dedupe_lines(warnings)
 
 
@@ -617,7 +634,23 @@ def _master_special_issue_lines(
     case_notice_text: str,
 ) -> list[str]:
     source_text = _source_text_for_special(data, rights, tenant_analysis_text, sale_spec_remarks_text, status_survey_etc_text, case_notice_text)
-    return build_special_issue_lines(source_text, verbose=False)
+    rights_text = _rights_signal_text(rights)
+    matched = []
+    for rule in SPECIAL_SITUATION_RULES:
+        # 가등기/가처분은 매각물건명세서 양식 고정문에 자주 등장하므로,
+        # 실제 등기 권리행에서 확인된 경우에만 브리핑 특이사항으로 노출한다.
+        if rule.get("code") in {"OWN-04", "OWN-06"}:
+            rule_source = rights_text
+        else:
+            rule_source = source_text
+        detected, _ = detect_affirmative_signal(rule_source, rule.get("keywords") or [])
+        if detected:
+            matched.append(rule)
+    matched.sort(key=lambda item: (RISK_ORDER.get(item.get("risk"), 9), item.get("code", "")))
+    return [
+        f"- {rule['name']}: {rule['action']}"
+        for rule in matched[:8]
+    ]
 
 
 def _source_text_for_special(
@@ -628,10 +661,6 @@ def _source_text_for_special(
     status_survey_etc_text: str,
     case_notice_text: str,
 ) -> str:
-    rights_text = " ".join(
-        " ".join(str(right.get(key) or "") for key in ("type", "creditor", "note", "status", "rawText"))
-        for right in rights or []
-    )
     return " ".join(
         str(value or "")
         for value in (
@@ -641,18 +670,58 @@ def _source_text_for_special(
             data.get("sale_spec_remarks"),
             data.get("status_survey_etc"),
             data.get("case_notice"),
-            data.get("case_document_text"),
-            data.get("rights_selector_text"),
-            data.get("rights_ocr_text"),
-            data.get("tenant_ocr_text"),
             data.get("status_survey_text"),
             tenant_analysis_text,
             sale_spec_remarks_text,
             status_survey_etc_text,
             case_notice_text,
-            rights_text,
+            _rights_signal_text(rights),
         )
     )
+
+
+def _rights_signal_text(rights: list[dict]) -> str:
+    return "\n".join(
+        " ".join(str(right.get(key) or "") for key in ("type", "creditor", "note", "status", "rawText"))
+        for right in rights or []
+    )
+
+
+def _customer_safe_text(text: str) -> str:
+    lines = [_customer_safe_line(line) for line in str(text or "").splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _customer_safe_line(line: str) -> str:
+    text = re.sub(r"\s+", " ", str(line or "")).strip()
+    if not text:
+        return ""
+    forbidden_tokens = (
+        "checklistRows", "checklistDetails", "checklistSummaryText",
+        "YAML", "review-standard", "권리분석_규칙", "규칙엔진",
+        "판정식", "dataQualityFlags", "source_completeness",
+    )
+    if any(token in text for token in forbidden_tokens):
+        return ""
+    text = re.sub(r"\{([^{}]+)\}", r"\1", text)
+    text = text.replace("종합경고:", "").strip()
+    # 고객 출력물에는 내부 상태값 '담당자 확인 필요'를 노출하지 않는다. (md §4-3: 0회)
+    text = text.replace("담당자 확인 필요", "미확인")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _briefing_bid_check_lines(data: dict, tenants: list[dict], management_fee: dict) -> list[str]:
+    lines: list[str] = []
+    fee_status = rc._management_fee_status(management_fee) if management_fee else "unknown"
+    unpaid = int((management_fee or {}).get("unpaidAmount") or 0)
+    if fee_status == "confirmed" and unpaid > 0:
+        lines.append(f"- 미납관리비: {rc.build_unpaid_management_fee_text(management_fee)}")
+    else:
+        lines.append("- 미납관리비: 미납관리비는 확인되지 않습니다. 입찰 전 관리사무소에 최신 미납 내역을 확인하시기 바랍니다.")
+    if any(tenant.get("isVacant") for tenant in tenants or []):
+        lines.append("- 점유 확인: 공실 가능성이 있으므로 입찰 전 현장 점유 상태를 확인하시기 바랍니다.")
+    return lines
 
 
 def _dedupe_lines(lines: list[str]) -> list[str]:
@@ -703,11 +772,22 @@ def _property_special_issue_lines(
     )
     if any("임차권등기" in (right.get("type") or "") or "임차권등기" in (right.get("rawText") or "") for right in rights):
         issues.append("- 임차권등기: 실제 점유관계와 배당·인수 여부를 원본 문서로 확인해 주시기 바랍니다.")
-    if rc._text_has_takeover_tenant("\n".join(tenant_texts + [tenant_analysis_text])):
+    if _text_has_takeover_tenant("\n".join(tenant_texts + [tenant_analysis_text])):
         issues.append("- 대항력 임차인: 보증금 잔액 인수 가능성을 입찰가 산정에 반영해 주시기 바랍니다.")
     if registered_takeover_texts:
         issues.append("- 선순위 전세권: 배당요구 여부에 따라 낙찰자 인수 가능성이 있으므로 별도 확인이 필요합니다.")
     return issues
+
+
+def _text_has_takeover_tenant(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return False
+    return (
+        "대항력" in compact
+        and any(token in compact for token in ("보증금", "임차권리", "임차권"))
+        and "인수" in compact
+    )
 
 
 __all__ = ["extract_context", "build_opinion_data"]

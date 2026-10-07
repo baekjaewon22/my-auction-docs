@@ -15,6 +15,33 @@ const cases = new Hono<AuthEnv>();
 
 const CASE_ALLOWANCE_EXCLUDED_NAMES = new Set(['임태율', '서정수', '진성헌']);
 const CASE_ALLOWANCE_SALES_INSERT_DISABLED_FROM = '2026-05_06';
+const NO_LOCKED_PAYROLL_MONTH_SQL = `NOT EXISTS (
+  SELECT 1
+  FROM payroll_saves destination_payroll
+  WHERE destination_payroll.user_id = ?
+    AND destination_payroll.locked = 1
+    AND destination_payroll.period IN (?, ?)
+)`;
+
+function payrollPeriodLabel(month: string): string {
+  const [year, monthText] = month.split('-');
+  return `${Number(year)}년 ${Number(monthText)}월`;
+}
+
+async function lockedPayrollPeriodForMonth(
+  db: D1Database,
+  userId: string,
+  month: string,
+): Promise<string> {
+  const row = await db.prepare(`
+    SELECT period
+    FROM payroll_saves
+    WHERE user_id = ? AND locked = 1 AND period IN (?, ?)
+    ORDER BY period
+    LIMIT 1
+  `).bind(userId, month, payrollPeriodLabel(month)).first<{ period: string }>().catch(() => null);
+  return String(row?.period || '');
+}
 
 function normalizeCaseAllowanceName(name: unknown): string {
   return String(name || '').replace(/["'\s]/g, '').trim();
@@ -851,6 +878,7 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
   // 마감월(짝수월) 말일
   const lastDay = new Date(year, m2, 0).getDate();
   const closingDate = `${year}-${String(m2).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  const closingMonth = closingDate.slice(0, 7);
   const periodLabel = labelOfPeriod(period);
 
   // 컨설턴트별 합계 (조정 금액 기준)
@@ -916,6 +944,18 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
       ineligible++;
       continue;
     }
+    const lockedPayrollPeriod = await lockedPayrollPeriodForMonth(db, userId, closingMonth);
+    if (lockedPayrollPeriod) {
+      details.push({
+        user_id: userId,
+        user_name: userName,
+        bonus,
+        status: 'skipped',
+        reason: `${lockedPayrollPeriod} 급여 확정 월`,
+      });
+      skipped++;
+      continue;
+    }
 
     // INSERT OR IGNORE — external_id 중복이면 무시
     // 안건 수당(구 명도포상)의 멱등성 키. 기존 DB 레코드 호환 위해 'myungdo-bonus-' prefix 유지
@@ -927,26 +967,34 @@ export async function finalizeCaseAllowance(env: any, period: string): Promise<{
         amount, contract_date, status, deposit_date, payment_type, payment_method,
         memo, branch, department, direction, external_id,
         confirmed_at
-      ) VALUES (
+      ) SELECT
         ?, ?, '기타', ?, ?, ?, 0,
         ?, ?, 'confirmed', ?, '이체', '',
         ?, ?, ?, 'income', ?,
         datetime('now')
-      )
+      WHERE ${NO_LOCKED_PAYROLL_MONTH_SQL}
     `).bind(
       id, userId, `명도성과금 (${periodLabel})`,
       userName, userName,
       bonus, closingDate, closingDate,
       `명승 명도사건 ${r.cnt}건 / 조정매출 ${r.total_fee_adjusted}원 → ${periodLabel} 등급 성과금`,
       u.branch || '', '', externalId,
+      userId, closingMonth, payrollPeriodLabel(closingMonth),
     ).run();
 
     if ((result.meta?.changes || 0) > 0) {
       inserted++;
       details.push({ user_id: userId, user_name: userName, bonus, status: 'inserted' });
     } else {
+      const concurrentlyLockedPayroll = await lockedPayrollPeriodForMonth(db, userId, closingMonth);
       skipped++;
-      details.push({ user_id: userId, user_name: userName, bonus, status: 'skipped', reason: '이미 처리됨' });
+      details.push({
+        user_id: userId,
+        user_name: userName,
+        bonus,
+        status: 'skipped',
+        reason: concurrentlyLockedPayroll ? `${concurrentlyLockedPayroll} 급여 확정 월` : '이미 처리됨',
+      });
     }
   }
 

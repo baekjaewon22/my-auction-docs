@@ -3,6 +3,7 @@ import {
   listActiveLawitgoConsultantMappings,
   resolveLawitgoConsultantId,
 } from './lawitgo-consultant-mapping.ts';
+import { winningAuctionKind, type WinningAuctionKind } from '../../shared/winning-auction.ts';
 
 const WINNING_CUTOVER_KST = '2026-08-14 00:00:00';
 const DELIVERY_HOURS_UTC = new Set([0, 3, 6, 9]); // 09, 12, 15, 18 KST
@@ -42,6 +43,7 @@ export type WinningSourceRow = {
   legacy_client_name?: string | null;
   legacy_property_type?: string | null;
   override_customer_name?: string | null;
+  override_auction_kind?: string | null;
   override_customer_phone?: string | null;
   override_court?: string | null;
   override_case_number?: string | null;
@@ -69,6 +71,7 @@ export type LawitgoWinningItem = {
 };
 
 export type LawitgoWinningOverrideInput = {
+  auctionKind?: WinningAuctionKind;
   customerName: string;
   customerPhone: string;
   court: string;
@@ -104,6 +107,12 @@ function parseObject(value: string | null): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+export function isPublicAuctionWinningSource(row: WinningSourceRow): boolean {
+  return row.override_auction_kind === 'public'
+    || winningAuctionKind(parseObject(row.schedule_data).auctionKind, row.type_detail) === 'public'
+    || winningAuctionKind(parseObject(row.journal_data).auctionKind) === 'public';
 }
 
 function text(value: unknown): string {
@@ -256,6 +265,7 @@ export async function ensureLawitgoWinningSchema(db: D1Database): Promise<void> 
     )`),
     db.prepare(`CREATE TABLE IF NOT EXISTS lawitgo_winning_overrides (
       sales_record_id TEXT PRIMARY KEY, customer_name TEXT NOT NULL, customer_phone TEXT NOT NULL,
+      auction_kind TEXT NOT NULL DEFAULT 'court',
       court TEXT NOT NULL, case_number TEXT NOT NULL, property_type TEXT NOT NULL,
       winning_date TEXT NOT NULL, assignee_user_id TEXT NOT NULL, updated_by TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
@@ -299,6 +309,14 @@ export async function ensureLawitgoWinningSchema(db: D1Database): Promise<void> 
     )`),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_lawitgo_winning_manual_runs_started ON lawitgo_winning_manual_runs(started_at DESC)'),
   ]);
+  const overrideColumns = await db.prepare('PRAGMA table_info(lawitgo_winning_overrides)').all<{ name: string }>();
+  if (!(overrideColumns.results || []).some(column => column.name === 'auction_kind')) {
+    try {
+      await db.prepare("ALTER TABLE lawitgo_winning_overrides ADD COLUMN auction_kind TEXT NOT NULL DEFAULT 'court'").run();
+    } catch (error) {
+      if (!/duplicate column/i.test(String(error))) throw error;
+    }
+  }
 }
 
 /**
@@ -357,6 +375,7 @@ export async function validateLawitgoWinningOverrideInput(
   context?: LawitgoWinningOverrideContext,
 ): Promise<ValidatedLawitgoWinningOverride> {
   const normalized: LawitgoWinningOverrideInput = {
+    auctionKind: winningAuctionKind(input?.auctionKind),
     customerName: text(input?.customerName).slice(0, 200),
     customerPhone: normalizedPhone(input?.customerPhone),
     court: text(input?.court).slice(0, 200),
@@ -367,8 +386,9 @@ export async function validateLawitgoWinningOverrideInput(
   };
   if (!normalized.customerName) throw new LawitgoWinningOverrideError('고객명을 입력하세요.');
   if (!normalized.customerPhone) throw new LawitgoWinningOverrideError('유효한 고객 전화번호를 입력하세요.');
-  if (!normalized.court) throw new LawitgoWinningOverrideError('법원을 입력하세요.');
-  if (!normalized.caseNumber) throw new LawitgoWinningOverrideError('사건번호를 입력하세요.');
+  if (normalized.auctionKind === 'public') normalized.court = '';
+  if (normalized.auctionKind !== 'public' && !normalized.court) throw new LawitgoWinningOverrideError('법원을 입력하세요.');
+  if (!normalized.caseNumber) throw new LawitgoWinningOverrideError(normalized.auctionKind === 'public' ? '공매 물건번호를 입력하세요.' : '사건번호를 입력하세요.');
   if (!normalized.propertyType) throw new LawitgoWinningOverrideError('물건종류를 입력하세요.');
   if (!isValidDateKey(normalized.winningDate)) throw new LawitgoWinningOverrideError('유효한 낙찰일을 입력하세요.');
   if (!normalized.assigneeUserId) throw new LawitgoWinningOverrideError('담당자를 선택하세요.');
@@ -380,7 +400,9 @@ export async function validateLawitgoWinningOverrideInput(
       WHERE id = ? AND approved = 1 AND role != 'resigned'
       LIMIT 1
     `).bind(normalized.assigneeUserId).first<{ id: string; name: string; branch: string }>();
-    if (user) {
+    if (user && normalized.auctionKind === 'public') {
+      assignee = { name: user.name, branch: user.branch, consultantId: '' };
+    } else if (user) {
       const consultantId = await resolveLawitgoConsultantId(db, user.id);
       if (consultantId) assignee = { name: user.name, branch: user.branch, consultantId };
     }
@@ -422,8 +444,8 @@ async function persistValidatedLawitgoWinningOverride(
   await db.prepare(`
     INSERT INTO lawitgo_winning_overrides (
       sales_record_id, customer_name, customer_phone, court, case_number,
-      property_type, winning_date, assignee_user_id, updated_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      property_type, winning_date, assignee_user_id, updated_by, auction_kind
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(sales_record_id) DO UPDATE SET
       customer_name = excluded.customer_name,
       customer_phone = excluded.customer_phone,
@@ -433,6 +455,7 @@ async function persistValidatedLawitgoWinningOverride(
       winning_date = excluded.winning_date,
       assignee_user_id = excluded.assignee_user_id,
       updated_by = excluded.updated_by,
+      auction_kind = excluded.auction_kind,
       updated_at = datetime('now', '+9 hours')
   `).bind(
     normalizedSalesRecordId,
@@ -444,6 +467,7 @@ async function persistValidatedLawitgoWinningOverride(
     validated.winningDate,
     validated.assigneeUserId,
     text(updatedBy),
+    validated.auctionKind || 'court',
   ).run();
 
   const item: LawitgoWinningItem = {
@@ -512,6 +536,7 @@ async function sourceRows(db: D1Database): Promise<WinningSourceRow[]> {
            fb.case_number AS legacy_case_number, fb.item_no AS legacy_item_no,
            fb.client_name AS legacy_client_name, fb.property_type AS legacy_property_type,
            o.customer_name AS override_customer_name, o.customer_phone AS override_customer_phone,
+           o.auction_kind AS override_auction_kind,
            o.court AS override_court, o.case_number AS override_case_number,
            o.property_type AS override_property_type, o.winning_date AS override_winning_date,
            o.assignee_user_id AS override_assignee_user_id,
@@ -622,7 +647,15 @@ export async function stageLawitgoWinningOutbox(db: D1Database): Promise<{ stage
           AND COALESCE(sr.status, '') != 'refunded'
           AND sr.created_at >= ?
       )`).bind(WINNING_CUTOVER_KST).run();
-  const rows = await sourceRows(db);
+  const source = await sourceRows(db);
+  const publicRows = source.filter(isPublicAuctionWinningSource);
+  if (publicRows.length > 0) {
+    await db.batch(publicRows.map(row => db.prepare(`
+      DELETE FROM lawitgo_winning_outbox
+      WHERE sales_record_id = ? AND status NOT IN ('sent', 'sending')
+    `).bind(row.sales_record_id)));
+  }
+  const rows = source.filter(row => !isPublicAuctionWinningSource(row));
   let blocked = 0;
   const statements = rows.map((row) => {
     const built = buildLawitgoWinningItem(row);

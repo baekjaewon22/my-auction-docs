@@ -6,7 +6,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from bs4 import BeautifulSoup
+from PIL import Image
 from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_AUTO_SIZE
 from pptx.util import Inches
 
@@ -24,6 +27,14 @@ from app.services.rights_certificate import (  # noqa: E402
     _paginate_narrative_sections,
     _right_dividend_request_status,
     _tenant_ocr_text_indicates_no_tenants,
+    _is_no_tenant_record,
+    _is_name_like_token,
+    _looks_like_person_name,
+    _guess_sale_spec_tenant_name,
+    _sale_spec_name_before_source,
+    _parse_sale_spec_occupancy_blocks,
+    NO_TENANTS_TEXT,
+    build_tenant_analysis_text,
     analyze_surplus,
     analyze_registered_takeover_rights,
     analyze_tenants,
@@ -37,13 +48,15 @@ from app.services.rights_certificate import (  # noqa: E402
     render_certificate_pptx_template,
     merge_rights,
     parse_rights_from_ocr,
+    parse_sale_spec_tenants_from_pdf_text,
+    parse_sale_spec_tenants_from_ocr,
     parse_tenants_from_ocr,
     registered_right_amount_total,
     substantive_registered_rights,
 )
 from app.services.rights_checklist import State, build_checklist_from_pipeline  # noqa: E402
 from app.services.briefing_rights import _build_surplus_description as build_briefing_surplus_description  # noqa: E402
-from app.services import crawler  # noqa: E402
+from app.services import briefing_cost_images, briefing_opinion, briefing_rights, capturer, crawler, forced_execution_estimator, ppt_builder  # noqa: E402
 
 
 def _slide_text(slide) -> str:
@@ -65,6 +78,361 @@ def _slide_image_hashes(slide) -> set[str]:
 
 
 class RightsCertificateTests(unittest.TestCase):
+    def test_briefing_cost_images_use_bid_three_for_acquisition_tax_and_fixed_loan_priority(self):
+        ctx = briefing_cost_images.build_cost_context(
+            {
+                "market_price": 620_000_000,
+                "bid_price_1": 590_000_000,
+                "bid_price_2": 580_000_000,
+                "bid_price_3": 570_000_000,
+                "difference_amount": 5_000_000,
+                "property_tax_type": "house",
+                "house_count": "1",
+                "regulated_area": False,
+                "unpaid_management_fee": 300_000,
+                "service_fee_basis": "appraised",
+                "service_fee_rate": 1,
+                "fixed_loan_amount": 400_000_000,
+                "loan_base_amount": 700_000_000,
+                "ltv_limit": 80,
+                "bid_price_loan_limit": 80,
+                "loan_room_deduction": 50_000_000,
+                "bank_loan_note": "한도 4억원 우선",
+            },
+            {
+                "appraised_price": "668,000,000원",
+                "min_price": "467,600,000원",
+                "building_area_m2": "40",
+                "eviction_cost_values": {"flat_total": 4_064_000},
+            },
+        )
+
+        self.assertEqual(ctx["tax1"]["price"], 570_000_000)
+        self.assertEqual(ctx["scenarios"][0]["loan"], 400_000_000)
+        self.assertEqual(ctx["scenarios"][1]["loan"], 400_000_000)
+        self.assertEqual(ctx["scenarios"][2]["loan"], 400_000_000)
+        self.assertEqual(ctx["scenarios"][0]["consulting_fee"], 6_680_000)
+        self.assertEqual(ctx["scenarios"][0]["eviction_cost"], 4_064_000)
+        self.assertEqual(ctx["scenarios"][0]["unpaid_management_fee"], 300_000)
+        self.assertEqual(ctx["tax1"]["total_tax"], 6_270_000)
+        self.assertEqual(
+            [(row["label"], row["bid"]) for row in ctx["bid_rows"]],
+            [
+                ("감정가", 668_000_000),
+                ("...", 605_000_000),
+                ("...", 600_000_000),
+                ("...", 595_000_000),
+                ("낙찰 우위입찰가", 590_000_000),
+                ("경쟁 균형입찰가", 580_000_000),
+                ("안정 투자입찰가", 570_000_000),
+                ("...", 565_000_000),
+                ("최저 입찰가", 467_600_000),
+            ],
+        )
+
+    def test_briefing_cost_images_clamp_minimum_price_when_it_exceeds_appraisal(self):
+        ctx = briefing_cost_images.build_cost_context(
+            {
+                "bid_price_1": 1_820_000_000,
+                "bid_price_2": 1_810_000_000,
+                "bid_price_3": 1_800_000_000,
+            },
+            {"appraised_price": 1_847_000_000, "min_price": 3_030_000_000},
+        )
+
+        self.assertEqual(ctx["appraised"], 1_847_000_000)
+        self.assertEqual(ctx["minimum"], 1_847_000_000)
+
+    def test_briefing_cost_images_blank_fixed_loan_uses_lower_of_appraisal_and_bid_ltv(self):
+        ctx = briefing_cost_images.build_cost_context(
+            {
+                "market_price": 700_000_000,
+                "bid_price_1": 590_000_000,
+                "bid_price_2": 580_000_000,
+                "bid_price_3": 570_000_000,
+                "fixed_loan_amount": "",
+                "loan_base_amount": "",
+                "ltv_limit": 70,
+                "bid_price_loan_limit": 80,
+            },
+            {"appraised_price": 668_000_000, "min_price": 467_600_000},
+        )
+
+        self.assertEqual(ctx["scenarios"][0]["loan"], 467_600_000)
+        self.assertEqual(ctx["scenarios"][1]["loan"], 464_000_000)
+        self.assertEqual(ctx["scenarios"][2]["loan"], 456_000_000)
+        self.assertIn("감정가 70", ctx["scenarios"][0]["loan_note"])
+        self.assertNotIn("고정값", ctx["scenarios"][0]["loan_note"])
+
+    def test_briefing_cost_images_default_bank_loan_note_matches_planner_policy(self):
+        ctx = briefing_cost_images.build_cost_context(
+            {
+                "bid_price_1": 590_000_000,
+                "bid_price_2": 580_000_000,
+                "bid_price_3": 570_000_000,
+                "fixed_loan_amount": "",
+                "loan_base_amount": "",
+                "ltv_limit": 40,
+                "bid_price_loan_limit": 80,
+                "bank_loan_note": "",
+            },
+            {"appraised_price": 668_000_000, "min_price": 467_600_000},
+        )
+
+        self.assertEqual(ctx["scenarios"][0]["loan"], 267_200_000)
+        self.assertEqual(ctx["scenarios"][0]["loan_note"], "감정가 40%,낙찰가80% 중 낮은금액으로 대출이 가능합니다.")
+
+    def test_briefing_cost_images_custom_bank_loan_note_is_preserved(self):
+        ctx = briefing_cost_images.build_cost_context(
+            {
+                "bid_price_1": 590_000_000,
+                "bid_price_2": 580_000_000,
+                "bid_price_3": 570_000_000,
+                "ltv_limit": 40,
+                "bid_price_loan_limit": 80,
+                "bank_loan_note": "은행 확인 후 별도 적용",
+            },
+            {"appraised_price": 668_000_000, "min_price": 467_600_000},
+        )
+
+        self.assertEqual(ctx["scenarios"][0]["loan_note"], "은행 확인 후 별도 적용")
+
+    def test_briefing_cost_images_bid_and_cost_tables_use_bold_text(self):
+        ctx = briefing_cost_images.build_cost_context(
+            {
+                "market_price": 620_000_000,
+                "bid_price_1": 590_000_000,
+                "bid_price_2": 580_000_000,
+                "bid_price_3": 570_000_000,
+                "service_fee_rate": 1,
+                "ltv_limit": 80,
+                "bid_price_loan_limit": 80,
+            },
+            {
+                "appraised_price": 668_000_000,
+                "min_price": 467_600_000,
+                "building_area_m2": 40,
+                "eviction_cost_values": {"flat_total": 4_064_000},
+            },
+        )
+        bold_fonts = (
+            briefing_cost_images.FONT_18_B,
+            briefing_cost_images.FONT_20_B,
+            briefing_cost_images.FONT_22_B,
+            briefing_cost_images.FONT_24_B,
+            briefing_cost_images.FONT_26_B,
+            briefing_cost_images.FONT_34_B,
+        )
+        used_fonts: list[object] = []
+
+        def capture_text(_draw, _xy, _text, font, *args, **kwargs):
+            used_fonts.append(font)
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(briefing_cost_images, "_draw_text", side_effect=capture_text):
+            briefing_cost_images.render_bid_price_image(ctx, Path(tmp) / "bid.png")
+            briefing_cost_images.render_acquisition_cost_sheet_image(ctx, Path(tmp) / "cost.png")
+
+        self.assertTrue(used_fonts)
+        self.assertTrue(all(any(font is bold for bold in bold_fonts) for font in used_fonts))
+
+    def test_briefing_cost_images_render_three_pngs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rendered = briefing_cost_images.render_briefing_cost_images(
+                {
+                    "market_price": 620_000_000,
+                    "bid_price_1": 590_000_000,
+                    "bid_price_2": 580_000_000,
+                    "bid_price_3": 570_000_000,
+                    "property_tax_type": "house",
+                    "house_count": "1",
+                    "regulated_area": False,
+                    "unpaid_management_fee": 300_000,
+                    "service_fee_rate": 1,
+                    "fixed_loan_amount": 400_000_000,
+                },
+                {
+                    "appraised_price": 668_000_000,
+                    "min_price": 467_600_000,
+                    "building_area_m2": 40,
+                    "eviction_cost_values": {"flat_total": 4_064_000},
+                },
+                tmp,
+            )
+
+            self.assertEqual(set(rendered.keys()), {"acquisition-tax", "loan-bid-estimator", "acquisition-cost-sheet"})
+            for path in rendered.values():
+                self.assertTrue(Path(path).exists())
+                with Image.open(path) as img:
+                    self.assertGreaterEqual(img.width, 1400)
+                    self.assertGreaterEqual(img.height, 800)
+
+    def test_eviction_fixed_total_uses_myauction_detail_main_price(self):
+        class FakeDriver:
+            def execute_script(self, _script):
+                return "총 407만원"
+
+        flat_price = capturer._extract_eviction_flat_rate_main_price(FakeDriver())
+        self.assertEqual(flat_price, 4_070_000)
+
+        values = forced_execution_estimator.build_eviction_cost_values({
+            "item_type": "아파트",
+            "myauction_eviction_costs": {
+                "filingFee": 150_000,
+                "transportStorage": 2_200_000,
+                "laborTotal": 2_080_000,
+                "laborWorkers": 16,
+                "locksmith": 200_000,
+                "ladderTruck": 350_000,
+                "witness": 100_000,
+                "grandTotal": 5_080_000,
+                "flatRateMainPrice": flat_price,
+            },
+        })
+        self.assertEqual(values["flat_total"], 4_070_000)
+        self.assertEqual(values["명도_정액제총액"], 4_070_000)
+        self.assertEqual(values["명도_총명도비용"], 5_080_000)
+        self.assertEqual(values["normal_execution_cost"], 5_080_000)
+        self.assertEqual(values["eviction_flat_total_source"], "myauction_detail")
+        self.assertNotEqual(values["flat_total"], round((values["attorney_fee"] + 5_080_000) * 0.8))
+
+    def test_eviction_cost_basis_capture_replaces_left_estimate_table(self):
+        prs = Presentation(str(BACKEND_PATH / "templates" / "sample2_configured.pptx"))
+        slide = ppt_builder.find_slide_by_note_key(prs, "FORCED_EXECUTION_ESTIMATE_BOX")
+        self.assertIsNotNone(slide)
+        before_pictures = [shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "eviction-cost-basis.png"
+            Image.new("RGB", (727, 884), "white").save(image_path)
+            self.assertTrue(ppt_builder.insert_eviction_cost_basis_image(prs, str(image_path)))
+
+        after_pictures = [shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE]
+        self.assertEqual(len(after_pictures), len(before_pictures) + 1)
+        inserted = after_pictures[-1]
+        self.assertEqual(inserted.left, 506628)
+        self.assertEqual(inserted.top, 1606378)
+        self.assertEqual(inserted.width, 4534930)
+        self.assertEqual(inserted.height, 5276335)
+
+    def test_eviction_cost_basis_uses_user_yellow_box_size_when_present(self):
+        prs = Presentation(str(BACKEND_PATH / "templates" / "sample2_configured.pptx"))
+        slide = ppt_builder.find_slide_by_note_key(prs, "FORCED_EXECUTION_ESTIMATE_BOX")
+        self.assertIsNotNone(slide)
+        marker = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            Inches(0.73),
+            Inches(1.42),
+            Inches(4.82),
+            Inches(5.66),
+        )
+        marker.fill.solid()
+        marker.fill.fore_color.rgb = RGBColor(255, 255, 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "eviction-cost-basis.png"
+            Image.new("RGB", (727, 884), "white").save(image_path)
+            self.assertTrue(ppt_builder.insert_eviction_cost_basis_image(prs, str(image_path)))
+
+        pictures = [shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE]
+        inserted = pictures[-1]
+        self.assertEqual(inserted.left, Inches(0.73))
+        self.assertEqual(inserted.top, Inches(1.42))
+        self.assertEqual(inserted.width, Inches(4.82))
+        self.assertEqual(inserted.height, Inches(5.66))
+        self.assertIsNone(ppt_builder.find_explicit_yellow_box(slide))
+
+    def test_briefing_images_are_inserted_with_contained_aspect_ratio(self):
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        title = slide.shapes.add_textbox(Inches(0.2), Inches(0.2), Inches(1), Inches(0.3))
+        title.text = "테스트이미지"
+        marker = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(1), Inches(1), Inches(4), Inches(4))
+        marker.fill.solid()
+        marker.fill.fore_color.rgb = RGBColor(255, 192, 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "wide.png"
+            Image.new("RGB", (1000, 500), "navy").save(image_path)
+            ppt_builder.insert_single_image(prs, "테스트이미지", str(image_path))
+
+        pictures = [shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE]
+        self.assertEqual(len(pictures), 1)
+        inserted = pictures[0]
+        self.assertEqual(inserted.width, Inches(4))
+        self.assertEqual(inserted.height, Inches(2))
+        self.assertEqual(inserted.left, Inches(1))
+        self.assertEqual(inserted.top, Inches(2))
+
+    def test_rights_analysis_opinion_continues_to_next_slide_for_many_tenants(self):
+        prs = Presentation(str(BACKEND_PATH / "templates" / "sample2_configured.pptx"))
+        before_count = len(prs.slides)
+        tenant_lines = [
+            f"- 점유자 성명: 임차인{i} / 점유구분: 주거 / 보증금: {i * 10_000_000:,}원 / "
+            f"전입일: 2024.0{i}.01 / 확정일: 2024.0{i}.02 / 배당요구일: 2024.0{i}.03."
+            for i in range(1, 8)
+        ]
+        opinion = "\n".join([
+            "1) 말소기준 및 등기부상 소멸사항",
+            "- 말소기준권리 이후의 권리는 매각으로 말소됩니다.",
+            "",
+            "2) 임차권리 인수사항",
+            *tenant_lines,
+            "",
+            "3) 경매취하 / 무잉여 가능성",
+            "- 현재 확인된 진행상황을 기준으로 별도 취하 접수는 확인되지 않았습니다.",
+        ])
+
+        self.assertTrue(ppt_builder.apply_rights_analysis_opinion(prs, opinion))
+
+        all_text = "\n".join(_slide_text(slide) for slide in prs.slides)
+        for i in range(1, 8):
+            self.assertIn(f"임차인{i}", all_text)
+        self.assertGreater(len(prs.slides), before_count)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "many-tenants.pptx"
+            prs.save(output)
+            reloaded = Presentation(str(output))
+            reloaded_text = "\n".join(_slide_text(slide) for slide in reloaded.slides)
+            self.assertIn("임차인7", reloaded_text)
+
+    def test_optional_empty_briefing_pages_are_removed_but_filled_pages_remain(self):
+        prs = Presentation(str(BACKEND_PATH / "templates" / "sample2_configured.pptx"))
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "filled.png"
+            Image.new("RGB", (640, 360), "blue").save(image_path)
+            slide = prs.slides[18]  # 실거래가 선택 페이지
+            slide.shapes.add_picture(str(image_path), Inches(1), Inches(1), width=Inches(4), height=Inches(2.25))
+
+        removed = ppt_builder.cleanup_optional_empty_slides(prs)
+        notes = [
+            (slide.notes_slide.notes_text_frame.text or "")
+            for slide in prs.slides
+        ]
+        self.assertGreaterEqual(removed, 8)
+        self.assertTrue(any("실거래가" in _slide_text(slide) for slide in prs.slides))
+        self.assertFalse(any("네이버 매물 현황 -2" in _slide_text(slide) for slide in prs.slides))
+        self.assertFalse(any("SLIDE_KEY=OPINION_RELATED_LAW" in note for note in notes))
+
+    def test_appraisal_sentence_cleanup_removes_entities_and_mechanical_endings(self):
+        sentence = briefing_opinion._ensure_sentence(
+            '소재 &amp; 아파트로 이용 중이며, &quot;중로1류&quot;와 접하고 붙임 사진과 같음입니다'
+        )
+        self.assertNotIn("&amp;", sentence)
+        self.assertNotIn("&quot;", sentence)
+        self.assertNotIn("같음입니다", sentence)
+        self.assertIn("및", sentence)
+        self.assertIn("같습니다", sentence)
+
+    def test_customer_style_linter_blocks_internal_markers(self):
+        with self.assertRaisesRegex(ValueError, "고객 출력 문체 린터 실패"):
+            briefing_opinion.assert_customer_facing_texts({
+                "special_opinion": "checklistRows 판정식 YAML {내부 확인}\n[ ] 담당자 체크",
+            })
+
+        briefing_opinion.assert_customer_facing_texts({
+            "special_opinion": "본건은 매각기일 전 현황조사와 등기사항을 재확인하는 조건으로 검토합니다.",
+        })
+
     def test_case_1232734_court_keeps_parent_and_branch(self):
         self.assertEqual(
             _clean_court_label("수원지방법원 안양지원 경매4계 2022 타경 102285"),
@@ -106,6 +474,72 @@ class RightsCertificateTests(unittest.TestCase):
         self.assertEqual(parsed["입찰기일"], "2026.11.03 10:30")
         self.assertNotEqual(parsed["auction_date"], "2026.10.12")
 
+        detail_header = BeautifulSoup(
+            """
+            <div id="dtl_title">
+              <h3>사건 정보</h3>
+              <div>기타</div>
+              <div>
+                <ul>
+                  <li><span class="sale_txt"><span>2026.09.29 10:30</span></span></li>
+                </ul>
+              </div>
+            </div>
+            <p class="plan_day"><span class="pink">매각기일 2026.09.01 10:30</span></p>
+            <div id="dtl_table">
+              <table><tr><th>배당요구종기일</th><td>2026.08.01</td></tr></table>
+            </div>
+            """,
+            "html.parser",
+        )
+        parsed_detail_header = crawler.parse_myauction_detail(detail_header, "https://www.my-auction.co.kr/view/test")
+        self.assertEqual(parsed_detail_header["auction_date"], "2026.09.29 10:30")
+        self.assertNotEqual(parsed_detail_header["auction_date"], "2026.09.01 10:30")
+
+        detail_header_with_minimum = BeautifulSoup(
+            """
+            <div id="detail_left">
+              <table class="tbl_detail">
+                <tr><th>경매종류</th><td>부동산임의경매</td><th>감정가</th><td>1,847,000,000원</td></tr>
+                <tr><th>최저가</th><td>3,030,000,000원</td><th>입찰보증금</th><td>303,000,000원</td></tr>
+              </table>
+            </div>
+            <div id="dtl_title">
+              <h3>사건 정보</h3>
+              <div>기타</div>
+              <div>
+                <ul>
+                  <li><span class="sale_txt"><span>2026.09.29 10:30</span></span> 최저가 1,650,000,000원 입찰보증금 165,000,000원 89%</li>
+                </ul>
+              </div>
+            </div>
+            """,
+            "html.parser",
+        )
+        parsed_header_with_minimum = crawler.parse_myauction_detail(detail_header_with_minimum, "https://www.my-auction.co.kr/view/test")
+        self.assertEqual(parsed_header_with_minimum["auction_date"], "2026.09.29 10:30")
+        self.assertEqual(parsed_header_with_minimum["min_price"], "1,650,000,000원")
+        self.assertEqual(parsed_header_with_minimum["deposit"], "165,000,000원")
+        self.assertEqual(parsed_header_with_minimum["min_rate"], "89%")
+
+        same_row = BeautifulSoup(
+            """
+            <div id="dtl_table">
+              <table>
+                <tr>
+                  <th>경매종류</th><td>부동산임의경매</td>
+                  <th>매각기일</th><td>2026.09.08</td>
+                  <th>배당요구종기일</th><td>2026.08.01</td>
+                </tr>
+              </table>
+            </div>
+            """,
+            "html.parser",
+        )
+        parsed_same_row = crawler.parse_myauction_detail(same_row, "https://www.my-auction.co.kr/view/test")
+        self.assertEqual(parsed_same_row["auction_date"], "2026.09.08")
+        self.assertNotEqual(parsed_same_row["auction_date"], "2026.08.01")
+
         deadline_only = BeautifulSoup(
             """
             <div id="dtl_table">
@@ -117,6 +551,329 @@ class RightsCertificateTests(unittest.TestCase):
         parsed_deadline_only = crawler.parse_myauction_detail(deadline_only, "https://www.my-auction.co.kr/view/test")
         self.assertEqual(parsed_deadline_only["auction_date"], "")
         self.assertEqual(parsed_deadline_only["입찰기일"], "")
+
+    def test_current_auction_round_supplies_date_min_price_and_deposit_together(self):
+        html = """
+        <html><body>
+          <div id="detail_left">
+            <table class="tbl_detail">
+              <tr><th>경매종류</th><td>부동산임의경매</td><th>감정가</th><td>847,000,000원</td></tr>
+              <tr><th>최저가</th><td>847,000,000원</td><th>입찰보증금</th><td>84,700,000원</td></tr>
+              <tr><th>배당요구종기일</th><td>2026.03.26</td></tr>
+            </table>
+            <h3>기일내역</h3>
+            <table>
+              <tr><th>회차</th><th>매각기일</th><th>최저매각가격</th><th>저가비율</th><th>매수신청보증금</th><th>결과</th></tr>
+              <tr><td>1</td><td>2026.08.04</td><td>847,000,000원</td><td>100%</td><td>84,700,000원</td><td>유찰</td></tr>
+              <tr><td>2</td><td>2026.09.08</td><td>592,900,000원</td><td>70%</td><td>59,290,000원</td><td>진행</td></tr>
+            </table>
+          </div>
+          <p class="plan_day"><span class="pink">배당요구종기일 2026.03.26</span></p>
+        </body></html>
+        """
+        parsed = crawler.parse_myauction_detail(BeautifulSoup(html, "html.parser"), "https://www.my-auction.co.kr/view/test")
+        self.assertEqual(parsed["auction_date"], "2026.09.08")
+        self.assertEqual(parsed["입찰기일"], "2026.09.08")
+        self.assertEqual(parsed["min_price"], "592,900,000원")
+        self.assertEqual(parsed["deposit"], "59,290,000원")
+        self.assertEqual(parsed["min_rate"], "70%")
+
+    def test_current_round_min_price_is_not_overwritten_by_header_summary_amount(self):
+        html = """
+        <html><body>
+          <div id="detail_left">
+            <table class="tbl_detail">
+              <tr><th>경매종류</th><td>부동산임의경매</td><th>감정가</th><td>1,847,000,000원</td></tr>
+              <tr><th>최저가</th><td>3,030,000,000원</td><th>입찰보증금</th><td>303,000,000원</td></tr>
+            </table>
+            <h3>기일내역</h3>
+            <table>
+              <tr><th>회차</th><th>매각기일</th><th>최저매각가격</th><th>저가비율</th><th>매수신청보증금</th><th>결과</th></tr>
+              <tr><td>1</td><td>2026.09.29</td><td>1,847,000,000원</td><td>100%</td><td>184,700,000원</td><td>진행</td></tr>
+            </table>
+          </div>
+          <div id="dtl_title">
+            <h3>사건 정보</h3>
+            <div>기타</div>
+            <div>
+              <ul>
+                <li><span class="sale_txt"><span>2026.09.29 10:30</span></span> 최저가 3,030,000,000원 입찰보증금 303,000,000원</li>
+              </ul>
+            </div>
+          </div>
+        </body></html>
+        """
+        parsed = crawler.parse_myauction_detail(BeautifulSoup(html, "html.parser"), "https://www.my-auction.co.kr/view/test")
+        self.assertEqual(parsed["min_price"], "1,847,000,000원")
+        self.assertEqual(parsed["deposit"], "184,700,000원")
+        self.assertEqual(parsed["min_rate"], "100%")
+
+    def test_detail_table_authoritative_cells_override_stale_round_and_header_values(self):
+        filler_rows = "\n".join("<tr><td></td><td></td><td></td></tr>" for _ in range(16))
+        html = f"""
+        <html><body>
+          <div id="detail_left">
+            <table class="tbl_detail">
+              <tr><th>경매종류</th><td>부동산임의경매</td><th>감정가</th><td>206,000,000원</td></tr>
+              <tr><th>최저가</th><td>206,000,000원</td><th>입찰보증금</th><td>20,600,000원</td></tr>
+            </table>
+          </div>
+          <p class="plan_day"><span class="pink">매각기일 2026.09.08</span></p>
+          <div id="dtl_table">
+            <table><tbody>
+              <tr><td></td><td></td><td></td></tr>
+              <tr><th>최저가</th><td class="tdl_right"><strong>25,998,000원</strong></td><td></td></tr>
+              {filler_rows}
+              <tr><td>입찰기일</td><td></td><td>2026.10.13</td></tr>
+            </tbody></table>
+          </div>
+        </body></html>
+        """
+        parsed = crawler.parse_myauction_detail(BeautifulSoup(html, "html.parser"), "https://www.my-auction.co.kr/view/test")
+        self.assertEqual(parsed["min_price"], "25,998,000원")
+        self.assertEqual(parsed["auction_date"], "2026.10.13")
+        self.assertEqual(parsed["입찰기일"], "2026.10.13")
+        self.assertNotEqual(parsed["min_price"], "206,000,000원")
+        self.assertNotEqual(parsed["auction_date"], "2026.09.08")
+
+    def test_live_detail_dom_overrides_stale_page_source_values(self):
+        class LiveDetailDriver:
+            def execute_script(self, _script, selector):
+                values = {
+                    "#dtl_table > table > tbody > tr:nth-child(2) > td.tdl_right > strong": "25,998,000원",
+                    "#dtl_table > table > tbody > tr:nth-child(19) > td:nth-child(3)": "2026.10.13",
+                    "#dtl_table > table > tbody > tr:nth-child(3) > td.tdl_right": "2,599,800원",
+                }
+                return values.get(selector, "")
+
+        html = """
+        <html><body>
+          <div id="detail_left">
+            <table class="tbl_detail">
+              <tr><th>경매종류</th><td>부동산임의경매</td><th>감정가</th><td>206,000,000원</td></tr>
+              <tr><th>최저가</th><td>206,000,000원</td><th>입찰보증금</th><td>20,600,000원</td></tr>
+            </table>
+          </div>
+          <p class="plan_day"><span class="pink">매각기일 2026.09.08</span></p>
+        </body></html>
+        """
+        parsed = crawler.parse_myauction_detail(
+            BeautifulSoup(html, "html.parser"),
+            "https://www.my-auction.co.kr/view/test",
+            driver=LiveDetailDriver(),
+        )
+        self.assertEqual(parsed["min_price"], "25,998,000원")
+        self.assertEqual(parsed["deposit"], "2,599,800원")
+        self.assertEqual(parsed["auction_date"], "2026.10.13")
+        self.assertEqual(parsed["입찰기일"], "2026.10.13")
+
+    def test_live_sale_header_date_wins_over_stale_fixed_detail_row(self):
+        class LiveDetailDriver:
+            def execute_script(self, script, selector):
+                if "outerHTML" in script and selector == "#dtl_table":
+                    return """
+                    <div id="dtl_table"><table><tbody>
+                      <tr><td></td><td></td><td></td></tr>
+                      <tr><th>최저가</th><td class="tdl_right"><strong>9,365,925,000원</strong></td><td></td></tr>
+                      <tr><th>입찰보증금</th><td class="tdl_right">936,592,500원</td><td></td></tr>
+                      <tr><td>배당요구종기일</td><td></td><td>2025.11.05</td></tr>
+                      <tr><td>기타</td><td></td><td>2026.09.22</td></tr>
+                    </tbody></table></div>
+                    """
+                values = {
+                    "#dtl_title > div:nth-child(3) > ul > li > span.sale_txt > span": "2026.09.30 10:00",
+                    "#dtl_title .sale_txt span": "2026.09.30 10:00",
+                    "#dtl_table > table > tbody > tr:nth-child(2) > td.tdl_right > strong": "9,365,925,000원",
+                    "#dtl_table > table > tbody > tr:nth-child(19) > td:nth-child(3)": "2026.09.22",
+                    "#dtl_table > table > tbody > tr:nth-child(3) > td.tdl_right": "936,592,500원",
+                }
+                return values.get(selector, "")
+
+        html = """
+        <html><body>
+          <p class="plan_day"><span class="pink">매각기일 2026.09.22</span></p>
+        </body></html>
+        """
+        parsed = crawler.parse_myauction_detail(
+            BeautifulSoup(html, "html.parser"),
+            "https://www.my-auction.co.kr/view/test",
+            driver=LiveDetailDriver(),
+        )
+        self.assertEqual(parsed["min_price"], "9,365,925,000원")
+        self.assertEqual(parsed["deposit"], "936,592,500원")
+        self.assertEqual(parsed["auction_date"], "2026.09.30 10:00")
+        self.assertNotEqual(parsed["auction_date"], "2026.09.22")
+
+    def test_sale_spec_pdf_text_keeps_multiple_tenant_rows(self):
+        text = """
+        점유자 성명 점유부분 정보출처구분 점유의 권원 임대차기간 보증금 차임 전입신고일자 확정일자 배당요구여부 (배당요구일자)
+        고정수 현황조사 주거 임차인 2024.06.10.
+        김대현 현황조사 주거 임차인 2024.03.15.
+        김수형 현황조사 주거 임차인 2024.10.21.
+        안의재 현황조사 주거 임차인 2025.04.08.
+        이은우 현황조사 주거 임차인 2020.05.18.
+        이희석 현황조사 주거 임차인 2024.04.02.
+        조영민 2층 301호 등기사항전부증명서 주거 임차인 2020.04.15. 140,000,000 350,000 2020.04.14. 2020.04.16.
+        2층 301호 권리신고 주거 임차인 2020.04.15. 140,000,000 350,000 2020.04.14. 2020.04.16. 2025.9.16.
+        등기된 부동산에 관한 권리 또는 가처분으로 매각으로 그 효력이 소멸되지 아니하는 것
+        """
+        tenants = parse_sale_spec_tenants_from_pdf_text(text)
+        self.assertEqual([tenant["name"] for tenant in tenants], [
+            "고정수",
+            "김대현",
+            "김수형",
+            "안의재",
+            "이은우",
+            "이희석",
+            "조영민",
+        ])
+        self.assertEqual(tenants[-1]["deposit"], 140_000_000)
+        self.assertEqual(tenants[-1]["rent"], 350_000)
+        self.assertEqual(tenants[-1]["moveInDate"], "2020.04.14")
+        self.assertEqual(tenants[-1]["fixedDate"], "2020.04.16")
+        self.assertEqual(tenants[-1]["depositClaimDate"], "2025.09.16")
+
+        opinion_data = briefing_rights.build_opinion_data({
+            "rights": [{"type": "근저당권", "date": "2024.03.21", "creditor": "농업협동조합자산관리회사", "amount": "1,000,000원", "isBaseRight": True}],
+            "tenants": tenants,
+            "tenant_source": "sale_spec_ocr",
+            "tenant_ocr_text": text,
+            "sale_spec_dividend_deadline": "2025.11.05",
+            "min_price": "9,365,925,000원",
+            "claim_amount": "2,477,462,227원",
+            "auction_type": "부동산임의경매",
+        })
+        tenant_text = opinion_data["tenantAnalysisText"]
+        for name in ("고정수", "김대현", "김수형", "안의재", "이은우", "이희석", "조영민"):
+            self.assertIn(name, tenant_text)
+
+    def test_sale_spec_ocr_parse_wins_over_single_pdf_fallback(self):
+        collapsed_pdf_text = """
+        매각물건명세서
+        점유자 성명 점유부분 정보출처구분 점유의 권원 임대차기간 보증금 차임 전입신고일자 확정일자 배당요구여부 (배당요구일자)
+        고정수
+        현황조사
+        주거
+        임차인
+        2020.04.15.
+        140,000,000
+        350,000
+        2020.04.14.
+        2020.04.16.
+        비고
+        """
+        ocr_text = """
+        매각물건명세서
+        점유자 성명 점유부분 정보출처구분 점유의 권원 임대차기간 보증금 차임 전입신고일자 확정일자 배당요구여부 (배당요구일자)
+        고정수 현황조사 주거 임차인 2024.06.10.
+        김대현 현황조사 주거 임차인 2024.03.15.
+        김수형 현황조사 주거 임차인 2024.10.21.
+        안의재 현황조사 주거 임차인 2025.04.08.
+        이은우 현황조사 주거 임차인 2020.05.18.
+        이희석 현황조사 주거 임차인 2024.04.02.
+        조영민 현황조사 주거 임차인 2020.04.14.
+        등기된 부동산에 관한 권리 또는 가처분으로 매각으로 그 효력이 소멸되지 아니하는 것
+        """
+
+        with (
+            patch(
+                "app.services.rights_certificate.collect_sale_spec_text_and_images",
+                return_value=(collapsed_pdf_text, ["page1.png"]),
+            ),
+            patch("app.services.rights_certificate.ocr_image_to_text", return_value=ocr_text),
+        ):
+            context = extract_sale_spec_tenant_context_by_ocr(object(), task_id="multi-tenant-ocr")
+
+        self.assertEqual(
+            [tenant["name"] for tenant in context["tenants"]],
+            ["고정수", "김대현", "김수형", "안의재", "이은우", "이희석", "조영민"],
+        )
+        self.assertEqual(context["tenants"][0].get("deposit") or 0, 0)
+
+    def test_no_tenant_sale_spec_ocr_does_not_promote_header_noise(self):
+        ocr_text = """
+        매각물건명세서
+        점유자 성명 점유부분 정보출처구분 점유의 권원 임대차기간 보증금 차임 전입신고일자 확정일자 배당요구여부 (배당요구일자)
+        ※ 조사된 임차내역이 없습니다.
+        부동산의 점유자와 점유의 권원
+        점유자 성명: 와 점유의 AA / 점유구분: 자와 점유의 AA / 보증금: 담당자 확인 필요 / 차임: 없음 또는 미확인
+        신고일자
+        Be
+        ya 기간
+        일자-사업자등
+        2026.11.04
+        """
+
+        self.assertTrue(parse_sale_spec_tenants_from_ocr(ocr_text)[0]["name"].startswith("조사된 임차내역 없음"))
+        self.assertTrue(parse_sale_spec_tenants_from_pdf_text(ocr_text)[0]["name"].startswith("조사된 임차내역 없음"))
+        self.assertTrue(parse_tenants_from_ocr(ocr_text)[0]["name"].startswith("조사된 임차내역 없음"))
+
+        data = build_template_data({
+            "rights": [{"type": "근저당권", "date": "2024.01.10", "creditor": "테스트은행", "isBaseRight": True}],
+            "tenants": parse_sale_spec_tenants_from_ocr(ocr_text),
+            "tenant_ocr_text": ocr_text,
+        })
+        self.assertEqual(data["tenantAnalysisText"], "조사된 임차인이 없으므로, 매수인에게 인수되는 임차권리는 없습니다.")
+        for noise in ("와 점유의 AA", "신고일자", "Be", "ya", "일자-사업자등", "미확인 점유자"):
+            self.assertNotIn(noise, data["tenantAnalysisText"])
+
+    def test_s1_briefing_blocks_false_special_tags_and_internal_markers(self):
+        rights = [
+            {"type": "근저당권", "date": "2023.05.16", "creditor": "테스트은행", "amount": "500,000,000원", "isBaseRight": True},
+            {"type": "강제경매", "date": "2026.01.10", "creditor": "테스트채권자", "amount": "761,315,340원", "isAuctionProcedure": True},
+        ]
+        data = {
+            "auction_type": "부동산강제경매",
+            "claim_amount": "761,315,340원",
+            "min_price": "592,900,000원",
+            "rights": rights,
+            "tenants": [{"name": "임차인 없음"}],
+            "source_completeness": {"registry": True},
+            "sale_spec_remarks": (
+                "양식 안내: 가등기담보권, 가압류, 전세권의 등기일자가 말소기준권리보다 빠른 경우 확인. "
+                "가처분으로 매각으로 그 효력이 소멸되지 아니하는 것."
+            ),
+            "status_survey_etc": "특이사항 없음",
+            "case_notice": "checklistRows 판정식 YAML review-standard {내부 확인}",
+            "management_fee": {},
+        }
+        opinion_data = briefing_rights.build_opinion_data(data)
+        special = briefing_opinion.build_special_opinion(opinion_data)
+        self.assertNotIn("가등기", special)
+        self.assertNotIn("가처분", special)
+        self.assertNotIn("{", special)
+        self.assertNotIn("}", special)
+        self.assertNotIn("checklistRows", special)
+        self.assertNotIn("판정식", special)
+        self.assertEqual(registered_right_amount_total(rights), 500_000_000)
+        self.assertIn("등기상 권리 기재금액 합계는 500,000,000원", opinion_data["surplusDescription"])
+
+    def test_management_fee_scraper_rejects_polluted_schedule_block(self):
+        polluted = """
+        <html><body>
+          <div id="dtl_stock">
+            <div id="dtl_title"><h3>기일내역</h3></div>
+            <table>
+              <tr><th>저가 비율</th><th>상태</th><th>날짜</th><th>회차</th><th>최저가</th><th>결과</th></tr>
+              <tr><td>100%</td><td>284일</td><td>2026-08-04</td><td>1</td><td>847,000,000원</td><td>유찰</td></tr>
+            </table>
+            <div>미납관리비 목록 (0000.00.00현재) 감정평가현황 목록</div>
+          </div>
+        </body></html>
+        """
+        self.assertEqual(_extract_management_fee(BeautifulSoup(polluted, "html.parser")), {})
+
+        clean = """
+        <html><body>
+          <div id="dtl_stock">
+            <div id="dtl_title"><h3>미납관리비</h3></div>
+            <table><tr><th>체납관리비</th><td>1,234,000원</td></tr></table>
+          </div>
+        </body></html>
+        """
+        extracted = _extract_management_fee(BeautifulSoup(clean, "html.parser"))
+        self.assertEqual(extracted["unpaidAmount"], 1_234_000)
+        self.assertEqual(extracted["amountStatus"], "confirmed")
 
     def test_case_1232734_registry_claim_and_ocr_are_canonicalized(self):
         soup = BeautifulSoup(
@@ -578,7 +1335,7 @@ class RightsCertificateTests(unittest.TestCase):
             }
         )
         self.assertFalse(explicit["noTenants"])
-        self.assertIn("법원에서 조사된 임차인 현황", explicit["tenantAnalysisText"])
+        self.assertIn("조사된 임차인은 없으므로", explicit["tenantAnalysisText"])
         self.assertIn("인수되는 임차권리는 없습니다", explicit["tenantAnalysisText"])
         self.assertIn("임차·점유 확인이 필요한 사건입니다", missing["narrativeReportHtml"])
 
@@ -594,9 +1351,9 @@ class RightsCertificateTests(unittest.TestCase):
             }
         )
         self.assertFalse(partial["noTenants"])
-        self.assertIn("법원에서 조사된 임차인 현황", partial["tenantAnalysisText"])
-        self.assertIn("매수인에게 인수되는 임차권리는 없습니다", partial["tenantAnalysisText"])
-        self.assertIn("조사 결과상 임차인은 없으며", partial["narrativeReportHtml"])
+        self.assertIn("조사된 임차인은 없으므로", partial["tenantAnalysisText"])
+        self.assertIn("인수되는 임차권리는 없습니다", partial["tenantAnalysisText"])
+        self.assertIn("조사된 임차인은 없으므로", partial["narrativeReportHtml"])
 
         complete = build_template_data(
             {
@@ -644,8 +1401,8 @@ class RightsCertificateTests(unittest.TestCase):
             "tenant_ocr_text": text,
         })
         self.assertEqual(data["tenantAnalysisText"], "조사된 임차인이 없으므로, 매수인에게 인수되는 임차권리는 없습니다.")
-        self.assertIn("법원에서 조사된 임차인 현황에는", data["narrativeReportHtml"])
-        self.assertIn("조사 결과상 임차인은 없으며", data["narrativeReportHtml"])
+        self.assertIn("조사된 임차인은 없으므로", data["narrativeReportHtml"])
+        self.assertIn("인수되는 임차권리는 없습니다", data["narrativeReportHtml"])
 
     def test_source_label_or_missing_base_date_never_proves_no_tenant_takeover(self):
         source_label_only = build_template_data(
@@ -695,7 +1452,7 @@ class RightsCertificateTests(unittest.TestCase):
             }
         )
         first_page = data["tenantAnalysisText"]
-        self.assertIn("확인된 임차인은 말소기준권리보다 후순위", first_page)
+        self.assertIn("대항력이 없으므로(대항력 X)", first_page)
         self.assertIn("낙찰자에게 인수되는 임차권리는 없습니다", first_page)
 
     def test_missing_tenant_dates_do_not_calculate_priority_repayment_or_safe_dividend(self):
@@ -1343,6 +2100,297 @@ class RightsCertificateTests(unittest.TestCase):
         text = "미납 관리비는 관리사무소 확인 필요. 감정가 121,000,000원"
 
         self.assertEqual(_extract_management_fee_amount(text), 0)
+
+
+class NoTenantPlaceholderRegressionTest(unittest.TestCase):
+    """다가구 명세서에서 이름을 못 읽은 '미확인' 행이 가짜 임차인으로 나열되던 회귀 방지."""
+
+    @staticmethod
+    def _rec(name="", occ="", deposit=0, rent=0, move_in="", fixed="", claim=""):
+        return {
+            "name": name, "occupancyType": occ, "type": occ,
+            "deposit": deposit, "rent": rent,
+            "moveInDate": move_in, "fixedDate": fixed, "depositClaimDate": claim,
+        }
+
+    def test_placeholder_only_records_are_treated_as_no_tenant(self):
+        # 보증금·차임·일자가 전혀 없는 '미확인'/공란 레코드는 임차인 아님
+        self.assertTrue(_is_no_tenant_record(self._rec(name="미확인 점유자", occ="미확인")))
+        self.assertTrue(_is_no_tenant_record(self._rec(name="", occ="임차인")))
+
+    def test_unknown_name_tenant_with_real_data_is_preserved(self):
+        # 이름만 미확인이고 보증금/전입일이 있으면 실제 임차인으로 보존
+        self.assertFalse(
+            _is_no_tenant_record(
+                self._rec(name="미확인 점유자", occ="임차인", deposit=50000000, move_in="2023-01-01")
+            )
+        )
+
+    def test_no_tenant_multiunit_collapses_to_single_no_tenant_sentence(self):
+        tenants = [
+            self._rec(name="미확인 점유자", occ="미확인"),
+            self._rec(name="미확인 점유자", occ="미확인"),
+            self._rec(name="", occ="임차인"),
+        ]
+        text = build_tenant_analysis_text(tenants, [], "", tenant_source_complete=True)
+        self.assertEqual(text, NO_TENANTS_TEXT)
+        self.assertNotIn("미확인", text)
+
+    def test_real_unknown_name_tenant_still_listed(self):
+        tenants = [self._rec(name="미확인 점유자", occ="임차인", deposit=50000000, move_in="2023-01-01")]
+        text = build_tenant_analysis_text(tenants, ["인수여부 확인이 필요합니다."], "", tenant_source_complete=True)
+        self.assertNotEqual(text, NO_TENANTS_TEXT)
+        self.assertIn("50,000,000", text)
+
+    def test_opinion_and_certificate_consumer_renders_clean_no_tenant(self):
+        # 종합의견 (2) 권리분석 → 임차권리 및 보증서 소비 경로: 무임차면 '미확인' 없이 단일 문장
+        text = briefing_opinion._tenant_text_from_template_data(
+            {"noTenants": True, "tenantAnalyses": [], "tenantAnalysisText": NO_TENANTS_TEXT}
+        )
+        self.assertNotIn("미확인", text)
+        self.assertIn("임차권리는 없습니다", text)
+        self.assertEqual(len([ln for ln in text.splitlines() if ln.strip()]), 1)
+
+    def test_opinion_consumer_lists_real_tenants(self):
+        text = briefing_opinion._tenant_text_from_template_data(
+            {"noTenants": False, "tenantAnalyses": [
+                {"description": "점유자 성명: 홍길동 / 보증금: 50,000,000원\n인수여부: 인수됩니다."},
+                {"description": "점유자 성명: 김철수 / 보증금: 30,000,000원\n인수여부: 소멸됩니다."},
+            ]}
+        )
+        self.assertIn("홍길동", text)
+        self.assertIn("김철수", text)
+
+
+class TenantProseFragmentRegressionTest(unittest.TestCase):
+    """비고란·현황조사서 서술문에서 '대항요건을', '있고' 같은 문장 조각을 임차인명으로
+    추출하고, 그 가짜 임차인이 종합의견(2) 권리분석을 2장으로 밀어내던 회귀 방지."""
+
+    def test_name_token_rejects_sentence_fragments(self):
+        for fragment in ("대항요건을", "있고", "갖추고", "하였음", "하였습니다", "되었습니다"):
+            self.assertFalse(_is_name_like_token(fragment), fragment)
+
+    def test_name_token_accepts_real_names(self):
+        for name in ("홍길동", "김철수", "이영희", "박민"):
+            self.assertTrue(_is_name_like_token(name), name)
+
+    def test_guess_name_bails_on_prose_line(self):
+        prose = "임차인은 대항요건을 갖추고 있고 배당요구종기 이내에 배당요구를 하였습니다."
+        self.assertEqual(_guess_sale_spec_tenant_name(prose), "")
+
+    def test_prose_remark_line_creates_no_tenant(self):
+        # 날짜가 섞인 서술문도 가짜 임차인을 만들지 않는다.
+        for prose in (
+            "임차인은 대항요건을 갖추고 있고 배당요구를 하였습니다.",
+            "임차인은 2023.01.01 전입신고를 마쳤고 대항요건을 갖추었습니다.",
+        ):
+            result = [t for t in parse_sale_spec_tenants_from_ocr(prose) if not _is_no_tenant_record(t)]
+            self.assertEqual(result, [], prose)
+
+    def test_labeled_tabular_rows_capture_real_tenants(self):
+        ocr = (
+            "점유자 성명: 홍길동 점유구분: 주거임차인 보증금: 50,000,000원 전입일: 2023.01.01 확정일: 2023.01.02 배당요구일: 2023.02.01\n"
+            "점유자 성명: 김철수 점유구분: 주거임차인 보증금: 30,000,000원 전입일: 2022.03.01 확정일: 2022.03.02 배당요구일: 2022.04.01\n"
+        )
+        tenants = [t for t in parse_sale_spec_tenants_from_ocr(ocr) if not _is_no_tenant_record(t)]
+        names = {t.get("name") for t in tenants}
+        self.assertIn("홍길동", names)
+        self.assertIn("김철수", names)
+        self.assertNotIn("대항요건을", names)
+
+    def test_no_tenant_opinion_fits_single_page(self):
+        opinion = "\n".join([
+            "1) 말소기준 및 등기부상 소멸사항",
+            "- 2023.05.16 설정된 근저당권[○○대부]이 말소기준권리이며 이후 권리는 모두 소멸되어 인수하는 권리는 없습니다.",
+            "2) 임차권리 인수사항",
+            "- 조사된 임차인이 없으므로, 낙찰자에게 인수되는 임차권리는 없습니다.",
+            "3) 경매취하 / 무잉여 가능성",
+            "- 경매신청 채권자의 청구금액은 761,315,340원입니다.",
+            "- 등기부상 채권 총액이 최저가보다 높아 취하 가능성은 낮습니다.",
+            "- 신청채권자는 경매비용·당해세 다음으로 배당받을 수 있어 무잉여 가능성은 낮습니다.",
+        ])
+        self.assertEqual(len(ppt_builder._split_rights_analysis_opinion_pages(opinion)), 1)
+
+    def test_many_tenants_opinion_splits_to_two_pages(self):
+        lines = ["1) 말소기준 및 등기부상 소멸사항",
+                 "- 2023.05.16 설정된 근저당권[○○대부]이 말소기준권리이며 이후 권리는 모두 소멸됩니다.",
+                 "2) 임차권리 인수사항"]
+        for i in range(6):
+            lines.append(
+                f"점유자 성명: 임차인{i} / 점유구분: 주거임차인 / 보증금: 50,000,000원 / 차임: 없음 / 전입일: 2023.01.0{i} / 확정일: 2023.01.0{i} / 배당요구일: 2023.02.0{i}"
+            )
+            lines.append("인수여부: 대항력 및 우선변제권 성립 여부는 배당요구종기일 기준으로 최종 검토가 필요합니다.")
+        lines += ["3) 경매취하 / 무잉여 가능성",
+                  "- 경매신청 채권자의 청구금액은 761,315,340원입니다."]
+        self.assertGreaterEqual(len(ppt_builder._split_rights_analysis_opinion_pages("\n".join(lines))), 2)
+
+    def test_customer_safe_text_strips_staff_confirm_token(self):
+        cleaned = briefing_rights._customer_safe_text("보증금: 담당자 확인 필요 / 차임: 없음")
+        self.assertNotIn("담당자 확인 필요", cleaned)
+        self.assertIn("미확인", cleaned)
+
+    def test_linter_flags_staff_confirm_token(self):
+        issues = briefing_opinion.lint_customer_facing_text("보증금: 담당자 확인 필요", "rights")
+        self.assertTrue(any("staff-confirm-token" in issue for issue in issues))
+
+    # --- 매각물건명세서 PDF텍스트 경로 (실제 운영 1차 파서) ---
+    def test_sale_spec_name_before_source_rejects_fragments(self):
+        self.assertEqual(_sale_spec_name_before_source("임차인은 대항요건을 갖추고 있고"), "")
+        self.assertEqual(_sale_spec_name_before_source("홍길동 전부"), "홍길동")
+
+    def test_pdf_text_prose_rows_create_no_fake_tenants(self):
+        # 비고/각주 서술문이 점유자 '표의 행'으로 오인되어 조각이 임차인이 되지 않는다.
+        text = "\n".join([
+            "점유자 성명 점유부분 정보출처 점유의 권원 전입신고일자 확정일자 (배당요구일자)",
+            "홍길동 전부 현황조사 주거임차인 50,000,000 2023.01.01 2023.01.02 2023.02.01",
+            "김철수 전부 권리신고 주거임차인 30,000,000 2022.03.01 2022.03.02 2022.04.01",
+            "현황조사서상 임차인은 대항요건을 갖추고 있고 배당요구종기 이내에 배당요구를 하였습니다",
+        ])
+        tenants = [t for t in parse_sale_spec_tenants_from_pdf_text(text) if not _is_no_tenant_record(t)]
+        names = {t.get("name") for t in tenants}
+        self.assertIn("홍길동", names)
+        self.assertIn("김철수", names)
+        self.assertNotIn("대항요건을", names)
+        self.assertNotIn("있고", names)
+
+    def test_sale_spec_metadata_lines_do_not_create_fake_tenant(self):
+        # '조사된 임차내역없음'인데 상단 메타데이터('최선순위 설정 … 근저당권 배당요구종기 …')에서
+        # '설정'·'종기'를 임차인명으로, 설정일자를 전입일로 뽑던 실제 사건(서울서부 2024타경52693) 회귀.
+        text = "\n".join([
+            "최저매각가격의 표시 별지 기재와 같음 최선순위",
+            "설정 2018.6.11 근저당권 배당요구종기 2024. 5. 27.",
+            "점유자 성명 점유부분 정보출처 ... 확정일자 배당요구여부(배당요구일자)",
+            "조사된 임차내역없음",
+        ])
+        for parser in (parse_sale_spec_tenants_from_ocr, parse_sale_spec_tenants_from_pdf_text):
+            valid = [t for t in parser(text) if not _is_no_tenant_record(t)]
+            self.assertEqual(valid, [], f"{parser.__name__} produced {[t.get('name') for t in valid]}")
+
+    def test_select_best_prefers_occupancy_region_over_ocr_fakes(self):
+        # 실제 사건(서울서부 2024타경, 권미선 1명)에서 명세서 셀이 한 줄씩 쪼개져 pdf_text 파서가
+        # summary_fallback 으로 권미선만 읽었는데, 전문서 OCR이 '있는'·'변제' 가짜를 더해 개수로
+        # 이기던 회귀 방지 — 점유자 영역에서 읽은 결과를 전문서 OCR보다 신뢰해야 한다.
+        from app.services.rights_certificate import _select_best_sale_spec_tenants
+        occupancy = [{
+            "name": "권미선", "occupancyType": "주거 임차인", "type": "주거 임차인",
+            "deposit": 190000000, "rent": 0,
+            "moveInDate": "2022.08.22", "fixedDate": "", "depositClaimDate": "",
+            "_parse_method": "summary_fallback",
+        }]
+        ocr_with_fakes = [
+            {"name": "권미선", "deposit": 0, "moveInDate": "2024.08.20"},
+            {"name": "있는", "deposit": 190000000, "moveInDate": "2022.08.22"},
+            {"name": "변제", "deposit": 0, "moveInDate": "2022.07.25"},
+        ]
+        best = _select_best_sale_spec_tenants(occupancy, ocr_with_fakes)
+        names = {t.get("name") for t in best if not _is_no_tenant_record(t)}
+        self.assertEqual(names, {"권미선"})
+
+
+class MultiTenantBlockParseTest(unittest.TestCase):
+    """세로로 쪼개진 점유자 표(다가구·상가 다수임차인)를 임차인별로 재구성하는지 검증.
+    실측: 서울남부 2026타경114(상가 4명), 서울남부 2024타경105895(다가구 7명)."""
+
+    FIX_114 = "\n".join([
+        "김호은 현황조사 - 임차인 2026.02.20.",
+        "장만희",
+        "1층 현황조사 점포",
+        "임차인 2022.07.11.",
+        "1층 권리신고 점포",
+        "임차인",
+        "2022.08.10.", "부터", "2028.08.10.", "까지",
+        "100,000,000 3,500,000 2022.07.11 2026.04.09 2026.4.17.",
+        "주식회", "사", "컴타운",
+        "3층 현황조사 점포",
+        "임차인 2021.06.09.",
+        "3층", "전부 권리신고 점포", "임차인",
+        "2022.10.17.", "부터", "2026.10.16.", "까지",
+        "10,000,000 1,000,000 2022.10.26 2026.4.3.",
+        "하나협", "동조합 2층 현황조사 점포",
+        "임차인 미상",
+    ]).splitlines()
+
+    def test_114_four_tenants_split_with_amounts(self):
+        tenants = _parse_sale_spec_occupancy_blocks(self.FIX_114)
+        names = [t["name"] for t in tenants]
+        self.assertEqual(names, ["김호은", "장만희", "주식회사 컴타운", "하나협동조합"])
+        by = {t["name"]: t for t in tenants}
+        self.assertEqual(by["장만희"]["deposit"], 100000000)
+        self.assertEqual(by["장만희"]["rent"], 3500000)
+        self.assertEqual(by["장만희"]["moveInDate"], "2022.07.11")
+        self.assertEqual(by["주식회사 컴타운"]["deposit"], 10000000)
+        self.assertEqual(by["주식회사 컴타운"]["moveInDate"], "2022.10.26")
+
+    def test_block_parser_rejects_names_ending_in_ho(self):
+        # '안영호'처럼 '호'로 끝나는 이름을 점유부분(301호)으로 오판하지 않는다.
+        lines = ["안영호", "2층", "301호", "현황조사", "주거", "임차인", "2024.01.03"]
+        tenants = _parse_sale_spec_occupancy_blocks(lines)
+        self.assertEqual([t["name"] for t in tenants], ["안영호"])
+
+    def test_daehangnyeok_marked_per_tenant(self):
+        base = {"date": "2018.06.20", "type": "근저당권"}
+        # 전입이 말소기준보다 늦음 → 대항력 X
+        late = [{"name": "장만희", "moveInDate": "2022.07.11", "fixedDate": "2026.04.09", "depositClaimDate": "2026.04.17", "deposit": 100000000}]
+        texts = analyze_tenants(late, base, [], "2026.06.12", "서울")
+        self.assertTrue(any("대항력 X" in t and "인수되는 임차권리는 없습니다" in t for t in texts))
+        # 전입이 말소기준보다 빠름 → 대항력 O
+        early = [{"name": "김선순", "moveInDate": "2017.01.01", "fixedDate": "2017.01.02", "depositClaimDate": "2018.01.01", "deposit": 100000000}]
+        texts2 = analyze_tenants(early, base, [], "2018.06.12", "서울")
+        self.assertTrue(any("대항력 O" in t for t in texts2))
+
+    def test_analyze_tenants_not_deduped_for_multi(self):
+        base = {"date": "2018.06.20"}
+        tenants = [
+            {"name": "A", "moveInDate": "2022.01.01", "deposit": 0},
+            {"name": "B", "moveInDate": "2023.01.01", "deposit": 0},
+            {"name": "C", "moveInDate": "2024.01.01", "deposit": 0},
+        ]
+        texts = analyze_tenants(tenants, base, [], "", "")
+        self.assertEqual(len(texts), 3)
+
+
+class RightsOpinionPaginationTest(unittest.TestCase):
+    """담당자 종합의견 (2) 권리분석이 길어 추가 페이지가 생길 때 본문 텍스트 박스가
+    중복 생성(겹침)되지 않는지 검증."""
+
+    def _body_boxes(self, slide):
+        boxes = []
+        for sh in slide.shapes:
+            if not getattr(sh, "has_text_frame", False):
+                continue
+            if (sh.text or "").strip().isdigit():
+                continue
+            if int(sh.width) * int(sh.height) > Inches(2) * Inches(2):
+                boxes.append(sh)
+        return boxes
+
+    def test_duplicate_slide_does_not_double_placeholders(self):
+        from app.core.config import settings
+        prs = Presentation(settings.pptm_template)
+        slide = ppt_builder.find_slide_by_note_key(prs, "SLIDE_KEY=OPINION_RIGHTS_ANALYSIS")
+        if slide is None:
+            self.skipTest("권리분석 템플릿 슬라이드 없음")
+        before = sum(1 for sh in slide.shapes if getattr(sh, "has_text_frame", False))
+        dup = ppt_builder.duplicate_slide(prs, slide)
+        after = sum(1 for sh in dup.shapes if getattr(sh, "has_text_frame", False))
+        self.assertEqual(after, before)
+
+    def test_extra_page_has_single_body_box(self):
+        from app.core.config import settings
+        prs = Presentation(settings.pptm_template)
+        slide = ppt_builder.find_slide_by_note_key(prs, "SLIDE_KEY=OPINION_RIGHTS_ANALYSIS")
+        if slide is None:
+            self.skipTest("권리분석 템플릿 슬라이드 없음")
+        base = prs.slides.index(slide)
+        long_text = "\n".join(
+            [f"{n}) 섹션" for n in (1, 2, 3)] + ["- " + ("가" * 60) for _ in range(20)]
+        )
+        pages = ppt_builder._split_rights_analysis_opinion_pages(long_text)
+        self.assertGreaterEqual(len(pages), 2)
+        ppt_builder.apply_rights_analysis_opinion(prs, long_text)
+        for i in range(base, base + len(pages)):
+            self.assertLessEqual(len(self._body_boxes(prs.slides[i])), 1, f"slide {i} 본문박스 중복")
+
 
 if __name__ == "__main__":
     unittest.main()

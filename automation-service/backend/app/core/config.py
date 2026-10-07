@@ -6,6 +6,7 @@
 """
 
 import os
+import re
 import sys
 import json
 import platform
@@ -153,6 +154,41 @@ def save_config(cfg: dict) -> None:
 
 
 # ============================================================
+# 에이전트 버전 (단일 출처: 번들된 agent-version.txt, dev는 공유 TS 상수)
+# ============================================================
+def _load_agent_version() -> str:
+    """중앙 큐에 보고하는 에이전트 버전.
+
+    frozen(EXE) 실행 시 exe 옆 ``agent-version.txt``(빌드 시 기록)를,
+    dev 실행 시 ``src/shared/automation-agent-version.ts``를 읽는다.
+    (하드코딩 상수가 빌드 버전과 어긋나 중앙 큐에 구버전을 보고하던 회귀 방지 —
+     ``app.api.routes._load_agent_version`` 과 동일 출처로 통일한다.)
+    """
+    if IS_FROZEN:
+        version_file = Path(sys.executable).resolve().parent / "agent-version.txt"
+        try:
+            if version_file.is_file():
+                version = version_file.read_text(encoding="ascii").strip()
+                if version:
+                    return version
+        except Exception:
+            pass
+
+    shared_source = Path(__file__).resolve().parents[4] / "src" / "shared" / "automation-agent-version.ts"
+    try:
+        if shared_source.is_file():
+            match = re.search(
+                r"AUTOMATION_AGENT_VERSION\s*=\s*['\"]([^'\"]+)['\"]",
+                shared_source.read_text(encoding="utf-8"),
+            )
+            if match:
+                return match.group(1)
+    except Exception:
+        pass
+    return "unknown"
+
+
+# ============================================================
 # FastAPI Settings
 # ============================================================
 class Settings(BaseSettings):
@@ -184,7 +220,7 @@ class Settings(BaseSettings):
     queue_agent_id: str = "office-automation-01"
     queue_agent_name: str = "회사 자동화 서버"
     queue_poll_seconds: int = 5
-    agent_version: str = "2026.09.07.2"
+    agent_version: str = _load_agent_version()
 
     # 템플릿
     pptm_template: str = str(TEMPLATES_DIR / "sample2_configured.pptx")

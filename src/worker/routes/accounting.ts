@@ -7,6 +7,8 @@ import { confirmedSalesSql, pendingCardSettlementSql, recognizedSalesDateSql } f
 import { currentKstMonth, ensurePayTypeHistoryTable, normalizeYearMonth } from '../lib/pay-type-history';
 import { classifyPayrollSavesFromMonth } from '../../shared/payroll-effective-month';
 import { SALES_EVALUATION_EMPLOYEE_FILTER, SALES_EVALUATION_EXCLUDED_USER_ID } from '../lib/sales-evaluation-eligibility';
+import { calculateVideoProductionNet, calculateVideoProductionWithholding } from '../../shared/video-production.ts';
+import { ensureVideoProductionRequestTable } from '../lib/video-production-requests';
 
 const accounting = new Hono<AuthEnv>();
 accounting.use('*', authMiddleware);
@@ -17,6 +19,39 @@ const ACCOUNTING_ROLES = ['master', 'ceo', 'accountant', 'accountant_asst'] as c
 const PROFIT_LOSS_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const LABOR_COST_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const ACCOUNTING_ALERT_EXTRA_USER_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f']; // 정민호
+const NO_LOCKED_PAYROLL_MONTH_SQL = `NOT EXISTS (
+  SELECT 1
+  FROM payroll_saves destination_payroll
+  WHERE destination_payroll.user_id = ?
+    AND destination_payroll.locked = 1
+    AND destination_payroll.period IN (?, ?)
+)`;
+
+function payrollPeriodLabel(month: string): string {
+  const [year, monthText] = month.split('-');
+  return `${Number(year)}년 ${Number(monthText)}월`;
+}
+
+function dateMonth(value: unknown): string {
+  const month = String(value || '').trim().slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(month) ? month : '';
+}
+
+async function lockedPayrollPeriodForMonth(
+  db: D1Database,
+  userId: string,
+  month: string,
+): Promise<string> {
+  if (!month) return '';
+  const row = await db.prepare(`
+    SELECT period
+    FROM payroll_saves
+    WHERE user_id = ? AND locked = 1 AND period IN (?, ?)
+    ORDER BY period
+    LIMIT 1
+  `).bind(userId, month, payrollPeriodLabel(month)).first<{ period: string }>().catch(() => null);
+  return String(row?.period || '');
+}
 
 const CARD_SETTLEMENT_KEYWORDS = [
   '카드', '헥토', '파이낸셜', '나이스', 'nice', '토스', 'toss', '이니시스', 'kg', 'kcp',
@@ -374,6 +409,104 @@ async function payrollLaborRowsForProfitLoss(db: D1Database, month: string, bran
   });
 }
 
+function accountingMonthEndDate(month: string): string {
+  const match = month.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return month;
+  const year = Number(match[1]);
+  const monthNumber = Number(match[2]);
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+  return `${month}-${String(lastDay).padStart(2, '0')}`;
+}
+
+async function videoProductionReportMonths(db: D1Database, branch: string | null) {
+  await ensureVideoProductionRequestTable(db);
+  const where = [
+    `vpr.status = 'confirmed'`,
+    `COALESCE(vpr.result_received_date, '') <> ''`,
+  ];
+  const binds: any[] = [];
+  if (branch) pushReportBranchWhere(where, binds, `COALESCE(u.branch, '')`, branch);
+  const result = await db.prepare(`
+    SELECT DISTINCT substr(vpr.result_received_date, 1, 7) AS month
+    FROM video_production_requests vpr
+    LEFT JOIN users u ON u.id = vpr.assignee_user_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY month DESC
+    LIMIT 36
+  `).bind(...binds).all<{ month: string }>();
+  return (result.results || []).map((row) => row.month).filter(Boolean);
+}
+
+async function videoProductionLaborRowsForAccounting(db: D1Database, month: string, branch: string | null) {
+  if (!/^\d{4}-\d{2}$/.test(month)) return [];
+  await ensureVideoProductionRequestTable(db);
+  const monthStart = `${month}-01`;
+  const monthEnd = accountingMonthEndDate(month);
+  const where = [
+    `vpr.status = 'confirmed'`,
+    `vpr.result_received_date >= ?`,
+    `vpr.result_received_date <= ?`,
+  ];
+  const binds: any[] = [monthStart, monthEnd];
+  if (branch) pushReportBranchWhere(where, binds, `COALESCE(u.branch, '')`, branch);
+  const result = await db.prepare(`
+    SELECT
+      vpr.assignee_user_id,
+      COALESCE(u.name, '') AS assignee_name,
+      COALESCE(u.branch, '') AS assignee_branch,
+      COALESCE(u.department, '') AS assignee_department,
+      COUNT(*) AS request_count,
+      COALESCE(SUM(CASE WHEN vpr.video_type = 'short_form' THEN MAX(COALESCE(vpr.quantity, 1), 1) ELSE 0 END), 0) AS short_count,
+      COALESCE(SUM(CASE WHEN vpr.video_type = 'long_form' THEN MAX(COALESCE(vpr.quantity, 1), 1) ELSE 0 END), 0) AS long_count,
+      COALESCE(SUM(MAX(COALESCE(vpr.quantity, 1), 1)), 0) AS total_count,
+      COALESCE(SUM(COALESCE(vpr.amount, 0)), 0) AS total_amount,
+      MIN(vpr.result_received_date) AS first_result_date,
+      MAX(vpr.result_received_date) AS last_result_date
+    FROM video_production_requests vpr
+    LEFT JOIN users u ON u.id = vpr.assignee_user_id
+    WHERE ${where.join(' AND ')}
+    GROUP BY vpr.assignee_user_id, u.name, u.branch, u.department
+    ORDER BY last_result_date DESC, u.name ASC
+  `).bind(...binds).all<any>();
+
+  return (result.results || []).flatMap((row: any) => {
+    const grossAmount = Number(row.total_amount || 0);
+    if (!grossAmount) return [];
+    const withholding = calculateVideoProductionWithholding(grossAmount);
+    const netAmount = calculateVideoProductionNet(grossAmount);
+    const totalCount = Number(row.total_count || 0);
+    const shortCount = Number(row.short_count || 0);
+    const longCount = Number(row.long_count || 0);
+    const rangeText = row.first_result_date === row.last_result_date
+      ? String(row.first_result_date || monthEnd)
+      : `${row.first_result_date || monthStart}~${row.last_result_date || monthEnd}`;
+    return [{
+      id: `video-production:${month}:${row.assignee_user_id || 'unknown'}`,
+      ledger_type: 'expense',
+      entry_date: monthEnd,
+      branch: compactAccountingText(row.assignee_branch) || '미지정',
+      owner_name: compactAccountingText(row.assignee_name) || compactAccountingText(row.assignee_user_id) || '담당자',
+      category: '인건비',
+      item: '영상제작 외주급여',
+      amount: grossAmount,
+      direction: 'expense',
+      memo: `결과물 확정 ${totalCount.toLocaleString('ko-KR')}건(숏폼 ${shortCount.toLocaleString('ko-KR')}건, 롱폼 ${longCount.toLocaleString('ko-KR')}건) · 공급가 기준 · 원천징수 ${withholding.toLocaleString('ko-KR')}원, 실지급 ${netAmount.toLocaleString('ko-KR')}원`,
+      source_type: 'video_production',
+      transaction_at: monthEnd,
+      merchant_name: compactAccountingText(row.assignee_name),
+      description: `영상제작 외주급여 ${month} · 결과물일 ${rangeText}`,
+      card_last4: '',
+      ledger_policy: '영상제작 결과물 정산',
+      duplicate_status: 'unique',
+      gross_amount: grossAmount,
+      withholding_tax: withholding,
+      video_short_count: shortCount,
+      video_long_count: longCount,
+      video_total_count: totalCount,
+    }];
+  });
+}
+
 async function ensureAccountingRuleTables(db: D1Database): Promise<void> {
   await db.prepare(`
     CREATE TABLE IF NOT EXISTS accounting_card_rules (
@@ -462,9 +595,13 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
   const bookMonths = bookMonthBinds.length
     ? await bookMonthsStatement.bind(...bookMonthBinds).all<{ month: string }>()
     : await bookMonthsStatement.all<{ month: string }>();
+  const videoProductionMonths = ['expense', 'profit-loss', 'tax'].includes(reportType)
+    ? await videoProductionReportMonths(db, branch)
+    : [];
   const availableMonths = Array.from(new Set([
     ...(months.results || []).map((row) => row.month).filter(Boolean),
     ...(bookMonths.results || []).map((row) => row.month).filter(Boolean),
+    ...videoProductionMonths,
   ])).sort().reverse();
   if (requestedMonth === 'latest' || !requestedMonth) {
     month = pickDefaultReportMonth(availableMonths);
@@ -693,6 +830,15 @@ accounting.get('/session2/reports', requireRole(...ACCOUNTING_ROLES), async (c) 
     rows = [...rows, ...(bookRowsResult.results || [])]
       .sort((a: any, b: any) => String(b.entry_date || b.transaction_at || '').localeCompare(String(a.entry_date || a.transaction_at || '')))
       .slice(0, 2000);
+
+    if (['expense', 'profit-loss', 'tax'].includes(reportType) && month) {
+      const videoProductionRows = await videoProductionLaborRowsForAccounting(db, month, branch);
+      if (videoProductionRows.length) {
+        rows = [...rows, ...videoProductionRows]
+          .sort((a: any, b: any) => String(b.entry_date || b.transaction_at || '').localeCompare(String(a.entry_date || a.transaction_at || '')))
+          .slice(0, 2000);
+      }
+    }
 
     if (false && ['expense', 'profit-loss', 'tax'].includes(reportType)) {
       const cardWhere: string[] = [`COALESCE(ct.transaction_date, '') <> ''`];
@@ -2068,8 +2214,20 @@ accounting.post('/card-settlements/:id/confirm', requireRole(...ACCOUNTING_ROLES
   const grossAmount = Math.abs(Number(record.amount || 0) || 0);
   const feeAmount = netAmount > 0 ? Math.max(grossAmount - netAmount, 0) : 0;
   const memo = (note || '').trim();
+  const destinationPayrollMonth = dateMonth(settleDate);
+  const lockedDestinationPayroll = await lockedPayrollPeriodForMonth(
+    db,
+    record.user_id,
+    destinationPayrollMonth,
+  );
+  if (lockedDestinationPayroll) {
+    return c.json({
+      error: `${lockedDestinationPayroll} 급여정산이 이미 확정되어 해당 월로 카드 정산할 수 없습니다. 먼저 급여 확정을 취소해주세요.`,
+      payroll_period: lockedDestinationPayroll,
+    }, 409);
+  }
 
-  await db.prepare(`
+  const settlementStatement = db.prepare(`
     UPDATE sales_records
     SET status = 'confirmed',
         card_deposit_date = ?,
@@ -2079,11 +2237,79 @@ accounting.post('/card-settlements/:id/confirm', requireRole(...ACCOUNTING_ROLES
         card_settlement_note = ?,
         updated_at = datetime('now', '+9 hours')
     WHERE id = ?
-  `).bind(settleDate, netAmount, feeAmount, staging_id || '', memo, id).run();
+      AND status IN ('confirmed', 'card_pending')
+      AND payment_type = '카드'
+      AND TRIM(COALESCE(card_deposit_date, '')) = ''
+      AND (
+        ? = ''
+        OR EXISTS (
+          SELECT 1
+          FROM bank_staging bs
+          WHERE bs.id = ?
+            AND bs.status = 'pending'
+            AND bs.category = 'card_settlement'
+            AND bs.transaction_date = ?
+            AND bs.amount = ?
+        )
+      )
+      AND ${NO_LOCKED_PAYROLL_MONTH_SQL}
+  `).bind(
+    settleDate,
+    netAmount,
+    feeAmount,
+    staging_id || '',
+    memo,
+    id,
+    staging_id || '',
+    staging_id || '',
+    settlement?.transaction_date || '',
+    Number(settlement?.amount || 0),
+    record.user_id,
+    destinationPayrollMonth,
+    payrollPeriodLabel(destinationPayrollMonth),
+  );
 
-  if (staging_id) {
-    await db.prepare("UPDATE bank_staging SET status = 'approved', matched_sales_id = ?, updated_at = datetime('now') WHERE id = ?")
-      .bind(id, staging_id).run();
+  if (!staging_id) {
+    const settlementResult = await settlementStatement.run();
+    if (Number(settlementResult.meta?.changes ?? 0) !== 1) {
+      return c.json({ error: '카드 정산 중 급여 확정 또는 매출 상태가 변경되어 처리하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+    }
+  } else {
+    const stagingStatement = db.prepare(`
+      UPDATE bank_staging
+      SET status = 'approved', matched_sales_id = ?, updated_at = datetime('now')
+      WHERE id = ?
+        AND status = 'pending'
+        AND category = 'card_settlement'
+        AND transaction_date = ?
+        AND amount = ?
+        AND EXISTS (
+          SELECT 1
+          FROM sales_records sr
+          WHERE sr.id = ?
+            AND sr.status = 'confirmed'
+            AND sr.card_deposit_date = ?
+            AND sr.card_settlement_staging_id = ?
+        )
+    `).bind(
+      id,
+      staging_id,
+      settlement.transaction_date,
+      Number(settlement.amount || 0),
+      id,
+      settleDate,
+      staging_id,
+    );
+    const [settlementResult, stagingResult] = await db.batch([
+      settlementStatement,
+      stagingStatement,
+    ]);
+    if (
+      Number(settlementResult.meta?.changes ?? 0) !== 1
+      || Number(stagingResult.meta?.changes ?? 0) !== 1
+    ) {
+      return c.json({ error: '카드 정산 입금건이 이미 처리되었거나 급여/매출 상태가 변경되어 처리하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+    }
   }
 
   return c.json({ success: true, sales_id: id, settlement_amount: netAmount, fee_amount: feeAmount, settlement_date: settleDate, confirmed_by: user.sub });
@@ -2134,13 +2360,20 @@ accounting.post('/upload-bank', requireRole(...ACCOUNTING_ROLES), async (c) => {
       if (existingExpense) { dupSales++; continue; }
 
       const id = crypto.randomUUID();
-      await db.prepare(`
+      const destinationPayrollMonth = dateMonth(txDate);
+      const expenseInsertResult = await db.prepare(`
         INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, amount, contract_date, deposit_date, status, confirmed_at, confirmed_by, branch, department, memo, payment_type, direction, journal_entry_id, exclude_from_count)
-        VALUES (?, ?, '기타', ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, '이체', 'expense', ?, 1)
+        SELECT ?, ?, '기타', ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, '이체', 'expense', ?, 1
+        WHERE ${NO_LOCKED_PAYROLL_MONTH_SQL}
       `).bind(
         id, user.sub, purpose, depositor, depositor, amount, txDate, txDate,
-        user.sub, user.branch || '', user.department || '', description, autoKey
+        user.sub, user.branch || '', user.department || '', description, autoKey,
+        user.sub, destinationPayrollMonth, payrollPeriodLabel(destinationPayrollMonth),
       ).run();
+      if (Number(expenseInsertResult.meta?.changes ?? 0) !== 1) {
+        skipped.push(`${depositor}: ${payrollPeriodLabel(destinationPayrollMonth)} 급여 확정 월이라 자동 지출 이관 안 함`);
+        continue;
+      }
       autoExpenses++;
       continue;
     }
@@ -2203,7 +2436,7 @@ accounting.post('/staging/:id/to-sales', requireRole(...ACCOUNTING_ROLES), async
   const stagingId = c.req.param('id');
   const { type, user_id, type_detail, direction } = await c.req.json<{ type: string; user_id?: string; type_detail?: string; direction?: string }>();
 
-  const item = await db.prepare('SELECT * FROM bank_staging WHERE id = ?').bind(stagingId).first<any>();
+  const item = await db.prepare("SELECT * FROM bank_staging WHERE id = ? AND status = 'pending'").bind(stagingId).first<any>();
   const entryDirection = direction === 'expense' || item?.direction === 'expense' ? 'expense' : 'income';
   const entryType = type || (entryDirection === 'expense' ? '지출' : '기타수입');
   if (!item) return c.json({ error: '항목을 찾을 수 없습니다.' }, 404);
@@ -2212,23 +2445,93 @@ accounting.post('/staging/:id/to-sales', requireRole(...ACCOUNTING_ROLES), async
   const assignee = user_id
     ? await db.prepare('SELECT id, name, branch, department FROM users WHERE id = ?').bind(user_id).first<any>()
     : null;
+  const salesOwnerId = assignee?.id || user.sub;
+  const destinationPayrollMonth = dateMonth(item.transaction_date);
+  const lockedDestinationPayroll = await lockedPayrollPeriodForMonth(
+    db,
+    salesOwnerId,
+    destinationPayrollMonth,
+  );
+  if (lockedDestinationPayroll) {
+    return c.json({
+      error: `${lockedDestinationPayroll} 급여정산이 이미 확정되어 해당 월의 매출로 이동할 수 없습니다. 먼저 급여 확정을 취소해주세요.`,
+      payroll_period: lockedDestinationPayroll,
+    }, 409);
+  }
 
   const salesId = crypto.randomUUID();
-  await db.prepare(`
+  const insertStatement = db.prepare(`
     INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, amount, contract_date, deposit_date, status, confirmed_at, confirmed_by, branch, department, attribution_branch, memo, payment_type, direction)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, ?, '이체', ?)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, ?, ?, ?, ?, '이체', ?
+    WHERE ${NO_LOCKED_PAYROLL_MONTH_SQL}
+      AND EXISTS (
+        SELECT 1
+        FROM bank_staging bs
+        WHERE bs.id = ?
+          AND bs.status = 'pending'
+          AND bs.depositor = ?
+          AND bs.amount = ?
+          AND bs.transaction_date = ?
+          AND COALESCE(bs.description, '') = ?
+          AND COALESCE(bs.direction, 'income') = ?
+      )
   `).bind(
-    salesId, assignee?.id || user.sub, entryType, type_detail || '',
+    salesId, salesOwnerId, entryType, type_detail || '',
     item.depositor, item.depositor, item.amount,
     item.transaction_date, item.transaction_date,
     user.sub, assignee?.branch || user.branch || '', assignee?.department || user.department || '',
     resolveSalesAttributionBranch(assignee?.name || (assignee ? '' : user.name)),
-    item.description || '거래내역 첨부에서 이동', entryDirection
-  ).run();
-
-  // 스테이징 상태 업데이트
-  await db.prepare("UPDATE bank_staging SET status = 'approved', matched_sales_id = ?, updated_at = datetime('now') WHERE id = ?")
-    .bind(salesId, stagingId).run();
+    item.description || '거래내역 첨부에서 이동', entryDirection,
+    salesOwnerId, destinationPayrollMonth, payrollPeriodLabel(destinationPayrollMonth),
+    stagingId,
+    item.depositor,
+    Number(item.amount || 0),
+    item.transaction_date,
+    item.description || '',
+    item.direction || 'income',
+  );
+  const stagingStatement = db.prepare(`
+    UPDATE bank_staging
+    SET status = 'approved', matched_sales_id = ?, updated_at = datetime('now')
+    WHERE id = ?
+      AND status = 'pending'
+      AND depositor = ?
+      AND amount = ?
+      AND transaction_date = ?
+      AND COALESCE(description, '') = ?
+      AND COALESCE(direction, 'income') = ?
+      AND EXISTS (
+        SELECT 1
+        FROM sales_records sr
+        WHERE sr.id = ?
+          AND sr.user_id = ?
+          AND sr.status = 'confirmed'
+          AND sr.deposit_date = ?
+          AND COALESCE(sr.direction, 'income') = ?
+      )
+  `).bind(
+    salesId,
+    stagingId,
+    item.depositor,
+    Number(item.amount || 0),
+    item.transaction_date,
+    item.description || '',
+    item.direction || 'income',
+    salesId,
+    salesOwnerId,
+    item.transaction_date,
+    entryDirection,
+  );
+  const [insertResult, stagingResult] = await db.batch([
+    insertStatement,
+    stagingStatement,
+  ]);
+  if (
+    Number(insertResult.meta?.changes ?? 0) !== 1
+    || Number(stagingResult.meta?.changes ?? 0) !== 1
+  ) {
+    return c.json({ error: '입금건이 이미 처리되었거나 매출 이동 중 급여가 확정되어 처리하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+  }
 
   return c.json({ success: true, sales_id: salesId });
 });

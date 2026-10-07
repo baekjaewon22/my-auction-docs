@@ -444,6 +444,7 @@ export default function Sales() {
   const [formContractDate, setFormContractDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [formPhone, setFormPhone] = useState('');
   const [formWinningCourt, setFormWinningCourt] = useState('');
+  const [formAuctionKind, setFormAuctionKind] = useState<'court' | 'public'>('court');
   const [formWinningCaseNumber, setFormWinningCaseNumber] = useState('');
   const [formWinningPropertyType, setFormWinningPropertyType] = useState('');
   // [6-1] 수수료 계산 (계약 타입만) - 감정가%, 낙찰가%
@@ -520,6 +521,7 @@ export default function Sales() {
   const [claimPhone, setClaimPhone] = useState('');
   const [claimWinningDate, setClaimWinningDate] = useState('');
   const [claimWinningCourt, setClaimWinningCourt] = useState('');
+  const [claimAuctionKind, setClaimAuctionKind] = useState<'court' | 'public'>('court');
   const [claimWinningCaseNumber, setClaimWinningCaseNumber] = useState('');
   const [claimWinningPropertyType, setClaimWinningPropertyType] = useState('');
 
@@ -719,7 +721,7 @@ export default function Sales() {
     setFormAmount(''); setFormContractDate(new Date().toISOString().slice(0, 10));
     setFormAppraisalRate(''); setFormWinningRate('');
     setFormPhone('');
-    setFormWinningCourt(''); setFormWinningCaseNumber(''); setFormWinningPropertyType('');
+    setFormAuctionKind('court'); setFormWinningCourt(''); setFormWinningCaseNumber(''); setFormWinningPropertyType('');
     setSelectedCustomerId('');
     setSelectedCustomerPhones([]);
     setCustomerSuggestions([]);
@@ -737,6 +739,7 @@ export default function Sales() {
     setClaimPhone('');
     setClaimWinningDate('');
     setClaimWinningCourt('');
+    setClaimAuctionKind('court');
     setClaimWinningCaseNumber('');
     setClaimWinningPropertyType('');
   };
@@ -779,12 +782,12 @@ export default function Sales() {
     if (formType === '낙찰') {
       const missingWinningFields = [
         !formContractDate ? '낙찰일' : '',
-        !formWinningCourt.trim() ? '관할법원' : '',
-        !formWinningCaseNumber.trim() ? '사건번호' : '',
+        formAuctionKind !== 'public' && !formWinningCourt.trim() ? '관할법원' : '',
+        !formWinningCaseNumber.trim() ? (formAuctionKind === 'public' ? '물건번호' : '사건번호') : '',
         !formWinningPropertyType.trim() ? '물건종류' : '',
       ].filter(Boolean);
       if (missingWinningFields.length > 0) {
-        alert(`Lawitgo 낙찰 전송에 필요한 ${missingWinningFields.join(', ')}을(를) 입력하세요.`);
+        alert(`낙찰 등록에 필요한 ${missingWinningFields.join(', ')}을(를) 입력하세요.`);
         return;
       }
     }
@@ -838,7 +841,8 @@ export default function Sales() {
         ...((formType === '계약' || formType === '낙찰') ? { client_phone: formPhone } : {}),
         ...((formType === '계약' || formType === '낙찰') && selectedCustomerId ? { customer_id: selectedCustomerId } : {}),
         ...(formType === '낙찰' ? {
-          court: formWinningCourt.trim(),
+          auction_kind: formAuctionKind,
+          court: formAuctionKind === 'public' ? '' : formWinningCourt.trim(),
           case_number: formWinningCaseNumber.trim(),
           property_type: formWinningPropertyType.trim(),
         } : {}),
@@ -878,12 +882,12 @@ export default function Sales() {
         return;
       }
       const missingWinningFields = [
-        !claimWinningCourt.trim() ? '관할법원' : '',
-        !claimWinningCaseNumber.trim() ? '사건번호' : '',
+        claimAuctionKind !== 'public' && !claimWinningCourt.trim() ? '관할법원' : '',
+        !claimWinningCaseNumber.trim() ? (claimAuctionKind === 'public' ? '물건번호' : '사건번호') : '',
         !claimWinningPropertyType.trim() ? '물건종류' : '',
       ].filter(Boolean);
       if (missingWinningFields.length > 0) {
-        alert(`Lawitgo 낙찰 전송에 필요한 ${missingWinningFields.join(', ')}을(를) 입력하세요.`);
+        alert(`낙찰 등록에 필요한 ${missingWinningFields.join(', ')}을(를) 입력하세요.`);
         return;
       }
     }
@@ -894,7 +898,8 @@ export default function Sales() {
         ...(claimType === '낙찰' ? {
           client_phone: claimPhone,
           contract_date: claimWinningDate,
-          court: claimWinningCourt.trim(),
+          auction_kind: claimAuctionKind,
+          court: claimAuctionKind === 'public' ? '' : claimWinningCourt.trim(),
           case_number: claimWinningCaseNumber.trim(),
           property_type: claimWinningPropertyType.trim(),
         } : {}),
@@ -2038,21 +2043,26 @@ export default function Sales() {
 
           {formType === '낙찰' && (
             <div style={{ marginTop: 14, padding: 16, background: '#fff8e1', borderRadius: 8, border: '1px solid #f4d03f' }}>
-              <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: 4, color: '#7b5e00' }}>Lawitgo 낙찰정보</div>
+              <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: 4, color: '#7b5e00' }}>낙찰정보</div>
               <div style={{ fontSize: '0.74rem', color: '#5f6368', marginBottom: 10 }}>
-                누락 없이 실제 전송될 원본 정보입니다. 수수료 변동 사유와 분리하여 저장되며,
-                등록 후 전송정보 정정은 담당 관리자에게 요청하세요.
+                경매 낙찰정보는 Lawitgo 전송에 사용됩니다. 공매는 물건번호로 관리하며 Lawitgo 전송 대상에서 제외됩니다.
               </div>
               <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+                <div><label className="form-label">낙찰 구분</label>
+                  <select className="form-input" value={formAuctionKind} onChange={e => setFormAuctionKind(e.target.value as 'court' | 'public')}>
+                    <option value="court">경매</option><option value="public">공매</option>
+                  </select></div>
+                {formAuctionKind !== 'public' && (
                 <div>
                   <label className="form-label">관할법원 <span style={{ color: '#d93025' }}>*</span></label>
                   <input className="form-input" value={formWinningCourt} onChange={(e) => setFormWinningCourt(e.target.value)}
                     style={{ width: '100%' }} placeholder="예: 의정부지방법원" required />
                 </div>
+                )}
                 <div>
-                  <label className="form-label">사건번호 <span style={{ color: '#d93025' }}>*</span></label>
+                  <label className="form-label">{formAuctionKind === 'public' ? '물건번호' : '사건번호'} <span style={{ color: '#d93025' }}>*</span></label>
                   <input className="form-input" value={formWinningCaseNumber} onChange={(e) => setFormWinningCaseNumber(e.target.value)}
-                    style={{ width: '100%' }} placeholder="예: 2026타경12345" required />
+                    style={{ width: '100%' }} placeholder={formAuctionKind === 'public' ? '공매 물건번호' : '예: 2026타경12345'} required />
                 </div>
                 <div>
                   <label className="form-label">물건종류 <span style={{ color: '#d93025' }}>*</span></label>
@@ -2244,16 +2254,20 @@ export default function Sales() {
                         <input className="form-input" value={claimClient} onChange={(e) => setClaimClient(e.target.value)} placeholder="계약자명" /></div>
                       {claimType === '낙찰' && (
                         <>
+                          <div><label className="form-label">낙찰 구분</label>
+                            <select className="form-input" value={claimAuctionKind} onChange={e => setClaimAuctionKind(e.target.value as 'court' | 'public')}>
+                              <option value="court">경매</option><option value="public">공매</option>
+                            </select></div>
                           <div><label className="form-label" style={{ fontSize: '0.75rem' }}>낙찰일 *</label>
                             <input className="form-input" type="date" value={claimWinningDate}
                               onChange={(e) => setClaimWinningDate(e.target.value)} required /></div>
                           <div><label className="form-label" style={{ fontSize: '0.75rem' }}>전화번호 *</label>
                             <input className="form-input" value={claimPhone} inputMode="tel" onChange={(e) => setClaimPhone(formatPhone(e.target.value))}
                               placeholder="010-0000-0000" maxLength={13} /></div>
-                          <div><label className="form-label" style={{ fontSize: '0.75rem' }}>관할법원 *</label>
-                            <input className="form-input" value={claimWinningCourt} onChange={(e) => setClaimWinningCourt(e.target.value)} placeholder="관할법원" /></div>
-                          <div><label className="form-label" style={{ fontSize: '0.75rem' }}>사건번호 *</label>
-                            <input className="form-input" value={claimWinningCaseNumber} onChange={(e) => setClaimWinningCaseNumber(e.target.value)} placeholder="2026타경12345" /></div>
+                          {claimAuctionKind !== 'public' && <div><label className="form-label" style={{ fontSize: '0.75rem' }}>관할법원 *</label>
+                            <input className="form-input" value={claimWinningCourt} onChange={(e) => setClaimWinningCourt(e.target.value)} placeholder="관할법원" /></div>}
+                          <div><label className="form-label" style={{ fontSize: '0.75rem' }}>{claimAuctionKind === 'public' ? '물건번호' : '사건번호'} *</label>
+                            <input className="form-input" value={claimWinningCaseNumber} onChange={(e) => setClaimWinningCaseNumber(e.target.value)} placeholder={claimAuctionKind === 'public' ? '공매 물건번호' : '2026타경12345'} /></div>
                           <div><label className="form-label" style={{ fontSize: '0.75rem' }}>물건종류 *</label>
                             <input className="form-input" value={claimWinningPropertyType} onChange={(e) => setClaimWinningPropertyType(e.target.value)} placeholder="예: 아파트" /></div>
                         </>
@@ -2330,7 +2344,7 @@ export default function Sales() {
                   <td style={{ whiteSpace: 'nowrap' }}>{r.user_name}</td>
                   <td style={{ whiteSpace: 'nowrap', maxWidth: 110 }}>
                     <div style={{ fontSize: '0.78rem' }}>{r.type}</div>
-                    {r.type === '기타' && r.type_detail && (
+                    {(r.type === '기타' || r.type === '낙찰') && r.type_detail && (
                       <div style={{ color: '#9aa0a6', fontSize: '0.7rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.type_detail}>
                         {r.type_detail}
                       </div>
@@ -2648,7 +2662,7 @@ export default function Sales() {
                         </span>
                       </div>
                     )}
-                    {r.type === '기타' && r.type_detail && (
+                    {(r.type === '기타' || r.type === '낙찰') && r.type_detail && (
                       <div className="sales-card-row">
                         <span className="sales-card-label">상세</span>
                         <span>{r.type_detail}</span>

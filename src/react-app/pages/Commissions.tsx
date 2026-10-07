@@ -91,7 +91,7 @@ export default function Commissions() {
               <tr>
                 <th>담당자</th>
                 <th>고객명</th>
-                <th>사건번호</th>
+                <th>사건번호 / 공매 물건번호</th>
                 <th>낙찰가</th>
                 <th>D-DAY</th>
                 <th>상태</th>

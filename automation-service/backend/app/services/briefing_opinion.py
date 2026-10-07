@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import html
 
 
 SECTION_PATTERNS = [
@@ -20,6 +21,23 @@ SECTION_PATTERNS = [
 ]
 
 SKIP_KEYS = {"note", "etc"}
+
+
+CUSTOMER_STYLE_FORBIDDEN_PATTERNS = [
+    ("internal-token", re.compile(
+        r"checklistRows|checklistDetails|checklistSummaryText|YAML|review-standard|"
+        r"권리분석_규칙|규칙엔진|판정식|내부\s*계산식|dataQualityFlags|source_completeness",
+        re.I,
+    )),
+    ("operator-checklist", re.compile(r"물건별\s*체크리스트|담당자\s*체크|검수인\s*체크")),
+    ("checkbox-line", re.compile(r"^\s*\[\s*[xX ]?\s*\]", re.M)),
+    ("raw-warning-label", re.compile(r"종합경고\s*:")),
+    ("staff-confirm-token", re.compile(r"담당자\s*확인\s*필요")),
+    ("hedged-structure", re.compile(r"구조로\s*판단됩니다")),
+    ("template-braces", re.compile(r"\{[^{}\n]{3,}\}")),
+    ("html-entity", re.compile(r"&(?:amp|quot|lt|gt|nbsp);", re.I)),
+    ("mechanical-ending", re.compile(r"(조사|확인|기재|이용|소재)되었음\s*입니다|같음\s*입니다")),
+]
 
 
 def build_property_status_opinion(data: dict) -> str:
@@ -82,6 +100,24 @@ def build_special_opinion(template_data: dict) -> str:
     return ""
 
 
+def lint_customer_facing_text(text: str, label: str = "") -> list[str]:
+    """Return style/safety issues that should never reach customer-facing PPT/PDF."""
+    value = str(text or "")
+    issues: list[str] = []
+    for code, pattern in CUSTOMER_STYLE_FORBIDDEN_PATTERNS:
+        if pattern.search(value):
+            issues.append(f"{label}:{code}" if label else code)
+    return issues
+
+
+def assert_customer_facing_texts(texts: dict[str, str]) -> None:
+    issues: list[str] = []
+    for label, text in (texts or {}).items():
+        issues.extend(lint_customer_facing_text(text, label))
+    if issues:
+        raise ValueError("고객 출력 문체 린터 실패: " + ", ".join(issues[:12]))
+
+
 def _extract_special_section(text: str) -> str:
     lines = [re.sub(r"\s+", " ", line).strip() for line in str(text or "").splitlines()]
     result: list[str] = []
@@ -123,12 +159,12 @@ def _tenant_text_from_template_data(template_data: dict) -> str:
 def _clean_body_text(text: str) -> str:
     text = str(text or "").replace("\r", "\n")
     text = re.sub(r"\n{3,}", "\n\n", text)
-    lines = [re.sub(r"\s+", " ", line).strip(" -") for line in text.splitlines()]
+    lines = [_remove_internal_markers(re.sub(r"\s+", " ", line).strip(" -")) for line in text.splitlines()]
     return "\n".join(line for line in lines if line)
 
 
 def _clean_source(text: str) -> str:
-    text = str(text or "").replace("\xa0", " ").replace("\u3000", " ")
+    text = html.unescape(str(text or "")).replace("\xa0", " ").replace("\u3000", " ")
     text = re.sub(r"[\r\n\t]+", " ", text)
     text = re.sub(r"\s+", " ", text)
     marker = text.find("감정평가현황")
@@ -255,6 +291,8 @@ def _join_opinion_lines(lines: list[str]) -> str:
 
 def _ensure_sentence(text: str) -> str:
     text = _clean_section_text(text)
+    text = _remove_internal_markers(text)
+    text = html.unescape(text)
     if not text:
         return ""
     text = re.sub(r"\s+", " ", text).strip(" -ㆍ")
@@ -267,6 +305,21 @@ def _ensure_sentence(text: str) -> str:
 
 
 def _polish_sentence_text(text: str) -> str:
+    text = html.unescape(str(text or ""))
+    text = text.replace("&", " 및 ")
+    replacements = {
+        "조사되었음입니다": "조사되었습니다",
+        "조사되었음 입니다": "조사되었습니다",
+        "확인되었음입니다": "확인되었습니다",
+        "확인되었음 입니다": "확인되었습니다",
+        "붙임 사진과 같음입니다": "붙임 사진과 같습니다",
+        "사진과 같음입니다": "사진과 같습니다",
+        "같음입니다": "같습니다",
+    }
+    for before, after in replacements.items():
+        text = text.replace(before, after)
+    text = re.sub(r"([가-힣])되었음입니다", r"\1되었습니다", text)
+    text = re.sub(r"([가-힣])음입니다", r"\1습니다", text)
     text = re.sub(r"제반\s*교통\s*사정\s*보통입니다$", "제반 교통사정은 보통입니다", text)
     text = re.sub(r"설비\s+등\s+되어 있습니다$", "설비 등이 되어 있습니다", text)
     return text
@@ -324,3 +377,18 @@ def _make_polite_ending(text: str) -> str:
     if text.endswith("다"):
         return text
     return f"{text}입니다"
+
+
+def _remove_internal_markers(text: str) -> str:
+    text = str(text or "")
+    forbidden_tokens = (
+        "checklistRows", "checklistDetails", "checklistSummaryText",
+        "YAML", "review-standard", "권리분석_규칙", "규칙엔진",
+        "판정식", "체크리스트", "담당자 체크", "내부 계산식",
+        "dataQualityFlags", "source_completeness",
+    )
+    if any(token in text for token in forbidden_tokens):
+        return ""
+    text = re.sub(r"\{([^{}]+)\}", r"\1", text)
+    text = text.replace("종합경고:", "")
+    return re.sub(r"\s+", " ", text).strip()

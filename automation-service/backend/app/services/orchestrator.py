@@ -11,7 +11,7 @@ import time
 import logging
 import base64
 import json
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, parse_qs
 from typing import Optional, Callable
 
 from pptx import Presentation
@@ -34,6 +34,7 @@ from . import ppt_builder
 from . import forced_execution_estimator
 from . import briefing_opinion
 from . import briefing_rights
+from . import briefing_cost_images
 from .special_situations import build_special_issue_lines, detect_building_violation
 from .selenium_driver import (
     create_driver, login_myauction, click_tab_safe,
@@ -146,6 +147,17 @@ def _insert_planner_snapshots(prs: Presentation, snapshots: list[dict]) -> list[
                 _planner_snapshot_rows(snapshot),
             )
         if ok:
+            inserted.append(calculator)
+    return inserted
+
+
+def _insert_briefing_cost_images(prs: Presentation, inputs: dict, data: dict) -> list[str]:
+    if not isinstance(inputs, dict) or not inputs:
+        return []
+    rendered = briefing_cost_images.render_briefing_cost_images(inputs, data, CAPTURE_DIR)
+    inserted: list[str] = []
+    for calculator, image_path in rendered.items():
+        if ppt_builder.insert_single_image_by_note_keywords(prs, _planner_snapshot_note_keywords(calculator), image_path):
             inserted.append(calculator)
     return inserted
 
@@ -389,6 +401,11 @@ def _find_checklist_reference(item_category: str, references: dict) -> dict:
 
 
 def _append_briefing_special_references(special_opinion: str, data: dict, request) -> str:
+    # The auction-reference checklist is an operator aid. It must never be copied
+    # verbatim to the customer-facing briefing because it exposes internal review
+    # prompts and makes the output look machine-generated.
+    return special_opinion or ""
+
     additions: list[str] = []
     item_category = str(data.get("item_category") or "").strip()
     item_type = str(data.get("item_type") or "").strip()
@@ -521,6 +538,37 @@ def _find_public_data_link(driver, timeout: int = 20):
     raise RuntimeError("공시자료 팝업 링크를 찾지 못했습니다. 마이옥션 화면 구조가 변경되었거나 해당 사건에 공시자료 버튼이 없습니다.") from last_err
 
 
+def _public_data_page_ready(driver) -> bool:
+    """A click on the detail page is not evidence of entering the document viewer."""
+    current = urlparse(driver.current_url)
+    return (
+        current.hostname in ("www.my-auction.co.kr", "my-auction.co.kr")
+        and current.path == "/auction/auction_detail_view.php"
+        and (bool(driver.find_elements(By.CSS_SELECTOR, "#detail_target"))
+             or len(driver.find_elements(By.XPATH,
+                 "//a[normalize-space(.)='건축물대장' or normalize-space(.)='매각물건명세서' or normalize-space(.)='현황조사서']")) >= 2)
+    )
+
+
+def _public_data_direct_url(current_url: str, href: str, onclick: str) -> str:
+    source = f"{onclick} {href}"
+    match = re.search(r"pop_detail\(\s*['\"]bu['\"]\s*,\s*['\"](\d+)['\"]\s*\)", source)
+    if match:
+        return f"https://www.my-auction.co.kr/auction/auction_detail_view.php?type=bu&idx={match.group(1)}"
+    match = re.search(r"(?:windowOpen|(?:window\.)?open)\(\s*['\"]([^'\"]+)['\"]", source)
+    candidate = match.group(1) if match else href
+    target = urljoin(current_url, candidate)
+    parsed = urlparse(target)
+    query = parse_qs(parsed.query)
+    if (parsed.scheme in ("http", "https")
+            and parsed.hostname in ("www.my-auction.co.kr", "my-auction.co.kr")
+            and parsed.path == "/auction/auction_detail_view.php"
+            and query.get("type") == ["bu"]
+            and re.fullmatch(r"\d+", query.get("idx", [""])[0])):
+        return target
+    return ""
+
+
 def _open_public_data_page(driver, link_el, timeout: int = 15) -> str:
     info = driver.execute_script("""
         const el = arguments[0];
@@ -537,6 +585,13 @@ def _open_public_data_page(driver, link_el, timeout: int = 15) -> str:
 
     href = (info.get("href") or "").strip()
     onclick = (info.get("onclick") or "").strip()
+    verified_url = _public_data_direct_url(driver.current_url, href, onclick)
+    if verified_url:
+        logger.info(f"공시자료 검증 URL 직접 이동: {verified_url}")
+        driver.get(verified_url)
+        wait_document_ready(driver, timeout=timeout)
+        WebDriverWait(driver, timeout).until(_public_data_page_ready)
+        return driver.current_window_handle
     popup_path = driver.execute_script("""
         const href = arguments[0] || '';
         const onclick = arguments[1] || '';
@@ -555,6 +610,7 @@ def _open_public_data_page(driver, link_el, timeout: int = 15) -> str:
         logger.info(f"공시자료 URL 직접 이동: {direct_url}")
         driver.get(direct_url)
         wait_document_ready(driver, timeout=timeout)
+        WebDriverWait(driver, timeout).until(_public_data_page_ready)
         return driver.current_window_handle
 
     before_handles = list(driver.window_handles)
@@ -567,11 +623,13 @@ def _open_public_data_page(driver, link_el, timeout: int = 15) -> str:
             driver.switch_to.window(new_handles[0])
             keep_browser_hidden(driver)
             wait_document_ready(driver, timeout=timeout)
+            WebDriverWait(driver, timeout).until(_public_data_page_ready)
             logger.info(f"공시자료 새 창 열림: {driver.current_url}")
             return new_handles[0]
         time.sleep(0.2)
 
     wait_document_ready(driver, timeout=timeout)
+    WebDriverWait(driver, timeout).until(_public_data_page_ready)
     logger.info(f"공시자료 현재 창 열림: {driver.current_url}")
     return driver.current_window_handle
 
@@ -793,6 +851,12 @@ async def generate_report(
         except Exception as e:
             logger.warning(f"담당자 종합의견 (1) 물건현황 문안 구성 실패: {e}")
 
+        briefing_opinion.assert_customer_facing_texts({
+            "property_status_opinion": data.get("property_status_opinion") or "",
+            "rights_analysis_opinion": rights_analysis_opinion or "",
+            "special_opinion": special_opinion or "",
+        })
+
         try:
             emit(1, "사이트 파싱", "마이옥션 예상명도비용 확인 중...", percent=19.8)
             myauction_eviction_costs = capturer.extract_eviction_cost_values(driver, detail_url=url, timeout=15)
@@ -851,6 +915,7 @@ async def generate_report(
             driver.switch_to.window(base_handle)
             wait_document_ready(driver)
         except Exception as e:
+            diagnostic_reasons["court-guide"] = _short_selenium_message(e, "관할법원안내 캡처 실패")
             logger.warning(f"관할법원안내 실패: {e}")
             try:
                 if driver.current_window_handle != base_handle:
@@ -863,6 +928,7 @@ async def generate_report(
         try:
             land_use_plan_img = capturer.capture_land_use_plan(driver, LAND_USE_PLAN_PNG)
         except Exception as e:
+            diagnostic_reasons["land-use-plan"] = _short_selenium_message(e, "토지이용계획 캡처 실패")
             logger.warning(f"토지이용계획 캡처 실패: {e}")
 
         # 임차인/등기부 캡처
@@ -880,8 +946,19 @@ async def generate_report(
             diagnostic_reasons["tenant-status"] = _short_selenium_message(e, "임차인 현황 캡처 단계 오류")
             logger.warning(f"캡처 실패: {e}")
 
-        # 명도비는 위 파싱 단계에서 확인한 마이옥션 계산값을 템플릿 변수로 사용한다.
-        emit(3, "문서 캡처", "예상명도비용 계산값 준비 완료", percent=38)
+        # 명도비 계산값은 파싱 단계에서 템플릿 변수로 쓰고, 산출근거 표는 실제 마이옥션 이미지를 캡처해
+        # 06.명도(3) 강제집행 예상비용표 좌측 영역에 삽입한다.
+        emit(3, "문서 캡처", "예상명도비용 산출근거 캡처 중...", percent=38)
+        try:
+            eviction_cost_basis_img = capturer.capture_eviction_cost_basis(
+                driver,
+                EVICTION_COST_BASIS_PNG,
+                timeout=15,
+                detail_url=url,
+            )
+        except Exception as e:
+            diagnostic_reasons["eviction-cost-basis"] = _short_selenium_message(e, "예상명도비용 산출근거 캡처 실패")
+            logger.warning(f"예상명도비용 산출근거 캡처 실패 → 기존 템플릿 변수 방식 유지: {e}")
 
         # 공시자료 팝업
         emit(3, "문서 캡처", "공시자료 팝업 열기...", percent=40)
@@ -907,10 +984,12 @@ async def generate_report(
         try:
             kakao_map_img = capturer.open_kakao_and_capture(driver, popup_handle, "전자지도", KAKAO_MAP_PNG)
         except Exception as e:
+            diagnostic_reasons["electronic-map"] = _short_selenium_message(e, "전자지도 캡처 실패")
             logger.warning(f"전자지도 캡처 실패: {e}")
         try:
             kakao_sat_img = capturer.open_kakao_and_capture(driver, popup_handle, "위성지도", KAKAO_SAT_PNG)
         except Exception as e:
+            diagnostic_reasons["satellite-map"] = _short_selenium_message(e, "위성지도 캡처 실패")
             logger.warning(f"위성지도 캡처 실패: {e}")
 
         # [MODE] 건축물대장 탭 존재시 건축물 버전 강제 전환
@@ -1102,11 +1181,14 @@ async def generate_report(
                     logger.warning(f"내부구조도 탐색 실패(계속 진행): {e2}")
 
         except Exception as e:
+            diagnostic_reasons["appraisal-map"] = _short_selenium_message(e, "감정평가서 위치도 캡처 실패")
             logger.warning(f"감정평가서 실패: {e}")
 
         # 현황조사서
         emit(3, "문서 캡처", "현황조사서 처리 중...", percent=70)
         try:
+            if not _public_data_page_ready(driver):
+                raise RuntimeError("현황조사서 출력 전 공시자료 문서 화면 검증 실패")
             clicked = click_tab_safe(wait, driver, ["현황조사서"])
             time.sleep(1)
             status_pdf = pdf_processor.print_current_page_to_pdf(driver, "status_report", landscape=True)
@@ -1207,14 +1289,31 @@ async def generate_report(
             logger.warning("물건현황 (1) 위치도/내부구조도 좌우 삽입 실패")
 
     try:
-        planner_inserted_calculators = _insert_planner_snapshots(prs, request.planner_snapshots)
+        eviction_values_for_cost = forced_execution_estimator.build_eviction_cost_values(data)
+        data["eviction_cost_values"] = eviction_values_for_cost
+        auto_cost_inserted = _insert_briefing_cost_images(prs, request.briefing_cost_inputs, data)
+        remaining_snapshots = [
+            item for item in (request.planner_snapshots or [])
+            if not (isinstance(item, dict) and str(item.get("calculator") or "") in set(auto_cost_inserted))
+        ]
+        planner_inserted_calculators = auto_cost_inserted + _insert_planner_snapshots(prs, remaining_snapshots)
         if planner_inserted_calculators:
             logger.info(f"옥션플래너 스냅샷 {len(planner_inserted_calculators)}건 PPT 삽입 완료")
     except Exception as e:
         diagnostic_reasons["planner"] = _short_selenium_message(e, "옥션플래너 PPT 삽입 실패")
         logger.warning(f"옥션플래너 스냅샷 PPT 삽입 실패: {e}")
 
-    logger.info("예상명도비용 산출근거 캡처 이미지 삽입 생략: 템플릿 변수 자동입력 방식 사용")
+    if eviction_cost_basis_img:
+        try:
+            if ppt_builder.insert_eviction_cost_basis_image(prs, eviction_cost_basis_img):
+                logger.info("예상명도비용 산출근거 캡처 이미지 삽입 완료")
+            else:
+                logger.warning("예상명도비용 산출근거 캡처 이미지 삽입 대상 슬라이드를 찾지 못했습니다.")
+        except Exception as e:
+            diagnostic_reasons["eviction-cost-basis-insert"] = _short_selenium_message(e, "예상명도비용 산출근거 이미지 삽입 실패")
+            logger.warning(f"예상명도비용 산출근거 이미지 삽입 실패 → 기존 템플릿 변수 방식 유지: {e}")
+    else:
+        logger.info("예상명도비용 산출근거 캡처 이미지 없음: 기존 템플릿 변수 자동입력 방식 사용")
 
     emit(4, "PPT 이미지 삽입", "삽입 완료", percent=85)
 
@@ -1269,6 +1368,9 @@ async def generate_report(
         for item in (request.planner_snapshots or [])
         if isinstance(item, dict) and item.get("include") is not False
     }
+    if isinstance(request.briefing_cost_inputs, dict) and request.briefing_cost_inputs:
+        for calculator in planner_inserted_calculators:
+            received_snapshots.setdefault(calculator, {"image_data_url": "data:image/png;base64,auto-generated"})
     for calculator, label in required_planner.items():
         snapshot = received_snapshots.get(calculator)
         if calculator in planner_inserted_calculators:
@@ -1344,6 +1446,21 @@ async def generate_report(
                 empty_status,
                 diagnostic_reasons.get(key) or "캡처 결과가 없어 PPT에 삽입되지 않음",
             )
+
+    for key, label in (
+        ("court-guide", "관할법원안내"), ("land-use-plan", "토지이용계획"),
+        ("electronic-map", "전자지도"), ("satellite-map", "위성지도"),
+        ("appraisal-map", "감정평가서 위치도"),
+    ):
+        if diagnostic_reasons.get(key):
+            add_diagnostic(key, label, "warning", diagnostic_reasons[key])
+
+    try:
+        removed_optional_slides = ppt_builder.cleanup_optional_empty_slides(prs)
+        if removed_optional_slides:
+            logger.info(f"선택 자료가 없는 빈 템플릿 페이지 삭제 완료: {removed_optional_slides}장")
+    except Exception as e:
+        logger.warning(f"빈 선택 페이지 정리 실패: {e}")
 
     # ===== STEP 5: 저장 =====
     emit(5, "저장", "PPT 저장 중...", percent=90)

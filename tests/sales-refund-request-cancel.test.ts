@@ -75,6 +75,56 @@ test('completed refund revert API clears completed refund fields and blocks reco
   assert.match(refundRevertRoute, /action: 'refund_revert'/);
 });
 
+test('엑셀 일괄환불도 전액 환불액을 기록해 급여 자동회수 대상에 포함한다', () => {
+  const route = readFileSync(new URL('../src/worker/routes/sales.ts', import.meta.url), 'utf8');
+  const start = route.indexOf("sales.post('/bulk-import'");
+  assert.ok(start >= 0);
+  const bulkImportRoute = route.slice(start);
+  assert.match(bulkImportRoute, /SET status = 'refunded', refund_amount = amount, refund_approved_at = \?/);
+  assert.match(bulkImportRoute, /refund_recovery_resolved/);
+  assert.match(bulkImportRoute, /refund_already_recovered/);
+  assert.match(bulkImportRoute, /NOT EXISTS \(\s*SELECT 1 FROM refund_recovery_resolutions/);
+});
+
+test('회수 완료된 환불은 금액 변경과 원본 매출 삭제를 서버에서 차단한다', () => {
+  const route = readFileSync(new URL('../src/worker/routes/sales.ts', import.meta.url), 'utf8');
+  const partialStart = route.indexOf("sales.post('/:id/partial-refund'");
+  const partialEnd = route.indexOf("sales.put('/:id/contract-check'");
+  const deleteStart = route.indexOf("sales.delete('/:id'");
+  const deleteEnd = route.indexOf("sales.put('/:id/phone'");
+  assert.ok(partialStart >= 0 && partialEnd > partialStart);
+  assert.ok(deleteStart >= 0 && deleteEnd > deleteStart);
+  const partialRoute = route.slice(partialStart, partialEnd);
+  const deleteRoute = route.slice(deleteStart, deleteEnd);
+  assert.match(partialRoute, /refund_recovery_resolutions/);
+  assert.match(partialRoute, /NOT EXISTS/);
+  assert.match(deleteRoute, /refund_recovery_resolutions/);
+  assert.match(deleteRoute, /deletionStatements/);
+  assert.match(deleteRoute, /NOT EXISTS/);
+});
+
+test('확정된 과거 급여월에는 새 매출 인식일을 원자적으로 유입시키지 않는다', () => {
+  const salesRoute = readFileSync(new URL('../src/worker/routes/sales.ts', import.meta.url), 'utf8');
+  const accountingRoute = readFileSync(new URL('../src/worker/routes/accounting.ts', import.meta.url), 'utf8');
+  const confirmStart = salesRoute.indexOf("sales.post('/:id/confirm'");
+  const confirmEnd = salesRoute.indexOf("sales.post('/:id/unconfirm'");
+  const bulkStart = salesRoute.indexOf("sales.post('/bulk-import'");
+  const cardStart = accountingRoute.indexOf("accounting.post('/card-settlements/:id/confirm'");
+  const uploadStart = accountingRoute.indexOf("accounting.post('/upload-bank'");
+  const stagingStart = accountingRoute.indexOf("accounting.post('/staging/:id/to-sales'");
+  assert.ok(confirmStart >= 0 && confirmEnd > confirmStart);
+  assert.ok(bulkStart >= 0);
+  assert.ok(cardStart >= 0 && uploadStart > cardStart && stagingStart > uploadStart);
+
+  assert.match(salesRoute, /NO_LOCKED_PAYROLL_MONTH_SQL/);
+  assert.match(salesRoute.slice(confirmStart, confirmEnd), /lockedDestinationPayrollGuardSql/);
+  assert.match(salesRoute.slice(bulkStart), /lockedPayrollMonths/);
+  assert.match(salesRoute.slice(bulkStart), /NO_LOCKED_PAYROLL_MONTH_SQL/);
+  assert.match(accountingRoute.slice(cardStart, uploadStart), /NO_LOCKED_PAYROLL_MONTH_SQL/);
+  assert.match(accountingRoute.slice(uploadStart, stagingStart), /NO_LOCKED_PAYROLL_MONTH_SQL/);
+  assert.match(accountingRoute.slice(stagingStart), /NO_LOCKED_PAYROLL_MONTH_SQL/);
+});
+
 test('sales and accounting UIs wire separate buttons for request cancel and completed refund revert', () => {
   const salesPage = readFileSync(new URL('../src/react-app/pages/Sales.tsx', import.meta.url), 'utf8');
   const accountingPage = readFileSync(new URL('../src/react-app/pages/Accounting.tsx', import.meta.url), 'utf8');

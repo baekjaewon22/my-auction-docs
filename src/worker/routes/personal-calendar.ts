@@ -18,8 +18,13 @@ import {
 } from '../lib/calendar-auction-management.ts';
 import { branchAliases, normalizeBranchName } from '../lib/branchAliases.ts';
 import { auctionStoryAnomalyBranches, AUCTION_STORY_BRANCHES } from '../../shared/auction-story-anomaly-access.ts';
+import { canManageVideoProduction } from '../../shared/video-production.ts';
 import { buildAuctionStoryAnomalies, loadAuctionStoryStageRows } from '../lib/auction-story-anomalies.ts';
 import { loadCalendarHolidays } from '../lib/calendar-holidays.ts';
+import {
+  buildVideoProductionCalendarEvents,
+  ensureVideoProductionRequestTable,
+} from '../lib/video-production-requests.ts';
 
 const personalCalendar = new Hono<AuthEnv>();
 personalCalendar.use('*', authMiddleware);
@@ -107,19 +112,36 @@ personalCalendar.get('/events', async (c) => {
   }>();
 
   await ensureAuctionScheduleTable(db);
-  const [auctionRows, inspectionRows, holidays] = await Promise.all([
+  await ensureVideoProductionRequestTable(db);
+  const [auctionRows, inspectionRows, videoProductionRows, holidays] = await Promise.all([
     loadPersonalCalendarAuctionRows(db, from, to, { mode: 'all' }),
     loadPersonalCalendarInspectionRows(db, from, to),
+    db.prepare(`
+      SELECT vpr.*,
+        u.name AS assignee_name,
+        u.branch AS assignee_branch,
+        u.department AS assignee_department,
+        u.position_title AS assignee_position_title
+      FROM video_production_requests vpr
+      LEFT JOIN users u ON u.id = vpr.assignee_user_id
+      WHERE (request_date >= ? AND request_date <= ?)
+        OR (provided_date >= ? AND provided_date <= ?)
+        OR (submit_due_date >= ? AND submit_due_date <= ?)
+        OR (result_received_date >= ? AND result_received_date <= ?)
+    `).bind(from, to, from, to, from, to, from, to).all<any>(),
     loadCalendarHolidays(db, from, to),
   ]);
   const auctionEvents = buildPersonalCalendarAuctionEvents(auctionRows)
     .map(event => toPublicPersonalCalendarAuctionEvent(event, { id: user.sub, role: user.role }));
   const inspectionEvents = buildPersonalCalendarInspectionEvents(inspectionRows)
     .map(event => toPublicPersonalCalendarInspectionEvent(event, { id: user.sub, role: user.role }));
+  const videoProductionEvents = canManageVideoProduction(user)
+    ? buildVideoProductionCalendarEvents(videoProductionRows.results || [])
+    : [];
   const personalEvents = (result.results || []).map(event => ({ ...event, source_type: 'personal' }));
 
   return c.json({
-    events: [...personalEvents, ...auctionEvents, ...inspectionEvents].sort((left, right) =>
+    events: [...personalEvents, ...auctionEvents, ...inspectionEvents, ...videoProductionEvents].sort((left, right) =>
       String(left.event_date).localeCompare(String(right.event_date))
         || String(left.title).localeCompare(String(right.title), 'ko')
     ),

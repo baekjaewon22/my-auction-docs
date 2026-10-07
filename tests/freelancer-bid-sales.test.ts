@@ -75,7 +75,7 @@ test('낙찰 매출 생성은 경매 스케줄의 고유 외부키와 pending �
   assert.match(source, /auctionScheduleSalesExternalId\(id\)/);
   assert.match(source, /INSERT OR IGNORE INTO sales_records/);
   assert.match(source, /'pending', 'income'/);
-  assert.match(source, /경매 스케줄 낙찰 자동 입금신청/);
+  assert.match(source, /스케줄 낙찰 자동 입금신청/);
 });
 
 test('프리랜서의 일지·휴가·근태 종합분석 API를 서버에서 차단한다', () => {

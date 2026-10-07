@@ -82,7 +82,7 @@ test('업무성과 UI는 낙찰 원본을 별도 필드로 받고 전송정보 �
   assert.match(pageSource, /nextType === '낙찰'\) setFormContractDate\(''\)/);
   assert.match(pageSource, /claimWinningDate[\s\S]*?contract_date: claimWinningDate/);
   assert.match(pageSource, /formWinningCourt\.trim\(\)/);
-  assert.match(pageSource, /court: formWinningCourt\.trim\(\)/);
+  assert.match(pageSource, /court: formAuctionKind === 'public' \? '' : formWinningCourt\.trim\(\)/);
   assert.match(pageSource, /case_number: formWinningCaseNumber\.trim\(\)/);
   assert.match(pageSource, /property_type: formWinningPropertyType\.trim\(\)/);
   assert.match(pageSource, /T<\/td><td>관할법원/);

@@ -67,6 +67,7 @@ import AuctionBidResultGate from './components/AuctionBidResultGate';
 import BriefingMaterials from './pages/BriefingMaterials';
 import RightsAnalysisGuarantee from './pages/RightsAnalysisGuarantee';
 import AutomationDiagnosticsAdmin from './pages/AutomationDiagnosticsAdmin';
+import VideoProductionRequests from './pages/VideoProductionRequests';
 import { X } from 'lucide-react';
 import { canUseBusinessAutomation } from '../shared/automation-access';
 import { canViewAuctionStoryAnomalies } from '../shared/auction-story-anomaly-access';
@@ -76,6 +77,7 @@ import {
   canUploadBriefingMaterial,
   canViewBriefingMaterial,
 } from '../shared/briefing-material-access';
+import { canManageVideoProduction } from '../shared/video-production';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -419,6 +421,13 @@ function BusinessAutomationRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function VideoProductionRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuthStore();
+  if (loading) return <div className="page-loading">로딩중...</div>;
+  if (!canManageVideoProduction(user)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
 function AnnouncementPopupGate() {
   const { user } = useAuthStore();
   const location = useLocation();
@@ -584,6 +593,10 @@ export default function App() {
           <Route path="lawitgo-winning-admin" element={<MasterRoute><LawitgoWinningAdmin /></MasterRoute>} />
           <Route path="profile" element={<Profile />} />
           <Route path="personal-calendar" element={<PersonalCalendar />} />
+          <Route
+            path="video-production"
+            element={<VideoProductionRoute><VideoProductionRequests /></VideoProductionRoute>}
+          />
           <Route
             path="personal-calendar/anomalies"
             element={<AuctionStoryAnomalyRoute><AuctionStoryAnomalies /></AuctionStoryAnomalyRoute>}

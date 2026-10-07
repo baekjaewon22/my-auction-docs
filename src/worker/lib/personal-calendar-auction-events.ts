@@ -359,6 +359,7 @@ function resultOf(data: Record<string, unknown>): CalendarAuctionEvent['bid_resu
 function compatibleKey(row: CalendarAuctionScheduleRow, data: Record<string, unknown>): string {
   const court = normalized(data.court);
   const caseNo = normalized(data.caseNo);
+  if (data.auctionKind === 'public' && caseNo) return [row.user_id, row.event_date, 'public', caseNo].join('|');
   if (!court || !caseNo) return `source:${row.source_kind}:${row.id}`;
   return [row.user_id, row.event_date, court, caseNo].join('|');
 }
@@ -389,7 +390,7 @@ function inspectionBidMaterializationReady(
   return isValidDateKey(bidDate)
     && row.event_date === bidDate
     && !!text('caseNo')
-    && !!text('court')
+    && (data.auctionKind === 'public' || !!text('court'))
     && !!(text('client') || text('bidder'))
     && !!text('propertyType');
 }

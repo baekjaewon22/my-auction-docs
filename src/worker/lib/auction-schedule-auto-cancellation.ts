@@ -1,6 +1,7 @@
 import {
   auctionScheduleBidResult,
   auctionScheduleAutoCancellationCutoff,
+  isPublicAuctionPriceEditOpen,
 } from '../../shared/auction-schedule.ts';
 import { ensureAuctionScheduleTable } from './auction-schedule-schema.ts';
 import { ensureBidAnalysisTable, normalizeAmount, upsertBidAnalysisEntry } from './bid-analysis.ts';
@@ -28,7 +29,8 @@ function kstTimestamp(now: Date): string {
 }
 
 /**
- * 입찰일 다음 날부터 5일 전체를 결과 입력 기간으로 두고 그 다음 날 미결 일정만 취소한다.
+ * 일반 경매는 입찰일 다음 날부터 5일 전체, 공매는 입찰일부터 7일째까지
+ * 결과 입력 기간으로 두고 그 다음 날 미결 일정만 취소한다.
  * UPDATE의 JSON 상태 조건은 Cron 조회 뒤 사용자가 결과를 입력한 경쟁 상황을 막는다.
  */
 export async function runAuctionScheduleAutoCancellation(
@@ -57,6 +59,7 @@ export async function runAuctionScheduleAutoCancellation(
   for (const row of rows.results || []) {
     const data = parseData(row.data);
     if (auctionScheduleBidResult(data) !== 'pending') continue;
+    if (isPublicAuctionPriceEditOpen(data, row.target_date, scheduledAt)) continue;
     const claim = await acquireAuctionScheduleMutationClaim(db, row, 'auto_cancel', 'system:auto-cancel');
     if (!claim) continue;
     try {

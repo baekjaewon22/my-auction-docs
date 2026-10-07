@@ -23,6 +23,7 @@ import requests
 from PIL import Image as PILImage
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.oxml.xmlchemy import OxmlElement
@@ -290,6 +291,68 @@ def find_yellow_boxes_left_to_right(slide, limit=2):
     return [c[2] for c in candidates[:limit]]
 
 
+def _shape_text(shape) -> str:
+    try:
+        return (shape.text or "").strip()
+    except Exception:
+        return ""
+
+
+def _rgb_hex_from_color(color) -> str:
+    try:
+        rgb = color.rgb
+    except Exception:
+        return ""
+    if not rgb:
+        return ""
+    return str(rgb).upper()
+
+
+def _looks_like_yellow_marker(hex_value: str) -> bool:
+    if not hex_value or len(hex_value) != 6:
+        return False
+    try:
+        red = int(hex_value[0:2], 16)
+        green = int(hex_value[2:4], 16)
+        blue = int(hex_value[4:6], 16)
+    except ValueError:
+        return False
+    return red >= 200 and green >= 160 and blue <= 140
+
+
+def find_explicit_yellow_box(slide):
+    """Return a user-drawn yellow marker box, if present."""
+    candidates = []
+    for shape in slide.shapes:
+        if _shape_text(shape):
+            continue
+        try:
+            area = shape.width * shape.height
+        except Exception:
+            continue
+        if area <= 0:
+            continue
+
+        color_hexes = []
+        try:
+            if shape.fill and shape.fill.type is not None:
+                color_hexes.append(_rgb_hex_from_color(shape.fill.fore_color))
+        except Exception:
+            pass
+        try:
+            if shape.line and shape.line.fill and shape.line.fill.type is not None:
+                color_hexes.append(_rgb_hex_from_color(shape.line.fill.fore_color))
+        except Exception:
+            pass
+
+        if any(_looks_like_yellow_marker(value) for value in color_hexes):
+            candidates.append((area, shape))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
 def find_image_boxes_left_to_right(slide, limit=2):
     candidates = []
     for shape in slide.shapes:
@@ -322,6 +385,12 @@ def find_image_boxes_left_to_right(slide, limit=2):
 # ============================================================
 def duplicate_slide(prs: Presentation, slide):
     new_slide = prs.slides.add_slide(slide.slide_layout)
+    # add_slide()는 레이아웃의 플레이스홀더(본문·제목 등)를 새 슬라이드에 자동 복제한다.
+    # 아래에서 원본 슬라이드의 도형을 그대로 deepcopy해 넣으므로, 이 자동 플레이스홀더를
+    # 먼저 제거하지 않으면 본문 텍스트 박스가 '2개'가 되어 겹친다.
+    # (담당자 종합의견 (2) 권리분석이 길어 추가 페이지가 생길 때 영역 중복 현상의 원인)
+    for placeholder in list(new_slide.placeholders):
+        placeholder._element.getparent().remove(placeholder._element)
     for shape in slide.shapes:
         new_el = deepcopy(shape._element)
         new_slide.shapes._spTree.insert_element_before(new_el, "p:extLst")
@@ -335,6 +404,97 @@ def move_slide(prs, old_index, new_index):
     if new_index > old_index:
         new_index -= 1
     xml_slides.insert(new_index, slide_id)
+
+
+def _remove_slide(prs: Presentation, slide) -> None:
+    """Remove a slide from the presentation by object identity."""
+    xml_slides = prs.slides._sldIdLst
+    slide_id = None
+    for candidate in xml_slides:
+        rel_id = candidate.rId
+        if prs.part.related_slide(rel_id) is slide:
+            slide_id = candidate
+            break
+    if slide_id is None:
+        return
+    xml_slides.remove(slide_id)
+
+
+def _slide_notes_text(slide) -> str:
+    try:
+        return slide.notes_slide.notes_text_frame.text or ""
+    except Exception:
+        return ""
+
+
+def _is_yellow_placeholder_picture(shape) -> bool:
+    try:
+        if getattr(shape, "shape_type", None) != 13:
+            return False
+        with PILImage.open(BytesIO(shape.image.blob)) as img:
+            avg = img.convert("RGB").resize((1, 1)).getpixel((0, 0))
+        red, green, blue = avg
+        return red >= 230 and 150 <= green <= 215 and blue <= 80
+    except Exception:
+        return False
+
+
+def _is_optional_template_title(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact or re.fullmatch(r"\d+", compact):
+        return True
+    optional_titles = (
+        "실거래가", "네이버매물현황", "낙찰사례분석", "개발호재",
+        "관련법령", "적정입찰가", "취득세및대출", "입찰가산정표", "취득비용계산표",
+    )
+    return any(title in compact for title in optional_titles)
+
+
+def _optional_slide_has_real_content(slide) -> bool:
+    for shape in slide.shapes:
+        if getattr(shape, "has_table", False):
+            return True
+        if getattr(shape, "shape_type", None) == 13:
+            if not _is_yellow_placeholder_picture(shape):
+                return True
+            continue
+        text = _shape_text(shape)
+        if text and not _is_optional_template_title(text):
+            return True
+    return False
+
+
+def cleanup_optional_empty_slides(prs: Presentation) -> int:
+    """
+    Remove optional briefing-template pages that still contain only guide text or
+    yellow placeholders. Filled pages are kept when an actual image/table/text was
+    inserted by the automation or by a planner snapshot.
+    """
+    removable_note_markers = (
+        "※ 세부목록",
+        "※ 텍스트 작성하세요",
+        "취득세 및 대출",
+        "EXCEL_RANGE:",
+        "SLIDE_KEY=OPINION_RELATED_LAW",
+    )
+    removed = 0
+    for slide in list(prs.slides):
+        notes = _slide_notes_text(slide)
+        if not any(marker in notes for marker in removable_note_markers):
+            continue
+        if _optional_slide_has_real_content(slide):
+            continue
+        _remove_slide(prs, slide)
+        removed += 1
+
+    has_investment_detail = any("※ 세부목록" in _slide_notes_text(slide) for slide in prs.slides)
+    if not has_investment_detail:
+        for slide in list(prs.slides):
+            if "SLIDE_KEY=INVESTMENT_TOC" in _slide_notes_text(slide):
+                _remove_slide(prs, slide)
+                removed += 1
+                break
+    return removed
 
 
 # ============================================================
@@ -649,19 +809,72 @@ def apply_rights_analysis_opinion(prs: Presentation, opinion_text: str) -> bool:
         logger.warning("담당자 종합의견 (2) 권리분석 슬라이드를 찾지 못했습니다.")
         return False
 
-    target = _find_main_body_text_shape(slide)
-    if target is None or not getattr(target, "has_text_frame", False):
-        logger.warning("담당자 종합의견 (2) 권리분석 본문 텍스트 박스를 새로 생성합니다.")
-        target = slide.shapes.add_textbox(735013, 1486429, 9534525, 5478251)
+    pages = _split_rights_analysis_opinion_pages(opinion_text or "")
+    if not pages:
+        pages = [""]
 
-    target.text_frame.word_wrap = True
-    _set_rights_analysis_rich_text(
-        target.text_frame,
-        opinion_text or "",
-        heading_size_pt=RIGHTS_OPINION_HEADING_PT,
-        body_size_pt=RIGHTS_OPINION_BODY_PT,
-    )
+    base_index = prs.slides.index(slide)
+    slide_for_page = {1: slide}
+    for page_no in range(2, len(pages) + 1):
+        new_slide = duplicate_slide(prs, slide)
+        slide_for_page[page_no] = new_slide
+        move_slide(prs, prs.slides.index(new_slide), base_index + page_no - 1)
+
+    for page_no, page_text in enumerate(pages, start=1):
+        page_slide = slide_for_page[page_no]
+        page_target = _find_main_body_text_shape(page_slide)
+        if page_target is None or not getattr(page_target, "has_text_frame", False):
+            page_target = page_slide.shapes.add_textbox(735013, 1486429, 9534525, 5478251)
+        page_target.text_frame.word_wrap = True
+        _set_rights_analysis_rich_text(
+            page_target.text_frame,
+            page_text,
+            heading_size_pt=RIGHTS_OPINION_HEADING_PT,
+            body_size_pt=RIGHTS_OPINION_BODY_PT,
+        )
     return True
+
+
+def _split_rights_analysis_opinion_pages(opinion_text: str, max_weight: float = 19.0) -> list[str]:
+    lines = [re.sub(r"\s+", " ", line or "").strip() for line in str(opinion_text or "").splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return []
+
+    pages: list[list[str]] = []
+    current: list[str] = []
+    current_weight = 0.0
+
+    def line_weight(line: str) -> float:
+        if re.match(r"^\d+\)", line):
+            return 2.2
+        return 1.0 + max(0, len(line) - 42) / 46
+
+    for line in lines:
+        weight = line_weight(line)
+        if current and current_weight + weight > max_weight:
+            # 섹션 제목이 다음 장에 홀로 떨어지거나, 장 끝에 제목만 남는 것을 피한다.
+            if re.match(r"^\d+\)", line):
+                pages.append(current)
+                current = [line]
+                current_weight = weight
+                continue
+            if current and re.match(r"^\d+\)", current[-1]):
+                heading = current.pop()
+                pages.append(current)
+                current = [heading, line]
+                current_weight = line_weight(heading) + weight
+                continue
+            pages.append(current)
+            current = []
+            current_weight = 0.0
+        current.append(line)
+        current_weight += weight
+
+    if current:
+        pages.append(current)
+
+    return ["\n".join(page) for page in pages if page]
 
 
 def apply_special_opinion(prs: Presentation, opinion_text: str) -> bool:
@@ -940,7 +1153,7 @@ def insert_images_into_ppt(prs, total_pages, keyword, img_pattern,
         except Exception:
             use_path = img_path
 
-        slide.shapes.add_picture(use_path, left, top, width=width, height=height)
+        _add_picture_contained(slide, use_path, left, top, width, height)
 
         # 제목 번호
         if total_pages > 1:
@@ -974,7 +1187,7 @@ def insert_single_image(prs, keyword_or_key, image_path, use_note_key=False):
         use_path = trimmed
     except Exception:
         use_path = image_path
-    slide.shapes.add_picture(use_path, l, t, width=w, height=h)
+    _add_picture_contained(slide, use_path, l, t, w, h)
 
 
 def insert_single_image_by_note_keywords(prs, keywords: list[str], image_path: str):
@@ -1016,7 +1229,96 @@ def insert_single_image_by_note_keywords(prs, keywords: list[str], image_path: s
             new_t = t
         slide.shapes.add_picture(use_path, new_l, new_t, width=new_w, height=new_h)
     except Exception:
-        slide.shapes.add_picture(use_path, l, t, width=w, height=h)
+        _add_picture_contained(slide, use_path, l, t, w, h)
+    return True
+
+
+def _add_picture_contained(slide, image_path: str, left: int, top: int, width: int, height: int):
+    try:
+        with PILImage.open(image_path) as img:
+            img_w, img_h = img.size
+        if img_w <= 0 or img_h <= 0:
+            raise ValueError("invalid image size")
+        img_ratio = img_w / img_h
+        box_ratio = width / height
+        if img_ratio > box_ratio:
+            new_w = width
+            new_h = int(width / img_ratio)
+            new_l = left
+            new_t = top + int((height - new_h) / 2)
+        else:
+            new_h = height
+            new_w = int(height * img_ratio)
+            new_l = left + int((width - new_w) / 2)
+            new_t = top
+        return slide.shapes.add_picture(image_path, new_l, new_t, width=new_w, height=new_h)
+    except Exception:
+        return slide.shapes.add_picture(image_path, left, top, width=width, height=height)
+
+
+def insert_eviction_cost_basis_image(prs: Presentation, image_path: str) -> bool:
+    """Insert MyAuction's execution-cost basis capture over the left cost table."""
+    if not image_path or not os.path.exists(image_path):
+        return False
+    slide = find_slide_by_note_key(prs, "FORCED_EXECUTION_ESTIMATE_BOX")
+    if slide is None:
+        logger.warning("FORCED_EXECUTION_ESTIMATE_BOX 슬라이드를 찾지 못했습니다.")
+        return False
+
+    yellow_box = find_explicit_yellow_box(slide)
+    if yellow_box is not None:
+        left, top, width, height = yellow_box.left, yellow_box.top, yellow_box.width, yellow_box.height
+        slide.shapes._spTree.remove(yellow_box._element)
+        slide.shapes.add_picture(image_path, left, top, width=width, height=height)
+        return True
+
+    # `sample2_configured.pptx` may not retain the marker shape, but the original
+    # `샘플.pptm` keeps the intended yellow box on this slide. Use that exact box
+    # as the template fallback before deriving a rough area from placeholders.
+    original_marker_left = 506628
+    original_marker_top = 1606378
+    original_marker_width = 4534930
+    original_marker_height = 5276335
+    if original_marker_left + original_marker_width <= prs.slide_width:
+        slide.shapes.add_picture(
+            image_path,
+            original_marker_left,
+            original_marker_top,
+            width=original_marker_width,
+            height=original_marker_height,
+        )
+        return True
+
+    amount_shapes = [
+        shape for shape in slide.shapes
+        if getattr(shape, "has_text_frame", False)
+        and "{{명도_" in (shape.text or "")
+    ]
+    if amount_shapes:
+        min_left = min(shape.left for shape in amount_shapes)
+        min_top = min(shape.top for shape in amount_shapes)
+        max_right = max(shape.left + shape.width for shape in amount_shapes)
+        max_bottom = max(shape.top + shape.height for shape in amount_shapes)
+        left = max(0, min_left - Inches(3.0))
+        top = max(0, min_top - Inches(1.25))
+        right = min(prs.slide_width, max_right + Inches(0.35))
+        bottom = min(prs.slide_height - Inches(0.35), max_bottom + Inches(0.30))
+        width = max(Inches(3.8), right - left)
+        height = max(Inches(4.8), bottom - top)
+    else:
+        left, top = Inches(0.47), Inches(1.18)
+        width, height = Inches(5.15), Inches(5.85)
+
+    # The slide's table is part of the template background. Cover it first, then place
+    # the captured basis image with its original aspect ratio so the table is not warped.
+    backdrop = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left, top, width, height)
+    backdrop.fill.solid()
+    backdrop.fill.fore_color.rgb = RGBColor(255, 255, 255)
+    try:
+        backdrop.line.fill.background()
+    except Exception:
+        pass
+    _add_picture_contained(slide, image_path, left, top, width, height)
     return True
 
 
@@ -1135,7 +1437,7 @@ def insert_internal_structure_image(prs, image_path: str) -> bool:
             new_t = t
         target_slide.shapes.add_picture(use_path, new_l, new_t, width=new_w, height=new_h)
     except Exception:
-        target_slide.shapes.add_picture(use_path, l, t, width=w, height=h)
+        _add_picture_contained(target_slide, use_path, l, t, w, h)
     return True
 
 
@@ -1184,7 +1486,7 @@ def insert_location_and_structure_images(prs, location_img: str = "", structure_
             use_path = trimmed
         except Exception:
             use_path = img_path
-        target_slide.shapes.add_picture(use_path, l, t, width=w, height=h)
+        _add_picture_contained(target_slide, use_path, l, t, w, h)
         logger.info(f"{label} 이미지 삽입 완료: {use_path}")
         return True
 
@@ -1231,7 +1533,7 @@ def insert_two_images_location(prs, keyword, left_img, right_img=""):
             use_path = trimmed
         except Exception:
             use_path = img_path
-        slide.shapes.add_picture(use_path, l, t, width=w, height=h)
+        _add_picture_contained(slide, use_path, l, t, w, h)
 
     _put(boxes[0], left_img)
     if len(boxes) > 1:

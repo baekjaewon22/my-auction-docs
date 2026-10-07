@@ -10,10 +10,12 @@ function functionSection(name: string, nextName: string): string {
 
 test('the payroll exception user remains read-only while accounting roles can edit', () => {
   const editDeclaration = source.match(/const canEditPayroll = ([^;]+);/)?.[1] || '';
+  const lockDeclaration = source.match(/const canLockPayroll = ([^;]+);/)?.[1] || '';
   const allPayrollDeclaration = source.match(/const canViewAllEmployeePayroll = ([\s\S]*?);/)?.[1] || '';
 
   assert.match(editDeclaration, /\['master', 'ceo', 'accountant', 'accountant_asst'\]/);
   assert.doesNotMatch(editDeclaration, /PAYROLL_EXTRA_IDS/);
+  assert.match(lockDeclaration, /\['master', 'accountant'\]/);
   assert.match(allPayrollDeclaration, /PAYROLL_EXTRA_IDS\.includes\(currentUser\.id\)/);
 });
 
@@ -25,7 +27,7 @@ test('manual payroll mutation controls are not rendered for read-only viewers', 
 
   assert.match(manualSection, /\{canEditPayroll && \(/);
   assert.match(manualSection, /onClick=\{handleSavePayroll\}/);
-  assert.match(manualSection, /onClick=\{handleLockPayroll\}/);
+  assert.match(manualSection, /\{canLockPayroll && <button[\s\S]*?onClick=\{handleLockPayroll\}/);
   assert.match(manualSection, /isLocked && canUnlockPayroll/);
 });
 
@@ -36,7 +38,7 @@ test('payroll mutation handlers stop before calling APIs when edit permission is
   const recoveryHandler = functionSection('handleCompleteRefundRecovery', 'loadBranch');
 
   assert.match(saveHandler, /if \(!canEditPayroll \|\| !data \|\| !selectedUserId\) return;[\s\S]*?api\.payroll\.save/);
-  assert.match(lockHandler, /if \(!canEditPayroll \|\| !data \|\| !selectedUserId\) return;[\s\S]*?api\.payroll\.lock/);
+  assert.match(lockHandler, /if \(!canLockPayroll \|\| !data \|\| !selectedUserId\) return;[\s\S]*?api\.payroll\.lock/);
   assert.match(unlockHandler, /if \(!canUnlockPayroll \|\| !data \|\| !selectedUserId\) return;[\s\S]*?api\.payroll\.unlock/);
   assert.match(recoveryHandler, /if \(!canResolveRefundRecovery \|\| !refundRecoveryId \|\| !refundRecoveryMonth\) return;[\s\S]*?api\.sales\.resolveRefundRecovery/);
 });

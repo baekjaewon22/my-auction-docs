@@ -1,12 +1,18 @@
 import { Hono } from 'hono';
+import { winningAuctionKind, winningAuctionDetail } from '../../shared/winning-auction.ts';
+import { ensureAuctionScheduleTable } from '../lib/auction-schedule-schema.ts';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk';
 import { branchAliases, isHeadOfficeBranch, normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { getAdminVisibleBranches } from '../lib/branch-approval-overrides';
 import { resolveSalesRecordSqlScope } from '../lib/sales-record-scope';
-import { calculateRefundRecoveryAmount, refundApprovalMonth, payrollPeriodLabelFromMonth } from '../../shared/refund-recovery';
-import { resolveRefundRecovery } from '../lib/refund-recovery';
+import {
+  kstDateOnly,
+  refundApprovalMonth,
+  refundRecoveryOriginDate,
+} from '../../shared/refund-recovery';
+import { loadPayrollRefundRecoveries, resolveRefundRecovery } from '../lib/refund-recovery';
 import { accountingEntryInitialStatus, effectiveSalesStatus, normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
 import { canUseRequestedSalesOwner } from '../../shared/sales-assignment';
@@ -30,6 +36,7 @@ import {
 } from '../lib/contract-award-ranking';
 import {
   assertLawitgoWinningSaleDeletable,
+  ensureLawitgoWinningSchema,
   LawitgoWinningOverrideError,
   LawitgoWinningSaleDeleteBlockedError,
   type LawitgoWinningOverrideInput,
@@ -58,6 +65,230 @@ const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'acc
 const EDIT_ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 const TEST_ACCOUNT_KEYWORDS = ['test', '테스트', 'dummy', 'sample', 'example', '임시'];
 const CASE_ALLOWANCE_SALES_EXCLUDE_FROM_DATE = '2026-06-01';
+const NO_LOCKED_PAYROLL_SALE_SQL = `NOT EXISTS (
+  SELECT 1
+  FROM payroll_saves locked_payroll
+  LEFT JOIN json_each(
+      CASE
+        WHEN json_valid(locked_payroll.data)
+          THEN COALESCE(json_extract(locked_payroll.data, '$.payroll_snapshot.response.records'), '[]')
+        ELSE '[]'
+      END
+    ) locked_record ON 1 = 1
+  WHERE locked_payroll.user_id = ? AND locked_payroll.locked = 1
+    AND (
+      CAST(json_extract(locked_record.value, '$.id') AS TEXT) = ?
+      OR (
+        COALESCE(
+          CASE WHEN json_valid(locked_payroll.data)
+            THEN json_type(locked_payroll.data, '$.payroll_snapshot.response.records')
+          END,
+          ''
+        ) != 'array'
+        AND EXISTS (
+          SELECT 1 FROM sales_records legacy_sale
+          WHERE legacy_sale.id = ?
+            AND locked_payroll.period IN (
+              CASE
+                WHEN COALESCE(legacy_sale.payment_type, '') = '카드'
+                  THEN substr(COALESCE(legacy_sale.card_deposit_date, ''), 1, 7)
+                WHEN COALESCE(legacy_sale.payment_type, '') != ''
+                  THEN substr(COALESCE(legacy_sale.deposit_date, ''), 1, 7)
+                ELSE substr(COALESCE(legacy_sale.contract_date, ''), 1, 7)
+              END,
+              substr(
+                CASE
+                  WHEN COALESCE(legacy_sale.payment_type, '') = '카드' THEN COALESCE(legacy_sale.card_deposit_date, '')
+                  WHEN COALESCE(legacy_sale.payment_type, '') != '' THEN COALESCE(legacy_sale.deposit_date, '')
+                  ELSE COALESCE(legacy_sale.contract_date, '')
+                END,
+                1,
+                4
+              ) || '년 ' || CAST(substr(
+                CASE
+                  WHEN COALESCE(legacy_sale.payment_type, '') = '카드' THEN COALESCE(legacy_sale.card_deposit_date, '')
+                  WHEN COALESCE(legacy_sale.payment_type, '') != '' THEN COALESCE(legacy_sale.deposit_date, '')
+                  ELSE COALESCE(legacy_sale.contract_date, '')
+                END,
+                6,
+                2
+              ) AS INTEGER) || '월'
+            )
+        )
+      )
+    )
+)`;
+
+const NO_LOCKED_PAYROLL_MONTH_SQL = `NOT EXISTS (
+  SELECT 1
+  FROM payroll_saves destination_payroll
+  WHERE destination_payroll.user_id = ?
+    AND destination_payroll.locked = 1
+    AND destination_payroll.period IN (?, ?)
+)`;
+
+const PAYROLL_MONTH_OPEN_OR_SALE_INCLUDED_SQL = `(
+  NOT EXISTS (
+    SELECT 1
+    FROM payroll_saves destination_payroll
+    WHERE destination_payroll.user_id = ?
+      AND destination_payroll.locked = 1
+      AND destination_payroll.period IN (?, ?)
+  )
+  OR EXISTS (
+    SELECT 1
+    FROM payroll_saves destination_payroll
+    JOIN json_each(
+      CASE
+        WHEN json_valid(destination_payroll.data)
+          AND json_type(destination_payroll.data, '$.payroll_snapshot.response.records') = 'array'
+          THEN json_extract(destination_payroll.data, '$.payroll_snapshot.response.records')
+        ELSE '[]'
+      END
+    ) destination_record
+    WHERE destination_payroll.user_id = ?
+      AND destination_payroll.locked = 1
+      AND destination_payroll.period IN (?, ?)
+      AND CAST(json_extract(destination_record.value, '$.id') AS TEXT) = ?
+      AND COALESCE(json_extract(destination_record.value, '$.refund_amount'), 0) = ?
+  )
+)`;
+
+const NO_LOCKED_PAYROLL_REFUND_ABOVE_SQL = `NOT EXISTS (
+  SELECT 1
+  FROM payroll_saves locked_payroll
+  JOIN json_each(
+    CASE
+      WHEN json_valid(locked_payroll.data)
+        AND json_type(locked_payroll.data, '$.payroll_snapshot.response.records') = 'array'
+        THEN json_extract(locked_payroll.data, '$.payroll_snapshot.response.records')
+      ELSE '[]'
+    END
+  ) locked_record
+  WHERE locked_payroll.user_id = ? AND locked_payroll.locked = 1
+    AND CAST(json_extract(locked_record.value, '$.id') AS TEXT) = ?
+    AND COALESCE(json_extract(locked_record.value, '$.refund_amount'), 0) > ?
+)`;
+
+function payrollPeriodLabel(month: string): string {
+  const [year, monthText] = month.split('-');
+  return `${Number(year)}년 ${Number(monthText)}월`;
+}
+
+function payrollPeriodMonth(period: string): string {
+  const value = String(period || '').trim();
+  if (/^\d{4}-\d{2}$/.test(value)) return value;
+  const korean = value.match(/^(\d{4})년\s*(\d{1,2})월$/);
+  return korean ? `${korean[1]}-${String(Number(korean[2])).padStart(2, '0')}` : '';
+}
+
+function payrollRecognitionMonth(record: Record<string, unknown>): string {
+  if (effectiveSalesStatus(record) !== 'confirmed') return '';
+  const paymentType = String(record.payment_type || '');
+  const recognizedDate = paymentType === '카드'
+    ? String(record.card_deposit_date || '')
+    : paymentType
+      ? String(record.deposit_date || '')
+      : String(record.contract_date || '');
+  const month = recognizedDate.trim().slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(month) ? month : '';
+}
+
+async function lockedPayrollPeriodForMonth(
+  db: D1Database,
+  userId: string,
+  month: string,
+): Promise<string> {
+  if (!month) return '';
+  const row = await db.prepare(`
+    SELECT period
+    FROM payroll_saves
+    WHERE user_id = ? AND locked = 1 AND period IN (?, ?)
+    ORDER BY period
+    LIMIT 1
+  `).bind(userId, month, payrollPeriodLabel(month)).first<{ period: string }>().catch(() => null);
+  return String(row?.period || '');
+}
+
+async function lockedPayrollSnapshotIncludesSale(
+  db: D1Database,
+  userId: string,
+  month: string,
+  salesRecordId: string,
+  expectedRefundAmount: number,
+): Promise<boolean> {
+  if (!month) return false;
+  const row = await db.prepare(`
+    SELECT 1 AS found
+    FROM payroll_saves locked_payroll
+    JOIN json_each(
+      CASE
+        WHEN json_valid(locked_payroll.data)
+          AND json_type(locked_payroll.data, '$.payroll_snapshot.response.records') = 'array'
+          THEN json_extract(locked_payroll.data, '$.payroll_snapshot.response.records')
+        ELSE '[]'
+      END
+    ) locked_record
+    WHERE locked_payroll.user_id = ?
+      AND locked_payroll.locked = 1
+      AND locked_payroll.period IN (?, ?)
+      AND CAST(json_extract(locked_record.value, '$.id') AS TEXT) = ?
+      AND COALESCE(json_extract(locked_record.value, '$.refund_amount'), 0) = ?
+    LIMIT 1
+  `).bind(
+    userId,
+    month,
+    payrollPeriodLabel(month),
+    salesRecordId,
+    expectedRefundAmount,
+  ).first<{ found: number }>().catch(() => null);
+  return Number(row?.found) === 1;
+}
+
+async function payrollRestorationDestination(
+  db: D1Database,
+  record: Record<string, unknown>,
+  restoredStatus: string,
+  restoredRefundAmount = Number(record.refund_amount) || 0,
+): Promise<{ month: string; blockedPeriod: string }> {
+  const month = payrollRecognitionMonth({ ...record, status: restoredStatus });
+  const lockedPeriod = await lockedPayrollPeriodForMonth(db, String(record.user_id || ''), month);
+  if (!lockedPeriod) return { month, blockedPeriod: '' };
+  const alreadyIncluded = await lockedPayrollSnapshotIncludesSale(
+    db,
+    String(record.user_id || ''),
+    month,
+    String(record.id || ''),
+    restoredRefundAmount,
+  );
+  return { month, blockedPeriod: alreadyIncluded ? '' : lockedPeriod };
+}
+
+async function lockedPayrollRefundFloor(
+  db: D1Database,
+  userId: string,
+  salesRecordId: string,
+): Promise<{ period: string; amount: number } | null> {
+  const row = await db.prepare(`
+    SELECT locked_payroll.period,
+      MAX(COALESCE(json_extract(locked_record.value, '$.refund_amount'), 0)) AS amount
+    FROM payroll_saves locked_payroll
+    JOIN json_each(
+      CASE
+        WHEN json_valid(locked_payroll.data)
+          AND json_type(locked_payroll.data, '$.payroll_snapshot.response.records') = 'array'
+          THEN json_extract(locked_payroll.data, '$.payroll_snapshot.response.records')
+        ELSE '[]'
+      END
+    ) locked_record
+    WHERE locked_payroll.user_id = ? AND locked_payroll.locked = 1
+      AND CAST(json_extract(locked_record.value, '$.id') AS TEXT) = ?
+    GROUP BY locked_payroll.period
+    ORDER BY amount DESC, locked_payroll.period
+    LIMIT 1
+  `).bind(userId, salesRecordId).first<{ period: string; amount: number }>().catch(() => null);
+  return row ? { period: String(row.period || ''), amount: Number(row.amount) || 0 } : null;
+}
 
 function excludeCaseAllowanceSalesSql(alias = 'sr'): string {
   return `NOT (
@@ -94,6 +325,56 @@ type LogInput = {
   before?: any;
   after?: any;
 };
+
+async function lockedPayrollPeriodContainingSale(
+  db: D1Database,
+  userId: string,
+  salesRecordId: string,
+): Promise<string> {
+  const row = await db.prepare(`
+    SELECT ps.period
+    FROM payroll_saves ps
+    LEFT JOIN json_each(
+        CASE
+          WHEN json_valid(ps.data)
+            THEN COALESCE(json_extract(ps.data, '$.payroll_snapshot.response.records'), '[]')
+          ELSE '[]'
+        END
+      ) snapshot_record ON 1 = 1
+    LEFT JOIN sales_records legacy_sale ON legacy_sale.id = ?
+    WHERE ps.user_id = ? AND ps.locked = 1
+      AND (
+        CAST(json_extract(snapshot_record.value, '$.id') AS TEXT) = ?
+        OR (
+          COALESCE(
+            CASE WHEN json_valid(ps.data)
+              THEN json_type(ps.data, '$.payroll_snapshot.response.records')
+            END,
+            ''
+          ) != 'array'
+          AND (
+            CASE
+              WHEN ps.period GLOB '????-??' THEN ps.period
+              ELSE substr(ps.period, 1, 4) || '-' || printf('%02d', CAST(
+                replace(replace(substr(ps.period, 6), '월', ''), ' ', '') AS INTEGER
+              ))
+            END
+          ) = (
+            CASE
+              WHEN COALESCE(legacy_sale.payment_type, '') = '카드'
+                THEN substr(COALESCE(legacy_sale.card_deposit_date, ''), 1, 7)
+              WHEN COALESCE(legacy_sale.payment_type, '') != ''
+                THEN substr(COALESCE(legacy_sale.deposit_date, ''), 1, 7)
+              ELSE substr(COALESCE(legacy_sale.contract_date, ''), 1, 7)
+            END
+          )
+        )
+      )
+    ORDER BY ps.period
+    LIMIT 1
+  `).bind(salesRecordId, userId, salesRecordId).first<{ period: string }>().catch(() => null);
+  return String(row?.period || '');
+}
 
 async function logActivity(db: D1Database, user: LogUser, input: LogInput, sourcePage: string = 'sales') {
   if (!LOGGED_ROLES.has(user.role)) return;
@@ -176,6 +457,7 @@ function monthRangeBetween(startMonth: string, endMonth: string): string[] | nul
 }
 
 type SalesWinningSourceRequest = {
+  auction_kind?: unknown;
   client_name?: unknown;
   client_phone?: unknown;
   contract_date?: unknown;
@@ -205,6 +487,7 @@ export function buildSalesWinningOverrideInput(
 ): LawitgoWinningOverrideInput {
   const source = parseWinningSourceData(linkedSource);
   return {
+    auctionKind: winningAuctionKind(source.auctionKind || request.auction_kind),
     customerName: winningSourceText(request.client_name),
     customerPhone: winningSourceText(request.client_phone),
     court: winningSourceText(request.court) || winningSourceText(source.court),
@@ -264,15 +547,24 @@ const SALES_DIFF_FIELDS = [
 sales.get('/', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
+  await ensureAuctionScheduleTable(db);
+  await ensureLawitgoWinningSchema(db);
   const { month, month_end, user_id: filterUserId, date_mode } = c.req.query();
 
   let query = `
     SELECT sr.*, sr.deposit_date, u.name as user_name, u.position_title,
-      cu.name as confirmed_by_name, ru.name as refund_approved_by_name
+      cu.name as confirmed_by_name, ru.name as refund_approved_by_name,
+      winning_schedule.data as winning_schedule_data,
+      winning_metadata.auction_kind as winning_auction_kind,
+      winning_metadata.case_number as winning_case_number,
+      winning_metadata.property_type as winning_property_type
     FROM sales_records sr
     JOIN users u ON u.id = sr.user_id
     LEFT JOIN users cu ON cu.id = sr.confirmed_by
     LEFT JOIN users ru ON ru.id = sr.refund_approved_by
+    LEFT JOIN freelancer_auction_schedules winning_schedule
+      ON sr.external_id IN ('auction-schedule:' || winning_schedule.id, 'auction_schedule:' || winning_schedule.id)
+    LEFT JOIN lawitgo_winning_overrides winning_metadata ON winning_metadata.sales_record_id = sr.id
   `;
   const conditions: string[] = [];
   const params: any[] = [];
@@ -318,7 +610,17 @@ sales.get('/', async (c) => {
     ? await db.prepare(query).bind(...params).all()
     : await db.prepare(query).all();
 
-  return c.json({ records: (result.results || []).map((row: any) => normalizeSalesRecognition(row)) });
+  return c.json({ records: (result.results || []).map((row: any) => {
+    const { winning_schedule_data, winning_auction_kind, winning_case_number, winning_property_type, ...record } = row;
+    if (record.type === '낙찰') {
+      const source = parseWinningSourceData(winning_schedule_data);
+      record.auction_kind = winningAuctionKind(source.auctionKind || winning_auction_kind, record.type_detail);
+      if (record.auction_kind === 'public' && (source.caseNo || winning_case_number)) {
+        record.type_detail = winningAuctionDetail({ auctionKind: 'public', caseNumber: source.caseNo || winning_case_number, propertyType: source.propertyType || winning_property_type });
+      }
+    }
+    return normalizeSalesRecognition(record);
+  }) });
 });
 
 // GET /api/sales/contract-tracker — 실시간 컨설턴트 계약 현황 (대표·총무·정민호 열람)
@@ -638,6 +940,7 @@ sales.post('/', async (c) => {
     court?: string;
     case_number?: string;
     property_type?: string;
+    auction_kind?: 'court' | 'public';
   }>();
 
   if (!['계약', '낙찰', '중개', '권리분석보증서', '매수신청대리', '기타'].includes(body.type)) {
@@ -782,7 +1085,7 @@ sales.post('/', async (c) => {
       INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, attribution_branch, payment_type, receipt_type, receipt_phone, proxy_cost, customer_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      id, ownerId, body.type, body.type_detail || '', body.client_name,
+      id, ownerId, body.type, winningOverrideInput ? winningAuctionDetail(winningOverrideInput, body.type_detail) : body.type_detail || '', body.client_name,
       body.depositor_name || '', body.depositor_different ? 1 : 0,
       body.amount || 0, effectiveContractDate,
       body.journal_entry_id || null, direction, ownerBranch, ownerDepartment,
@@ -870,6 +1173,31 @@ sales.put('/:id', async (c) => {
 
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
+  const completedRecovery = await db.prepare(
+    'SELECT 1 AS found FROM refund_recovery_resolutions WHERE sales_record_id = ?'
+  ).bind(id).first<{ found: number }>();
+  if (completedRecovery) {
+    return c.json({ error: '급여에서 회수 완료된 환불 건은 매출 금액·정산 정보를 변경할 수 없습니다.' }, 409);
+  }
+  const changesLockedPayrollSource = (
+    (body.type !== undefined && String(body.type) !== String(record.type || ''))
+    || (body.type_detail !== undefined && String(body.type_detail) !== String(record.type_detail || ''))
+    || (body.amount !== undefined && Number(body.amount) !== Number(record.amount || 0))
+    || (body.contract_date !== undefined && String(body.contract_date) !== String(record.contract_date || ''))
+    || (body.deposit_date !== undefined && String(body.deposit_date) !== String(record.deposit_date || ''))
+    || (body.payment_type !== undefined && String(body.payment_type) !== String(record.payment_type || ''))
+    || (body.card_deposit_date !== undefined && String(body.card_deposit_date) !== String(record.card_deposit_date || ''))
+    || (body.proxy_cost !== undefined && Number(body.proxy_cost) !== Number(record.proxy_cost || 0))
+  );
+  if (changesLockedPayrollSource) {
+    const lockedPayrollPeriod = await lockedPayrollPeriodContainingSale(db, record.user_id, id);
+    if (lockedPayrollPeriod) {
+      return c.json({
+        error: `${lockedPayrollPeriod} 확정 급여에 반영된 매출의 금액·인식일·결제정보는 변경할 수 없습니다. 먼저 해당 급여를 확정 취소해주세요.`,
+        payroll_period: lockedPayrollPeriod,
+      }, 409);
+    }
+  }
 
   const isOwner = record.user_id === user.sub;
   const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user.role);
@@ -935,15 +1263,43 @@ sales.put('/:id', async (c) => {
     tax_invoice_type: body.tax_invoice_type ?? record.tax_invoice_type ?? '',
     status: statusUpdate,
   };
+  const destinationPayrollMonth = changesLockedPayrollSource
+    ? payrollRecognitionMonth(nextRecord)
+    : '';
+  const lockedDestinationPayroll = await lockedPayrollPeriodForMonth(
+    db,
+    record.user_id,
+    destinationPayrollMonth,
+  );
+  if (lockedDestinationPayroll) {
+    return c.json({
+      error: `${lockedDestinationPayroll} 급여정산이 이미 확정되어 해당 월의 매출 금액·인식일·결제정보를 변경할 수 없습니다. 먼저 급여 확정을 취소해주세요.`,
+      payroll_period: lockedDestinationPayroll,
+    }, 409);
+  }
+  const lockedPayrollMutationGuardSql = changesLockedPayrollSource
+    ? `AND ${NO_LOCKED_PAYROLL_SALE_SQL}`
+    : '';
+  const lockedPayrollMutationGuardBindings = changesLockedPayrollSource
+    ? [record.user_id, id, id]
+    : [];
+  const lockedDestinationPayrollGuardSql = destinationPayrollMonth
+    ? `AND ${NO_LOCKED_PAYROLL_MONTH_SQL}`
+    : '';
+  const lockedDestinationPayrollGuardBindings = destinationPayrollMonth
+    ? [record.user_id, destinationPayrollMonth, payrollPeriodLabel(destinationPayrollMonth)]
+    : [];
 
-  await db.prepare(`
+  const updateResult = await db.prepare(`
     UPDATE sales_records SET type = ?, type_detail = ?, client_name = ?, depositor_name = ?,
       depositor_different = ?, amount = ?, contract_date = ?, deposit_date = ?,
       payment_type = ?, receipt_type = ?, receipt_phone = ?, card_deposit_date = ?,
       tax_invoice_date = ?, tax_invoice_type = ?,
       appraisal_rate = ?, winning_rate = ?, client_phone = ?, proxy_cost = ?,
       status = ?, updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
+    WHERE id = ? AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    ) ${lockedPayrollMutationGuardSql} ${lockedDestinationPayrollGuardSql}
   `).bind(
     resolvedType, resolvedTypeDetail,
     body.client_name ?? record.client_name, body.depositor_name ?? record.depositor_name,
@@ -957,8 +1313,13 @@ sales.put('/:id', async (c) => {
     body.appraisal_rate ?? record.appraisal_rate ?? 0, body.winning_rate ?? record.winning_rate ?? 0,
     body.client_phone ?? record.client_phone ?? '',
     resolvedProxyCost,
-    statusUpdate, id
+    statusUpdate, id, id,
+    ...lockedPayrollMutationGuardBindings,
+    ...lockedDestinationPayrollGuardBindings,
   ).run();
+  if (Number(updateResult.meta?.changes ?? 0) === 0) {
+    return c.json({ error: '매출 수정 중 급여 확정 또는 환불 회수 상태가 변경되어 수정하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+  }
 
   // 총무/총무보조 수정 시 활동 로그
   const diff = buildDiff(record, nextRecord, SALES_DIFF_FIELDS);
@@ -1005,10 +1366,44 @@ sales.post('/:id/confirm', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
     payment_type: record.payment_type,
     card_deposit_date: record.card_deposit_date,
   });
-  await db.prepare(`
+  const destinationPayrollMonth = payrollRecognitionMonth({
+    ...record,
+    status: newStatus,
+    deposit_date: depDate,
+  });
+  const lockedDestinationPayroll = await lockedPayrollPeriodForMonth(
+    db,
+    record.user_id,
+    destinationPayrollMonth,
+  );
+  if (lockedDestinationPayroll) {
+    return c.json({
+      error: `${lockedDestinationPayroll} 급여정산이 이미 확정되어 이 매출을 해당 월에 입금 확인할 수 없습니다. 먼저 급여 확정을 취소해주세요.`,
+      payroll_period: lockedDestinationPayroll,
+    }, 409);
+  }
+  const lockedDestinationPayrollGuardSql = destinationPayrollMonth
+    ? `AND ${NO_LOCKED_PAYROLL_MONTH_SQL}`
+    : '';
+  const lockedDestinationPayrollGuardBindings = destinationPayrollMonth
+    ? [record.user_id, destinationPayrollMonth, payrollPeriodLabel(destinationPayrollMonth)]
+    : [];
+  const confirmResult = await db.prepare(`
     UPDATE sales_records SET status = ?, confirmed_at = datetime('now', '+9 hours'), confirmed_by = ?, deposit_date = ?, updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(newStatus, user.sub, depDate, id).run();
+    WHERE id = ? AND status = 'pending' AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    ) ${lockedDestinationPayrollGuardSql}
+  `).bind(
+    newStatus,
+    user.sub,
+    depDate,
+    id,
+    id,
+    ...lockedDestinationPayrollGuardBindings,
+  ).run();
+  if (Number(confirmResult.meta?.changes ?? 0) === 0) {
+    return c.json({ error: '입금 확인 중 급여 확정 또는 환불 회수 상태가 변경되어 처리하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+  }
 
   await logActivity(db, user as LogUser, {
     action: 'status_change', target_id: id, target_label: recordLabel(record),
@@ -1041,11 +1436,23 @@ sales.post('/:id/unconfirm', requireRole('master', 'accountant', 'accountant_ass
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
   if (record.status !== 'confirmed' && record.status !== 'card_pending') return c.json({ error: '확정된 매출만 취소할 수 있습니다.' }, 400);
+  const lockedPayrollPeriod = await lockedPayrollPeriodContainingSale(db, record.user_id, id);
+  if (lockedPayrollPeriod) {
+    return c.json({
+      error: `${lockedPayrollPeriod} 확정 급여에 반영된 매출은 입금확인을 취소할 수 없습니다. 먼저 해당 급여를 확정 취소해주세요.`,
+      payroll_period: lockedPayrollPeriod,
+    }, 409);
+  }
 
-  await db.prepare(`
+  const unconfirmResult = await db.prepare(`
     UPDATE sales_records SET status = 'pending', confirmed_at = NULL, confirmed_by = NULL, deposit_date = '', card_deposit_date = '', updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(id).run();
+    WHERE id = ? AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    ) AND ${NO_LOCKED_PAYROLL_SALE_SQL}
+  `).bind(id, id, record.user_id, id, id).run();
+  if (Number(unconfirmResult.meta?.changes ?? 0) === 0) {
+    return c.json({ error: '입금확인 취소 중 급여 회수가 완료되어 상태를 변경하지 않았습니다.' }, 409);
+  }
 
   await logActivity(db, user as LogUser, {
     action: 'status_change', target_id: id, target_label: recordLabel(record),
@@ -1072,10 +1479,15 @@ sales.post('/:id/refund-request', async (c) => {
   }
   if (record.status !== 'confirmed' && record.status !== 'card_pending') return c.json({ error: '확정된 매출만 환불 신청할 수 있습니다.' }, 400);
 
-  await db.prepare(`
+  const refundRequestResult = await db.prepare(`
     UPDATE sales_records SET status = 'refund_requested', refund_requested_at = datetime('now', '+9 hours'), updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(id).run();
+    WHERE id = ? AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    )
+  `).bind(id, id).run();
+  if (Number(refundRequestResult.meta?.changes ?? 0) === 0) {
+    return c.json({ error: '환불 신청 중 급여 회수가 완료되어 상태를 변경하지 않았습니다.' }, 409);
+  }
 
   return c.json({ success: true });
 });
@@ -1095,11 +1507,44 @@ sales.post('/:id/refund-request-cancel', async (c) => {
   if (record.status !== 'refund_requested') return c.json({ error: '환불 신청 상태인 건만 취소할 수 있습니다.' }, 400);
 
   const restoredStatus = restoredSalesStatusAfterRefundRequestCancel(record);
-  await db.prepare(`
+  const restoredRefundAmount = Number(record.refund_amount) || 0;
+  const restoration = await payrollRestorationDestination(
+    db,
+    record,
+    restoredStatus,
+    restoredRefundAmount,
+  );
+  if (restoration.blockedPeriod) {
+    return c.json({
+      error: `${restoration.blockedPeriod} 급여정산이 이미 확정되었고 이 매출은 정산서에 반영되지 않아 환불 신청을 취소할 수 없습니다. 먼저 급여 확정을 취소해주세요.`,
+      payroll_period: restoration.blockedPeriod,
+    }, 409);
+  }
+  const restorationGuardSql = restoration.month
+    ? `AND ${PAYROLL_MONTH_OPEN_OR_SALE_INCLUDED_SQL}`
+    : '';
+  const restorationGuardBindings = restoration.month
+    ? [
+      record.user_id,
+      restoration.month,
+      payrollPeriodLabel(restoration.month),
+      record.user_id,
+      restoration.month,
+      payrollPeriodLabel(restoration.month),
+      id,
+      restoredRefundAmount,
+    ]
+    : [];
+  const cancelResult = await db.prepare(`
     UPDATE sales_records
     SET status = ?, refund_requested_at = NULL, updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(restoredStatus, id).run();
+    WHERE id = ? AND status = 'refund_requested' AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    ) ${restorationGuardSql}
+  `).bind(restoredStatus, id, id, ...restorationGuardBindings).run();
+  if (Number(cancelResult.meta?.changes ?? 0) === 0) {
+    return c.json({ error: '환불 신청 취소 중 급여 확정 또는 회수 상태가 변경되어 처리하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+  }
 
   await logActivity(db, user as LogUser, {
     action: 'refund_request_cancel',
@@ -1141,7 +1586,29 @@ sales.post('/:id/refund-revert', async (c) => {
   }
 
   const restoredStatus = restoredSalesStatusAfterRefundRevert(record);
-  await db.prepare(`
+  const restoration = await payrollRestorationDestination(db, record, restoredStatus, 0);
+  if (restoration.blockedPeriod) {
+    return c.json({
+      error: `${restoration.blockedPeriod} 급여정산이 이미 확정되었고 이 매출은 정산서에 반영되지 않아 환불완료를 되돌릴 수 없습니다. 먼저 급여 확정을 취소해주세요.`,
+      payroll_period: restoration.blockedPeriod,
+    }, 409);
+  }
+  const restorationGuardSql = restoration.month
+    ? `AND ${PAYROLL_MONTH_OPEN_OR_SALE_INCLUDED_SQL}`
+    : '';
+  const restorationGuardBindings = restoration.month
+    ? [
+      record.user_id,
+      restoration.month,
+      payrollPeriodLabel(restoration.month),
+      record.user_id,
+      restoration.month,
+      payrollPeriodLabel(restoration.month),
+      id,
+      0,
+    ]
+    : [];
+  const revertResult = await db.prepare(`
     UPDATE sales_records
     SET status = ?,
         refund_amount = 0,
@@ -1149,8 +1616,13 @@ sales.post('/:id/refund-revert', async (c) => {
         refund_approved_at = NULL,
         refund_approved_by = NULL,
         updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(restoredStatus, id).run();
+    WHERE id = ? AND status = 'refunded' AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    ) ${restorationGuardSql}
+  `).bind(restoredStatus, id, id, ...restorationGuardBindings).run();
+  if (Number(revertResult.meta?.changes ?? 0) === 0) {
+    return c.json({ error: '환불완료 되돌리기 중 급여 확정 또는 회수 상태가 변경되어 처리하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+  }
 
   await logActivity(db, user as LogUser, {
     action: 'refund_revert',
@@ -1186,10 +1658,15 @@ sales.post('/:id/refund-approve', requireRole(...EDIT_ACCOUNTING_ROLES), async (
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
   if (record.status !== 'refund_requested') return c.json({ error: '환불 신청된 건만 승인할 수 있습니다.' }, 400);
 
-  await db.prepare(`
+  const approveResult = await db.prepare(`
     UPDATE sales_records SET status = 'refunded', refund_amount = amount, refund_approved_at = datetime('now', '+9 hours'), refund_approved_by = ?, updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(user.sub, id).run();
+    WHERE id = ? AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    )
+  `).bind(user.sub, id, id).run();
+  if (Number(approveResult.meta?.changes ?? 0) === 0) {
+    return c.json({ error: '환불 승인 중 급여 회수가 완료되어 상태를 변경하지 않았습니다.' }, 409);
+  }
 
   await logActivity(db, user as LogUser, {
     action: 'refund_approve', target_id: id, target_label: recordLabel(record),
@@ -1231,21 +1708,49 @@ sales.post('/:id/partial-refund', requireRole(...EDIT_ACCOUNTING_ROLES), async (
 
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
+  const completedRecovery = await db.prepare(
+    'SELECT 1 AS found FROM refund_recovery_resolutions WHERE sales_record_id = ?'
+  ).bind(id).first<{ found: number }>();
+  if (completedRecovery) {
+    return c.json({ error: '급여에서 회수 완료된 환불 건은 환불액을 다시 변경할 수 없습니다.' }, 409);
+  }
   if (record.status !== 'confirmed' && record.status !== 'card_pending') {
     return c.json({ error: '확정된 매출만 부분환불할 수 있습니다.' }, 400);
   }
   const total = Number(record.amount) || 0;
   if (refundAmount <= 0) return c.json({ error: '환불액을 1원 이상 입력하세요.' }, 400);
   if (refundAmount > total) return c.json({ error: '환불액이 매출 총액을 초과할 수 없습니다.' }, 400);
+  const lockedRefundFloor = await lockedPayrollRefundFloor(db, record.user_id, id);
+  if (lockedRefundFloor && refundAmount < lockedRefundFloor.amount) {
+    return c.json({
+      error: `${lockedRefundFloor.period} 확정 급여에 ${lockedRefundFloor.amount.toLocaleString('ko-KR')}원 환불이 이미 반영되어 그보다 낮출 수 없습니다. 먼저 급여 확정을 취소해주세요.`,
+      payroll_period: lockedRefundFloor.period,
+      minimum_refund_amount: lockedRefundFloor.amount,
+    }, 409);
+  }
 
   const isFull = refundAmount >= total;
-  await db.prepare(`
+  const refundResult = await db.prepare(`
     UPDATE sales_records
     SET refund_amount = ?, refund_approved_at = datetime('now', '+9 hours'), refund_approved_by = ?,
         status = CASE WHEN ? = 1 THEN 'refunded' ELSE status END,
         updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(refundAmount, user.sub, isFull ? 1 : 0, id).run();
+    WHERE id = ? AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    ) AND ${NO_LOCKED_PAYROLL_REFUND_ABOVE_SQL}
+  `).bind(
+    refundAmount,
+    user.sub,
+    isFull ? 1 : 0,
+    id,
+    id,
+    record.user_id,
+    id,
+    refundAmount,
+  ).run();
+  if (Number(refundResult.meta?.changes ?? 0) === 0) {
+    return c.json({ error: '환불 처리 중 급여 확정 또는 회수 상태가 변경되어 환불액을 변경하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+  }
 
   await logActivity(db, user as LogUser, {
     action: 'refund_approve', target_id: id, target_label: recordLabel(record),
@@ -1375,15 +1880,7 @@ sales.get('/dashboard/refund-impacts', async (c) => {
 
   // 최근 60일 이내 환불 승인된 건 조회
   const refunded = await db.prepare(`
-    SELECT sr.*, u.name as user_name, u.branch as user_branch, ua.pay_type,
-      COALESCE((
-        SELECT cro.commission_rate
-        FROM commission_rate_overrides cro
-        WHERE cro.user_id = sr.user_id
-          AND cro.year_month = substr(sr.refund_approved_at, 1, 7)
-        LIMIT 1
-      ), ua.commission_rate) AS commission_rate,
-      ua.standard_sales, ua.salary
+    SELECT sr.*, u.name as user_name, u.branch as user_branch, ua.pay_type
     FROM sales_records sr
     JOIN users u ON u.id = sr.user_id
     LEFT JOIN user_accounting ua ON ua.user_id = sr.user_id
@@ -1397,23 +1894,27 @@ sales.get('/dashboard/refund-impacts', async (c) => {
   `).all();
 
   // 회수 판정용: 관련 담당자들의 '잠금(지급확정)' 정산월 + 확정시각
-  const refundUserIds = Array.from(new Set((refunded.results || []).map((r: any) => r.user_id).filter(Boolean)));
-  const lockedAtByUserPeriod = new Map<string, string>();
-  if (refundUserIds.length > 0) {
-    const lockedPh = refundUserIds.map(() => '?').join(',');
-    const lockedSaves = await db.prepare(
-      `SELECT user_id, period, updated_at FROM payroll_saves WHERE locked = 1 AND user_id IN (${lockedPh})`
-    ).bind(...refundUserIds).all();
-    for (const row of (lockedSaves.results as any[])) {
-      lockedAtByUserPeriod.set(`${row.user_id}|${row.period}`, String(row.updated_at || ''));
+  const recoveryGroups = new Map<string, { userId: string; payrollMonth: string }>();
+  for (const row of (refunded.results || []) as any[]) {
+    const payrollMonth = refundApprovalMonth(row.refund_approved_at);
+    if (row.user_id && payrollMonth) {
+      recoveryGroups.set(`${row.user_id}|${payrollMonth}`, { userId: row.user_id, payrollMonth });
     }
+  }
+  const refundRecoveryById = new Map<string, any>();
+  for (const group of recoveryGroups.values()) {
+    const recoveries = await loadPayrollRefundRecoveries(db, {
+      userId: group.userId,
+      payrollMonth: group.payrollMonth,
+      includeZero: true,
+    });
+    for (const recovery of recoveries) refundRecoveryById.set(recovery.id, recovery);
   }
 
   const impacts: any[] = [];
   for (const r of (refunded.results || []) as any[]) {
     // 환불 건이 어느 정산 기간에 속했는지 판단
-    const settleDate = r.payment_type === '카드' && r.card_deposit_date ? r.card_deposit_date
-      : r.deposit_date ? r.deposit_date : r.contract_date;
+    const settleDate = refundRecoveryOriginDate(r);
     if (!settleDate) continue;
     const [sy, sm] = settleDate.split('-').map(Number);
     const bonusPeriodStart = sm % 2 === 0 ? sm - 1 : sm;
@@ -1421,25 +1922,17 @@ sales.get('/dashboard/refund-impacts', async (c) => {
 
     // 현재 월과 비교 — 이전 기간 환불만 영향 있음
     const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
-    const nowY = now.getFullYear();
-    const nowM = now.getMonth() + 1;
+    const nowY = now.getUTCFullYear();
+    const nowM = now.getUTCMonth() + 1;
     const nowPeriodStart = nowM % 2 === 0 ? nowM - 1 : nowM;
     const isSamePeriod = sy === nowY && bonusPeriodStart === nowPeriodStart;
 
     const isContract = r.type === '계약';
-    const affectsBonus = r.pay_type === 'salary' && !isSamePeriod;
-    // '회수'는 원매출월이 지급확정(잠금)된 뒤 환불된 경우만 성립(실제 지급된 커미션 환수).
-    // 원매출월 미확정/잠금 전 환불은 그 달에서 공제(제외)로 반영되므로 회수 대상 아님.
-    const originLockedAt = lockedAtByUserPeriod.get(`${r.user_id}|${payrollPeriodLabelFromMonth(String(settleDate).slice(0, 7))}`);
-    const affectsCommission = r.pay_type === 'commission' && !!originLockedAt && originLockedAt < String(r.refund_approved_at || '');
-
-    // 회수 금액 계산 — 부분환불이면 환불액(refund_amount) 비례, 전액환불이면 refund_amount = amount
-    const recoveryAmount = calculateRefundRecoveryAmount({
-      amount: r.refund_amount,
-      payType: r.pay_type,
-      commissionRate: r.commission_rate,
-      payrollMonth: refundApprovalMonth(r.refund_approved_at),
-    });
+    const authoritativeRecovery = refundRecoveryById.get(String(r.id || ''));
+    const originPayType = String(authoritativeRecovery?.origin_pay_type || r.pay_type || 'salary');
+    const recoveryAmount = Number(authoritativeRecovery?.recovery_amount) || 0;
+    const affectsBonus = originPayType === 'salary' && !isSamePeriod;
+    const affectsCommission = originPayType === 'commission' && recoveryAmount > 0;
 
     impacts.push({
       id: r.id,
@@ -1453,7 +1946,7 @@ sales.get('/dashboard/refund-impacts', async (c) => {
       settle_date: settleDate,
       refund_approved_at: r.refund_approved_at,
       bonus_period_label: bonusPeriodLabel,
-      pay_type: r.pay_type || 'salary',
+      pay_type: originPayType,
       is_contract: isContract,
       affects_bonus: affectsBonus,
       affects_commission: affectsCommission,
@@ -1863,6 +2356,7 @@ sales.post('/deposits/:id/claim', async (c) => {
   const body = await c.req.json<{
     type: string; type_detail?: string; client_name: string; contract_date?: string;
     client_phone?: string; court?: string; case_number?: string; property_type?: string;
+    auction_kind?: 'court' | 'public';
   }>();
   const { type, type_detail, client_name, contract_date } = body;
 
@@ -1898,7 +2392,7 @@ sales.post('/deposits/:id/claim', async (c) => {
       INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, client_phone, amount, contract_date, status, confirmed_at, confirmed_by, branch, department, attribution_branch, payment_type)
       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'pending', NULL, NULL, ?, ?, ?, '이체')
     `).bind(
-      salesId, user.sub, type, type_detail || '', client_name,
+      salesId, user.sub, type, winningOverrideInput ? winningAuctionDetail(winningOverrideInput, type_detail) : type_detail || '', client_name,
       notice.depositor, body.client_phone || '', notice.amount, effectiveContractDate,
       user.branch, user.department, resolveSalesAttributionBranch(user.name)
     ).run();
@@ -1952,17 +2446,83 @@ sales.post('/deposits/:id/approve', requireRole(...EDIT_ACCOUNTING_ROLES), async
   if (!notice) return c.json({ error: '입금 내역을 찾을 수 없습니다.' }, 404);
   if (notice.status !== 'claimed') return c.json({ error: '담당자가 클레임한 건만 승인할 수 있습니다.' }, 400);
 
-  await db.prepare(`
-    UPDATE deposit_notices SET status = 'approved', approved_by = ?, approved_at = datetime('now', '+9 hours'), updated_at = datetime('now', '+9 hours')
-    WHERE id = ?
-  `).bind(user.sub, id).run();
-
   // 연결된 매출도 확정
   if (notice.sales_record_id) {
-    await db.prepare(`
-      UPDATE sales_records SET status = 'confirmed', confirmed_at = datetime('now', '+9 hours'), confirmed_by = ?, updated_at = datetime('now', '+9 hours')
-      WHERE id = ?
-    `).bind(user.sub, notice.sales_record_id).run();
+    const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?')
+      .bind(notice.sales_record_id).first<any>();
+    if (!record) return c.json({ error: '연결된 매출 내역을 찾을 수 없습니다.' }, 404);
+    const depositDate = String(notice.deposit_date || '').trim();
+    const destinationPayrollMonth = payrollRecognitionMonth({
+      ...record,
+      status: 'confirmed',
+      deposit_date: depositDate,
+    });
+    const lockedDestinationPayroll = await lockedPayrollPeriodForMonth(
+      db,
+      record.user_id,
+      destinationPayrollMonth,
+    );
+    if (lockedDestinationPayroll) {
+      return c.json({
+        error: `${lockedDestinationPayroll} 급여정산이 이미 확정되어 이 입금 건을 승인할 수 없습니다. 먼저 급여 확정을 취소해주세요.`,
+        payroll_period: lockedDestinationPayroll,
+      }, 409);
+    }
+    const lockedDestinationPayrollGuardSql = destinationPayrollMonth
+      ? `AND ${NO_LOCKED_PAYROLL_MONTH_SQL}`
+      : '';
+    const lockedDestinationPayrollGuardBindings = destinationPayrollMonth
+      ? [record.user_id, destinationPayrollMonth, payrollPeriodLabel(destinationPayrollMonth)]
+      : [];
+    const salesConfirmStatement = db.prepare(`
+      UPDATE sales_records
+      SET status = 'confirmed', confirmed_at = datetime('now', '+9 hours'), confirmed_by = ?,
+          deposit_date = ?, updated_at = datetime('now', '+9 hours')
+      WHERE id = ? AND status = 'pending'
+        AND EXISTS (
+          SELECT 1 FROM deposit_notices claimed_notice
+          WHERE claimed_notice.id = ? AND claimed_notice.status = 'claimed'
+            AND claimed_notice.sales_record_id = sales_records.id
+        )
+        ${lockedDestinationPayrollGuardSql}
+    `).bind(
+      user.sub,
+      depositDate,
+      notice.sales_record_id,
+      id,
+      ...lockedDestinationPayrollGuardBindings,
+    );
+    const noticeApproveStatement = db.prepare(`
+      UPDATE deposit_notices
+      SET status = 'approved', approved_by = ?, approved_at = datetime('now', '+9 hours'),
+          updated_at = datetime('now', '+9 hours')
+      WHERE id = ? AND status = 'claimed' AND sales_record_id = ?
+        AND EXISTS (
+          SELECT 1 FROM sales_records confirmed_sale
+          WHERE confirmed_sale.id = ? AND confirmed_sale.status = 'confirmed'
+            AND COALESCE(confirmed_sale.deposit_date, '') = ?
+        )
+    `).bind(user.sub, id, notice.sales_record_id, notice.sales_record_id, depositDate);
+    const [salesConfirmResult, noticeApproveResult] = await db.batch([
+      salesConfirmStatement,
+      noticeApproveStatement,
+    ]);
+    if (
+      Number(salesConfirmResult.meta?.changes ?? 0) !== 1
+      || Number(noticeApproveResult.meta?.changes ?? 0) !== 1
+    ) {
+      return c.json({ error: '입금 승인 중 급여 확정 또는 매출 상태가 변경되어 처리하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+    }
+  } else {
+    const noticeApproveResult = await db.prepare(`
+      UPDATE deposit_notices
+      SET status = 'approved', approved_by = ?, approved_at = datetime('now', '+9 hours'),
+          updated_at = datetime('now', '+9 hours')
+      WHERE id = ? AND status = 'claimed' AND sales_record_id IS NULL
+    `).bind(user.sub, id).run();
+    if (Number(noticeApproveResult.meta?.changes ?? 0) !== 1) {
+      return c.json({ error: '입금 승인 상태가 변경되었습니다. 화면을 새로고침해주세요.' }, 409);
+    }
   }
 
   await logActivity(db, user as LogUser, {
@@ -2011,15 +2571,61 @@ sales.post('/accounting-entry', requireRole(...EDIT_ACCOUNTING_ROLES), async (c)
   const paymentType = payment_method === '카드' ? '카드' : '이체';
   // 카드 정산대기는 수입 매출에만 적용한다. 지출은 입력일에 즉시 회계 인식한다.
   const initialStatus = accountingEntryInitialStatus(dir, paymentType);
+  const depositDate = dir === 'income' && paymentType === '이체' ? String(date || '').trim() : '';
   const actualAssignee = assignee_id === '__all__' ? user.sub : assignee_id;
   const assignee = await db.prepare('SELECT id, name, branch, department FROM users WHERE id = ?').bind(actualAssignee).first<any>();
   if (!assignee) return c.json({ error: '담당자를 찾을 수 없습니다.' }, 404);
 
+  const destinationPayrollMonth = payrollRecognitionMonth({
+    status: initialStatus,
+    payment_type: paymentType,
+    contract_date: date,
+    deposit_date: depositDate,
+    card_deposit_date: '',
+    direction: dir,
+  });
+  const lockedDestinationPayroll = await lockedPayrollPeriodForMonth(
+    db,
+    actualAssignee,
+    destinationPayrollMonth,
+  );
+  if (lockedDestinationPayroll) {
+    return c.json({
+      error: `${lockedDestinationPayroll} 급여정산이 이미 확정되어 해당 월의 매출로 등록할 수 없습니다. 먼저 급여 확정을 취소해주세요.`,
+      payroll_period: lockedDestinationPayroll,
+    }, 409);
+  }
+  const lockedDestinationPayrollGuardSql = destinationPayrollMonth
+    ? `WHERE ${NO_LOCKED_PAYROLL_MONTH_SQL}`
+    : '';
+  const lockedDestinationPayrollGuardBindings = destinationPayrollMonth
+    ? [actualAssignee, destinationPayrollMonth, payrollPeriodLabel(destinationPayrollMonth)]
+    : [];
   const id = crypto.randomUUID();
-  await db.prepare(`
-    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, amount, contract_date, status, confirmed_at, confirmed_by, direction, branch, department, attribution_branch, payment_type)
-    VALUES (?, ?, '기타', ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?)
-  `).bind(id, actualAssignee, content, content, amount, date, initialStatus, user.sub, dir, assignee.branch || '', assignee.department || '', resolveSalesAttributionBranch(assignee.name), paymentType).run();
+  const insertResult = await db.prepare(`
+    INSERT INTO sales_records (id, user_id, type, type_detail, client_name, amount, contract_date, deposit_date, status, confirmed_at, confirmed_by, direction, branch, department, attribution_branch, payment_type)
+    SELECT ?, ?, '기타', ?, ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?
+    ${lockedDestinationPayrollGuardSql}
+  `).bind(
+    id,
+    actualAssignee,
+    content,
+    content,
+    amount,
+    date,
+    depositDate,
+    initialStatus,
+    user.sub,
+    dir,
+    assignee.branch || '',
+    assignee.department || '',
+    resolveSalesAttributionBranch(assignee.name),
+    paymentType,
+    ...lockedDestinationPayrollGuardBindings,
+  ).run();
+  if (Number(insertResult.meta?.changes ?? 0) !== 1) {
+    return c.json({ error: '매출 등록 중 급여가 확정되어 처리하지 않았습니다. 화면을 새로고침해주세요.' }, 409);
+  }
 
   return c.json({ success: true, id });
 });
@@ -2035,6 +2641,19 @@ sales.delete('/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant
     LEFT JOIN users u ON u.id = sr.user_id WHERE sr.id = ?
   `).bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
+  const lockedPayrollPeriod = await lockedPayrollPeriodContainingSale(db, record.user_id, id);
+  if (lockedPayrollPeriod) {
+    return c.json({
+      error: `${lockedPayrollPeriod} 확정 급여에 반영된 매출은 삭제할 수 없습니다. 먼저 해당 급여를 확정 취소해주세요.`,
+      payroll_period: lockedPayrollPeriod,
+    }, 409);
+  }
+  const completedRecovery = await db.prepare(
+    'SELECT 1 AS found FROM refund_recovery_resolutions WHERE sales_record_id = ?'
+  ).bind(id).first<{ found: number }>();
+  if (completedRecovery) {
+    return c.json({ error: '급여에서 회수 완료된 환불 건은 매출 내역을 삭제할 수 없습니다.' }, 409);
+  }
 
   let forcedLawitgoUnlock = false;
   try {
@@ -2047,19 +2666,40 @@ sales.delete('/:id', requireRole('master', 'ceo', 'cc_ref', 'admin', 'accountant
       // 마스터·총무담당 강제 삭제: Lawitgo 감사 잠금은 outbox('sending'/'sent') 행에 의존하므로,
       // 그 행을 먼저 제거하면 앱 검사와 DB 트리거(trg_sales_records_preserve_lawitgo_audit)를 함께 통과한다.
       console.warn(`[sales] force-deleting Lawitgo-locked sale ${id} by ${user.sub} (${user.role})`);
-      await db.prepare('DELETE FROM lawitgo_winning_outbox WHERE sales_record_id = ?').bind(id).run();
       forcedLawitgoUnlock = true;
     } else {
       throw error;
     }
   }
 
-  // FK 참조 해제: deposit_notices의 sales_record_id를 NULL로, 클레임 상태 pending 복원
-  await db.prepare(
-    "UPDATE deposit_notices SET sales_record_id = NULL, claimed_by = NULL, claimed_at = NULL, status = 'pending' WHERE sales_record_id = ?"
-  ).bind(id).run();
-
-  await db.prepare('DELETE FROM sales_records WHERE id = ?').bind(id).run();
+  // 회수 완료가 동시에 기록되더라도 근거 행을 cascade로 지우지 않도록 하나의 batch에서 조건부로 처리한다.
+  const deletionStatements: D1PreparedStatement[] = [];
+  if (forcedLawitgoUnlock) {
+    deletionStatements.push(db.prepare(`
+      DELETE FROM lawitgo_winning_outbox
+      WHERE sales_record_id = ? AND NOT EXISTS (
+        SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+      ) AND ${NO_LOCKED_PAYROLL_SALE_SQL}
+    `).bind(id, id, record.user_id, id, id));
+  }
+  deletionStatements.push(db.prepare(`
+    UPDATE deposit_notices
+    SET sales_record_id = NULL, claimed_by = NULL, claimed_at = NULL, status = 'pending'
+    WHERE sales_record_id = ? AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    ) AND ${NO_LOCKED_PAYROLL_SALE_SQL}
+  `).bind(id, id, record.user_id, id, id));
+  deletionStatements.push(db.prepare(`
+    DELETE FROM sales_records
+    WHERE id = ? AND NOT EXISTS (
+      SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+    ) AND ${NO_LOCKED_PAYROLL_SALE_SQL}
+  `).bind(id, id, record.user_id, id, id));
+  const deletionResults = await db.batch(deletionStatements);
+  const salesDeletion = deletionResults[deletionResults.length - 1];
+  if (Number(salesDeletion?.meta?.changes ?? 0) === 0) {
+    return c.json({ error: '매출 삭제 중 급여 회수가 완료되어 삭제하지 않았습니다.' }, 409);
+  }
 
   await logActivity(db, user as LogUser, {
     action: 'delete', target_id: id,
@@ -2255,6 +2895,8 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
     duplicate: 0,
     no_origin: 0,
     multi_match: 0,
+    refund_already_recovered: 0,
+    locked_payroll: 0,
     lawitgo_repair_required: 0,
   };
 
@@ -2272,10 +2914,21 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
       activeUsersByName.set(name, matches);
     }
   });
+  const lockedPayrollRows = await db.prepare(
+    'SELECT user_id, period FROM payroll_saves WHERE locked = 1'
+  ).all<{ user_id: string; period: string }>();
+  const lockedPayrollMonths = new Set(
+    (lockedPayrollRows.results || [])
+      .map(row => `${String(row.user_id || '')}|${payrollPeriodMonth(row.period)}`)
+      .filter(key => !key.endsWith('|')),
+  );
 
   // 사전 로드 2: 기존 매출 (client+amount 인덱스 — 중복 체크 및 환불 매칭용)
   const existing = await db.prepare(`
-    SELECT id, user_id, client_name, depositor_name, amount, contract_date, payment_type, status, branch
+    SELECT id, user_id, client_name, depositor_name, amount, refund_amount, contract_date, payment_type, status, branch,
+      EXISTS (
+        SELECT 1 FROM refund_recovery_resolutions rrr WHERE rrr.sales_record_id = sales_records.id
+      ) AS refund_recovery_resolved
     FROM sales_records WHERE status IN ('confirmed', 'card_pending', 'pending')
   `).all();
   const existingList = existing.results as any[];
@@ -2296,6 +2949,13 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
   const localDupSet = new Set<string>();
   // 배치 처리용
   const batchStatements: any[] = [];
+  const batchOperations: Array<{
+    kind: 'insert' | 'refund';
+    rowNo?: number;
+    clientName?: string;
+    amount?: number;
+    payrollMonth?: string;
+  }> = [];
   let winningOverrideContext: LawitgoWinningOverrideContext | null = null;
 
   for (const r of body.records) {
@@ -2322,7 +2982,7 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
 
     if (isRefund) {
       // 환불 모드: 메모리 내 매칭 (기존 DB + 이번 업로드 둘 다)
-      const refundDate = normDate(r.date_a) || new Date().toISOString().slice(0, 10);
+      const refundDate = normDate(r.date_a) || kstDateOnly();
       const matches = refundMatches(clientName, amount, paymentType);
 
       if (matches.length === 0) {
@@ -2337,22 +2997,30 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
       }
 
       const orig = matches[0];
+      if (Number(orig.refund_recovery_resolved) === 1) {
+        skipCounts.refund_already_recovered++;
+        skipped.push(`행${rowNo}: ${clientName} ${amount.toLocaleString()}원 — 급여 회수 완료 건이라 환불액 변경 안 함`);
+        continue;
+      }
       // DB 업데이트 및 in-memory 상태 반영(같은 원본에 중복 환불 방지)
       batchStatements.push(
         db.prepare(`
           UPDATE sales_records
-          SET status = 'refunded', refund_approved_at = ?, refund_approved_by = ?,
+          SET status = 'refunded', refund_amount = amount, refund_approved_at = ?, refund_approved_by = ?,
               memo = CASE WHEN memo = '' OR memo IS NULL THEN ? ELSE memo || CHAR(10) || ? END,
               updated_at = datetime('now', '+9 hours')
-          WHERE id = ?
+          WHERE id = ? AND NOT EXISTS (
+            SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
+          )
         `).bind(
           refundDate + 'T00:00:00', user.sub,
           `엑셀 일괄환불 (${refundDate})`, `엑셀 일괄환불 (${refundDate})`,
-          orig.id,
+          orig.id, orig.id,
         )
       );
+      batchOperations.push({ kind: 'refund', rowNo, clientName, amount });
       orig.status = 'refunded';  // 이후 매칭에서 제외
-      refundCount++;
+      orig.refund_amount = orig.amount;
       continue;
     }
 
@@ -2407,6 +3075,21 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
     if (r.memo_s && !receiptPhone) memoParts.push(String(r.memo_s).slice(0, 200));
 
     const importedStatus = paymentType === '카드' && !cardDepDate ? 'card_pending' : 'confirmed';
+    const destinationPayrollMonth = payrollRecognitionMonth({
+      status: importedStatus,
+      payment_type: paymentType,
+      contract_date: contractDate,
+      deposit_date: depositDate,
+      card_deposit_date: cardDepDate,
+      direction: 'income',
+    });
+    if (destinationPayrollMonth && lockedPayrollMonths.has(`${userId}|${destinationPayrollMonth}`)) {
+      skipCounts.locked_payroll++;
+      skipped.push(
+        `행${rowNo}: ${clientName} ${amount.toLocaleString()}원 — ${payrollPeriodLabel(destinationPayrollMonth)} 급여 확정 월이라 등록 안 함`,
+      );
+      continue;
+    }
     const id = crypto.randomUUID();
     let winningOverrideInput: LawitgoWinningOverrideInput | null = null;
     let validatedWinningOverride: ValidatedLawitgoWinningOverride | null = null;
@@ -2443,18 +3126,26 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
       }
     }
 
+    const lockedDestinationPayrollGuardSql = destinationPayrollMonth
+      ? `WHERE ${NO_LOCKED_PAYROLL_MONTH_SQL}`
+      : '';
+    const lockedDestinationPayrollGuardBindings = destinationPayrollMonth
+      ? [userId, destinationPayrollMonth, payrollPeriodLabel(destinationPayrollMonth)]
+      : [];
     const insertStatement = db.prepare(`
         INSERT INTO sales_records
           (id, user_id, type, type_detail, client_name, depositor_name, client_phone,
            amount, contract_date, deposit_date, card_deposit_date, status,
            confirmed_at, confirmed_by, branch, department, attribution_branch, memo,
            payment_type, receipt_type, receipt_phone)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?, ?, ?)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+9 hours'), ?, ?, ?, ?, ?, ?, ?, ?
+        ${lockedDestinationPayrollGuardSql}
       `).bind(
         id, userId, type, finalTypeDetail, clientName, clientName, r.client_phone || '',
         amount, contractDate, depositDate, cardDepDate, importedStatus, user.sub,
         branch, department, resolveSalesAttributionBranch(resolvedUser?.name || userName), memoParts.join(' | '),
         paymentType, receiptType, receiptPhone,
+        ...lockedDestinationPayrollGuardBindings,
       );
 
     if (winningOverrideInput) {
@@ -2465,7 +3156,14 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
       }
       let inserted = false;
       try {
-        await insertStatement.run();
+        const insertResult = await insertStatement.run();
+        if (Number(insertResult.meta?.changes ?? 0) !== 1) {
+          skipCounts.locked_payroll++;
+          skipped.push(
+            `행${rowNo}: ${clientName} ${amount.toLocaleString()}원 — 처리 중 ${payrollPeriodLabel(destinationPayrollMonth)} 급여가 확정되어 등록 안 함`,
+          );
+          continue;
+        }
         inserted = true;
         await upsertValidatedLawitgoWinningOverride(
           db,
@@ -2474,6 +3172,7 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
           user.sub,
           winningOverrideContext,
         );
+        count++;
       } catch (error) {
         if (inserted) await cleanupFailedWinningSale(db, id);
         skipCounts.lawitgo_repair_required++;
@@ -2483,6 +3182,7 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
       }
     } else {
       batchStatements.push(insertStatement);
+      batchOperations.push({ kind: 'insert', rowNo, clientName, amount, payrollMonth: destinationPayrollMonth });
     }
 
     localDupSet.add(dkey);
@@ -2491,14 +3191,37 @@ sales.post('/bulk-import', requireRole(...EDIT_ACCOUNTING_ROLES), async (c) => {
       id, user_id: userId, client_name: clientName, depositor_name: clientName,
       amount, contract_date: contractDate, payment_type: paymentType, status: importedStatus, branch
     });
-    count++;
     if (!resolvedUser && userName) skipped.push(`행${rowNo}: ${userName} 미가입 (총무 명의로 등록됨)`);
   }
 
   // D1 batch 실행 (subrequest 1번으로 다건 처리)
   const BATCH_SIZE = 50;
   for (let i = 0; i < batchStatements.length; i += BATCH_SIZE) {
-    await db.batch(batchStatements.slice(i, i + BATCH_SIZE));
+    const batchResults = await db.batch(batchStatements.slice(i, i + BATCH_SIZE));
+    const operations = batchOperations.slice(i, i + BATCH_SIZE);
+    batchResults.forEach((result, index) => {
+      const operation = operations[index];
+      if (operation?.kind === 'insert') {
+        if (Number(result.meta?.changes ?? 0) > 0) {
+          count++;
+          return;
+        }
+        skipCounts.locked_payroll++;
+        skipped.push(
+          `행${operation.rowNo || 0}: ${operation.clientName || ''} ${Number(operation.amount || 0).toLocaleString()}원 — 처리 중 ${payrollPeriodLabel(operation.payrollMonth || '')} 급여가 확정되어 등록 안 함`,
+        );
+        return;
+      }
+      if (operation?.kind !== 'refund') return;
+      if (Number(result.meta?.changes ?? 0) > 0) {
+        refundCount++;
+        return;
+      }
+      skipCounts.refund_already_recovered++;
+      skipped.push(
+        `행${operation.rowNo || 0}: ${operation.clientName || ''} ${Number(operation.amount || 0).toLocaleString()}원 — 처리 중 급여 회수가 완료되어 환불액 변경 안 함`,
+      );
+    });
   }
 
   return c.json({ success: true, count, refund_count: refundCount, skipped, skip_counts: skipCounts });

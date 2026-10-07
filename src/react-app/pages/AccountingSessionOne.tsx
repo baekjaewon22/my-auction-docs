@@ -1254,6 +1254,10 @@ function AccountingLedgerReportPage({ reportType }: { reportType: AccountingRepo
   void [patchLedgerRow, addLedgerRow, saveLedgerRow];
   const deleteLedgerRow = async (row: any) => {
     const id = String(row.id);
+    if (isReadonlyAccountingReportRow(row)) {
+      setEditStatus('자동 산정 행은 원천 페이지에서 수정해 주세요.');
+      return;
+    }
     if (!window.confirm('이 원장 행을 삭제할까요?')) return;
     if (id.startsWith('draft:')) {
       setEditableRows((rows) => rows.filter((item) => String(item.id) !== id));
@@ -1296,6 +1300,7 @@ function AccountingLedgerReportPage({ reportType }: { reportType: AccountingRepo
   const saveAllLedgerRows = async () => {
     const rowsToSave = editableRows.filter((row) => {
       const id = String(row.id);
+      if (isReadonlyAccountingReportRow(row)) return false;
       return id.startsWith('draft:') || dirtyLedgerIds.includes(id);
     });
     if (!rowsToSave.length) {
@@ -1343,6 +1348,11 @@ function AccountingLedgerReportPage({ reportType }: { reportType: AccountingRepo
     setEditStatus('새 행을 추가했습니다. 내용을 입력한 뒤 전체 저장을 눌러주세요.');
   };
   const renderLedgerCell = (row: any, column: { key: string; numeric?: boolean }) => {
+    if (isReadonlyAccountingReportRow(row)) {
+      return column.numeric
+        ? formatMoney(row[column.key], '')
+        : <span className="accounting-cell-text">{getReportCellText(row, column) || '-'}</span>;
+    }
     const rowId = String(row.id);
     const cellKey = `${rowId}:${column.key}`;
     const isEditing = editingLedgerCell === cellKey || rowId.startsWith('draft:');
@@ -1438,15 +1448,19 @@ function AccountingLedgerReportPage({ reportType }: { reportType: AccountingRepo
                   {columns.map((column) => (
                     <td
                       key={column.key}
-                      className={`${column.numeric ? 'report-number' : 'accounting-report-cell-text'} ${reportType === 'expense' && isRequiredExpenseLedgerCellEmpty(row, column) ? 'accounting-ledger-required-empty' : ''}`}
+                      className={`${column.numeric ? 'report-number' : 'accounting-report-cell-text'} ${reportType === 'expense' && !isReadonlyAccountingReportRow(row) && isRequiredExpenseLedgerCellEmpty(row, column) ? 'accounting-ledger-required-empty' : ''}`}
                       title={getReportCellTitle(row, column)}
                     >
-                      {canEditLedgerRows ? renderLedgerCell(row, column) : (
+                      {canEditLedgerRows && !isReadonlyAccountingReportRow(row) ? renderLedgerCell(row, column) : (
                         column.numeric ? formatMoney(row[column.key], '') : <span className="accounting-cell-text">{getReportCellText(row, column) || '-'}</span>
                       )}
                     </td>
                   ))}
-                  {canEditLedgerRows && <td className="accounting-ledger-row-actions"><button type="button" className="accounting-ledger-delete-btn" aria-label="행 삭제" title="행 삭제" disabled={savingLedgerId === String(row.id) || savingLedgerId === 'all'} onClick={() => deleteLedgerRow(row)}>×</button></td>}
+                  {canEditLedgerRows && <td className="accounting-ledger-row-actions">
+                    {isReadonlyAccountingReportRow(row)
+                      ? <span className="accounting-ledger-auto-badge">자동</span>
+                      : <button type="button" className="accounting-ledger-delete-btn" aria-label="행 삭제" title="행 삭제" disabled={savingLedgerId === String(row.id) || savingLedgerId === 'all'} onClick={() => deleteLedgerRow(row)}>×</button>}
+                  </td>}
                 </tr>
               ))}
               {!data.rows?.length && <tr><td colSpan={columns.length} className="empty-state">출력할 데이터가 없습니다.</td></tr>}
@@ -1973,6 +1987,10 @@ function formatCardLast4(value: unknown) {
 function isBlankReportValue(value: unknown) {
   const text = normalizeText(value);
   return !text || text === '-' || text === '—';
+}
+
+function isReadonlyAccountingReportRow(row: any) {
+  return ['video_production', 'payroll'].includes(String(row?.source_type || ''));
 }
 
 function isRequiredExpenseLedgerCellEmpty(row: any, column: { key: string; numeric?: boolean }) {

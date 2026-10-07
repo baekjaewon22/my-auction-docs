@@ -133,7 +133,8 @@ def build_eviction_cost_values(data: dict) -> dict:
     attorney_fee = _attorney_fee_from_item_type(data.get("item_type") or "")
     normal_execution_cost = int(cost["grandTotal"])
     discounted_execution_cost = int(cost["proposedPrice"])
-    flat_total = int(round((attorney_fee + normal_execution_cost) * 0.8))
+    flat_rate_main_price = int(myauction_cost.get("flatRateMainPrice") or 0) if isinstance(myauction_cost, dict) else 0
+    flat_total = flat_rate_main_price if flat_rate_main_price > 0 else int(round((attorney_fee + normal_execution_cost) * 0.8))
     cost_plus_total = attorney_fee + normal_execution_cost
 
     return {
@@ -143,6 +144,7 @@ def build_eviction_cost_values(data: dict) -> dict:
         "flat_total": flat_total,
         "cost_plus_total": cost_plus_total,
         "eviction_cost_source": "myauction" if myauction_cost and int(myauction_cost.get("grandTotal") or 0) > 0 else "local_estimate",
+        "eviction_flat_total_source": "myauction_detail" if flat_rate_main_price > 0 else "local_formula",
         "attorney_fee_won": _format_won_with_space(attorney_fee),
         "normal_execution_cost_won": _format_won_with_space(normal_execution_cost),
         "myungsung_execution_cost_won": _format_won_with_space(discounted_execution_cost),
@@ -168,8 +170,10 @@ def build_eviction_cost_values(data: dict) -> dict:
         "명도_실비제총액": cost_plus_total,
         "명도_실비제총액_표시": f"약 {_format_manwon_number(cost_plus_total)}만원",
         "명도_실비제총액_괄호표시": f"(약 {_format_manwon_number(cost_plus_total)}만원 + @‥.)",
-        "명도_총명도비용": flat_total,
-        "명도_총명도비용_원": _format_won_with_space(flat_total),
+        # 06-(3) 강제집행 예상비용표의 총액은 정액제 패키지 총액이 아니라
+        # 마이옥션 산출근거 팝업의 일반 강제집행 총액(grandTotal)을 단일 원천으로 쓴다.
+        "명도_총명도비용": normal_execution_cost,
+        "명도_총명도비용_원": _format_won_with_space(normal_execution_cost),
         "명도_접수비": int(cost["filingFee"]),
         "명도_접수비_원": _format_won_with_space(int(cost["filingFee"])),
         "명도_운반및보관료": int(cost["transportStorage"]),
@@ -259,7 +263,7 @@ def _draw_estimate_result_template(draw, building_type, has_elevator, cost, font
         width=5,
     )
 
-    _draw_centered_text(draw, right_x, cards_y + 46, card_w, "법률사무소 명승 대행 시", fonts["label_bold"], COLORS["gold_dark"])
+    _draw_centered_text(draw, right_x, cards_y + 46, card_w, "법무법인 명승 대행 시", fonts["label_bold"], COLORS["gold_dark"])
     _draw_centered_text(draw, right_x, cards_y + 90, card_w, format_won(cost["proposedPrice"]), fonts["amount"], COLORS["navy"])
     _draw_centered_text(draw, right_x, cards_y + 158, card_w, f"{format_manwon(cost['savings'])} 절약", fonts["saving"], COLORS["green_dark"])
 
@@ -328,7 +332,7 @@ def _draw_centered_text(draw, x, y, w, text, font, fill):
 def _draw_result_card(draw, x, y, w, h, data, building_type, has_elevator, cost, fonts) -> None:
     _rounded_gradient_card(draw, x, y, w, h)
     _draw_badge(draw, x + 28, y + 28, "산출 완료", fonts["tiny_bold"], fill=COLORS["gold"], text_fill="#ffffff")
-    draw.text((x + 28, y + 72), "법률사무소 명승에 맡기시면", fill=COLORS["navy"], font=fonts["subtitle"])
+    draw.text((x + 28, y + 72), "법무법인 명승에 맡기시면", fill=COLORS["navy"], font=fonts["subtitle"])
     draw.text((x + 28, y + 116), "같은 집행, 20% 절감된 비용으로 진행합니다", fill=COLORS["muted"], font=fonts["body"])
 
     summary = f"{BUILDING_LABELS[building_type]} · {_format_area(cost['areaPyeong'])}평 · 엘리베이터 {'있음' if has_elevator else '없음'}"
@@ -343,7 +347,7 @@ def _draw_result_card(draw, x, y, w, h, data, building_type, has_elevator, cost,
     bbox = draw.textbbox((left_x, amount_y), old_text, font=fonts["amount_old"])
     draw.line((bbox[0], (bbox[1] + bbox[3]) // 2 + 2, bbox[2], (bbox[1] + bbox[3]) // 2 + 2), fill="#9ca3af", width=4)
 
-    draw.text((right_x, amount_y - 40), "법률사무소 명승 대행 시", fill=COLORS["gold_dark"], font=fonts["body_bold"])
+    draw.text((right_x, amount_y - 40), "법무법인 명승 대행 시", fill=COLORS["gold_dark"], font=fonts["body_bold"])
     draw.text((right_x, amount_y), format_won(cost["proposedPrice"]), fill=COLORS["gold_dark"], font=fonts["amount"])
     _draw_badge(draw, right_x, amount_y + 74, "20% 절감", fonts["tiny_bold"], fill=COLORS["navy"], text_fill="#ffffff")
     draw.text((right_x + 128, amount_y + 74), f"{format_manwon(cost['savings'])} 절약", fill=COLORS["gold_dark"], font=fonts["body_bold"])

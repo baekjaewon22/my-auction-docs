@@ -18,6 +18,10 @@ import {
 } from '../lib/contractAwardUi';
 import { refundApprovalMonth } from '../../shared/refund-recovery';
 import {
+  buildRequiredPayrollDeductions,
+  canonicalizePayrollDeductions,
+} from '../../shared/payroll-deductions';
+import {
   actualTransferAmount,
   normalizeWithholdingSettlements,
   withholdingSettlementAdjustment,
@@ -25,6 +29,10 @@ import {
   type WithholdingSettlementItem,
 } from '../../shared/withholding-settlement';
 import { calculateFreelancerSettlement } from '../../shared/freelancer-settlement';
+import {
+  calculateVideoProductionWithholding,
+  isExternalVideoProductionAssignee,
+} from '../../shared/video-production';
 import {
   canEditPayrollInternalMemo,
   canViewPayrollInternalMemo,
@@ -156,6 +164,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const { user: currentUser } = useAuthStore();
   const canAccessBusinessIncome = !!currentUser && ['master', 'ceo', 'accountant'].includes(currentUser.role);
   const canEditPayroll = !!currentUser && ['master', 'ceo', 'accountant', 'accountant_asst'].includes(currentUser.role);
+  const canLockPayroll = !!currentUser && ['master', 'accountant'].includes(currentUser.role);
   const canUnlockPayroll = !!currentUser && ['master', 'accountant'].includes(currentUser.role);
   const canResolveRefundRecovery = canUnlockPayroll;
   const canViewInternalMemo = canViewPayrollInternalMemo(currentUser);
@@ -305,6 +314,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       // 저장 데이터 로드
       const period = res.period_label || selectedMonth;
       let snapshotCaseAllowance = res.payroll_snapshot?.caseAllowance || null;
+      let loadedIsLocked = !!res.payroll_save?.locked;
       try {
         const saveRes = await api.payroll.getSave(selectedUserId, period);
         if (saveRes.save) {
@@ -328,31 +338,20 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
             memo: item.memo || '',
           })));
           setIsLocked(!!saveRes.save.locked);
+          loadedIsLocked = !!saveRes.save.locked;
           setLockedNetPay(saveRes.save.locked
             ? savedPayrollNetPay(sd.net_pay ?? sd.payroll_snapshot?.manual?.net_pay)
             : null);
         }
       } catch { /* 저장 없음 */ }
 
-      const linkedRecovery = (res.refund_recoveries || []).find((item: any) => item.id === refundRecoveryId);
-      if (linkedRecovery && res.accounting?.pay_type === 'commission' && Number(linkedRecovery.recovery_amount) > 0) {
-        setCommDeductions(prev => prev.some(item => item.sourceId === refundRecoveryId)
-          ? prev
-          : [...prev, {
-              label: `환불 회수 · ${linkedRecovery.client_name || '고객명 미기재'}`,
-              amount: String(Number(linkedRecovery.recovery_amount)),
-              sourceId: refundRecoveryId,
-            }]);
-      }
-      // 전월 이월 공제: 실지급이 음수여서 익월로 넘어온 미회수분을 세후공제로 자동 반영
-      if (res.carryover_deduction && Number(res.carryover_deduction.amount) > 0) {
-        setCommDeductions(prev => prev.some(item => item.sourceId === 'carryover')
-          ? prev
-          : [...prev, {
-              label: `전월 이월 공제 (${res.carryover_deduction.origin_month})`,
-              amount: String(Number(res.carryover_deduction.amount)),
-              sourceId: 'carryover',
-            }]);
+      // 잠긴 스냅샷은 그대로 두고, 확정 취소된 정산에만 최신 자동 세후공제를 병합한다.
+      if (!loadedIsLocked) {
+        const requiredDeductions = buildRequiredPayrollDeductions({
+          refundRecoveries: res.refund_recoveries || [],
+          carryoverDeduction: res.carryover_deduction || null,
+        });
+        setCommDeductions(prev => canonicalizePayrollDeductions(prev, requiredDeductions));
       }
 
       // 안건 수당 — 짝수월에만 (예: 4월 → 3~4월 합계)
@@ -464,7 +463,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   };
 
   const handleLockPayroll = async () => {
-    if (!canEditPayroll || !data || !selectedUserId) return;
+    if (!canLockPayroll || !data || !selectedUserId) return;
     const period = data.period_label || selectedMonth;
     if (!confirm('이 급여정산을 확정하시겠습니까? 확정 후에는 수정할 수 없습니다.')) return;
     try {
@@ -586,10 +585,15 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const caseAllowanceValue = isLocked ? (caseAllowance?.bonus || 0) : 0;
   const contractAwardAmount = payrollContractAwardAmount(data);
   const contractAwardPeriodLabel = payrollContractAwardPeriodLabel(data);
-  const totalPay = s ? payrollMoney(afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount + lawitgoNewSettlementTotal, selectedMonth) : 0;
+  const videoProductionIncome = Number(data?.video_production?.total_amount || 0);
+  const externalVideoProductionIncome = data?.accounting?.pay_type !== 'commission' && isExternalVideoProductionAssignee(data?.user)
+    ? videoProductionIncome
+    : 0;
+  const externalVideoProductionWithholding = calculateVideoProductionWithholding(externalVideoProductionIncome);
+  const totalPay = s ? payrollMoney(afterDeduction + s.bonus + extraPayNum + terminationLeavePayout + caseAllowanceValue + contractAwardAmount + lawitgoNewSettlementTotal + externalVideoProductionIncome, selectedMonth) : 0;
   const commExtraTotal = commExtras.reduce((sum, item) => sum + (Number(item.amount.replace(/[^0-9]/g, '')) || 0), 0);
   const commDeductionTotal = commDeductions.reduce((sum, item) => sum + (Number(item.amount.replace(/[^0-9]/g, '')) || 0), 0);
-  const salaryNetPay = payrollMoney(totalPay + commExtraTotal - commDeductionTotal, selectedMonth);
+  const salaryNetPay = payrollMoney(totalPay + commExtraTotal - commDeductionTotal - externalVideoProductionWithholding, selectedMonth);
   const withholdingSettlementItems = withholdingSettlementDrafts.flatMap((item): WithholdingSettlementItem[] => {
     const amount = Math.trunc(Number(item.amount.replace(/[^0-9]/g, '')) || 0);
     if (amount <= 0) return [];
@@ -886,6 +890,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                     // 신 안건수당은 기존 정산수익 구성에 그대로 두고, 이번 통합 대상 성과금은 계약포상만이다.
                     settlementIncome: commissionAmount + proxyIncome + positionAllowance + lawitgoNewSettlementTotal,
                     contractAward: contractAwardAmount,
+                    videoProductionIncome,
                     taxableExtraIncome,
                     taxExemptIncome,
                     preTaxDeduction: preTaxDeductions,
@@ -899,6 +904,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                   const legacyLockedNetPay = isLocked && lockedNetPay === null
                     ? calculateFreelancerSettlement({
                         settlementIncome: commissionAmount + proxyIncome + positionAllowance + lawitgoNewSettlementTotal,
+                        videoProductionIncome,
                         taxableExtraIncome,
                         taxExemptIncome,
                         preTaxDeduction: preTaxDeductions,
@@ -965,6 +971,13 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                           <div className="payroll-bonus-row" style={{ color: '#188038', borderTop: '1px solid #e8eaed', paddingTop: 6 }}>
                             <span>성과금 <span style={{ fontSize: '0.68rem', color: '#9aa0a6' }}>(계약포상)</span></span>
                             <span className="num" style={{ fontWeight: 600 }}>+{fmtWon(settlement.contractAward)}</span>
+                          </div>
+                        )}
+
+                        {settlement.videoProductionIncome > 0 && (
+                          <div className="payroll-bonus-row" style={{ color: '#188038' }}>
+                            <span>영상제작 외주 정산 <span style={{ fontSize: '0.68rem', color: '#9aa0a6' }}>(확정 결과물, 3.3% 원천징수 합산)</span></span>
+                            <span className="num" style={{ fontWeight: 600 }}>+{fmtWon(settlement.videoProductionIncome)}</span>
                           </div>
                         )}
 
@@ -1452,6 +1465,23 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                   <span className="num">+{fmtWon(Number(item.amount) || 0)}</span>
                 </div>
               ))}
+              {externalVideoProductionIncome > 0 && (
+                <>
+                  <div className="payroll-bonus-row" style={{ color: '#188038' }}>
+                    <span>
+                      영상제작 외주 정산
+                      <small style={{ display: 'block', color: '#80868b', marginTop: 2 }}>
+                        결과물 확정 {Number(data?.video_production?.total_count || 0).toLocaleString('ko-KR')}건 · 공급가
+                      </small>
+                    </span>
+                    <span className="num">+{fmtWon(externalVideoProductionIncome)}</span>
+                  </div>
+                  <div className="payroll-bonus-row" style={{ color: '#d93025' }}>
+                    <span>영상제작 원천징수 <small style={{ color: '#80868b' }}>(3.3%)</small></span>
+                    <span className="num">-{fmtWon(externalVideoProductionWithholding)}</span>
+                  </div>
+                </>
+              )}
               {extraPayNum > 0 && (
                 <div className="payroll-bonus-row">
                   <span>{extraLabel || '기타'}</span>
@@ -1629,6 +1659,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                   <div style={{ marginBottom: 12 }}>
                     <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#d93025', marginBottom: 8 }}>추가 공제 항목</div>
                     {commDeductions.map((e, i) => {
+                      const isAutomatic = !!e.sourceId;
                       const mode: '식대' | '세전' | '세후' = e.isFood ? '식대' : (e.skipTax ? '세전' : '세후');
                       const setMode = (next: '식대' | '세전' | '세후') => setCommDeductions(prev => prev.map((x, idx) => idx === i ? {
                         ...x,
@@ -1642,26 +1673,28 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                           <input className="form-input" value={e.label} placeholder={mode === '식대' ? '식대' : '명목'}
                             onChange={(ev) => setCommDeductions(prev => prev.map((x, idx) => idx === i ? { ...x, label: ev.target.value } : x))}
-                            style={{ flex: 1 }} />
+                            readOnly={isAutomatic} style={{ flex: 1 }} />
                           <input className="form-input" value={toMoneyDisplay(e.amount)} placeholder="금액"
                             onChange={(ev) => setCommDeductions(prev => prev.map((x, idx) => idx === i ? { ...x, amount: fromMoneyDisplay(ev.target.value) } : x))}
-                            style={{ width: 140, textAlign: 'right' }} />
+                            readOnly={isAutomatic} style={{ width: 140, textAlign: 'right' }} />
                           <span style={{ fontSize: '0.82rem', color: '#5f6368' }}>원</span>
-                          <button className="btn btn-sm btn-danger" style={{ padding: '4px 8px' }}
-                            onClick={() => setCommDeductions(prev => prev.filter((_, idx) => idx !== i))}>삭제</button>
+                          {isAutomatic
+                            ? <span style={{ fontSize: '0.72rem', color: '#d93025', fontWeight: 600 }}>자동 공제</span>
+                            : <button className="btn btn-sm btn-danger" style={{ padding: '4px 8px' }}
+                                onClick={() => setCommDeductions(prev => prev.filter((_, idx) => idx !== i))}>삭제</button>}
                         </div>
                         <div style={{ marginTop: 6, fontSize: '0.75rem', display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
                           <span style={{ color: '#5f6368', fontWeight: 600 }}>공제 방식:</span>
                           <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', color: mode === '식대' ? '#e65100' : '#9aa0a6', fontWeight: mode === '식대' ? 600 : 400 }}>
-                            <input type="radio" name={`cd-mode-${i}`} checked={mode === '식대'} onChange={() => setMode('식대')} />
+                            <input type="radio" name={`cd-mode-${i}`} checked={mode === '식대'} disabled={isAutomatic} onChange={() => setMode('식대')} />
                             식대 (비과세)
                           </label>
                           <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', color: mode === '세전' ? '#e65100' : '#9aa0a6', fontWeight: mode === '세전' ? 600 : 400 }}>
-                            <input type="radio" name={`cd-mode-${i}`} checked={mode === '세전'} onChange={() => setMode('세전')} />
+                            <input type="radio" name={`cd-mode-${i}`} checked={mode === '세전'} disabled={isAutomatic} onChange={() => setMode('세전')} />
                             세전 공제 (비과세 처리)
                           </label>
                           <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', color: mode === '세후' ? '#e65100' : '#9aa0a6', fontWeight: mode === '세후' ? 600 : 400 }}>
-                            <input type="radio" name={`cd-mode-${i}`} checked={mode === '세후'} onChange={() => setMode('세후')} />
+                            <input type="radio" name={`cd-mode-${i}`} checked={mode === '세후'} disabled={isAutomatic} onChange={() => setMode('세후')} />
                             세후 공제 (정상 과세 후)
                           </label>
                         </div>
@@ -1774,7 +1807,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button className="btn btn-primary" onClick={handleSavePayroll} disabled={saving}>{saving ? '저장중...' : '정산 저장'}</button>
-                  <button className="btn btn-success" onClick={handleLockPayroll}>확정</button>
+                  {canLockPayroll && <button className="btn btn-success" onClick={handleLockPayroll}>확정</button>}
                 </div>
                 <div style={{ marginTop: 10, fontSize: '0.78rem', color: '#9aa0a6' }}>
                   {data.accounting.pay_type === 'commission'

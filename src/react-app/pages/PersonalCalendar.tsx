@@ -55,6 +55,10 @@ function formatCalendarDate(value: string): string {
   return `${year}년 ${month}월 ${day}일 ${WEEKDAYS[date.getDay()]}요일`;
 }
 
+function formatWon(value: unknown): string {
+  return `${(Number(value) || 0).toLocaleString('ko-KR')}원`;
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
@@ -777,7 +781,7 @@ export default function PersonalCalendar() {
                     {dayEvents.map((event) => (
                       <button
                         type="button"
-                        className={`personal-calendar-event-chip${event.source_type?.startsWith('auction_') ? ' auction' : ''}${event.source_type === 'auction_inspection' ? ' inspection' : ''}`}
+                        className={`personal-calendar-event-chip${event.source_type?.startsWith('auction_') ? ' auction' : ''}${event.source_type === 'auction_inspection' ? ' inspection' : ''}${event.source_type === 'video_production' ? ' video-production' : ''}`}
                         style={{ '--event-color': event.color } as React.CSSProperties}
                         key={event.id}
                         onClick={() => {
@@ -811,7 +815,7 @@ export default function PersonalCalendar() {
           <section className="personal-calendar-event-detail" onClick={event => event.stopPropagation()}>
             <header>
               <div>
-                <h3>{selectedEvent.source_type === 'auction_bid' ? '입찰 일정' : selectedEvent.source_type === 'auction_inspection' ? '임장 일정' : selectedEvent.title || '일정'}</h3>
+                <h3>{selectedEvent.source_type === 'auction_bid' ? '입찰 일정' : selectedEvent.source_type === 'auction_inspection' ? '임장 일정' : selectedEvent.source_type === 'video_production' ? '영상제작 일정' : selectedEvent.title || '일정'}</h3>
                 <span>{formatCalendarDate(selectedEvent.event_date)}</span>
               </div>
               <button type="button" className="btn-close" onClick={closeSelectedEvent} aria-label="상세 닫기"><X size={18} /></button>
@@ -834,6 +838,30 @@ export default function PersonalCalendar() {
                 <div><span>고객명</span><strong>{selectedEvent.client_name || '-'}</strong></div>
                 <div><span>관련법원 · 지원</span><strong>{selectedEvent.court || '-'}</strong></div>
                 <div><span>사건번호</span><strong>{selectedEvent.case_no || '-'}{selectedEvent.item_no ? ` · 물건번호 ${selectedEvent.item_no}` : ''}</strong></div>
+              </div>
+            ) : selectedEvent.source_type === 'video_production' ? (
+              <div className="personal-calendar-personal-detail">
+                <div className="personal-calendar-event-detail-grid">
+                  <div><span>담당자</span><strong>{selectedEvent.assignee_name || '-'}</strong></div>
+                  <div><span>단계</span><strong>{selectedEvent.video_production_phase === 'result' ? '결과물' : '의뢰'}</strong></div>
+                  <div><span>유형</span><strong>{selectedEvent.video_type_label || '-'}</strong></div>
+                  <div><span>건수</span><strong>{(Number(selectedEvent.video_quantity) || 1).toLocaleString('ko-KR')}건</strong></div>
+                  <div><span>단가</span><strong>{formatWon(selectedEvent.video_unit_amount)}</strong></div>
+                  <div><span>총액</span><strong>{formatWon(selectedEvent.video_amount)}</strong></div>
+                  <div><span>상태</span><strong>{selectedEvent.video_status_label || '-'}</strong></div>
+                </div>
+                {selectedEvent.content && <pre>{selectedEvent.content}</pre>}
+                {selectedEvent.source_id && (
+                  <div className="personal-calendar-manage-actions">
+                    <Link
+                      className="btn btn-primary"
+                      to={`/video-production?month=${selectedEvent.event_date.slice(0, 7)}&edit=${encodeURIComponent(selectedEvent.source_id)}`}
+                      onClick={closeSelectedEvent}
+                    >
+                      <Pencil size={15} /> 영상제작 의뢰 즉시 수정
+                    </Link>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="personal-calendar-personal-detail">{selectedEvent.content || '등록된 상세 내용이 없습니다.'}</div>

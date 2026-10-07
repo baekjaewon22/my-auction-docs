@@ -203,8 +203,16 @@ export interface PersonalCalendarEvent {
   all_day: number;
   created_at: string;
   updated_at: string;
-  source_type?: 'personal' | 'auction_bid' | 'auction_inspection';
+  source_type?: 'personal' | 'auction_bid' | 'auction_inspection' | 'video_production';
   source_id?: string;
+  video_production_phase?: 'request' | 'result';
+  video_type?: VideoProductionType;
+  video_type_label?: string;
+  video_quantity?: number;
+  video_unit_amount?: number;
+  video_amount?: number;
+  video_status?: VideoProductionStatus;
+  video_status_label?: string;
   branch?: string;
   assignee_name?: string;
   position_title?: string;
@@ -230,6 +238,35 @@ export interface PersonalCalendarEvent {
     block_reason?: string;
     delete_warning?: string;
   };
+}
+
+export type VideoProductionType = 'short_form' | 'long_form';
+export type VideoProductionStatus = 'requested' | 'confirmed';
+
+export interface VideoProductionRequestItem {
+  id: string;
+  assignee_user_id: string;
+  assignee_name?: string;
+  assignee_branch?: string;
+  assignee_department?: string;
+  assignee_position_title?: string;
+  video_type: VideoProductionType;
+  status: VideoProductionStatus;
+  quantity: number;
+  unit_amount: number;
+  amount: number;
+  request_date: string;
+  provided_date: string;
+  submit_due_date: string;
+  result_received_date: string;
+  title: string;
+  memo: string;
+  created_by: string;
+  created_by_name?: string;
+  updated_by: string;
+  updated_by_name?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface AuctionBidResultEntry {
@@ -453,6 +490,45 @@ export const api = {
         anomalies: AuctionStoryAnomaly[];
       }>(`/personal-calendar/story-anomalies${query.toString() ? `?${query}` : ''}`);
     },
+  },
+
+  videoProduction: {
+    options: () =>
+      request<{
+        users: Array<{ id: string; name: string; role: string; branch: string; department: string; position_title?: string; login_type?: string }>;
+        types: Array<{ value: VideoProductionType; label: string; default_amount: number }>;
+        statuses: Array<{ value: VideoProductionStatus; label: string }>;
+      }>('/video-production-requests/options'),
+    list: (params: { month?: string; assignee_user_id?: string; status?: VideoProductionStatus | '' } = {}) => {
+      const q = new URLSearchParams();
+      if (params.month) q.set('month', params.month);
+      if (params.assignee_user_id) q.set('assignee_user_id', params.assignee_user_id);
+      if (params.status) q.set('status', params.status);
+      return request<{
+        month: string;
+        items: VideoProductionRequestItem[];
+        summary: { confirmed_count: number; short_count: number; long_count: number; total_amount: number };
+      }>('/video-production-requests' + (q.toString() ? '?' + q.toString() : ''));
+    },
+    create: (data: Partial<VideoProductionRequestItem>) =>
+      request<{ success: boolean; item: VideoProductionRequestItem }>('/video-production-requests', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: Partial<VideoProductionRequestItem>) =>
+      request<{ success: boolean; item: VideoProductionRequestItem }>('/video-production-requests/' + encodeURIComponent(id), {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    reopen: (id: string) =>
+      request<{ success: boolean; item: VideoProductionRequestItem }>('/video-production-requests/' + encodeURIComponent(id) + '/reopen', { method: 'POST' }),
+    setResultDate: (id: string, result_received_date: string) =>
+      request<{ success: boolean; item: VideoProductionRequestItem }>('/video-production-requests/' + encodeURIComponent(id) + '/result-date', {
+        method: 'POST',
+        body: JSON.stringify({ result_received_date }),
+      }),
+    delete: (id: string) =>
+      request<{ success: boolean }>('/video-production-requests/' + encodeURIComponent(id), { method: 'DELETE' }),
   },
 
   automationDiagnostics: {
@@ -1061,7 +1137,7 @@ export const api = {
         cases: Array<{ court: string; case_number: string; item_number: string; status: string }>;
       }> }>('/sales/customer-search?' + query.toString());
     },
-    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string; user_id?: string; customer_id?: string; court?: string; case_number?: string; property_type?: string }) =>
+    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string; user_id?: string; customer_id?: string; court?: string; case_number?: string; property_type?: string; auction_kind?: 'court' | 'public' }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; deposit_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
@@ -1134,7 +1210,7 @@ export const api = {
     deposits: () => request<{ deposits: import('./types').DepositNotice[] }>('/sales/deposits'),
     createDeposit: (data: { depositor: string; amount: number; deposit_date: string }) =>
       request<{ success: boolean; id: string }>('/sales/deposits', { method: 'POST', body: JSON.stringify(data) }),
-    claimDeposit: (id: string, data: { type: string; type_detail?: string; client_name: string; client_phone?: string; contract_date?: string; court?: string; case_number?: string; property_type?: string }) =>
+    claimDeposit: (id: string, data: { type: string; type_detail?: string; client_name: string; client_phone?: string; contract_date?: string; court?: string; case_number?: string; property_type?: string; auction_kind?: 'court' | 'public' }) =>
       request('/sales/deposits/' + id + '/claim', { method: 'POST', body: JSON.stringify(data) }),
     approveDeposit: (id: string) =>
       request('/sales/deposits/' + id + '/approve', { method: 'POST' }),

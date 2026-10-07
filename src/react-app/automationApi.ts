@@ -25,6 +25,26 @@ export interface ReportStartRequest {
   url: string;
   remember_login: boolean;
   requester_permission?: 'basic' | 'special';
+  briefing_cost_inputs?: {
+    market_price?: number;
+    bid_price_1?: number;
+    bid_price_2?: number;
+    bid_price_3?: number;
+    property_tax_type?: 'house' | 'non_house';
+    house_count?: string;
+    regulated_area?: boolean;
+    difference_amount?: number;
+    unpaid_management_fee?: number;
+    service_fee_basis?: 'appraised' | 'bid' | 'manual';
+    service_fee_manual_amount?: number;
+    service_fee_rate?: number;
+    fixed_loan_amount?: number;
+    loan_base_amount?: number;
+    ltv_limit?: number;
+    bid_price_loan_limit?: number;
+    loan_room_deduction?: number;
+    bank_loan_note?: string;
+  };
   planner_snapshots?: Array<{
     id: string;
     calculator: string;
