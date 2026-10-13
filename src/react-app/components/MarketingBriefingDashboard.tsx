@@ -14,6 +14,7 @@ import youtubeLogo from '../../../youtube.jpg';
 type TabKey = 'overview' | 'analytics' | 'youtube' | 'instagram' | 'naver';
 type Briefing = {
   id: string;
+  report_key?: string;
   site: string;
   type: 'weekly' | 'monthly';
   report_date: string;
@@ -32,6 +33,7 @@ type Briefing = {
   landing?: Record<string, unknown> | Array<Record<string, unknown>>;
   audience?: Array<Record<string, unknown>>;
   content_md?: string;
+  extra?: { dashboard?: Record<string, any> };
 };
 type DetailResponse = { briefing: Briefing; previous_checks?: Briefing['checks'] };
 type BriefingKey = { id: string; name: string; site: string | null; token_prefix: string; last_used_at: string | null; revoked_at: string | null };
@@ -56,7 +58,7 @@ const METRICS: Array<{ key: string; label: string; tab: TabKey; percent?: boolea
   { key: 'ig_followers', label: '팔로워', tab: 'instagram', help: '현재 인스타그램을 구독하는 사람 수입니다.' },
   { key: 'ig_reach_avg', label: '하루 평균 도달', tab: 'instagram', help: '콘텐츠를 본 계정 수의 하루 평균입니다.' },
   { key: 'reels_views_avg', label: '릴스 평균 조회', tab: 'instagram', help: '최근 릴스가 평균적으로 재생된 횟수입니다.' },
-  { key: 'naver_search_cvr', label: '네이버 검색 가입률', tab: 'naver', percent: true, help: '네이버 검색광고 방문자 중 가입한 비율입니다.' },
+  { key: 'naver_search_cvr', label: '네이버 모바일 검색 전체 가입률', tab: 'naver', percent: true, help: '네이버 모바일 자연검색과 광고 클릭이 섞인 전체 유입의 가입률입니다. 광고만의 성과는 아래 광고 가입과 CPA를 확인하세요.' },
   { key: 'naver_ad_cost', label: '광고비', tab: 'naver', lowerBetter: true, help: '선택 기간에 사용한 네이버 광고비입니다.' },
   { key: 'naver_ad_clicks', label: '광고 클릭', tab: 'naver', help: '네이버 광고를 눌러 방문한 횟수입니다.' },
   { key: 'naver_ad_signups', label: '광고 가입', tab: 'naver', help: '네이버 광고 방문 후 가입한 수입니다.' },
@@ -90,12 +92,18 @@ function deltaOf(current: number | null | undefined, previous: number | null | u
   return ((current - previous) / Math.abs(previous)) * 100;
 }
 
-function opinion(delta: number | null, lowerBetter = false) {
+function opinion(delta: number | null, lowerBetter = false, tab: TabKey = 'overview') {
   if (delta === null) return '이전 자료가 쌓이면 변화 이유까지 비교할 수 있습니다.';
   if (Math.abs(delta) < 3) return '직전 보고와 비슷한 수준입니다. 급한 변화는 없습니다.';
   const improved = lowerBetter ? delta < 0 : delta > 0;
   const size = Math.abs(delta) >= 15 ? '눈에 띄게' : '조금';
-  return improved ? `${size} 좋아졌습니다. 현재 방식에서 잘된 부분을 이어가세요.` : `${size} 나빠졌습니다. 원인과 광고 설정을 확인할 필요가 있습니다.`;
+  if (improved) return `${size} 좋아졌습니다. 현재 방식에서 잘된 부분을 이어가세요.`;
+  const nextStep: Record<TabKey, string> = {
+    overview: '각 채널의 원인을 차례로 확인하세요.', analytics: '유입 경로와 측정 누락 여부를 확인하세요.',
+    youtube: '최근 영상 소재와 사이트 이동 연결을 확인하세요.', instagram: '게시물 소재와 업로드 시점을 확인하세요.',
+    naver: '키워드 비용과 광고 추적 상태를 확인하세요.',
+  };
+  return `${size} 나빠졌습니다. ${nextStep[tab]}`;
 }
 
 function Sparkline({ values }: { values: number[] }) {
@@ -195,20 +203,89 @@ function EasyTable({ title, rows }: { title: string; rows: Array<Record<string, 
   return <div className="mbd-table-card"><h4>{title}</h4><div className="mbd-table-scroll"><table><thead><tr>{columns.map((key) => <th key={key}>{labels[key] || key}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map((key) => <td key={key}>{typeof row[key] === 'number' ? formatValue(row[key], key === 'cvr') : String(row[key] ?? '-')}</td>)}</tr>)}</tbody></table></div></div>;
 }
 
+function dashboardOf(item: Briefing) {
+  return item.extra?.dashboard as Record<string, any> | undefined;
+}
+
+function periodsOverlap(current: Briefing, previous?: Briefing) {
+  if (!previous?.period_start || !previous.period_end || !current.period_start || !current.period_end) return true;
+  return current.period_start <= previous.period_end && previous.period_start <= current.period_end;
+}
+
+function metricSnapshot(item: Briefing, key: string) {
+  const dashboard = dashboardOf(item);
+  const scorecard = dashboard?.overview?.scorecards?.find((card: any) => card.key === key);
+  if (scorecard) return { value: scorecard.value, prev: scorecard.prev, goodDirection: scorecard.good_direction, explain: scorecard.explain };
+  const channels = dashboard?.ga4?.channels || [];
+  const devices = dashboard?.ga4?.devices || [];
+  const account = dashboard?.instagram?.account || {};
+  const naver = dashboard?.naver || {};
+  const mapped: Record<string, { value?: number | null; prev?: number | null; goodDirection?: 'up' | 'down'; explain?: string }> = {
+    google_organic_signups: (() => { const row = channels.find((entry: any) => entry.source_medium === 'google / organic'); return { value: row?.signups, prev: row?.prev_signups, goodDirection: 'up', explain: '광고가 아닌 구글 검색으로 들어와 가입한 수입니다.' }; })(),
+    desktop_cvr: (() => { const row = devices.find((entry: any) => entry.device === 'desktop'); return { value: row?.cvr, prev: null, goodDirection: 'up', explain: 'GA4가 제공한 PC 방문자의 실제 가입률입니다.' }; })(),
+    mobile_cvr: (() => { const row = devices.find((entry: any) => entry.device === 'mobile'); return { value: row?.cvr, prev: null, goodDirection: 'up', explain: 'GA4가 제공한 모바일 방문자의 실제 가입률입니다.' }; })(),
+    new_user_signups: (() => { const row = (dashboard?.ga4?.audience || []).find((entry: any) => /new/i.test(entry.type || entry.user_type || '')); return { value: row?.conversions ?? row?.signups, prev: row?.prev_conversions ?? row?.prev_signups, goodDirection: 'up', explain: '처음 방문한 사람 가운데 가입한 수입니다.' }; })(),
+    youtube_sessions: { value: dashboard?.youtube?.totals?.site_sessions, prev: null, goodDirection: 'up', explain: '유튜브에서 사이트로 실제 이동한 방문 수입니다. 조회수와 가입은 별도로 판단합니다.' },
+    ig_followers: { value: account.followers, prev: null, goodDirection: 'up' },
+    ig_reach_avg: { value: account.reach_avg, prev: account.reach_avg_prev, goodDirection: 'up', explain: '하루에 인스타 게시물을 본 서로 다른 계정 수입니다.' },
+    naver_ad_cost: { value: naver.totals?.cost, prev: naver.prev_totals?.cost, goodDirection: 'down' },
+    naver_ad_clicks: { value: naver.totals?.clk, prev: naver.prev_totals?.clk, goodDirection: 'up' },
+    naver_ad_signups: { value: naver.ga4_match?.signups, prev: null, goodDirection: 'up' },
+    naver_ad_cpa: { value: naver.ga4_match?.cpa, prev: null, goodDirection: 'down', explain: naver.ga4_match?.explain },
+  };
+  const highlight = item.highlights?.find((entry) => entry.label === key || entry.label === METRICS.find((metric) => metric.key === key)?.label);
+  const ownPrev = item.kpis?.[`${key}_prev`] ?? highlight?.previous;
+  const selected = mapped[key] || {};
+  return { value: selected.value ?? item.kpis?.[key], prev: selected.prev ?? ownPrev, goodDirection: selected.goodDirection, explain: selected.explain };
+}
+
+function safeExternalUrl(value: unknown) {
+  return typeof value === 'string' && /^https?:\/\//i.test(value) ? value : undefined;
+}
+
+function DailyChart({ rows, valueKey, label }: { rows: any[]; valueKey: string; label: string }) {
+  const recent = rows.slice(-14);
+  const max = Math.max(...recent.map((row) => Number(row[valueKey]) || 0), 1);
+  if (!recent.length) return null;
+  return <div className="mbd-daily-chart" aria-label={`${label} 일별 변화`}>
+    {recent.map((row, index) => <div key={`${row.date}-${index}`} title={`${row.date}: ${(Number(row[valueKey]) || 0).toLocaleString('ko-KR')}`}><span><i style={{ height: `${Math.max(((Number(row[valueKey]) || 0) / max) * 100, 3)}%` }} /></span><small>{String(row.date || '').slice(5)}</small></div>)}
+  </div>;
+}
+
+function StructuredOverview({ item }: { item: Briefing }) {
+  const overview = dashboardOf(item)?.overview;
+  if (!overview) return null;
+  const summaries = Array.isArray(overview.plain_summary) ? overview.plain_summary : overview.plain_summary ? [overview.plain_summary] : [];
+  return <section className="mbd-structured-overview">
+    {!!summaries.length && <div className="mbd-easy-explain"><h4>이번 주를 쉽게 설명하면</h4><PlainNotes lines={summaries} /></div>}
+    {!!overview.findings?.length && <div className="mbd-structured-findings">{overview.findings.map((finding: any, index: number) => <article key={index} className={finding.severity || 'info'}><span>{finding.channel || '종합 점검'}</span><h4>{finding.title}</h4><p>{finding.detail}</p>{finding.what_to_do && <strong>다음 행동 · {finding.what_to_do}</strong>}</article>)}</div>}
+    {!!overview.cross_channel?.length && <div className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>채널을 함께 분석</span><h4>서로 연결해서 발견한 변화</h4></div></div><div className="mbd-insight-list">{overview.cross_channel.map((entry: any, index: number) => <article key={index}><strong>{entry.topic}</strong><p>{entry.evidence}</p><small>{entry.meaning}</small></article>)}</div></div>}
+    {!!overview.actions?.length && <div className="mbd-action-list"><h4>이번 주 우선 실행 항목</h4>{overview.actions.map((action: any, index: number) => <article key={index}><em>{action.priority || index + 1}</em><div><strong>{action.title}</strong><p>{action.why}</p></div><span>{action.owner || '담당자 확인'}</span></article>)}</div>}
+  </section>;
+}
+
 function MetricCards({ tab, items }: { tab: TabKey; items: Briefing[] }) {
   const chronological = [...items].reverse();
-  const configs = METRICS.filter((metric) => metric.tab === tab && chronological.some((item) => typeof item.kpis?.[metric.key] === 'number'));
+  const configs = METRICS.filter((metric) => metric.tab === tab && chronological.some((item) => typeof metricSnapshot(item, metric.key).value === 'number'));
   if (!configs.length) return <div className="mbd-empty">아직 이 채널의 숫자 자료가 없습니다. 아래 조사 결과와 점검 의견을 확인하세요.</div>;
   return <div className="mbd-metric-grid">{configs.map((metric) => {
-    const values = chronological.map((item) => item.kpis?.[metric.key]).filter((value): value is number => typeof value === 'number');
-    const current = values[values.length - 1];
-    const delta = deltaOf(current, values.length > 1 ? values[values.length - 2] : undefined);
-    const positive = delta !== null && (metric.lowerBetter ? delta < 0 : delta > 0);
+    const currentItem = chronological[chronological.length - 1];
+    const previousItem = chronological.length > 1 ? chronological[chronological.length - 2] : undefined;
+    const snapshot = metricSnapshot(currentItem, metric.key);
+    const previousSnapshot = previousItem ? metricSnapshot(previousItem, metric.key) : undefined;
+    const fallbackPrevious = previousItem && !periodsOverlap(currentItem, previousItem) ? previousSnapshot?.value : undefined;
+    const comparison = typeof snapshot.prev === 'number' ? snapshot.prev : fallbackPrevious;
+    const current = snapshot.value as number;
+    const values = typeof comparison === 'number' ? [comparison, current] : chronological.map((item) => metricSnapshot(item, metric.key).value).filter((value): value is number => typeof value === 'number');
+    const delta = deltaOf(current, comparison);
+    const lowerBetter = snapshot.goodDirection ? snapshot.goodDirection === 'down' : metric.lowerBetter;
+    const positive = delta !== null && (lowerBetter ? delta < 0 : delta > 0);
+    const youtubeWithoutSignup = metric.key === 'youtube_sessions' && Number(dashboardOf(currentItem)?.youtube?.totals?.site_signups) === 0;
     return <article className="mbd-metric" key={metric.key}>
       <div className="mbd-metric-head"><span>{metric.label}</span>{delta !== null && <em className={positive ? 'good' : 'bad'}>{delta > 0 ? '+' : ''}{delta.toFixed(1)}%</em>}</div>
       <strong>{formatValue(current, metric.percent, metric.key.includes('cost') || metric.key.includes('cpa'))}</strong>
       <Sparkline values={values} />
-      <p>{metric.help}</p><small>{opinion(delta, metric.lowerBetter)}</small>
+      <p>{snapshot.explain || metric.help}</p><small>{youtubeWithoutSignup ? '사이트 방문은 늘었어도 가입은 0명입니다. 영상과 가입 화면의 연결을 확인하세요.' : opinion(delta, lowerBetter, tab)}</small>
     </article>;
   })}</div>;
 }
@@ -230,6 +307,18 @@ function ReportTable({ table }: { table: ParsedTable }) {
 }
 
 function AnalyticsVisual({ item }: { item: Briefing }) {
+  const ga4 = dashboardOf(item)?.ga4;
+  if (ga4) {
+    const channels = [...(ga4.channels || [])].sort((a: any, b: any) => (b.signups || 0) - (a.signups || 0));
+    const channelRows = channels.map((row: any) => [row.label || row.source_medium, String(row.sessions ?? '-'), String(row.signups ?? '-'), typeof row.cvr === 'number' ? `${(row.cvr * 100).toFixed(1)}%` : '-']);
+    return <div className="mbd-channel-visual analytics">
+      {!!ga4.daily?.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>DAILY SIGNUPS</span><h4>날짜별 가입 변화</h4></div><p>갑자기 높거나 낮은 날짜가 있는지 확인하세요.</p></div><DailyChart rows={ga4.daily} valueKey="signups" label="가입" /></section>}
+      {!!channelRows.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>가입을 만든 유입 경로</span><h4>어디에서 가입했나요?</h4></div><p>조회나 방문보다 실제 가입이 많은 순서입니다.</p></div><VisualBars rows={channelRows} labelIndex={0} valueIndex={2} valueLabel="가입" /></section>}
+      {!!ga4.devices?.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>기기별 실제 성과</span><h4>PC와 모바일 비교</h4></div></div><div className="mbd-device-cards">{ga4.devices.map((row: any) => <article key={row.device}><strong>{row.label || (row.device === 'desktop' ? 'PC' : row.device === 'mobile' ? '모바일' : row.device)}</strong><dl><div><dt>방문</dt><dd>{Number(row.sessions || 0).toLocaleString('ko-KR')}</dd></div><div><dt>가입</dt><dd>{Number(row.signups || 0).toLocaleString('ko-KR')}</dd></div><div><dt>가입률</dt><dd>{typeof row.cvr === 'number' ? `${(row.cvr * 100).toFixed(1)}%` : '-'}</dd></div></dl><div className="mbd-rate-track"><i style={{ width: `${Math.min((Number(row.cvr) || 0) * 500, 100)}%` }} /></div><small>직전 가입 {row.prev_signups ?? '-'}</small></article>)}</div></section>}
+      {!!ga4.utm?.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>UTM 캠페인</span><h4>표시를 붙여 측정한 홍보 링크</h4></div><p>UTM은 어느 홍보물에서 들어왔는지 알려주는 링크 꼬리표입니다.</p></div><ReportTable table={{ columns: ['캠페인', '유입 경로', '방문', '가입', '직전 방문'], rows: ga4.utm.map((row: any) => [row.label || row.campaign, row.source_medium, String(row.sessions ?? '-'), String(row.signups ?? '-'), String(row.prev_sessions ?? '-')]) }} /></section>}
+      {!!ga4.tracking_health?.length && <section className="mbd-tracking-health"><h4>측정 상태 점검</h4>{ga4.tracking_health.map((row: any) => <article key={row.key} className={row.status}><span>{row.status === 'ok' ? '정상' : '확인 필요'}</span><div><strong>{row.label}</strong><p>{row.explain || row.evidence}</p></div></article>)}</section>}
+    </div>;
+  }
   const channelSource = reportSection(item, '채널별 가입 (GA4)');
   const analyticsSource = reportSection(item, '애널리틱스');
   const channelTable = parseMarkdownTables(channelSource)[0];
@@ -247,6 +336,24 @@ function AnalyticsVisual({ item }: { item: Briefing }) {
 }
 
 function NaverVisual({ item }: { item: Briefing }) {
+  const naver = dashboardOf(item)?.naver;
+  if (naver) {
+    const totals = naver.totals || {};
+    const previous = naver.prev_totals || {};
+    const metricRows = [
+      ['노출', totals.imp, previous.imp, false], ['클릭', totals.clk, previous.clk, false], ['광고비', totals.cost, previous.cost, true],
+      ['클릭률', totals.ctr, previous.ctr, false], ['클릭당 비용', totals.cpc, previous.cpc, true], ['네이버 전환', totals.naver_conv, previous.naver_conv, false],
+    ] as Array<[string, number, number, boolean]>;
+    const keywords = [...(naver.top_keywords || [])].sort((a: any, b: any) => (b.clk || 0) - (a.clk || 0));
+    const match = naver.ga4_match;
+    const coverage = Math.max(0, Math.min(Number(match?.coverage) || 0, 1));
+    return <div className="mbd-channel-visual naver">
+      <section className="mbd-naver-summary">{metricRows.map(([label, value, prev, lowerBetter]) => { const delta = deltaOf(value, prev); const good = delta !== null && (lowerBetter ? delta <= 0 : delta >= 0); return <article key={label}><span>{label}</span><strong>{label.includes('비용') ? formatValue(value, false, true) : label.includes('률') ? formatValue(value, true) : formatValue(value)}</strong><small>직전 {prev == null ? '-' : label.includes('비용') ? formatValue(prev, false, true) : formatValue(prev)}</small>{delta !== null && <em className={good ? 'good' : 'bad'}>{delta > 0 ? '+' : ''}{delta.toFixed(1)}%</em>}</article>; })}</section>
+      {match && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>광고 추적 연결 상태</span><h4>광고 클릭이 GA4에서 얼마나 잡혔나요?</h4></div><p>네이버 광고 클릭과 사이트 측정값의 연결 정도입니다.</p></div><div className="mbd-coverage"><strong>{(coverage * 100).toFixed(1)}%</strong><div><i style={{ width: `${coverage * 100}%` }} /></div><p>PC 광고 클릭 {match.pc_clicks ?? '-'}건 중 측정 방문 {match.pc_measured_sessions ?? '-'}건 · 가입 {match.signups ?? '-'}건</p><small>{match.explain}</small></div></section>}
+      {!!naver.daily?.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>DAILY AD CLICKS</span><h4>날짜별 광고 클릭</h4></div></div><DailyChart rows={naver.daily} valueKey="clk" label="네이버 광고 클릭" /></section>}
+      {!!keywords.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>키워드 점검</span><h4>클릭이 많은 검색어</h4></div><p>비용과 네이버 전환을 함께 비교합니다.</p></div><div className="mbd-keyword-grid">{keywords.slice(0, 12).map((row: any, index: number) => { const cpa = row.naver_conv ? row.cost / row.naver_conv : null; const grade = cpa === null ? 'unknown' : cpa <= 4000 ? 'good' : cpa >= 8000 ? 'bad' : 'watch'; return <article key={`${row.keyword}-${index}`} className={grade}><span className="rank">{index + 1}</span><div><strong>{row.keyword}</strong><small>{row.clk ?? 0}회 클릭 · 평균 {row.avg_rank ?? '-'}위</small></div><dl><div><dt>광고비</dt><dd>{formatValue(row.cost, false, true)}</dd></div><div><dt>전환</dt><dd>{row.naver_conv ?? 0}</dd></div><div><dt>전환당 비용</dt><dd>{cpa === null ? '-' : formatValue(cpa, false, true)}</dd></div></dl><em>{grade === 'good' ? '효율 좋음' : grade === 'bad' ? '조정 검토' : grade === 'watch' ? '관찰 필요' : '전환 자료 부족'}</em></article>; })}</div></section>}
+    </div>;
+  }
   const source = reportSection(item, '네이버 검색광고');
   const tables = parseMarkdownTables(source);
   const summary = tables[0];
@@ -267,6 +374,24 @@ function parseYoutubeTopicCards(item: Briefing) {
 }
 
 function YoutubeVisual({ item }: { item: Briefing }) {
+  const youtube = dashboardOf(item)?.youtube;
+  if (youtube) {
+    const totals = youtube.totals || {};
+    const videos = [...(youtube.top_videos || [])];
+    const longform = videos.filter((video: any) => !/short/i.test(video.type || '')).sort((a: any, b: any) => (b.views || 0) - (a.views || 0));
+    const shorts = videos.filter((video: any) => /short/i.test(video.type || '')).sort((a: any, b: any) => (b.views || 0) - (a.views || 0));
+    const renderVideo = (video: any, index: number, kind: 'long' | 'short') => {
+      const url = safeExternalUrl(video.url);
+      const body = <><em>{kind === 'long' ? `최근 7일 TOP ${index + 1}` : `쇼츠 ${index + 1}`}</em><strong>{video.title}</strong><span className="mbd-video-weekly-views">최근 7일 조회 {Number(video.views || 0).toLocaleString('ko-KR')}회</span><p>{video.why || '조회수뿐 아니라 사이트 방문과 가입까지 함께 확인해야 실제 기여도를 알 수 있습니다.'}</p><small>평균 시청 {typeof video.avg_view_pct === 'number' ? `${(video.avg_view_pct > 1 ? video.avg_view_pct : video.avg_view_pct * 100).toFixed(1)}%` : '-'} · 좋아요 {video.likes ?? '-'} · 공유 {video.shares ?? '-'}</small></>;
+      return url ? <a className={`mbd-video-card ${kind}`} href={url} target="_blank" rel="noreferrer" key={`${video.title}-${index}`}>{body}</a> : <article className={`mbd-video-card ${kind}`} key={`${video.title}-${index}`}>{body}</article>;
+    };
+    return <div className="mbd-channel-visual youtube">
+      <section className="mbd-youtube-kpis"><article><span>최근 7일 전체 조회</span><strong>{Number(totals.views || 0).toLocaleString('ko-KR')}</strong><small>직전 {Number(totals.prev_views || 0).toLocaleString('ko-KR')}</small></article><article><span>광고 조회 비중</span><strong>{typeof totals.ad_share === 'number' ? `${(totals.ad_share * 100).toFixed(1)}%` : '-'}</strong><small>광고로 발생한 조회 비율</small></article><article><span>구독자 증가</span><strong>{totals.subscribers_gained ?? '-'}</strong><small>이번 기간 순증가</small></article><article><span>사이트 가입</span><strong>{totals.site_signups ?? '-'}</strong><small>유튜브 유입의 실제 결과</small></article></section>
+      <div className="mbd-video-columns"><section><div className="mbd-panel-title"><div><span>LAST 7 DAYS · LONG FORM</span><h4>최근 7일 조회수 TOP 롱폼</h4></div><p>누적 최고 조회수가 아니라 이번 보고 기간 조회수 순위입니다.</p></div>{longform.length ? longform.map((video: any, index: number) => renderVideo(video, index, 'long')) : <div className="mbd-empty">이번 보고서에는 최근 7일 롱폼별 조회 자료가 없습니다.</div>}</section><section><div className="mbd-panel-title"><div><span>SHORT FORM</span><h4>쇼츠 영상 성과</h4></div></div>{shorts.length ? shorts.map((video: any, index: number) => renderVideo(video, index, 'short')) : <div className="mbd-empty">이번 보고서에는 쇼츠별 자료가 없습니다.</div>}</section></div>
+      {!!youtube.traffic_sources?.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>조회 유입 경로</span><h4>어디에서 영상을 봤나요?</h4></div></div><VisualBars rows={youtube.traffic_sources.map((row: any) => [row.label || row.source, String(row.views ?? 0)])} labelIndex={0} valueIndex={1} valueLabel="조회" /></section>}
+      {!!youtube.issues?.length && <section className="mbd-easy-explain"><h4>확인해야 할 유튜브 이슈</h4><PlainNotes lines={youtube.issues.map((issue: any) => issue.text)} /></section>}
+    </div>;
+  }
   const source = reportSection(item, '유튜브');
   const text = withoutTables(source).join(' ');
   const value = (pattern: RegExp) => text.match(pattern)?.[1] || '-';
@@ -284,6 +409,19 @@ function YoutubeVisual({ item }: { item: Briefing }) {
 }
 
 function InstagramVisual({ item }: { item: Briefing }) {
+  const instagram = dashboardOf(item)?.instagram;
+  if (instagram) {
+    const account = instagram.account || {};
+    const posts = [...(instagram.posts || [])].sort((a: any, b: any) => (a.rank || 999) - (b.rank || 999) || (b.views || 0) - (a.views || 0));
+    const maxViews = Math.max(...posts.map((post: any) => Number(post.views) || 0), 1);
+    return <div className="mbd-channel-visual instagram">
+      <section className="mbd-youtube-kpis"><article><span>현재 팔로워</span><strong>{Number(account.followers || 0).toLocaleString('ko-KR')}</strong><small>신규 +{account.new_followers ?? 0}</small></article><article><span>하루 평균 도달</span><strong>{Number(account.reach_avg || 0).toLocaleString('ko-KR')}</strong><small>직전 {Number(account.reach_avg_prev || 0).toLocaleString('ko-KR')}</small></article><article><span>프로필 조회 평균</span><strong>{Number(account.profile_views_avg || 0).toLocaleString('ko-KR')}</strong><small>관심을 갖고 프로필을 본 수</small></article><article><span>사이트 가입</span><strong>{account.link_signups ?? '-'}</strong><small>인스타 링크 유입의 실제 결과</small></article></section>
+      {!!instagram.daily?.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>DAILY REACH</span><h4>날짜별 도달 변화</h4></div></div><DailyChart rows={instagram.daily} valueKey="reach" label="인스타 도달" /></section>}
+      {!!posts.length && <section className="mbd-instagram-grid">{posts.map((post: any, index: number) => { const url = safeExternalUrl(post.permalink); const body = <><div className="mbd-post-rank"><span>{index < 3 ? `TOP ${index + 1}` : post.date}</span><em>{post.type || '게시물'}</em></div><h4>{post.hook || '제목 정보 없음'}</h4><div className="mbd-post-views"><strong>{Number(post.views || 0).toLocaleString('ko-KR')}</strong><span>조회</span></div><div className="mbd-post-track"><i style={{ width: `${((Number(post.views) || 0) / maxViews) * 100}%` }} /></div><dl><div><dt>도달</dt><dd>{post.reach ?? '-'}</dd></div><div><dt>저장</dt><dd>{post.saved ?? '-'}</dd></div><div><dt>공유</dt><dd>{post.shares ?? '-'}</dd></div></dl><p>{post.why || (index < 3 ? '반응이 좋은 게시물입니다. 제목과 첫 장면의 구조를 다음 콘텐츠에도 활용해 보세요.' : '첫 문장과 시각 요소를 상위 게시물과 비교해 보세요.')}</p></>;
+        return url ? <a href={url} target="_blank" rel="noreferrer" key={`${post.date}-${index}`} className={index < 3 ? 'top' : ''}>{body}</a> : <article key={`${post.date}-${index}`} className={index < 3 ? 'top' : ''}>{body}</article>; })}</section>}
+      {!!instagram.insights?.length && <section className="mbd-easy-explain"><h4>인스타 결과를 쉽게 읽으면</h4><PlainNotes lines={instagram.insights.map((insight: any) => insight.text)} /></section>}
+    </div>;
+  }
   const source = reportSection(item, '인스타 릴스');
   const table = parseMarkdownTables(source)[0];
   const rows = table ? [...table.rows].sort((a, b) => (numberFrom(b[2]) || 0) - (numberFrom(a[2]) || 0)) : [];
@@ -359,7 +497,7 @@ export default function MarketingBriefingDashboard() {
     setLoading(true); setError('');
     try {
       const result = await api.briefings.list({ site, type, limit: 20 });
-      const nextItems = result.briefings as Briefing[];
+      const nextItems = (result.briefings as Briefing[]).filter((briefing) => briefing.report_key !== 'myauction-weekly-2026-10-12');
       setItems(nextItems);
       if (nextItems[0]) {
         const detail = await api.briefings.byDate(site, nextItems[0].report_date) as DetailResponse;
@@ -371,7 +509,9 @@ export default function MarketingBriefingDashboard() {
   useEffect(() => { void load(); }, [site, type]);
 
   const latest = details[items[0]?.report_date]?.briefing || items[0];
-  const problemCount = (latest?.warnings?.length || 0) + (latest?.checks || []).filter((check) => check.status !== 'done').length;
+  const structuredFindings = latest ? dashboardOf(latest)?.overview?.findings || [] : [];
+  const structuredProblemCount = structuredFindings.filter((finding: any) => !/^(ok|good|success|positive|win|info)$/i.test(finding.severity || '')).length;
+  const problemCount = structuredFindings.length ? structuredProblemCount : (latest?.warnings?.length || 0) + (latest?.checks || []).filter((check) => check.status !== 'done').length;
   const overviewMetrics = useMemo(() => items.map((item) => ({ ...item, kpis: item.kpis || {} })), [items]);
 
   const toggleReport = async (item: Briefing) => {
@@ -404,7 +544,8 @@ export default function MarketingBriefingDashboard() {
     {loading ? <div className="briefing-state">자료를 정리하고 있습니다...</div> : error ? <div className="briefing-state error">{error}</div> : !latest ? <div className="briefing-state">아직 수신된 브리핑이 없습니다.</div> : tab === 'overview' ? <>
       <section className="mbd-overview-top"><article className={`mbd-status ${problemCount ? 'attention' : 'good'}`}><span>현재 종합 상태</span><strong>{problemCount ? '확인 필요' : '특이사항 없음'}</strong><p>{problemCount ? `문제 또는 미완료 항목이 ${problemCount}개 있습니다. 아래에서 쉬운 설명과 할 일을 확인하세요.` : '현재 보고된 자료에서는 급하게 확인할 문제가 없습니다.'}</p></article><article className="mbd-conclusion"><span>이번 주 변화 소견</span><h3>{latest.summary}</h3><p>수치 변화와 채널별 조사 결과를 함께 보고 판단한 결론입니다.</p></article></section>
       <section><header className="mbd-section-heading"><div><span>숫자를 쉽게 읽기</span><h3>주요 수치와 변화 소견</h3></div><p>그래프는 최근 보고 순서이며, 변화가 좋은지 나쁜지도 문장으로 설명합니다.</p></header><MetricCards tab="overview" items={overviewMetrics} /></section>
-      <Findings item={latest} />
+      <StructuredOverview item={latest} />
+      {!dashboardOf(latest)?.overview && <Findings item={latest} />}
       <section className="mbd-history"><header className="mbd-section-heading"><div><span>보고 날짜별 기록</span><h3>브리핑 목록</h3></div><p>날짜를 누르면 다른 페이지로 이동하지 않고 바로 펼쳐집니다.</p></header><div className="mbd-report-list">{items.map((item) => {
         const open = openDate === item.report_date;
         const detail = details[item.report_date];

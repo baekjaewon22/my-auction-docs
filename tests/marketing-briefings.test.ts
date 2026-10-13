@@ -107,6 +107,20 @@ test('briefing dashboard provides five channel tabs and date-based inline report
   assert.match(dashboard, /mbd-text-\$\{textSize\}/);
   assert.match(css, /\.mbd-text-large/);
   assert.match(css, /\.mbd-text-xlarge/);
+  assert.match(dashboard, /extra\?\.dashboard/);
+  assert.match(dashboard, /scorecards\?\.find/);
+  assert.match(dashboard, /periodsOverlap/);
+  assert.match(dashboard, /highlight\?\.previous/);
+  assert.match(dashboard, /ga4\.tracking_health/);
+  assert.match(dashboard, /youtube\.top_videos/);
+  assert.match(dashboard, /instagram\.posts/);
+  assert.match(dashboard, /naver\.ga4_match/);
+  assert.match(dashboard, /what_to_do/);
+  assert.match(dashboard, /myauction-weekly-2026-10-12/);
+  assert.match(dashboard, /네이버 모바일 자연검색과 광고 클릭이 섞인 전체 유입/);
+  assert.match(css, /\.mbd-daily-chart/);
+  assert.match(css, /\.mbd-coverage/);
+  assert.match(css, /\.mbd-structured-findings/);
 });
 
 test('briefing API is mounted and navigation is in the management section', () => {
