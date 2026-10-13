@@ -5,7 +5,7 @@ export const BRANCHES = ['의정부', '서초'] as const;
 export const DEPARTMENTS = ['경매사업부1팀', '경매사업부2팀', '경매사업부3팀'] as const;
 
 export const ROLE_LABELS: Record<Role, string> = {
-  master: '마스터',
+  master: '관리자',
   ceo: '대표',
   cc_ref: 'CC참조자',
   admin: '관리자',

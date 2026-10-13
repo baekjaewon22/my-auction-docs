@@ -458,11 +458,6 @@ export default function AuctionSchedule() {
                 return <div className="auction-schedule-detail-row" key={key}><span>{resolvedLabel}</span><strong>{String(value)}</strong></div>;
               })}
             </div>
-            {!selected.read_only && !canManageSelected && (
-              <p className="auction-schedule-past-lock" role="note">
-                일정 기본정보 수정·삭제는 마스터·총무·총무보조·대표만 가능합니다. 입찰가·낙찰·실패·취소 등 결과 입력 권한은 기존과 동일합니다.
-              </p>
-            )}
             {canEditBase && editLockedByBidResult && (
               <p className="auction-schedule-past-lock" role="note">
                 결과가 입력된 입찰 일정은 기본정보를 수정할 수 없습니다. 결과 전용 버튼으로 결과를 해제한 뒤 수정해 주세요.

@@ -202,7 +202,7 @@ export default function LawitgoWinningAdmin() {
       <div className="page-header lawitgo-winning-header">
         <div>
           <h2><ShieldCheck size={22} /> Lawitgo 낙찰 전송 관리</h2>
-          <p>마스터 전용 · 자동 발송과 수동 발송 이력을 통합 관리합니다.</p>
+          <p>자동 발송과 수동 발송 이력을 통합 관리합니다.</p>
         </div>
         <div className="lawitgo-winning-actions">
           <button className="btn" onClick={() => load(true)} disabled={loading || sending}><RefreshCw size={15} /> 새로고침</button>
@@ -313,7 +313,7 @@ export default function LawitgoWinningAdmin() {
                         <span key={field}>{MISSING_LABELS[field] || field}</span>
                       ))}
                     </div>
-                    <small>전화번호 원문은 이 마스터 전용 보완 창에서만 확인할 수 있습니다.</small>
+                    <small>전화번호 원문은 권한이 있는 이 보완 창에서만 확인할 수 있습니다.</small>
                   </div>
 
                   {repairError && <div className="alert alert-error"><AlertTriangle size={16} /> {repairError}</div>}

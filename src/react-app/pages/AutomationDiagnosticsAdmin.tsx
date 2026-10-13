@@ -102,7 +102,7 @@ export default function AutomationDiagnosticsAdmin() {
                       <strong>[{diagnostic.status.toUpperCase()}] {diagnostic.section}</strong><span>{diagnostic.message}</span>
                     </div>) : <p>세부 진단 항목이 기록되지 않았습니다.</p>}
                   </div>
-                  {item.review_note && <p className="automation-review-note"><strong>마스터 메모</strong>{item.review_note}</p>}
+                  {item.review_note && <p className="automation-review-note"><strong>검토 메모</strong>{item.review_note}</p>}
                   <div className="automation-review-actions">
                     <button className="btn btn-secondary" onClick={() => updateReview(item, 'open')}>확인 필요</button>
                     <button className="btn btn-secondary" onClick={() => updateReview(item, 'reviewed')}>검토 중</button>

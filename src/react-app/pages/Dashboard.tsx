@@ -514,7 +514,7 @@ export default function Dashboard() {
   // 마스터 전용 섹션 전체 삭제 버튼 — 실수 방지를 위해 명확한 라벨 표시
   const MasterCloseBtn = ({ alertType, keys, onClose }: { alertType: string; keys: string[]; onClose: () => void }) => isMaster ? (
     <button
-      title={`섹션 전체 ${keys.length}건 삭제 (마스터 전용 — 영구 삭제)`}
+      title={`섹션 전체 ${keys.length}건 삭제 (영구 삭제)`}
       onClick={async (e) => {
         e.preventDefault(); e.stopPropagation();
         if (!confirm(`⚠ 섹션 전체 ${keys.length}건을 모두 삭제합니다.\n\n개별 삭제를 원하시면 각 항목의 X 버튼을 이용하세요.\n\n정말 전체 삭제하시겠습니까? (영구 삭제)`)) return;

@@ -667,7 +667,7 @@ export default function UserManagement() {
                   <option value="special">special - 브리핑자료 + 권리분석 보증서</option>
                 </select>
                 <div style={{ fontSize: '0.72rem', color: '#5f6368', marginTop: 4 }}>
-                  권한 부여는 현재 마스터만 가능합니다.
+                  권한 부여는 지정된 관리자만 가능합니다.
                 </div>
               </div>
             )}

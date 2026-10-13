@@ -29,7 +29,7 @@ test('일반 일정 수정·삭제는 날짜와 소유자에 관계없이 관리
   assert.match(page, /const canDeleteSelected = canManageSelected/);
   assert.match(page, /\{canEditSelected && \([\s\S]*?일정 수정/);
   assert.match(page, /\{canDeleteSelected && <button[\s\S]*?일정 삭제/);
-  assert.match(page, /일정 기본정보 수정·삭제는 마스터·총무·총무보조·대표만 가능/);
+  assert.doesNotMatch(page, /일정 기본정보 수정·삭제/);
 
   const past = { user_id: 'owner', target_date: '2026-08-31' };
   const future = { user_id: 'owner', target_date: '2099-12-31' };

@@ -1499,7 +1499,7 @@ sales.post('/:id/refund-request-cancel', async (c) => {
   const db = c.env.DB;
 
   if (!canCancelSalesRefundRequest(user.role)) {
-    return c.json({ error: '환불신청 취소는 총무, 마스터, 대표만 할 수 있습니다.' }, 403);
+    return c.json({ error: '환불신청을 취소할 권한이 없습니다.' }, 403);
   }
 
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
@@ -1565,7 +1565,7 @@ sales.post('/:id/refund-revert', async (c) => {
   const db = c.env.DB;
 
   if (!canRevertCompletedSalesRefund(user.role)) {
-    return c.json({ error: '환불완료 되돌리기는 총무담당, 마스터, 대표만 처리할 수 있습니다.' }, 403);
+    return c.json({ error: '환불완료를 되돌릴 권한이 없습니다.' }, 403);
   }
 
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();

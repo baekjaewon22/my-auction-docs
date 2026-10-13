@@ -718,7 +718,7 @@ auctionSchedule.put('/:id', async (c) => {
   const existing = await db.prepare('SELECT * FROM freelancer_auction_schedules WHERE id = ?').bind(id).first<any>();
   if (!existing) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
   if (!canManageAuctionSchedule(user)) {
-    return c.json({ error: '경매 스케줄 수정 권한이 없습니다. (마스터·총무·총무보조·대표만 가능)' }, 403);
+    return c.json({ error: '경매 스케줄 수정 권한이 없습니다.' }, 403);
   }
   const existingData = parseJsonObject(existing.data);
   if (existing.activity_type === '입찰' && auctionScheduleBidResult(existingData) !== 'pending') {
@@ -1414,7 +1414,7 @@ auctionSchedule.delete('/:id', async (c) => {
     .bind(id).first<AuctionScheduleMutationSnapshot>();
   if (!existing) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
   if (!canManageAuctionSchedule(user)) {
-    return c.json({ error: '경매 스케줄 삭제 권한이 없습니다. (마스터·총무·총무보조·대표만 가능)' }, 403);
+    return c.json({ error: '경매 스케줄 삭제 권한이 없습니다.' }, 403);
   }
   await ensureCalendarAuctionDeletionSchema(db);
   const claim = await acquireAuctionScheduleMutationClaim(db, existing, 'source_delete', user.sub);

@@ -11,7 +11,8 @@ test('정보누락 행에서만 보완 상세를 열고 목록 전화번호는 �
   assert.match(page, /customer_phone_masked/);
   assert.doesNotMatch(page, /<td[^>]*>[\s\S]{0,200}item\.customer_phone(?:\W|$)/);
   assert.match(page, /api\.lawitgoWinningAdmin\.getRepair\(item\.sales_record_id\)/);
-  assert.match(page, /전화번호 원문은 이 마스터 전용 보완 창에서만 확인할 수 있습니다/);
+  assert.match(page, /전화번호 원문은 권한이 있는 이 보완 창에서만 확인할 수 있습니다/);
+  assert.doesNotMatch(page, /마스터 전용/);
 });
 
 test('보완 API는 sales record id를 인코딩하고 PUT으로 필수 스냅샷을 저장한다', () => {

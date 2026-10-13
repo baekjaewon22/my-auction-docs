@@ -607,7 +607,7 @@ export default function Leave() {
               {canManualAdjustLeave && (
                 <div className="card" style={{ padding: 14, marginBottom: 16, border: '1px solid #e8eaed' }}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
-                    <strong style={{ fontSize: '0.86rem', color: '#202124' }}>마스터 수동 조정</strong>
+                    <strong style={{ fontSize: '0.86rem', color: '#202124' }}>관리자 수동 조정</strong>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                       <span style={{ fontSize: '0.76rem', color: '#5f6368' }}>총 부여일수</span>
                       {[-1, -0.5, 0.5, 1].map(delta => (

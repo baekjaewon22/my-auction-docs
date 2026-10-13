@@ -158,7 +158,7 @@ export default function WebPushSettings() {
         <div className="profile-section web-push-section">
           <div className="web-push-title">
             <div><ShieldCheck size={20} /><h3>웹푸시 통합진단</h3></div>
-            <span className="profile-readonly-tag">마스터 전용</span>
+            <span className="profile-readonly-tag">관리 기능</span>
           </div>
           <div className="web-push-summary">
             <div><strong>{Number(diagnostics.summary.active || 0)}</strong><span>활성 기기</span></div>

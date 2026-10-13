@@ -207,7 +207,7 @@ function ExpenseReceiptPrint({ doc, signatures, steps, attachments, approval, to
     || signatures.find((signature) => steps.some((step) => step.approver_role === 'ceo' && step.approver_id === signature.user_id));
   const money = (value: number | undefined) => Number(value || 0).toLocaleString('ko-KR');
   const actorRoleLabel: Record<string, string> = {
-    master: '마스터', accountant: '총무담당', accountant_asst: '총무보조', ceo: '대표이사',
+    master: '관리자', accountant: '총무담당', accountant_asst: '총무보조', ceo: '대표이사',
   };
   const cell: React.CSSProperties = { border: '1px solid #9ca3af', padding: '7px 8px', fontSize: '10pt' };
   const head: React.CSSProperties = { ...cell, background: '#f3f4f6', fontWeight: 700, textAlign: 'center', width: '17%' };

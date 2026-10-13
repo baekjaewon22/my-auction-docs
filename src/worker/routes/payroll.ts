@@ -1648,7 +1648,7 @@ payroll.post('/lock', requireRole('master', 'accountant'), async (c) => {
     }
     const unresolvedRefundRecoveries = authoritative.refundRecoveries.filter(recovery => !recovery.resolved);
     if (unresolvedRefundRecoveries.length > 0 && !['master', 'accountant'].includes(user.role)) {
-      return c.json({ error: '환불 회수가 포함된 급여정산은 마스터 또는 총무담당만 확정할 수 있습니다.' }, 403);
+      return c.json({ error: '환불 회수가 포함된 급여정산을 확정할 권한이 없습니다.' }, 403);
     }
     const payrollSalesCandidatesJson = JSON.stringify(authoritative.payrollSalesCandidates);
     const { start: lockMonthStart, end: lockMonthEnd } = payrollMonthBounds(settleMonth);
