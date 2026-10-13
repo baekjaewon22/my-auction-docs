@@ -14,6 +14,8 @@ import LegalGlossaryTool from '../components/LegalGlossaryTool';
 import { EVICTION_QUOTE_VISIBILITY } from '../../shared/eviction-quote-access';
 import { canShareCommunityWithAll, defaultCommunityVisibility } from '../../shared/community-visibility';
 import { canUploadBriefingMaterial } from '../../shared/briefing-material-access';
+import { briefingCaseNumber } from '../../shared/briefing-auction';
+import { winningAuctionKind, type WinningAuctionKind } from '../../shared/winning-auction';
 import {
   assertSafeAdminNotePdfBlob,
   safeAdminNotePdfDataUrlBlob,
@@ -47,6 +49,7 @@ interface Note {
   lawsuit_cost_requested?: number;
   court?: string;
   case_number?: string;
+  auction_kind?: WinningAuctionKind;
   assignee_id?: string;
   target_date?: string;
   item_no?: string;
@@ -527,13 +530,15 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   const [formTargetDate, setFormTargetDate] = useState(() => new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10));
   const [formCaseYear, setFormCaseYear] = useState('2026');
   const [formBriefingCaseNo, setFormBriefingCaseNo] = useState('');
+  const [formBriefingAuctionKind, setFormBriefingAuctionKind] = useState<WinningAuctionKind>('court');
+  const [formPublicItemNo, setFormPublicItemNo] = useState('');
   const [formItemNo, setFormItemNo] = useState('');
   const [formClientName, setFormClientName] = useState('');
   const [briefingFiles, setBriefingFiles] = useState<File[]>([]);
   const [briefingDragActive, setBriefingDragActive] = useState(false);
   const [briefingRegisteredNoteId, setBriefingRegisteredNoteId] = useState('');
   const [autofillHint, setAutofillHint] = useState('');
-  const [autofillMatch, setAutofillMatch] = useState<null | { target_date: string; activity_type: string; case_number: string; item_no: string; court: string; client_name: string }>(null);
+  const [autofillMatch, setAutofillMatch] = useState<null | { target_date: string; activity_type: string; case_number: string; item_no: string; court: string; client_name: string; auction_kind?: WinningAuctionKind }>(null);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
 
@@ -793,28 +798,32 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
       setAutofillHint('');
       return;
     }
-    const caseNumber = formBriefingCaseNo.trim() ? `${formCaseYear}타경${formBriefingCaseNo.trim()}` : '';
+    const caseNumber = briefingCaseNumber(formBriefingAuctionKind, formCaseYear, formBriefingAuctionKind === 'public' ? formPublicItemNo : formBriefingCaseNo);
     const clientName = formClientName.trim();
     if (!caseNumber && !clientName) {
       setAutofillMatch(null);
       setAutofillHint('');
       return;
     }
+    let cancelled = false;
     const timer = window.setTimeout(() => {
       api.adminNotes.briefingAutofill({
         assignee_id: formAssigneeId,
+        auction_kind: formBriefingAuctionKind,
         case_number: caseNumber,
         client_name: clientName,
       }).then(res => {
+        if (cancelled) return;
         setAutofillMatch(res.match);
         setAutofillHint(res.match ? '' : '일치하는 기존 일지가 없습니다.');
       }).catch(() => {
+        if (cancelled) return;
         setAutofillMatch(null);
         setAutofillHint('');
       });
     }, 400);
-    return () => window.clearTimeout(timer);
-  }, [activeCategory, communitySection, formAssigneeId, formCaseYear, formBriefingCaseNo, formClientName]);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [activeCategory, communitySection, formAssigneeId, formCaseYear, formBriefingCaseNo, formPublicItemNo, formBriefingAuctionKind, formClientName]);
 
   const openDetail = async (note: Note) => {
     const requestId = ++detailRequestId.current;
@@ -891,7 +900,11 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     if (isBriefingSchedule && !canCreateBriefingSchedule) { alert('브리핑자료 제출 등록 권한이 없습니다.'); return; }
     if (isBriefingSchedule && !formAssigneeId) { alert('담당자를 목록에서 선택하세요.'); return; }
     if (isBriefingSchedule && !formTargetDate) { alert('일정일을 입력하세요.'); return; }
-    if (isBriefingSchedule && (!formBriefingCaseNo.trim() || !formCourt || !formClientName.trim())) { alert('사건번호, 법원, 계약자명을 입력하세요.'); return; }
+    if (isBriefingSchedule && (formBriefingAuctionKind === 'public'
+      ? !formPublicItemNo.trim() || !formClientName.trim()
+      : !formBriefingCaseNo.trim() || !formCourt || !formClientName.trim())) {
+      alert(formBriefingAuctionKind === 'public' ? '공매 물건번호와 계약자명을 입력하세요.' : '사건번호, 법원, 계약자명을 입력하세요.'); return;
+    }
     if (!isEditing && isBidHistoryMode && isBriefingSchedule && briefingFiles.length === 0) { alert('제출할 브리핑자료 파일을 첨부하세요.'); return; }
     if (!isBriefingSchedule && !formContent.trim()) { alert('내용을 입력하세요.'); return; }
     if (!isEditing && isResourceLibrary && formAttachments.length === 0) { alert('자료실은 다운로드할 첨부파일을 1개 이상 등록하세요.'); return; }
@@ -899,7 +912,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     setSubmitting(true);
     let briefingRecordSaved = Boolean(briefingRegisteredNoteId);
     try {
-      const briefingCaseNumber = `${formCaseYear}타경${formBriefingCaseNo.trim()}`;
+      const briefingIdentity = briefingCaseNumber(formBriefingAuctionKind, formCaseYear, formBriefingAuctionKind === 'public' ? formPublicItemNo : formBriefingCaseNo);
       const title = activeCategory === 'eviction_quote'
         ? `${formCourt} ${formCaseNumber.trim()} 명도 견적 의뢰`
         : isBriefingSchedule
@@ -936,10 +949,11 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           attachments: activeCategory === 'legal_support' || isResourceLibrary || isNotice ? formAttachments : [],
           assignee_id: isBriefingSchedule ? formAssigneeId : undefined,
           target_date: isBriefingSchedule ? formTargetDate : undefined,
-          court: activeCategory === 'eviction_quote' || isBriefingSchedule || isLegalAuction ? formCourt : undefined,
-          case_number: activeCategory === 'eviction_quote' ? formCaseNumber.trim() : isBriefingSchedule ? briefingCaseNumber : isLegalAuction ? legalAuctionCaseNumber : undefined,
+          auction_kind: isBriefingSchedule ? formBriefingAuctionKind : undefined,
+          court: isBriefingSchedule && formBriefingAuctionKind === 'public' ? '' : activeCategory === 'eviction_quote' || isBriefingSchedule || isLegalAuction ? formCourt : undefined,
+          case_number: activeCategory === 'eviction_quote' ? formCaseNumber.trim() : isBriefingSchedule ? briefingIdentity : isLegalAuction ? legalAuctionCaseNumber : undefined,
           no_case_number: isLegalAuction ? formNoCaseNumber : undefined,
-          item_no: isBriefingSchedule ? formItemNo.trim() : undefined,
+          item_no: isBriefingSchedule ? formBriefingAuctionKind === 'public' ? '' : formItemNo.trim() : undefined,
           client_name: isBriefingSchedule ? formClientName.trim() : undefined,
           });
           registeredNoteId = created.id;
@@ -950,7 +964,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
         }
         if (isBidHistoryMode && isBriefingSchedule) {
           for (const file of [...briefingFiles]) {
-            await api.briefingMaterials.upload(file, formAssigneeId, briefingCaseNumber, registeredNoteId);
+            await api.briefingMaterials.upload(file, formAssigneeId, briefingIdentity, registeredNoteId);
             setBriefingFiles(previous => previous.filter(candidate => candidate !== file));
           }
         }
@@ -980,7 +994,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     ));
     setFormCourt(COURTS[0]); setFormCaseNumber(''); setFormNoCaseNumber(false); setFormLegalSubcategory(activeLegalSubcategory); setFormLawsuitCostRequested(false); setFormAttachments([]);
     setFormAssigneeId(members[0]?.id || ''); setFormTargetDate(new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10));
-    setFormCaseYear('2026'); setFormBriefingCaseNo(''); setFormItemNo(''); setFormClientName(''); setAutofillHint(''); setAutofillMatch(null);
+    setFormCaseYear('2026'); setFormBriefingCaseNo(''); setFormBriefingAuctionKind('court'); setFormPublicItemNo(''); setFormItemNo(''); setFormClientName(''); setAutofillHint(''); setAutofillMatch(null);
     setBriefingFiles([]); setBriefingDragActive(false); setBriefingRegisteredNoteId('');
     setShowForm(false); setEditingId(null);
   };
@@ -995,6 +1009,16 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
     setFormNoCaseNumber(note.category === 'legal_support' && legalSubcategory === 'auction' && note.case_number === '사건번호없음');
     setFormCaseYear(note.category === 'legal_support' && legalSubcategory === 'auction' ? auctionCase.year : '2026');
     setFormCaseNumber(note.category === 'legal_support' && legalSubcategory === 'auction' ? (note.case_number === '사건번호없음' ? '' : auctionCase.no) : note.case_number || '');
+    if (note.category === 'briefing_schedule') {
+      setFormBriefingAuctionKind(winningAuctionKind(note.auction_kind));
+      setFormPublicItemNo(note.auction_kind === 'public' ? note.case_number || '' : '');
+      setFormCaseYear(auctionCase.year);
+      setFormBriefingCaseNo(auctionCase.no);
+      setFormItemNo(note.item_no || '');
+      setFormAssigneeId(note.assignee_id || '');
+      setFormTargetDate(note.target_date || '');
+      setFormClientName(note.client_name || '');
+    }
     setFormLegalSubcategory(legalSubcategory);
     setFormLawsuitCostRequested(!!note.lawsuit_cost_requested);
     setEditingId(note.id);
@@ -1224,13 +1248,15 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
   }, [articlePdfAttachment?.download_url]);
 
   const applyBriefingAutofill = (match: NonNullable<typeof autofillMatch>) => {
+    if (winningAuctionKind(match.auction_kind) !== formBriefingAuctionKind) return;
+    if (formBriefingAuctionKind === 'public') setFormPublicItemNo(match.case_number);
     const matchedCase = match.case_number.match(/^(\d{4})타경(.+)$/);
     if (matchedCase) {
       setFormCaseYear(matchedCase[1]);
       setFormBriefingCaseNo(matchedCase[2].replace(/[^0-9]/g, ''));
     }
-    if (match.item_no) setFormItemNo(match.item_no);
-    if (match.court) setFormCourt(match.court);
+    if (formBriefingAuctionKind !== 'public' && match.item_no) setFormItemNo(match.item_no);
+    if (formBriefingAuctionKind !== 'public' && match.court) setFormCourt(match.court);
     if (match.client_name) setFormClientName(match.client_name);
     setAutofillHint(`${match.target_date} ${match.activity_type} 이력으로 자동채움`);
   };
@@ -1284,7 +1310,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           <span>${escapeHtml(authorLabel(detail))}</span>
           <span>${escapeHtml(formatDate(detail.created_at))}</span>
           <span class="badge">${escapeHtml(getVisibilityLabel(detail.visibility))}</span>
-          ${detail.category === 'eviction_quote' || detail.category === 'briefing_schedule' || (detail.category === 'legal_support' && normalizeLegalSubcategory(detail.legal_subcategory) === 'auction') ? `<span class="badge">법원: ${escapeHtml(detail.court || '-')}</span><span class="badge">사건번호: ${escapeHtml(detail.case_number || '-')}</span>` : ''}
+          ${detail.category === 'eviction_quote' || detail.category === 'briefing_schedule' || (detail.category === 'legal_support' && normalizeLegalSubcategory(detail.legal_subcategory) === 'auction') ? `${detail.auction_kind === 'public' ? '<span class="badge">공매</span>' : `<span class="badge">법원: ${escapeHtml(detail.court || '-')}</span>`}<span class="badge">${detail.auction_kind === 'public' ? '물건번호' : '사건번호'}: ${escapeHtml(detail.case_number || '-')}</span>` : ''}
           ${detail.category === 'legal_support' ? `<span class="badge">${escapeHtml(getLegalSubcategoryLabel(detail.legal_subcategory))}</span>` : ''}
           ${detail.category === 'legal_support' && detail.lawsuit_cost_requested ? '<span class="badge">소송비용 문의</span>' : ''}
         </div>
@@ -1366,8 +1392,9 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           {(detail.category === 'eviction_quote' || detail.category === 'briefing_schedule') && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 0' }}>
               {detail.category === 'briefing_schedule' && <span className="admin-note-visibility-badge">일정일: {detail.target_date || '-'}</span>}
-              <span className="admin-note-visibility-badge">법원: {detail.court || '-'}</span>
-              <span className="admin-note-visibility-badge">사건번호: {detail.case_number || '-'}</span>
+              {detail.category === 'briefing_schedule' && <span className="admin-note-visibility-badge">{detail.auction_kind === 'public' ? '공매' : '경매'}</span>}
+              {detail.auction_kind !== 'public' && <span className="admin-note-visibility-badge">법원: {detail.court || '-'}</span>}
+              <span className="admin-note-visibility-badge">{detail.auction_kind === 'public' ? '물건번호' : '사건번호'}: {detail.case_number || '-'}</span>
               {detail.item_no && <span className="admin-note-visibility-badge">물건번호: {detail.item_no}</span>}
               {detail.client_name && <span className="admin-note-visibility-badge">계약자명: {detail.client_name}</span>}
             </div>
@@ -1744,6 +1771,16 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
           </h3>
           {activeCategory === 'community' && communitySection === 'briefing_schedule' ? (
             <div style={{ display: 'grid', gap: 12, marginBottom: 12 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>경매 / 공매 *</label>
+                <select className="form-input" aria-label="브리핑자료 경매 공매 구분" disabled={!!editingId} value={formBriefingAuctionKind} onChange={e => {
+                  setFormBriefingAuctionKind(e.target.value as WinningAuctionKind);
+                  setAutofillMatch(null); setAutofillHint('');
+                }}>
+                  <option value="court">경매</option>
+                  <option value="public">공매</option>
+                </select>
+              </div>
               {!canCreateBriefingSchedule && (
                 <div className="empty-state" style={{ padding: 16 }}>관리자 이상급 및 cc참조자만 등록할 수 있습니다.</div>
               )}
@@ -1765,8 +1802,10 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
               </div>
               <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(310px, 1.2fr) minmax(140px, 1fr)', gap: 10, alignItems: 'end' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label>사건번호 *</label>
-                  <div className="mobile-case-number-row" style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'nowrap' }}>
+                  <label>{formBriefingAuctionKind === 'public' ? '공매 물건번호 *' : '사건번호 *'}</label>
+                  {formBriefingAuctionKind === 'public' ? (
+                    <input className="form-input" aria-label="공매 물건번호" readOnly={!!editingId} value={formPublicItemNo} onChange={e => setFormPublicItemNo(e.target.value)} placeholder="예: 2026-0100-001234" maxLength={100} />
+                  ) : <div className="mobile-case-number-row" style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'nowrap' }}>
                     <select className="form-input" value={formCaseYear} onChange={(e) => setFormCaseYear(e.target.value)} style={{ width: 88 }}>
                       {YEARS.map(year => <option key={year} value={year}>{year}</option>)}
                     </select>
@@ -1793,7 +1832,8 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                       style={{ width: 42, minWidth: 42, padding: '6px 4px', textAlign: 'center' }}
                     />
                   </div>
-                  {autofillMatch && autofillCaseDigits && (
+                  }
+                  {formBriefingAuctionKind !== 'public' && autofillMatch && autofillCaseDigits && (
                     <datalist id="briefing-case-history">
                       <option value={autofillCaseDigits}>{autofillLabel}</option>
                     </datalist>
@@ -1819,7 +1859,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                   )}
                 </div>
               </div>
-              <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) auto', gap: 10, alignItems: 'end' }}>
+              {formBriefingAuctionKind !== 'public' && <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) auto', gap: 10, alignItems: 'end' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label>법원 *</label>
                   <select className="form-input" value={formCourt} onChange={(e) => setFormCourt(e.target.value)} style={{ width: '100%' }}>
@@ -1827,6 +1867,7 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                   </select>
                 </div>
               </div>
+              }
               {autofillHint && <div style={{ fontSize: '0.78rem', color: autofillHint.includes('없습니다') ? '#5f6368' : '#188038' }}>{autofillHint}</div>}
               {isBidHistoryMode && !editingId && (
                 <div className="briefing-registration-files">
@@ -2094,8 +2135,9 @@ export default function AdminNotes({ mode = 'community' }: { mode?: 'community' 
                 {(note.category === 'eviction_quote' || note.category === 'briefing_schedule') && (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '4px 0 6px' }}>
                     {note.category === 'briefing_schedule' && <span className="admin-note-visibility-badge">{note.target_date || '-'}</span>}
-                    <span className="admin-note-visibility-badge">{note.court || '-'}</span>
-                    <span className="admin-note-visibility-badge">{note.case_number || '-'}</span>
+                    {note.category === 'briefing_schedule' && <span className="admin-note-visibility-badge">{note.auction_kind === 'public' ? '공매' : '경매'}</span>}
+                    {note.auction_kind !== 'public' && <span className="admin-note-visibility-badge">{note.court || '-'}</span>}
+                    <span className="admin-note-visibility-badge">{note.auction_kind === 'public' ? '물건번호: ' : ''}{note.case_number || '-'}</span>
                     {note.client_name && <span className="admin-note-visibility-badge">{note.client_name}</span>}
                   </div>
                 )}

@@ -990,12 +990,12 @@ export const api = {
       }
       return res.blob();
     },
-    create: (data: { title?: string; content?: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; no_case_number?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean; attachments?: any[]; assignee_id?: string; target_date?: string; item_no?: string; client_name?: string }) =>
+    create: (data: { title?: string; content?: string; pinned?: boolean; source_type?: string; source_id?: string; is_anonymous?: boolean; visibility?: string; category?: string; court?: string; case_number?: string; no_case_number?: boolean; legal_subcategory?: string; lawsuit_cost_requested?: boolean; attachments?: any[]; assignee_id?: string; target_date?: string; item_no?: string; client_name?: string; auction_kind?: 'court' | 'public' }) =>
       request<{ success: boolean; id: string }>('/admin-notes', { method: 'POST', body: JSON.stringify(data) }),
-    briefingAutofill: (params: { assignee_id: string; client_name?: string; case_number?: string }) => {
+    briefingAutofill: (params: { assignee_id: string; client_name?: string; case_number?: string; auction_kind?: 'court' | 'public' }) => {
       const q = new URLSearchParams();
       Object.entries(params).forEach(([k, v]) => { if (v) q.set(k, String(v)); });
-      return request<{ match: null | { target_date: string; activity_type: string; case_number: string; item_no: string; court: string; client_name: string } }>('/admin-notes/briefing-autofill?' + q.toString());
+      return request<{ match: null | { target_date: string; activity_type: string; case_number: string; item_no: string; court: string; client_name: string; auction_kind?: 'court' | 'public' } }>('/admin-notes/briefing-autofill?' + q.toString());
     },
     myAlerts: () =>
       request<{ alerts: Array<{ type: string; priority: number; label: string; note_id?: string; title: string; message: string; comment_count?: number; link: string; created_at: string }> }>('/admin-notes/my-alerts'),
@@ -1519,6 +1519,22 @@ export const api = {
       }>; total: number; page: number; page_size: number }>(`/briefing-materials${q.toString() ? `?${q}` : ''}`);
     },
     download: (id: string, fileName: string) => authenticatedDownload(`/briefing-materials/${id}/download`, fileName),
+  },
+
+  briefings: {
+    list: (params: { site?: string; type?: 'weekly' | 'monthly'; limit?: number } = {}) => {
+      const query = new URLSearchParams();
+      if (params.site) query.set('site', params.site);
+      if (params.type) query.set('type', params.type);
+      if (params.limit) query.set('limit', String(params.limit));
+      return request<{ briefings: any[] }>(`/briefings?${query.toString()}`);
+    },
+    byDate: (site: string, reportDate: string) =>
+      request<{ briefing: any; previous?: any; next?: any; previous_checks: any[] }>(`/briefings/by-date/${encodeURIComponent(site)}/${encodeURIComponent(reportDate)}`),
+    keys: () => request<{ api_keys: any[] }>('/briefings/keys'),
+    createKey: (data: { name: string; site?: string }) =>
+      request<{ api_key: any; token: string }>('/briefings/keys', { method: 'POST', body: JSON.stringify(data) }),
+    revokeKey: (id: string) => request<{ success: boolean }>(`/briefings/keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
 
   announcementPopups: {

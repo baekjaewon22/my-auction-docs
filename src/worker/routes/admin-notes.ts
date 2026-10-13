@@ -20,6 +20,8 @@ import { normalizeBranchName, sameBranchName } from '../lib/branchAliases.ts';
 import { sendWebPushToUser } from '../lib/web-push-delivery.ts';
 import { canAccessEvictionQuote, EVICTION_QUOTE_VISIBILITY } from '../../shared/eviction-quote-access.ts';
 import { canUploadBriefingMaterial } from '../../shared/briefing-material-access.ts';
+import { normalizeBriefingAuction, briefingAuctionError } from '../../shared/briefing-auction.ts';
+import { winningAuctionKind, type WinningAuctionKind } from '../../shared/winning-auction.ts';
 import { sendEvictionQuoteSlackNotification } from '../lib/eviction-quote-slack.ts';
 import {
   communityCategoryLabel,
@@ -66,6 +68,7 @@ async function ensureAdminNoteExtensionsUncached(db: D1Database): Promise<void> 
     'ALTER TABLE admin_notes ADD COLUMN category TEXT DEFAULT "community"',
     'ALTER TABLE admin_notes ADD COLUMN court TEXT',
     'ALTER TABLE admin_notes ADD COLUMN case_number TEXT',
+    'ALTER TABLE admin_notes ADD COLUMN auction_kind TEXT NOT NULL DEFAULT "court"',
     'ALTER TABLE admin_notes ADD COLUMN legal_subcategory TEXT DEFAULT "lawsuit"',
     'ALTER TABLE admin_notes ADD COLUMN assignee_id TEXT',
     'ALTER TABLE admin_notes ADD COLUMN target_date TEXT',
@@ -396,12 +399,13 @@ async function resolveArticleApiAuthor(db: D1Database, user: any) {
   };
 }
 
-function makeBriefingContent(payload: { targetDate: string; assigneeName: string; court: string; caseNumber: string; itemNo?: string; clientName: string }) {
+function makeBriefingContent(payload: { targetDate: string; assigneeName: string; court: string; caseNumber: string; itemNo?: string; clientName: string; auctionKind?: WinningAuctionKind }) {
   return [
     `담당자: ${payload.assigneeName}`,
     `일정일: ${payload.targetDate}`,
-    `법원: ${payload.court}`,
-    `사건번호: ${payload.caseNumber}${payload.itemNo ? ` / 물건번호: ${payload.itemNo}` : ''}`,
+    `구분: ${payload.auctionKind === 'public' ? '공매' : '경매'}`,
+    ...(payload.auctionKind === 'public' ? [] : [`법원: ${payload.court}`]),
+    `${payload.auctionKind === 'public' ? '물건번호' : '사건번호'}: ${payload.caseNumber}${payload.itemNo ? ` / 물건번호: ${payload.itemNo}` : ''}`,
     `계약자명: ${payload.clientName}`,
   ].join('\n');
 }
@@ -427,9 +431,10 @@ export async function syncBriefingSchedulesFromJournal(db: D1Database): Promise<
     const targetDate = String(row.target_date || '').trim();
     const assigneeId = String(row.user_id || '').trim();
     const assigneeName = String(row.user_name || '').trim();
-    const court = String(data.briefingCourt || data.court || '').trim();
+    const auctionKind = winningAuctionKind(data.auctionKind);
+    const court = auctionKind === 'public' ? '' : String(data.briefingCourt || data.court || '').trim();
     const caseNumber = String(data.briefingCaseNo || row.activity_subtype || data.caseNo || '').trim();
-    const itemNo = String(data.briefingItemNo || data.itemNo || '').trim();
+    const itemNo = auctionKind === 'public' ? '' : String(data.briefingItemNo || data.itemNo || '').trim();
     const clientName = String(data.client || data.clientName || data.bidder || '').trim();
     if (!targetDate || !assigneeId || !caseNumber) continue;
 
@@ -441,6 +446,7 @@ export async function syncBriefingSchedulesFromJournal(db: D1Database): Promise<
       caseNumber,
       itemNo,
       clientName,
+      auctionKind,
     });
     const branch = String(row.branch || row.user_branch || '').trim();
     const department = String(row.department || row.user_department || '').trim();
@@ -456,24 +462,25 @@ export async function syncBriefingSchedulesFromJournal(db: D1Database): Promise<
             AND assignee_id = ?
             AND case_number = ?
             AND COALESCE(item_no, '') = ?
+            AND COALESCE(auction_kind, 'court') = ?
           )
         )
       ORDER BY CASE WHEN journal_entry_id = ? THEN 0 ELSE 1 END, created_at DESC
       LIMIT 1
-    `).bind(row.id, targetDate, assigneeId, caseNumber, itemNo, row.id).first<{ id: string }>();
+    `).bind(row.id, targetDate, assigneeId, caseNumber, itemNo, auctionKind, row.id).first<{ id: string }>();
 
     if (existing?.id) {
       await db.prepare(`
         UPDATE admin_notes
         SET title = ?, content = ?, author_id = ?, author_name = ?, visibility = 'all',
           author_branch = ?, author_department = ?, category = 'briefing_schedule',
-          court = ?, case_number = ?, assignee_id = ?, target_date = ?, item_no = ?,
+          court = ?, case_number = ?, auction_kind = ?, assignee_id = ?, target_date = ?, item_no = ?,
           client_name = ?, journal_entry_id = ?, source_type = 'journal', source_id = ?,
           updated_at = ${KST_NOW_SQL}
         WHERE id = ?
       `).bind(
         title, content, assigneeId, assigneeName,
-        branch, department, court, caseNumber, assigneeId, targetDate, itemNo,
+        branch, department, court, caseNumber, auctionKind, assigneeId, targetDate, itemNo,
         clientName, row.id, row.id, existing.id,
       ).run();
       continue;
@@ -483,14 +490,14 @@ export async function syncBriefingSchedulesFromJournal(db: D1Database): Promise<
       INSERT INTO admin_notes (
         id, title, content, author_id, author_name, pinned, source_type, source_id,
         is_anonymous, visibility, author_branch, author_department, category,
-        court, case_number, assignee_id, target_date, item_no, client_name,
+        court, case_number, auction_kind, assignee_id, target_date, item_no, client_name,
         journal_entry_id, created_at, updated_at
       )
       VALUES (?, ?, ?, ?, ?, 0, 'journal', ?, 0, 'all', ?, ?, 'briefing_schedule',
-        ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ${KST_NOW_SQL}), ${KST_NOW_SQL})
+        ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ${KST_NOW_SQL}), ${KST_NOW_SQL})
     `).bind(
       crypto.randomUUID(), title, content, assigneeId, assigneeName, row.id,
-      branch, department, court, caseNumber, assigneeId, targetDate, itemNo,
+      branch, department, court, caseNumber, auctionKind, assigneeId, targetDate, itemNo,
       clientName, row.id, row.created_at,
     ).run();
   }
@@ -848,6 +855,7 @@ adminNotes.get('/briefing-autofill', async (c) => {
   const assigneeId = (c.req.query('assignee_id') || '').trim();
   const clientName = (c.req.query('client_name') || '').trim();
   const caseNumber = (c.req.query('case_number') || '').trim();
+  const auctionKind = winningAuctionKind(c.req.query('auction_kind'));
 
   const profile = await db.prepare('SELECT role, branch FROM users WHERE id = ?').bind(viewer.sub).first<{ role: string; branch: string }>();
   if (!canUploadBriefingMaterial({ id: viewer.sub, role: profile?.role || viewer.role })) return c.json({ error: '브리핑자료 제출 등록 권한이 없습니다.' }, 403);
@@ -862,6 +870,7 @@ adminNotes.get('/briefing-autofill', async (c) => {
       FROM journal_entries
       WHERE user_id = ?
         AND activity_type IN ('임장', '미팅', '입찰')
+        AND CASE WHEN json_extract(data, '$.auctionKind') = 'public' THEN 'public' ELSE 'court' END = ?
         AND (
           activity_subtype = ?
           OR json_extract(data, '$.caseNo') = ?
@@ -869,7 +878,7 @@ adminNotes.get('/briefing-autofill', async (c) => {
         )
       ORDER BY target_date DESC, created_at DESC
       LIMIT 1
-    `).bind(assigneeId, caseNumber, caseNumber, caseNumber).first();
+    `).bind(assigneeId, auctionKind, caseNumber, caseNumber, caseNumber).first();
   }
 
   if (!row && clientName) {
@@ -878,13 +887,14 @@ adminNotes.get('/briefing-autofill', async (c) => {
       FROM journal_entries
       WHERE user_id = ?
         AND activity_type IN ('임장', '미팅', '입찰')
+        AND CASE WHEN json_extract(data, '$.auctionKind') = 'public' THEN 'public' ELSE 'court' END = ?
         AND (
           json_extract(data, '$.client') = ?
           OR json_extract(data, '$.bidder') = ?
         )
       ORDER BY target_date DESC, created_at DESC
       LIMIT 1
-    `).bind(assigneeId, clientName, clientName).first();
+    `).bind(assigneeId, auctionKind, clientName, clientName).first();
   }
 
   if (!row) return c.json({ match: null });
@@ -894,6 +904,7 @@ adminNotes.get('/briefing-autofill', async (c) => {
     match: {
       target_date: row.target_date,
       activity_type: row.activity_type,
+      auction_kind: winningAuctionKind(data.auctionKind),
       case_number: data.caseNo || data.briefingCaseNo || row.activity_subtype || '',
       item_no: data.itemNo || '',
       court: data.court || data.briefingCourt || '',
@@ -1658,9 +1669,11 @@ adminNotes.post('/', async (c) => {
   const {
     title, content, pinned, source_type, source_id, is_anonymous, visibility,
     category: rawCategory, court, case_number, no_case_number, legal_subcategory, attachments,
-    assignee_id, target_date, item_no, client_name, lawsuit_cost_requested,
+    assignee_id, target_date, item_no, client_name, lawsuit_cost_requested, auction_kind,
   } = await c.req.json();
   const category = normalizeCategory(rawCategory);
+  const briefingAuction = normalizeBriefingAuction({ auction_kind, court, case_number, item_no });
+  if (category === 'briefing_schedule' && auction_kind !== undefined && !['court', 'public'].includes(auction_kind)) return c.json({ error: '경매 또는 공매를 선택하세요.' }, 400);
   const legalSubcategory = category === 'legal_support' ? normalizeLegalSubcategory(legal_subcategory) : null;
   const legalAuctionCaseNumber = no_case_number ? '사건번호없음' : String(case_number || '').trim().replace(/\s+/g, '');
   if (category !== 'briefing_schedule' && (!title?.trim() || !content?.trim())) return c.json({ error: '제목과 내용을 입력하세요.' }, 400);
@@ -1727,7 +1740,9 @@ adminNotes.post('/', async (c) => {
     if (!canUploadBriefingMaterial({ id: user.sub, role })) return c.json({ error: '브리핑자료 제출 등록 권한이 없습니다.' }, 403);
     if (!assignee_id) return c.json({ error: '담당자를 목록에서 선택하세요.' }, 400);
     if (!target_date) return c.json({ error: '일정일을 입력하세요.' }, 400);
-    if (!court?.trim() || !case_number?.trim() || !client_name?.trim()) return c.json({ error: '법원, 사건번호, 계약자명은 필수입니다.' }, 400);
+    const auctionError = briefingAuctionError(briefingAuction);
+    if (auctionError) return c.json({ error: auctionError }, 400);
+    if (!client_name?.trim()) return c.json({ error: '계약자명을 입력하세요.' }, 400);
 
     assignee = await db.prepare(
       'SELECT id, name, branch, department, approved FROM users WHERE id = ?'
@@ -1737,9 +1752,10 @@ adminNotes.post('/', async (c) => {
     finalContent = makeBriefingContent({
       targetDate: target_date,
       assigneeName: assignee.name,
-      court: court.trim(),
-      caseNumber: case_number.trim(),
-      itemNo: item_no?.trim(),
+      court: briefingAuction.court,
+      caseNumber: briefingAuction.caseNumber,
+      itemNo: briefingAuction.itemNo,
+      auctionKind: briefingAuction.auctionKind,
       clientName: client_name.trim(),
     });
   }
@@ -1770,9 +1786,10 @@ adminNotes.post('/', async (c) => {
       '브리핑자료 제출',
       JSON.stringify({
         briefingSubmit: true,
-        briefingCaseNo: case_number.trim(),
-        itemNo: item_no?.trim() || '',
-        briefingCourt: court.trim(),
+        briefingCaseNo: briefingAuction.caseNumber,
+        auctionKind: briefingAuction.auctionKind === 'public' ? 'public' : 'auction',
+        itemNo: briefingAuction.itemNo,
+        briefingCourt: briefingAuction.court,
         client: client_name.trim(),
         sourceAdminNoteId: id,
         createdBy: user.sub,
@@ -1785,8 +1802,8 @@ adminNotes.post('/', async (c) => {
   }
 
   const adminNoteInsert = db.prepare(
-    `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, court, case_number, legal_subcategory, lawsuit_cost_requested, assignee_id, target_date, item_no, client_name, journal_entry_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
+    `INSERT INTO admin_notes (id, title, content, author_id, author_name, pinned, source_type, source_id, is_anonymous, visibility, author_branch, author_department, category, court, case_number, legal_subcategory, lawsuit_cost_requested, assignee_id, target_date, item_no, client_name, journal_entry_id, auction_kind, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})`
   ).bind(
     id, finalTitle, finalContent, user.sub, user.name,
     canPin && pinned ? 1 : 0,
@@ -1795,15 +1812,16 @@ adminNotes.post('/', async (c) => {
     finalVisibility,
     profile?.branch || '', profile?.department || '',
     category,
-    category === 'eviction_quote' || category === 'briefing_schedule' || (category === 'legal_support' && legalSubcategory === 'auction') ? String(court || '').trim() : null,
-    category === 'eviction_quote' || category === 'briefing_schedule' ? String(case_number || '').trim().replace(/\s+/g, '') : (category === 'legal_support' && legalSubcategory === 'auction') ? legalAuctionCaseNumber : null,
+    category === 'briefing_schedule' ? briefingAuction.court : category === 'eviction_quote' || (category === 'legal_support' && legalSubcategory === 'auction') ? String(court || '').trim() : null,
+    category === 'briefing_schedule' ? briefingAuction.caseNumber : category === 'eviction_quote' ? String(case_number || '').trim().replace(/\s+/g, '') : (category === 'legal_support' && legalSubcategory === 'auction') ? legalAuctionCaseNumber : null,
     legalSubcategory,
     category === 'legal_support' && shouldTrackLawsuitCost(legalSubcategory) && lawsuit_cost_requested ? 1 : 0,
     category === 'briefing_schedule' ? assignee?.id : null,
     category === 'briefing_schedule' ? target_date : null,
-    category === 'briefing_schedule' ? item_no?.trim() || '' : null,
+    category === 'briefing_schedule' ? briefingAuction.itemNo : null,
     category === 'briefing_schedule' ? client_name.trim() : null,
-    journalEntryId
+    journalEntryId,
+    category === 'briefing_schedule' ? briefingAuction.auctionKind : 'court'
   );
 
   if (category === 'notice') {

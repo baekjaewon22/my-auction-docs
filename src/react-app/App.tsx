@@ -68,6 +68,7 @@ import BriefingMaterials from './pages/BriefingMaterials';
 import RightsAnalysisGuarantee from './pages/RightsAnalysisGuarantee';
 import AutomationDiagnosticsAdmin from './pages/AutomationDiagnosticsAdmin';
 import VideoProductionRequests from './pages/VideoProductionRequests';
+import MarketingBriefings from './pages/MarketingBriefings';
 import { X } from 'lucide-react';
 import { canUseBusinessAutomation } from '../shared/automation-access';
 import { canViewAuctionStoryAnomalies } from '../shared/auction-story-anomaly-access';
@@ -900,6 +901,9 @@ export default function App() {
               </PrivateRoute>
             }
           />
+          <Route path="briefings" element={<PrivateRoute><MarketingBriefings /></PrivateRoute>} />
+          <Route path="briefings/:site" element={<PrivateRoute><MarketingBriefings /></PrivateRoute>} />
+          <Route path="briefings/:site/:reportDate" element={<PrivateRoute><MarketingBriefings /></PrivateRoute>} />
           <Route
             path="cooperation"
             element={

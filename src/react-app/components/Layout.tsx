@@ -18,7 +18,7 @@ import {
   Users, UserCog, LogOut, CalendarDays, BarChart3,
   PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
   Scale, ExternalLink, Activity, Send, ShieldCheck,
-  Moon, Sun, Video,
+  Moon, Sun, Video, Megaphone,
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
@@ -270,6 +270,9 @@ export default function Layout() {
             {!collapsed && <span className="nav-label">관리</span>}
             <Link to="/review" className={`nav-item ${isActive('/review') ? 'active' : ''}`} title="문서 승인" onClick={() => setMobileOpen(false)}>
               <CheckCircle size={18} /> {!collapsed && '문서 승인'}
+            </Link>
+            <Link to="/briefings" className={`nav-item ${isActive('/briefings') ? 'active' : ''}`} title="마이옥션 주간브리핑" onClick={() => setMobileOpen(false)}>
+              <Megaphone size={18} /> {!collapsed && '마이옥션 주간브리핑'}
             </Link>
             {canViewBidHistory && (
               <Link to="/bid-history" className={`nav-item ${isActive('/bid-history') ? 'active' : ''}`} title="경매분석" onClick={() => setMobileOpen(false)}>

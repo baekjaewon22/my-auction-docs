@@ -61,7 +61,8 @@ test('UI provides drag/drop submission and a document archive subcategory', () =
   assert.doesNotMatch(analysis, /briefing-material-dropzone/);
   assert.match(notes, /briefing-registration-files/);
   assert.match(notes, /accept="\.pdf,\.ppt,\.pptx,\.pptm"/);
-  assert.match(notes, /api\.briefingMaterials\.upload\(file, formAssigneeId, briefingCaseNumber, registeredNoteId\)/);
+  assert.match(notes, /api\.briefingMaterials\.upload\(file, formAssigneeId, briefingIdentity, registeredNoteId\)/);
+  assert.match(notes, /briefingCaseNumber\(formBriefingAuctionKind/);
   assert.match(archive, /category: 'briefing'/);
   assert.match(archive, /BriefingMaterialArchive/);
 });
