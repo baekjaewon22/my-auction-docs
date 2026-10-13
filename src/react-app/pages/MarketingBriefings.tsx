@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, ArrowRight, BarChart3, Check, Clipboard, KeyRound, RefreshCw, XCircle } from 'lucide-react';
+import { Link, useParams } from 'react-router-dom';
+import { AlertTriangle, ArrowLeft, ArrowRight, Check, Clipboard, XCircle } from 'lucide-react';
 import { api } from '../api';
-import { useAuthStore } from '../store';
+import MarketingBriefingDashboard from '../components/MarketingBriefingDashboard';
 
 type CheckStatus = 'done' | 'pending' | 'partial';
 type Briefing = {
@@ -17,19 +17,6 @@ type Briefing = {
   audience: Array<Record<string, unknown>>; corrections: Array<Record<string, unknown> | string>;
   notes: string[]; content_md: string; html?: string | null; revision: number;
 };
-type BriefingKey = { id: string; name: string; site: string | null; token_prefix: string; last_used_at: string | null; revoked_at: string | null; created_at: string };
-
-const KPI_CONFIG = [
-  { key: 'signups_per_day', label: '일평균 가입', percent: false },
-  { key: 'direct_share', label: '직접 가입 비중', percent: true },
-  { key: 'ig_followers', label: '인스타 팔로워', percent: false },
-  { key: 'ig_reach_avg', label: '인스타 일평균 도달', percent: false },
-  { key: 'desktop_cvr', label: 'PC 전환율', percent: true },
-  { key: 'mobile_cvr', label: '모바일 전환율', percent: true },
-  { key: 'app_webview_signups', label: '앱웹뷰 가입', percent: false },
-  { key: 'new_user_signups', label: '신규 사용자 가입', percent: false },
-  { key: 'pc_main_landing_sessions', label: 'PC 메인 유입', percent: false },
-] as const;
 const SITE_LABELS: Record<string, string> = { myauction: '마이옥션', myeongseung: '명승', sevenstars: '세븐스타즈' };
 
 function formatValue(value: unknown, percent = false) {
@@ -38,13 +25,6 @@ function formatValue(value: unknown, percent = false) {
   if (!Number.isFinite(number)) return String(value);
   if (percent) return `${(number * 100).toLocaleString('ko-KR', { maximumFractionDigits: 1 })}%`;
   return number.toLocaleString('ko-KR', { maximumFractionDigits: 1 });
-}
-
-function Sparkline({ values }: { values: number[] }) {
-  if (values.length < 2) return null;
-  const min = Math.min(...values); const max = Math.max(...values); const range = max - min || 1;
-  const points = values.map((value, index) => `${(index / (values.length - 1)) * 100},${36 - ((value - min) / range) * 30}`).join(' ');
-  return <svg className="briefing-sparkline" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true"><polyline points={points} /></svg>;
 }
 
 function MarkdownContent({ source }: { source: string }) {
@@ -62,28 +42,6 @@ function MarkdownContent({ source }: { source: string }) {
     else nodes.push(<p key={index}>{line}</p>);
   });
   flushList(); return <div className="briefing-markdown">{nodes}</div>;
-}
-
-function BriefingList() {
-  const { user } = useAuthStore(); const navigate = useNavigate(); const { site: routeSite } = useParams(); const [searchParams, setSearchParams] = useSearchParams();
-  const site = routeSite || searchParams.get('site') || 'myauction'; const type = (searchParams.get('type') || 'weekly') as 'weekly' | 'monthly';
-  const [items, setItems] = useState<Briefing[]>([]); const [availableSites, setAvailableSites] = useState<string[]>(['myauction']); const [loading, setLoading] = useState(true); const [error, setError] = useState('');
-  const [keyPanel, setKeyPanel] = useState(false); const [keys, setKeys] = useState<BriefingKey[]>([]); const [newToken, setNewToken] = useState('');
-  const [keyName, setKeyName] = useState('마케팅 주간 브리핑 자동화'); const isMaster = user?.role === 'master';
-  const load = async () => { setLoading(true); setError(''); try { const [result, all] = await Promise.all([api.briefings.list({ site, type, limit: 20 }), api.briefings.list({ limit: 100 })]); setItems(result.briefings as Briefing[]); setAvailableSites([...new Set(['myauction', ...all.briefings.map((item: Briefing) => item.site)])]); } catch (err: any) { setError(err?.message || '브리핑을 불러오지 못했습니다.'); } finally { setLoading(false); } };
-  useEffect(() => { load(); }, [site, type]);
-  const trendItems = items.slice(0, 12).reverse();
-  const loadKeys = async () => { if (isMaster) setKeys((await api.briefings.keys()).api_keys as BriefingKey[]); };
-  const toggleKeys = async () => { const next = !keyPanel; setKeyPanel(next); if (next) await loadKeys(); };
-  const createKey = async () => { const result = await api.briefings.createKey({ name: keyName, site }); setNewToken(result.token); await loadKeys(); };
-  const revokeKey = async (id: string) => { if (!window.confirm('이 API 키를 폐기할까요? 폐기 후에는 복구할 수 없습니다.')) return; await api.briefings.revokeKey(id); await loadKeys(); };
-  return <div className="briefings-page">
-    <header className="briefings-hero"><div><span className="briefings-kicker">MARKETING INTELLIGENCE</span><h2>마이옥션 주간 브리핑</h2><p>매주 수집된 마케팅 흐름과 실행 과제를 한눈에 확인합니다.</p></div><div className="briefings-hero-actions"><button className="btn btn-secondary" onClick={load}><RefreshCw size={16} /> 새로고침</button>{isMaster && <button className="btn btn-secondary" onClick={toggleKeys}><KeyRound size={16} /> API 키 관리</button>}</div></header>
-    {keyPanel && <section className="briefing-key-panel"><div className="briefing-section-title"><div><h3>수신 API 키</h3><p>원문 키는 발급 직후 한 번만 표시됩니다.</p></div></div><div className="briefing-key-create"><input value={keyName} onChange={(event) => setKeyName(event.target.value)} aria-label="키 이름" /><button className="btn btn-primary" onClick={createKey}>새 키 발급</button></div>{newToken && <div className="briefing-token-once"><strong>지금 안전하게 보관하세요.</strong><code>{newToken}</code><button onClick={() => navigator.clipboard.writeText(newToken)}><Clipboard size={15} /> 복사</button></div>}<div className="briefing-key-list">{keys.map((key) => <div key={key.id}><span><strong>{key.name}</strong><small>{key.token_prefix}… · {key.site || '전체 사이트'} · 최근 사용 {key.last_used_at || '없음'}</small></span>{key.revoked_at ? <em>폐기됨</em> : <button onClick={() => revokeKey(key.id)}>폐기</button>}</div>)}</div></section>}
-    <div className="briefing-filter-row"><div className="briefing-tabs">{availableSites.map((value) => <button key={value} className={site === value ? 'active' : ''} onClick={() => navigate(`/briefings/${value}?type=${type}`)}>{SITE_LABELS[value] || value}</button>)}</div><div className="briefing-type-toggle"><button className={type === 'weekly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'weekly' })}>주간</button><button className={type === 'monthly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'monthly' })}>월간</button></div></div>
-    <section className="briefing-kpi-grid">{KPI_CONFIG.map((config) => { const values = trendItems.map((item) => item.kpis?.[config.key]).filter((value): value is number => typeof value === 'number'); if (!values.length) return null; const latest = values[values.length - 1]; const previous = values.length > 1 ? values[values.length - 2] : undefined; const delta = previous === undefined || previous === 0 ? null : ((latest - previous) / Math.abs(previous)) * 100; return <article className="briefing-kpi-card" key={config.key}><span>{config.label}</span><strong>{formatValue(latest, config.percent)}</strong>{delta !== null && <small className={delta >= 0 ? 'up' : 'down'}>{delta >= 0 ? '+' : ''}{delta.toFixed(1)}% 전회 대비</small>}<Sparkline values={values} /></article>; })}</section>
-    <section className="briefing-list-section"><div className="briefing-section-title"><div><h3>브리핑 회차</h3><p>최신 보고서부터 표시됩니다.</p></div><BarChart3 size={20} /></div>{loading ? <div className="briefing-state">불러오는 중...</div> : error ? <div className="briefing-state error">{error}</div> : !items.length ? <div className="briefing-state">아직 수신된 브리핑이 없습니다.</div> : <div className="briefing-list">{items.map((item) => <button key={item.id} onClick={() => navigate(`/briefings/${item.site}/${item.report_date}`)}><time>{item.report_date}</time><span><strong>{item.title}</strong><small>{item.summary}</small></span><span className="briefing-list-badges">{item.warnings?.length > 0 && <em className="warn"><AlertTriangle size={12} /> {item.warnings.length}</em>}{item.type === 'monthly' && <em>월간</em>}<ArrowRight size={17} /></span></button>)}</div>}</section>
-  </div>;
 }
 
 function DataTable({ rows, kind }: { rows: Array<Record<string, any>>; kind: 'channels' | 'reels' }) {
@@ -170,5 +128,5 @@ export default function MarketingBriefings() {
       else if (robots) robots.content = previous;
     };
   }, []);
-  return reportDate ? <BriefingDetail /> : <BriefingList />;
+  return reportDate ? <BriefingDetail /> : <MarketingBriefingDashboard />;
 }

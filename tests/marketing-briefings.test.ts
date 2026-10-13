@@ -67,6 +67,22 @@ test('briefing UI renders markdown as React text and monthly HTML only in a sand
   assert.match(page, /신규·재방문/);
 });
 
+test('briefing dashboard provides five channel tabs and date-based inline reports', () => {
+  const dashboard = readFileSync('src/react-app/components/MarketingBriefingDashboard.tsx', 'utf8');
+  const css = readFileSync('src/react-app/index.css', 'utf8');
+  for (const label of ['종합', 'Google 애널리틱스', '유튜브', '인스타', '네이버센터']) {
+    assert.match(dashboard, new RegExp(label));
+  }
+  assert.match(dashboard, /aria-expanded=\{open\}/);
+  assert.match(dashboard, /날짜를 누르면 다른 페이지로 이동하지 않고 바로 펼쳐집니다/);
+  assert.match(dashboard, /출처 미확인 비중/);
+  assert.match(dashboard, /무엇이 달라졌고 무엇을 확인해야 하는지/);
+  assert.match(dashboard, /extractSections\(item\.content_md/);
+  assert.match(css, /\.mbd-channel-tabs[\s\S]*grid-template-columns:\s*repeat\(5/);
+  assert.match(css, /\.mbd-channel-tabs button[\s\S]*border-radius:\s*0/);
+  assert.match(css, /@media \(max-width:\s*720px\)[\s\S]*\.mbd-channel-tabs/);
+});
+
 test('briefing API is mounted and navigation is in the management section', () => {
   const worker = readFileSync('src/worker/index.ts', 'utf8');
   const layout = readFileSync('src/react-app/components/Layout.tsx', 'utf8');
