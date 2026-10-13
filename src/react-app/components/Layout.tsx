@@ -7,6 +7,7 @@ import { isHeadOfficeBranch, isRestrictedAccountingBranch } from '../lib/branchA
 import { canUseBusinessAutomation } from '../../shared/automation-access';
 import { canViewAuctionSchedule } from '../../shared/auction-schedule';
 import { canViewConsultantJournal } from '../../shared/consultant-journal-access';
+import { canViewMarketingBriefings } from '../../shared/marketing-briefing-access';
 import {
   canUploadBriefingMaterial,
   canViewBriefingMaterial,
@@ -106,6 +107,7 @@ export default function Layout() {
   const isSupport = role === 'support';
   const isRestrictedAsst = role === 'accountant_asst' && isRestrictedAccountingAsstBranch(user?.branch);
   const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant'].includes(role);
+  const canViewMarketingBriefingsPage = canViewMarketingBriefings(user);
   const canViewOrg = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst'].includes(role);
   const canManageUsers = !isFreelancer && ['master', 'ceo', 'admin', 'manager', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
@@ -271,9 +273,11 @@ export default function Layout() {
             <Link to="/review" className={`nav-item ${isActive('/review') ? 'active' : ''}`} title="문서 승인" onClick={() => setMobileOpen(false)}>
               <CheckCircle size={18} /> {!collapsed && '문서 승인'}
             </Link>
-            <Link to="/briefings" className={`nav-item ${isActive('/briefings') ? 'active' : ''}`} title="마이옥션 주간브리핑" onClick={() => setMobileOpen(false)}>
-              <Megaphone size={18} /> {!collapsed && '마이옥션 주간브리핑'}
-            </Link>
+            {canViewMarketingBriefingsPage && (
+              <Link to="/briefings" className={`nav-item ${isActive('/briefings') ? 'active' : ''}`} title="마이옥션 주간브리핑" onClick={() => setMobileOpen(false)}>
+                <Megaphone size={18} /> {!collapsed && '마이옥션 주간브리핑'}
+              </Link>
+            )}
             {canViewBidHistory && (
               <Link to="/bid-history" className={`nav-item ${isActive('/bid-history') ? 'active' : ''}`} title="경매분석" onClick={() => setMobileOpen(false)}>
                 <CalendarDays size={18} /> {!collapsed && '경매분석'}

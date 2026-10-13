@@ -69,6 +69,7 @@ import RightsAnalysisGuarantee from './pages/RightsAnalysisGuarantee';
 import AutomationDiagnosticsAdmin from './pages/AutomationDiagnosticsAdmin';
 import VideoProductionRequests from './pages/VideoProductionRequests';
 import MarketingBriefings from './pages/MarketingBriefings';
+import { canViewMarketingBriefings } from '../shared/marketing-briefing-access';
 import { X } from 'lucide-react';
 import { canUseBusinessAutomation } from '../shared/automation-access';
 import { canViewAuctionStoryAnomalies } from '../shared/auction-story-anomaly-access';
@@ -184,6 +185,14 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthStore();
   if (loading) return <div className="page-loading">로딩중...</div>;
   if (!user) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+}
+
+function MarketingBriefingsRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuthStore();
+  if (loading) return <div className="page-loading">로딩중...</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!canViewMarketingBriefings(user)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -901,9 +910,9 @@ export default function App() {
               </PrivateRoute>
             }
           />
-          <Route path="briefings" element={<PrivateRoute><MarketingBriefings /></PrivateRoute>} />
-          <Route path="briefings/:site" element={<PrivateRoute><MarketingBriefings /></PrivateRoute>} />
-          <Route path="briefings/:site/:reportDate" element={<PrivateRoute><MarketingBriefings /></PrivateRoute>} />
+          <Route path="briefings" element={<MarketingBriefingsRoute><MarketingBriefings /></MarketingBriefingsRoute>} />
+          <Route path="briefings/:site" element={<MarketingBriefingsRoute><MarketingBriefings /></MarketingBriefingsRoute>} />
+          <Route path="briefings/:site/:reportDate" element={<MarketingBriefingsRoute><MarketingBriefings /></MarketingBriefingsRoute>} />
           <Route
             path="cooperation"
             element={

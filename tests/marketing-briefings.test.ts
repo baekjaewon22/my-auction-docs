@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import Database from 'better-sqlite3';
 import { validateBriefingPayload } from '../src/shared/marketing-briefing.ts';
+import { canViewMarketingBriefings } from '../src/shared/marketing-briefing-access.ts';
 
 const validPayload = {
   report_key: 'myauction-weekly-2026-10-12',
@@ -69,6 +70,21 @@ test('briefing UI renders markdown as React text and monthly HTML only in a sand
 test('briefing API is mounted and navigation is in the management section', () => {
   const worker = readFileSync('src/worker/index.ts', 'utf8');
   const layout = readFileSync('src/react-app/components/Layout.tsx', 'utf8');
+  const app = readFileSync('src/react-app/App.tsx', 'utf8');
+  const route = readFileSync('src/worker/routes/briefings.ts', 'utf8');
   assert.match(worker, /app\.route\('\/api\/briefings', briefingsRoute\)/);
   assert.match(layout, /nav-label">관리<[\s\S]*?to="\/briefings"/);
+  assert.match(layout, /canViewMarketingBriefingsPage\s*&&/);
+  assert.equal((app.match(/<MarketingBriefingsRoute><MarketingBriefings \/><\/MarketingBriefingsRoute>/g) || []).length, 3);
+  assert.match(route, /user\.auth_type !== 'user'/);
+  assert.match(route, /!canViewMarketingBriefings\(user\)/);
+});
+
+test('marketing briefing page is limited to representative and internal top administrator roles', () => {
+  assert.equal(canViewMarketingBriefings({ role: 'master' }), true);
+  assert.equal(canViewMarketingBriefings({ role: 'ceo' }), true);
+  for (const role of ['cc_ref', 'admin', 'director', 'manager', 'accountant', 'accountant_asst', 'member', 'support', 'resigned']) {
+    assert.equal(canViewMarketingBriefings({ role }), false, `${role} must not view marketing briefings`);
+  }
+  assert.equal(canViewMarketingBriefings(null), false);
 });

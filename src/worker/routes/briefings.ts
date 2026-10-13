@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireHumanMaster } from '../middleware/auth';
 import { isBriefingSite, validateBriefingPayload } from '../../shared/marketing-briefing';
+import { canViewMarketingBriefings } from '../../shared/marketing-briefing-access';
 
 type BriefingType = 'weekly' | 'monthly';
 type ApiKeyRecord = { id: string; site: string | null; revoked_at: string | null };
@@ -70,7 +71,13 @@ async function readerAuth(c: any, next: any) {
     c.set('briefingApiKey', authenticated);
     return next();
   }
-  return authMiddleware(c, next);
+  return authMiddleware(c, async () => {
+    const user = c.get('user');
+    if (!user || user.auth_type !== 'user' || !canViewMarketingBriefings(user)) {
+      return errorJson(c, 403, 'forbidden', '브리핑 열람 권한이 없습니다.');
+    }
+    return next();
+  });
 }
 
 function safeJson(value: string | null, fallback: any) {
