@@ -6,6 +6,7 @@ import {
 import { useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
+import briefingHero from '../assets/marketing-briefing-hero.jpg';
 import instagramLogo from '../../../instar.jpg';
 import naverLogo from '../../../naver.jpg';
 import youtubeLogo from '../../../youtube.jpg';
@@ -267,7 +268,11 @@ export default function MarketingBriefingDashboard() {
   const revokeKey = async (id: string) => { if (!window.confirm('이 API 키를 폐기할까요? 폐기 후에는 복구할 수 없습니다.')) return; await api.briefings.revokeKey(id); await loadKeys(); };
 
   return <div className="briefings-page mbd-page">
-    <header className="mbd-hero"><div><span>MARKETING CHECK CENTER</span><h2>마이옥션 주간 브리핑</h2><p>광고를 잘 몰라도 문제와 변화를 바로 이해할 수 있는 마케팅 점검판입니다.</p></div><div className="mbd-actions"><button className="btn btn-secondary" onClick={() => void load()}><RefreshCw size={16} /> 새로고침</button>{isMaster && <button className="btn btn-secondary" onClick={() => void toggleKeys()}><KeyRound size={16} /> API 키</button>}</div></header>
+    <header className="mbd-hero">
+      <img className="mbd-hero-image" src={briefingHero} alt="" aria-hidden="true" />
+      <div className="mbd-hero-copy"><span>MARKETING CHECK CENTER</span><h2>마이옥션 주간 브리핑</h2><p>광고를 잘 몰라도 문제와 변화를 바로 이해할 수 있는 마케팅 점검판입니다.</p></div>
+      <div className="mbd-actions"><button className="btn btn-secondary" onClick={() => void load()}><RefreshCw size={16} /> 새로고침</button>{isMaster && <button className="btn btn-secondary" onClick={() => void toggleKeys()}><KeyRound size={16} /> API 키</button>}</div>
+    </header>
     {keyPanel && <section className="briefing-key-panel"><div className="briefing-section-title"><div><h3>수신 API 키</h3><p>원문 키는 발급 직후 한 번만 표시됩니다.</p></div></div><div className="briefing-key-create"><input value={keyName} onChange={(event) => setKeyName(event.target.value)} aria-label="키 이름" /><button className="btn btn-primary" onClick={() => void createKey()}>새 키 발급</button></div>{newToken && <div className="briefing-token-once"><strong>지금 안전하게 보관하세요.</strong><code>{newToken}</code><button onClick={() => void navigator.clipboard.writeText(newToken)}><Clipboard size={15} /> 복사</button></div>}<div className="briefing-key-list">{keys.map((key) => <div key={key.id}><span><strong>{key.name}</strong><small>{key.token_prefix}… · {key.site || '전체 사이트'} · 최근 사용 {key.last_used_at || '없음'}</small></span>{key.revoked_at ? <em>폐기됨</em> : <button onClick={() => void revokeKey(key.id)}>폐기</button>}</div>)}</div></section>}
 
     <nav className="mbd-channel-tabs" aria-label="마케팅 채널 선택">{TABS.map(({ key, label, icon: Icon, description, logo }) => <button key={key} data-channel={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)} aria-pressed={tab === key}>
