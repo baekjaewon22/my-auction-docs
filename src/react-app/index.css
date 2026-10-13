@@ -246,6 +246,23 @@
 .mbd-toolbar button { padding: 8px 18px; border: 1px solid var(--mbd-line); border-radius: 0; background: #fff; color: #64748b; cursor: pointer; }
 .mbd-toolbar button + button { border-left: 0; }
 .mbd-toolbar button.active { background: #eaf3ff; color: #1257ad; font-weight: 800; }
+.mbd-toolbar-options { align-items: center; gap: 16px; }
+.mbd-font-controls { display: flex; align-items: center; }
+.mbd-font-controls > span { margin-right: 7px; color: #64748b; font-size: 11px; font-weight: 700; }
+.mbd-font-controls button { width: 34px; height: 34px; padding: 0; display: grid; place-items: center; }
+.mbd-font-controls button:nth-of-type(1) { font-size: 11px; }
+.mbd-font-controls button:nth-of-type(2) { font-size: 14px; }
+.mbd-font-controls button:nth-of-type(3) { font-size: 17px; }
+
+.mbd-text-large :is(p, li, td, dd) { font-size: 14px !important; }
+.mbd-text-large :is(small, dt, th) { font-size: 12px !important; }
+.mbd-text-large :is(.mbd-channel-copy strong, .mbd-report-row strong, .mbd-metric-head, .mbd-video-card strong) { font-size: 16px !important; }
+.mbd-text-large :is(.mbd-section-heading h3, .mbd-panel-title h4, .mbd-easy-explain h4) { font-size: 20px !important; }
+.mbd-text-xlarge :is(p, li, td, dd) { font-size: 16px !important; line-height: 1.7; }
+.mbd-text-xlarge :is(small, dt, th) { font-size: 14px !important; }
+.mbd-text-xlarge :is(.mbd-channel-copy strong, .mbd-report-row strong, .mbd-metric-head, .mbd-video-card strong) { font-size: 18px !important; }
+.mbd-text-xlarge :is(.mbd-section-heading h3, .mbd-panel-title h4, .mbd-easy-explain h4) { font-size: 23px !important; }
+.mbd-text-xlarge .mbd-hero h2 { font-size: 43px; }
 
 .mbd-overview-top { display: grid; grid-template-columns: minmax(260px, .7fr) minmax(0, 1.3fr); gap: 14px; margin-bottom: 26px; }
 .mbd-status, .mbd-conclusion { padding: 23px 24px; border: 1px solid var(--mbd-line); background: #fff; }
@@ -371,6 +388,7 @@
 .mbd-video-card em { display: inline-block; margin-bottom: 8px; padding: 3px 7px; background: #182c4d; color: #fff; font-size: 9px; font-style: normal; letter-spacing: .08em; }
 .mbd-video-card.short em { background: #ff0033; }
 .mbd-video-card strong { display: block; color: #27384d; font-size: 14px; line-height: 1.55; }
+.mbd-video-weekly-views { display: inline-block; margin-top: 9px; padding: 5px 8px; background: #e8eef6; color: #294766; font-size: 11px; font-weight: 800; }
 .mbd-video-card p { margin: 8px 0 0; color: #718095; font-size: 11px; line-height: 1.55; }
 
 .mbd-instagram-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
@@ -446,6 +464,9 @@
   .mbd-channel-logo { width: 45px; height: 45px; flex-basis: 45px; border-radius: 11px; }
   .mbd-channel-tabs button:hover .mbd-channel-logo { transform: scale(1.08); }
   .mbd-toolbar, .mbd-section-heading { align-items: flex-start; }
+  .mbd-toolbar { flex-direction: column; gap: 10px; }
+  .mbd-toolbar-options { width: 100%; justify-content: space-between; gap: 8px; }
+  .mbd-text-xlarge .mbd-hero h2 { font-size: 31px; }
   .mbd-section-heading { flex-direction: column; gap: 7px; }
   .mbd-section-heading > p { text-align: left; }
   .mbd-overview-top, .mbd-data-grid { grid-template-columns: 1fr; }

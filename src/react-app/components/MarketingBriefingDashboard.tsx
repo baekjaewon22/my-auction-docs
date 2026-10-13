@@ -273,11 +273,12 @@ function YoutubeVisual({ item }: { item: Briefing }) {
   const topics = parseYoutubeTopicCards(item);
   const shortLine = text.match(/쇼츠 상위:\s*(.+?)(?:사이트 유입|$)/)?.[1] || '';
   const shorts = shortLine.split(/\),\s*/).map((entry) => entry.replace(/\)?$/, ')').trim()).filter(Boolean);
-  const longform = topics.filter((topic) => topic.kind === 'long');
+  const weeklyViews = (text: string) => numberFrom(text.match(/([\d,]+)\s*(?:\([^)]*\))?$/)?.[1]) || 0;
+  const longform = topics.filter((topic) => topic.kind === 'long').sort((a, b) => weeklyViews(b.text) - weeklyViews(a.text));
   const topicShorts = topics.filter((topic) => topic.kind === 'short').map((topic) => topic.text);
   return <div className="mbd-channel-visual youtube">
     <section className="mbd-youtube-kpis"><article><span>전체 조회</span><strong>{value(/주간 조회\s*([\d,]+)/)}</strong><small>직전 {value(/직전\s*([\d,]+)/)}</small></article><article><span>광고 조회</span><strong>{value(/광고\s*([\d,]+)/)}</strong><small>전체 중 {value(/광고\s*[\d,]+\((\d+%)/)}</small></article><article><span>쇼츠 조회</span><strong>{value(/쇼츠\s*([\d,]+)/)}</strong><small>{value(/쇼츠\s*[\d,]+\(([-+]?\d+%)/)} 변화</small></article><article><span>사이트 가입</span><strong>{value(/가입\s*([\d,]+)/)}</strong><small>유튜브 유입의 실제 결과</small></article></section>
-    <div className="mbd-video-columns"><section><div className="mbd-panel-title"><div><span>LONG FORM</span><h4>롱폼 영상 성과</h4></div></div>{longform.length ? longform.map((topic, index) => <article className="mbd-video-card long" key={index}><em>롱폼</em><strong>{topic.text}</strong><p>긴 영상은 조회수뿐 아니라 설명란 링크를 통한 사이트 방문과 가입까지 함께 확인해야 합니다.</p></article>) : <div className="mbd-empty">이번 보고서에는 롱폼별 상세 자료가 없습니다.</div>}</section><section><div className="mbd-panel-title"><div><span>SHORT FORM</span><h4>쇼츠 영상 성과</h4></div></div>{[...shorts, ...topicShorts].filter((entry, index, all) => all.indexOf(entry) === index).map((entry, index) => <article className="mbd-video-card short" key={index}><em>쇼츠 {index + 1}</em><strong>{entry}</strong><p>{/시청률\s*(?:[7-9]\d|100)%/.test(entry) ? '끝까지 보는 비율이 높습니다. 같은 전개를 반복할 가치가 있습니다.' : '첫 장면과 제목의 반전 요소를 유지하며 시청 지속률을 비교하세요.'}</p></article>)}</section></div>
+    <div className="mbd-video-columns"><section><div className="mbd-panel-title"><div><span>LAST 7 DAYS · LONG FORM</span><h4>최근 7일 조회수 TOP 롱폼</h4></div><p>누적 최고 조회수가 아닌 이번 보고 기간 조회수 순위입니다.</p></div>{longform.length ? longform.map((topic, index) => <article className="mbd-video-card long" key={index}><em>최근 7일 TOP {index + 1}</em><strong>{topic.text}</strong><span className="mbd-video-weekly-views">최근 7일 조회 {weeklyViews(topic.text).toLocaleString('ko-KR')}회</span><p>긴 영상은 최근 7일 조회수와 함께 설명란 링크를 통한 사이트 방문·가입까지 확인해야 합니다.</p></article>) : <div className="mbd-empty">이번 보고서에는 최근 7일 롱폼별 조회 자료가 없습니다.</div>}</section><section><div className="mbd-panel-title"><div><span>SHORT FORM</span><h4>쇼츠 영상 성과</h4></div></div>{[...shorts, ...topicShorts].filter((entry, index, all) => all.indexOf(entry) === index).map((entry, index) => <article className="mbd-video-card short" key={index}><em>쇼츠 {index + 1}</em><strong>{entry}</strong><p>{/시청률\s*(?:[7-9]\d|100)%/.test(entry) ? '끝까지 보는 비율이 높습니다. 같은 전개를 반복할 가치가 있습니다.' : '첫 장면과 제목의 반전 요소를 유지하며 시청 지속률을 비교하세요.'}</p></article>)}</section></div>
     <section className="mbd-easy-explain"><h4>유튜브 결과를 쉽게 읽으면</h4><PlainNotes lines={withoutTables(source)} /></section>
   </div>;
 }
@@ -345,7 +346,14 @@ export default function MarketingBriefingDashboard() {
   const [keys, setKeys] = useState<BriefingKey[]>([]);
   const [newToken, setNewToken] = useState('');
   const [keyName, setKeyName] = useState('마이옥션 주간 브리핑 자동화');
+  const [textSize, setTextSize] = useState<'normal' | 'large' | 'xlarge'>(() => {
+    if (typeof window === 'undefined') return 'normal';
+    const saved = window.localStorage.getItem('marketing-briefing-text-size');
+    return saved === 'large' || saved === 'xlarge' ? saved : 'normal';
+  });
   const isMaster = user?.role === 'master';
+
+  useEffect(() => { window.localStorage.setItem('marketing-briefing-text-size', textSize); }, [textSize]);
 
   const load = async () => {
     setLoading(true); setError('');
@@ -379,7 +387,7 @@ export default function MarketingBriefingDashboard() {
   const createKey = async () => { const result = await api.briefings.createKey({ name: keyName, site }); setNewToken(result.token); await loadKeys(); };
   const revokeKey = async (id: string) => { if (!window.confirm('이 API 키를 폐기할까요? 폐기 후에는 복구할 수 없습니다.')) return; await api.briefings.revokeKey(id); await loadKeys(); };
 
-  return <div className="briefings-page mbd-page">
+  return <div className={`briefings-page mbd-page mbd-text-${textSize}`}>
     <header className="mbd-hero">
       <img className="mbd-hero-image" src={briefingHero} alt="" aria-hidden="true" />
       <div className="mbd-hero-copy"><span>MARKETING CHECK CENTER</span><h2>마이옥션 주간 브리핑</h2><p>광고를 잘 몰라도 문제와 변화를 바로 이해할 수 있는 마케팅 점검판입니다.</p></div>
@@ -391,7 +399,7 @@ export default function MarketingBriefingDashboard() {
       <span className="mbd-channel-logo" aria-hidden="true">{logo ? <img src={logo} alt="" /> : key === 'analytics' ? <span className="mbd-ga-logo"><i /><i /><i /></span> : <Icon size={27} />}</span>
       <span className="mbd-channel-copy"><strong>{label}</strong><small>{description}</small></span>
     </button>)}</nav>
-    <div className="mbd-toolbar"><div><button className={type === 'weekly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'weekly' })}>주간</button><button className={type === 'monthly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'monthly' })}>월간</button></div>{latest && <span>최근 조사일 <b>{latest.report_date}</b></span>}</div>
+    <div className="mbd-toolbar"><div className="mbd-period-control"><button className={type === 'weekly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'weekly' })}>주간</button><button className={type === 'monthly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'monthly' })}>월간</button></div><div className="mbd-toolbar-options"><div className="mbd-font-controls" role="group" aria-label="글자 크기"><span>글자 크기</span><button className={textSize === 'normal' ? 'active' : ''} onClick={() => setTextSize('normal')} aria-pressed={textSize === 'normal'} title="기본 글자">가</button><button className={textSize === 'large' ? 'active' : ''} onClick={() => setTextSize('large')} aria-pressed={textSize === 'large'} title="큰 글자">가</button><button className={textSize === 'xlarge' ? 'active' : ''} onClick={() => setTextSize('xlarge')} aria-pressed={textSize === 'xlarge'} title="아주 큰 글자">가</button></div>{latest && <span>최근 조사일 <b>{latest.report_date}</b></span>}</div></div>
 
     {loading ? <div className="briefing-state">자료를 정리하고 있습니다...</div> : error ? <div className="briefing-state error">{error}</div> : !latest ? <div className="briefing-state">아직 수신된 브리핑이 없습니다.</div> : tab === 'overview' ? <>
       <section className="mbd-overview-top"><article className={`mbd-status ${problemCount ? 'attention' : 'good'}`}><span>현재 종합 상태</span><strong>{problemCount ? '확인 필요' : '특이사항 없음'}</strong><p>{problemCount ? `문제 또는 미완료 항목이 ${problemCount}개 있습니다. 아래에서 쉬운 설명과 할 일을 확인하세요.` : '현재 보고된 자료에서는 급하게 확인할 문제가 없습니다.'}</p></article><article className="mbd-conclusion"><span>이번 주 변화 소견</span><h3>{latest.summary}</h3><p>수치 변화와 채널별 조사 결과를 함께 보고 판단한 결론입니다.</p></article></section>

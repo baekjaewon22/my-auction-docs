@@ -94,13 +94,19 @@ test('briefing dashboard provides five channel tabs and date-based inline report
   assert.match(dashboard, /function NaverVisual/);
   assert.match(dashboard, /function YoutubeVisual/);
   assert.match(dashboard, /function InstagramVisual/);
-  assert.match(dashboard, /롱폼 영상 성과/);
+  assert.match(dashboard, /최근 7일 조회수 TOP 롱폼/);
+  assert.match(dashboard, /누적 최고 조회수가 아닌 이번 보고 기간 조회수 순위입니다/);
   assert.match(dashboard, /쇼츠 영상 성과/);
   assert.match(dashboard, /클릭이 많은 검색어/);
   assert.match(dashboard, /전체 보고서를 항목별로 자세히 보기/);
   assert.match(css, /\.mbd-instagram-grid/);
   assert.match(css, /\.mbd-keyword-grid/);
   assert.match(css, /\.mbd-video-columns/);
+  assert.match(dashboard, /marketing-briefing-text-size/);
+  assert.match(dashboard, /aria-label="글자 크기"/);
+  assert.match(dashboard, /mbd-text-\$\{textSize\}/);
+  assert.match(css, /\.mbd-text-large/);
+  assert.match(css, /\.mbd-text-xlarge/);
 });
 
 test('briefing API is mounted and navigation is in the management section', () => {
