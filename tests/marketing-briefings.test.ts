@@ -90,6 +90,17 @@ test('briefing dashboard provides five channel tabs and date-based inline report
   assert.match(css, /\.mbd-channel-tabs button:hover[\s\S]*scale\(1\.045\)/);
   assert.match(css, /button:hover \.mbd-channel-logo[\s\S]*scale\(1\.15\)/);
   assert.match(css, /@media \(max-width:\s*720px\)[\s\S]*\.mbd-channel-tabs/);
+  assert.match(dashboard, /function AnalyticsVisual/);
+  assert.match(dashboard, /function NaverVisual/);
+  assert.match(dashboard, /function YoutubeVisual/);
+  assert.match(dashboard, /function InstagramVisual/);
+  assert.match(dashboard, /롱폼 영상 성과/);
+  assert.match(dashboard, /쇼츠 영상 성과/);
+  assert.match(dashboard, /클릭이 많은 검색어/);
+  assert.match(dashboard, /전체 보고서를 항목별로 자세히 보기/);
+  assert.match(css, /\.mbd-instagram-grid/);
+  assert.match(css, /\.mbd-keyword-grid/);
+  assert.match(css, /\.mbd-video-columns/);
 });
 
 test('briefing API is mounted and navigation is in the management section', () => {

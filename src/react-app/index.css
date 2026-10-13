@@ -294,6 +294,112 @@
 .mbd-table-card th { background: #f5f8fb; color: #586a80; }
 .mbd-empty { margin-top: 18px; padding: 22px; border: 1px dashed #b9c5d3; background: #f8fafc; color: #64748b; text-align: center; }
 
+.mbd-channel-visual { margin-top: 18px; }
+.mbd-visual-panel, .mbd-easy-explain { margin-top: 16px; padding: 22px; border: 1px solid var(--mbd-line); background: #fff; }
+.mbd-panel-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.mbd-panel-title span { display: block; margin-bottom: 4px; color: var(--mbd-blue); font-size: 10px; font-weight: 900; letter-spacing: .12em; }
+.mbd-panel-title h4 { margin: 0; font-size: 18px; }
+.mbd-panel-title p { margin: 0; color: var(--mbd-muted); font-size: 12px; }
+
+.mbd-visual-bars { display: grid; gap: 11px; }
+.mbd-visual-bar { display: grid; grid-template-columns: minmax(145px, 1.2fr) minmax(150px, 3fr) 100px; align-items: center; gap: 13px; }
+.mbd-visual-bar > span { overflow: hidden; color: #3e5067; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.mbd-visual-bar > div { height: 12px; overflow: hidden; background: #e9eff6; }
+.mbd-visual-bar i { display: block; height: 100%; background: linear-gradient(90deg, #1b70dd, #4eb7f4); box-shadow: 0 0 12px rgba(27,112,221,.25); }
+.mbd-visual-bar strong { color: #17365f; font-size: 13px; text-align: right; }
+.mbd-visual-bar strong small { color: #8390a0; font-size: 10px; font-weight: 600; }
+
+.mbd-device-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.mbd-device-cards article { padding: 17px; border: 1px solid #dbe5ef; background: #f9fbfd; }
+.mbd-device-cards article > strong { display: block; margin-bottom: 12px; color: #155aa8; font-size: 17px; }
+.mbd-device-cards dl { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0; }
+.mbd-device-cards dl div { border-right: 1px solid #e3e9f0; text-align: center; }
+.mbd-device-cards dl div:last-child { border-right: 0; }
+.mbd-device-cards dt { color: #8090a3; font-size: 10px; }
+.mbd-device-cards dd { margin: 4px 0 0; color: #233b59; font-size: 13px; font-weight: 800; }
+.mbd-rate-track { height: 7px; margin: 13px 0 8px; overflow: hidden; background: #e5ebf2; }
+.mbd-rate-track i { display: block; height: 100%; background: linear-gradient(90deg, #20a4ef, #1769e0); }
+.mbd-device-cards article > small { color: #78879a; }
+
+.mbd-easy-explain { border-left: 5px solid #2f8de4; background: linear-gradient(110deg, #eff7ff, #fff); }
+.mbd-channel-visual.naver .mbd-easy-explain { border-left-color: #03c75a; background: linear-gradient(110deg, #effcf4, #fff); }
+.mbd-channel-visual.youtube .mbd-easy-explain { border-left-color: #ff0033; background: linear-gradient(110deg, #fff3f5, #fff); }
+.mbd-channel-visual.instagram .mbd-easy-explain { border-left-color: #d62976; background: linear-gradient(110deg, #fff4fa, #fff); }
+.mbd-easy-explain > h4 { margin: 0 0 11px; font-size: 16px; }
+.mbd-plain-notes p { position: relative; margin: 8px 0; padding-left: 16px; color: #43566e; font-size: 13px; line-height: 1.65; }
+.mbd-plain-notes p::before { content: ''; position: absolute; top: .62em; left: 0; width: 6px; height: 6px; border-radius: 50%; background: #3b91df; }
+.mbd-channel-visual.naver .mbd-plain-notes p::before { background: #03c75a; }
+.mbd-channel-visual.youtube .mbd-plain-notes p::before { background: #ff0033; }
+.mbd-channel-visual.instagram .mbd-plain-notes p::before { background: #d62976; }
+
+.mbd-naver-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }
+.mbd-naver-summary article { position: relative; min-height: 124px; padding: 17px; overflow: hidden; border: 1px solid #d6e9df; background: linear-gradient(150deg, #fff, #f2fbf6); }
+.mbd-naver-summary article::after { content: 'N'; position: absolute; right: -5px; bottom: -22px; color: rgba(3,199,90,.08); font-size: 72px; font-weight: 900; }
+.mbd-naver-summary span, .mbd-naver-summary strong, .mbd-naver-summary small { position: relative; z-index: 1; display: block; }
+.mbd-naver-summary span { color: #537064; font-size: 12px; font-weight: 700; }
+.mbd-naver-summary strong { margin: 8px 0 4px; color: #143c29; font-size: 21px; }
+.mbd-naver-summary small { color: #819187; }
+.mbd-naver-summary em { position: absolute; z-index: 2; top: 12px; right: 10px; padding: 3px 6px; font-size: 10px; font-style: normal; }
+.mbd-naver-summary em.good { background: #e2f8eb; color: #087b3b; }
+.mbd-naver-summary em.bad { background: #fff0ed; color: #ba3c2e; }
+
+.mbd-keyword-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.mbd-keyword-grid > article { position: relative; display: grid; grid-template-columns: 31px minmax(120px, 1fr) minmax(210px, 1.2fr); align-items: center; gap: 10px; padding: 14px; border: 1px solid #dce5df; background: #fbfefc; }
+.mbd-keyword-grid .rank { width: 27px; height: 27px; display: grid; place-items: center; background: #03c75a; color: #fff; font-size: 11px; font-weight: 900; }
+.mbd-keyword-grid strong, .mbd-keyword-grid small { display: block; }
+.mbd-keyword-grid strong { color: #173b29; font-size: 13px; }
+.mbd-keyword-grid small { margin-top: 4px; color: #75877d; font-size: 10px; }
+.mbd-keyword-grid dl { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0; }
+.mbd-keyword-grid dl div { text-align: center; }
+.mbd-keyword-grid dt { color: #8a9b91; font-size: 9px; }
+.mbd-keyword-grid dd { margin: 3px 0 0; color: #30493c; font-size: 11px; font-weight: 800; }
+.mbd-keyword-grid article > em { position: absolute; top: 0; right: 0; padding: 3px 6px; font-size: 9px; font-style: normal; }
+.mbd-keyword-grid article.good > em { background: #dcf8e8; color: #087d3d; }
+.mbd-keyword-grid article.bad > em { background: #ffe3df; color: #b43628; }
+.mbd-keyword-grid article.watch > em { background: #fff1d4; color: #90600c; }
+
+.mbd-youtube-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.mbd-youtube-kpis article { padding: 18px; border: 1px solid #eedde0; border-top: 4px solid #ff0033; background: #fff; }
+.mbd-youtube-kpis span, .mbd-youtube-kpis strong, .mbd-youtube-kpis small { display: block; }
+.mbd-youtube-kpis span { color: #7b6770; font-size: 12px; }
+.mbd-youtube-kpis strong { margin: 7px 0 4px; color: #301820; font-size: 25px; }
+.mbd-youtube-kpis small { color: #937c84; }
+.mbd-video-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+.mbd-video-columns > section { min-width: 0; padding: 20px; border: 1px solid var(--mbd-line); background: #fff; }
+.mbd-video-card { position: relative; margin-top: 10px; padding: 17px; border-left: 4px solid #182c4d; background: #f6f8fb; }
+.mbd-video-card.short { border-left-color: #ff0033; background: #fff6f7; }
+.mbd-video-card em { display: inline-block; margin-bottom: 8px; padding: 3px 7px; background: #182c4d; color: #fff; font-size: 9px; font-style: normal; letter-spacing: .08em; }
+.mbd-video-card.short em { background: #ff0033; }
+.mbd-video-card strong { display: block; color: #27384d; font-size: 14px; line-height: 1.55; }
+.mbd-video-card p { margin: 8px 0 0; color: #718095; font-size: 11px; line-height: 1.55; }
+
+.mbd-instagram-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.mbd-instagram-grid article { position: relative; min-width: 0; padding: 18px; border: 1px solid #eadde6; background: #fff; }
+.mbd-instagram-grid article.top { border-top: 4px solid #d62976; background: linear-gradient(145deg, #fff, #fff5fa); box-shadow: 0 9px 22px rgba(141,31,91,.1); }
+.mbd-post-rank { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.mbd-post-rank span { color: #d62976; font-size: 10px; font-weight: 900; letter-spacing: .08em; }
+.mbd-post-rank em { color: #8b7180; font-size: 9px; font-style: normal; }
+.mbd-instagram-grid h4 { min-height: 52px; margin: 12px 0; color: #3e2836; font-size: 14px; line-height: 1.55; }
+.mbd-post-views { display: flex; align-items: baseline; gap: 5px; }
+.mbd-post-views strong { color: #a71963; font-size: 25px; }
+.mbd-post-views span { color: #9b8793; font-size: 10px; }
+.mbd-post-track { height: 7px; margin: 8px 0 13px; overflow: hidden; background: #f0e6ec; }
+.mbd-post-track i { display: block; height: 100%; background: linear-gradient(90deg, #ff8a00, #d62976, #7b3fd5); }
+.mbd-instagram-grid dl { display: flex; gap: 22px; margin: 0; }
+.mbd-instagram-grid dl div { display: flex; gap: 5px; }
+.mbd-instagram-grid dt { color: #9a8492; font-size: 10px; }
+.mbd-instagram-grid dd { margin: 0; color: #593749; font-size: 11px; font-weight: 800; }
+.mbd-instagram-grid p { margin: 13px 0 0; padding-top: 11px; border-top: 1px solid #f0e5eb; color: #796472; font-size: 11px; line-height: 1.55; }
+
+.mbd-readable-report { padding: 5px 18px 18px; }
+.mbd-readable-report > section { margin-top: 14px; padding: 18px; border: 1px solid #e1e7ef; background: #fff; }
+.mbd-readable-report > section > h4 { margin: 0 0 12px; padding-bottom: 10px; border-bottom: 2px solid #1b70dd; color: #193a64; font-size: 17px; }
+.mbd-readable-table { margin-top: 13px; overflow-x: auto; }
+.mbd-readable-table table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.mbd-readable-table th, .mbd-readable-table td { padding: 9px 8px; border: 1px solid #e3e8ee; text-align: left; white-space: nowrap; }
+.mbd-readable-table th { background: #edf5ff; color: #2d527c; }
+.mbd-readable-table tbody tr:nth-child(even) { background: #f9fbfd; }
+
 .mbd-history { margin-top: 28px; }
 .mbd-report-list { border-top: 2px solid var(--mbd-navy); }
 .mbd-report-list > article { border-bottom: 1px solid var(--mbd-line); background: #fff; }
@@ -350,6 +456,17 @@
   .mbd-highlight-grid { grid-template-columns: 1fr; }
   .mbd-actions { width: 100%; }
   .mbd-actions .btn { flex: 1; }
+  .mbd-panel-title { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .mbd-visual-panel, .mbd-easy-explain { padding: 16px; }
+  .mbd-visual-bar { grid-template-columns: 105px minmax(90px, 1fr) 73px; gap: 7px; }
+  .mbd-device-cards, .mbd-video-columns, .mbd-instagram-grid { grid-template-columns: 1fr; }
+  .mbd-youtube-kpis { grid-template-columns: repeat(2, 1fr); }
+  .mbd-keyword-grid { grid-template-columns: 1fr; }
+  .mbd-keyword-grid > article { grid-template-columns: 29px minmax(100px, 1fr); }
+  .mbd-keyword-grid dl { grid-column: 2; }
+  .mbd-instagram-grid h4 { min-height: 0; }
+  .mbd-readable-report { padding: 3px 8px 12px; }
+  .mbd-readable-report > section { padding: 13px; }
 }
 
 /* 영상제작 의뢰 */

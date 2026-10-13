@@ -105,45 +105,80 @@ function Sparkline({ values }: { values: number[] }) {
   return <svg className="mbd-sparkline" viewBox="0 0 100 42" preserveAspectRatio="none" aria-hidden="true"><polyline points={points} /></svg>;
 }
 
-function SimpleMarkdown({ source }: { source: string }) {
-  const nodes: React.ReactNode[] = [];
-  let bullets: string[] = [];
-  const flush = () => {
-    if (!bullets.length) return;
-    nodes.push(<ul key={`list-${nodes.length}`}>{bullets.map((text, index) => <li key={index}>{text}</li>)}</ul>);
-    bullets = [];
-  };
-  source.split(/\r?\n/).forEach((raw, index) => {
-    const line = raw.trim();
-    const bullet = line.match(/^[-*]\s+(.+)$/);
-    if (bullet) { bullets.push(bullet[1]); return; }
-    flush();
-    if (!line) return;
-    const heading = line.match(/^#{1,4}\s+(.+)$/);
-    if (heading) nodes.push(<h4 key={index}>{heading[1]}</h4>);
-    else nodes.push(<p key={index}>{line.replace(/^>\s*/, '')}</p>);
-  });
-  flush();
-  return <div className="mbd-markdown">{nodes}</div>;
+function extractSections(markdown: string, words: string[]) {
+  const sections = splitReportSections(markdown);
+  return Object.entries(sections)
+    .filter(([heading]) => words.some((word) => heading.toLowerCase().includes(word.toLowerCase())))
+    .map(([heading, body]) => `### ${heading}\n${body}`)
+    .join('\n\n');
 }
 
-function extractSections(markdown: string, words: string[]) {
-  if (!markdown) return '';
-  const lines = markdown.split(/\r?\n/);
-  const selected: string[] = [];
-  let include = false;
-  let level = 0;
-  for (const line of lines) {
-    const heading = line.match(/^(#{1,4})\s+(.+)$/);
-    if (heading) {
-      const nextLevel = heading[1].length;
-      const matches = words.some((word) => heading[2].toLowerCase().includes(word.toLowerCase()));
-      if (matches) { include = true; level = nextLevel; }
-      else if (include && nextLevel <= level) include = false;
-    }
-    if (include) selected.push(line);
+type ParsedTable = { columns: string[]; rows: string[][] };
+const REPORT_HEADINGS = [
+  '한 줄 결론', '이번 주 화제 정보', '채널 간 연결 (추정)', '채널별 가입 (GA4)',
+  '네이버 검색광고', '애널리틱스', '인스타 릴스', '유튜브', '개발·광고 진행 체크', '다음 주 할 일',
+];
+
+function cleanMarkdown(value: string) {
+  return value.replace(/^#{1,4}\s*/, '').replace(/\*\*/g, '').replace(/`/g, '').trim();
+}
+
+function splitReportSections(markdown: string) {
+  const sections: Record<string, string> = {};
+  let heading = '보고서 안내';
+  let body: string[] = [];
+  const flush = () => { if (body.some((line) => line.trim())) sections[heading] = body.join('\n').trim(); body = []; };
+  for (const raw of (markdown || '').split(/\r?\n/)) {
+    const candidate = cleanMarkdown(raw);
+    const matched = REPORT_HEADINGS.find((item) => candidate === item);
+    if (matched) { flush(); heading = matched; }
+    else body.push(raw);
   }
-  return selected.join('\n').trim();
+  flush();
+  return sections;
+}
+
+function parseMarkdownTables(source: string): ParsedTable[] {
+  const tables: ParsedTable[] = [];
+  const lines = source.split(/\r?\n/);
+  for (let index = 0; index < lines.length;) {
+    if (!lines[index].trim().startsWith('|')) { index += 1; continue; }
+    const block: string[] = [];
+    while (index < lines.length) {
+      if (lines[index].trim().startsWith('|')) { block.push(lines[index]); index += 1; continue; }
+      if (!lines[index].trim() && lines.slice(index + 1).find((line) => line.trim())?.trim().startsWith('|')) { index += 1; continue; }
+      break;
+    }
+    const parsed = block.map((line) => line.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cleanMarkdown(cell)));
+    const rows = parsed.filter((row) => !row.every((cell) => /^:?-{3,}:?$/.test(cell)));
+    if (rows.length >= 2) tables.push({ columns: rows[0], rows: rows.slice(1) });
+  }
+  return tables;
+}
+
+function withoutTables(source: string) {
+  return source.split(/\r?\n/).filter((line) => !line.trim().startsWith('|') && line.trim()).map(cleanMarkdown);
+}
+
+function numberFrom(value: string | undefined) {
+  if (!value || /—|-/.test(value.trim()) && !/\d/.test(value)) return null;
+  const matched = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  return matched ? Number(matched[0]) : null;
+}
+
+function reportSection(item: Briefing, title: string) {
+  return splitReportSections(item.content_md || '')[title] || '';
+}
+
+function PlainNotes({ lines }: { lines: string[] }) {
+  if (!lines.length) return null;
+  return <div className="mbd-plain-notes">{lines.map((line, index) => <p key={index}>{line}</p>)}</div>;
+}
+
+function VisualBars({ rows, labelIndex, valueIndex, valueLabel }: { rows: string[][]; labelIndex: number; valueIndex: number; valueLabel: string }) {
+  const values = rows.map((row) => numberFrom(row[valueIndex]) || 0);
+  const max = Math.max(...values, 1);
+  return <div className="mbd-visual-bars">{rows.map((row, index) => <div key={`${row[labelIndex]}-${index}`} className="mbd-visual-bar"><span>{row[labelIndex]}</span><div><i style={{ width: `${Math.max((values[index] / max) * 100, values[index] ? 3 : 0)}%` }} /></div><strong>{row[valueIndex]} <small>{valueLabel}</small></strong></div>)}</div>;
 }
 
 function objectRows(value: unknown): Array<Record<string, unknown>> {
@@ -190,6 +225,79 @@ function Findings({ item, matcher }: { item: Briefing; matcher?: RegExp }) {
   </div>;
 }
 
+function ReportTable({ table }: { table: ParsedTable }) {
+  return <div className="mbd-readable-table"><table><thead><tr>{table.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{table.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table></div>;
+}
+
+function AnalyticsVisual({ item }: { item: Briefing }) {
+  const channelSource = reportSection(item, '채널별 가입 (GA4)');
+  const analyticsSource = reportSection(item, '애널리틱스');
+  const channelTable = parseMarkdownTables(channelSource)[0];
+  const deviceTable = parseMarkdownTables(analyticsSource)[0];
+  const channelRows = channelTable?.rows || [];
+  const sourceIndex = channelTable?.columns.findIndex((column) => /소스|채널/.test(column)) ?? 0;
+  const signupIndex = channelTable?.columns.findIndex((column) => /가입/.test(column) && !/직전/.test(column)) ?? 2;
+  const topChannels = [...channelRows].sort((a, b) => (numberFrom(b[signupIndex]) || 0) - (numberFrom(a[signupIndex]) || 0)).slice(0, 8);
+  const notes = [...withoutTables(channelSource), ...withoutTables(analyticsSource)];
+  return <div className="mbd-channel-visual analytics">
+    {!!topChannels.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>가입을 만든 유입 경로</span><h4>어디에서 가입했나요?</h4></div><p>막대가 길수록 가입 기여가 큽니다.</p></div><VisualBars rows={topChannels} labelIndex={sourceIndex} valueIndex={signupIndex} valueLabel="가입" /></section>}
+    {deviceTable && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>기기별 성과</span><h4>PC와 모바일 비교</h4></div><p>방문 수보다 가입률 차이를 함께 보세요.</p></div><div className="mbd-device-cards">{deviceTable.rows.map((row) => <article key={row[0]}><strong>{row[0] === 'desktop' ? 'PC' : row[0] === 'mobile' ? '모바일' : '태블릿'}</strong><dl><div><dt>방문</dt><dd>{row[1]}</dd></div><div><dt>가입</dt><dd>{row[2]}</dd></div><div><dt>가입률</dt><dd>{row[3]}</dd></div></dl><div className="mbd-rate-track"><i style={{ width: `${Math.min((numberFrom(row[3]) || 0) * 25, 100)}%` }} /></div><small>직전 가입 {row[4] || '-'}</small></article>)}</div></section>}
+    <section className="mbd-easy-explain"><h4>쉽게 풀어보면</h4><PlainNotes lines={notes} /></section>
+  </div>;
+}
+
+function NaverVisual({ item }: { item: Briefing }) {
+  const source = reportSection(item, '네이버 검색광고');
+  const tables = parseMarkdownTables(source);
+  const summary = tables[0];
+  const keywords = tables[1];
+  const notes = withoutTables(source);
+  const keywordRows = keywords ? [...keywords.rows].sort((a, b) => (numberFrom(b[1]) || 0) - (numberFrom(a[1]) || 0)) : [];
+  return <div className="mbd-channel-visual naver">
+    {summary && <section className="mbd-naver-summary">{summary.rows.map((row) => { const change = numberFrom(row[3]); const better = /비용|CPC|CPA/.test(row[0]) ? (change ?? 0) <= 0 : (change ?? 0) >= 0; return <article key={row[0]}><span>{row[0]}</span><strong>{row[1]}</strong><small>직전 {row[2]}</small>{row[3] && row[3] !== '—' && <em className={better ? 'good' : 'bad'}>{row[3]}</em>}</article>; })}</section>}
+    {keywords && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>키워드 점검</span><h4>클릭이 많은 검색어</h4></div><p>비용과 실제 전환을 함께 비교합니다.</p></div><div className="mbd-keyword-grid">{keywordRows.slice(0, 12).map((row, index) => { const costPer = numberFrom(row[6]); const grade = costPer === null ? 'unknown' : costPer <= 4000 ? 'good' : costPer >= 8000 ? 'bad' : 'watch'; return <article key={row[0]} className={grade}><span className="rank">{index + 1}</span><div><strong>{row[0]}</strong><small>{row[1]}회 클릭 · 평균 {row[4]}위</small></div><dl><div><dt>광고비</dt><dd>{row[2]}</dd></div><div><dt>전환</dt><dd>{row[5]}</dd></div><div><dt>전환당 비용</dt><dd>{row[6]}</dd></div></dl><em>{grade === 'good' ? '효율 좋음' : grade === 'bad' ? '조정 검토' : grade === 'watch' ? '관찰 필요' : '자료 부족'}</em></article>; })}</div></section>}
+    <section className="mbd-easy-explain"><h4>광고 담당자가 확인할 내용</h4><PlainNotes lines={notes} /></section>
+  </div>;
+}
+
+function parseYoutubeTopicCards(item: Briefing) {
+  const topic = parseMarkdownTables(reportSection(item, '이번 주 화제 정보'))[0];
+  const row = topic?.rows.find((entry) => /유튜브/.test(entry[0]));
+  return (row?.slice(1) || []).filter(Boolean).map((text) => ({ text, kind: /쇼츠|short/i.test(text) ? 'short' : 'long' as 'short' | 'long' }));
+}
+
+function YoutubeVisual({ item }: { item: Briefing }) {
+  const source = reportSection(item, '유튜브');
+  const text = withoutTables(source).join(' ');
+  const value = (pattern: RegExp) => text.match(pattern)?.[1] || '-';
+  const topics = parseYoutubeTopicCards(item);
+  const shortLine = text.match(/쇼츠 상위:\s*(.+?)(?:사이트 유입|$)/)?.[1] || '';
+  const shorts = shortLine.split(/\),\s*/).map((entry) => entry.replace(/\)?$/, ')').trim()).filter(Boolean);
+  const longform = topics.filter((topic) => topic.kind === 'long');
+  const topicShorts = topics.filter((topic) => topic.kind === 'short').map((topic) => topic.text);
+  return <div className="mbd-channel-visual youtube">
+    <section className="mbd-youtube-kpis"><article><span>전체 조회</span><strong>{value(/주간 조회\s*([\d,]+)/)}</strong><small>직전 {value(/직전\s*([\d,]+)/)}</small></article><article><span>광고 조회</span><strong>{value(/광고\s*([\d,]+)/)}</strong><small>전체 중 {value(/광고\s*[\d,]+\((\d+%)/)}</small></article><article><span>쇼츠 조회</span><strong>{value(/쇼츠\s*([\d,]+)/)}</strong><small>{value(/쇼츠\s*[\d,]+\(([-+]?\d+%)/)} 변화</small></article><article><span>사이트 가입</span><strong>{value(/가입\s*([\d,]+)/)}</strong><small>유튜브 유입의 실제 결과</small></article></section>
+    <div className="mbd-video-columns"><section><div className="mbd-panel-title"><div><span>LONG FORM</span><h4>롱폼 영상 성과</h4></div></div>{longform.length ? longform.map((topic, index) => <article className="mbd-video-card long" key={index}><em>롱폼</em><strong>{topic.text}</strong><p>긴 영상은 조회수뿐 아니라 설명란 링크를 통한 사이트 방문과 가입까지 함께 확인해야 합니다.</p></article>) : <div className="mbd-empty">이번 보고서에는 롱폼별 상세 자료가 없습니다.</div>}</section><section><div className="mbd-panel-title"><div><span>SHORT FORM</span><h4>쇼츠 영상 성과</h4></div></div>{[...shorts, ...topicShorts].filter((entry, index, all) => all.indexOf(entry) === index).map((entry, index) => <article className="mbd-video-card short" key={index}><em>쇼츠 {index + 1}</em><strong>{entry}</strong><p>{/시청률\s*(?:[7-9]\d|100)%/.test(entry) ? '끝까지 보는 비율이 높습니다. 같은 전개를 반복할 가치가 있습니다.' : '첫 장면과 제목의 반전 요소를 유지하며 시청 지속률을 비교하세요.'}</p></article>)}</section></div>
+    <section className="mbd-easy-explain"><h4>유튜브 결과를 쉽게 읽으면</h4><PlainNotes lines={withoutTables(source)} /></section>
+  </div>;
+}
+
+function InstagramVisual({ item }: { item: Briefing }) {
+  const source = reportSection(item, '인스타 릴스');
+  const table = parseMarkdownTables(source)[0];
+  const rows = table ? [...table.rows].sort((a, b) => (numberFrom(b[2]) || 0) - (numberFrom(a[2]) || 0)) : [];
+  const maxViews = Math.max(...rows.map((row) => numberFrom(row[2]) || 0), 1);
+  return <div className="mbd-channel-visual instagram">
+    {!!rows.length && <section className="mbd-instagram-grid">{rows.map((row, index) => <article key={`${row[0]}-${row[1]}`} className={index < 3 ? 'top' : ''}><div className="mbd-post-rank"><span>{index < 3 ? `TOP ${index + 1}` : row[0]}</span><em>{row[5] === '✅' ? '금액 대비 소재' : '일반 소재'}</em></div><h4>{row[1]}</h4><div className="mbd-post-views"><strong>{row[2]}</strong><span>조회</span></div><div className="mbd-post-track"><i style={{ width: `${((numberFrom(row[2]) || 0) / maxViews) * 100}%` }} /></div><dl><div><dt>저장</dt><dd>{row[3]}</dd></div><div><dt>공유</dt><dd>{row[4]}</dd></div></dl><p>{numberFrom(row[4]) && numberFrom(row[4])! >= 5 ? '공유 반응이 좋습니다. 비슷한 반전 소재를 이어가세요.' : index < 3 ? '조회 성과가 좋은 게시물입니다. 제목 구조를 재사용해 보세요.' : '첫 문장의 금액·반전 요소를 더 선명하게 테스트하세요.'}</p></article>)}</section>}
+    <section className="mbd-easy-explain"><h4>인스타 결과를 쉽게 읽으면</h4><PlainNotes lines={withoutTables(source)} /></section>
+  </div>;
+}
+
+export function ReadableReport({ source }: { source: string }) {
+  const sections = splitReportSections(source);
+  return <div className="mbd-readable-report">{Object.entries(sections).map(([heading, body]) => <section key={heading}><h4>{heading}</h4><PlainNotes lines={withoutTables(body)} />{parseMarkdownTables(body).map((table, index) => <ReportTable table={table} key={index} />)}</section>)}</div>;
+}
+
 function ChannelView({ tab, item, items }: { tab: Exclude<TabKey, 'overview'>; item: Briefing; items: Briefing[] }) {
   const section = extractSections(item.content_md || '', SECTION_WORDS[tab]);
   const title = TABS.find((entry) => entry.key === tab)!;
@@ -198,11 +306,15 @@ function ChannelView({ tab, item, items }: { tab: Exclude<TabKey, 'overview'>; i
   return <>
     <header className="mbd-section-heading"><div><span>{title.description}</span><h3>{title.label} 조사 결과</h3></div><p>전문용어 대신 “무엇이 달라졌고 무엇을 확인해야 하는지” 중심으로 정리했습니다.</p></header>
     <MetricCards tab={tab} items={items} />
-    {tab === 'analytics' && <div className="mbd-data-grid"><EasyTable title="기기별 방문·가입" rows={objectRows(item.devices)} /><EasyTable title="유입 화면·UTM" rows={objectRows(item.landing)} /><EasyTable title="신규·재방문" rows={objectRows(item.audience)} /><EasyTable title="채널별 유입" rows={item.channels || []} /></div>}
-    {tab === 'instagram' && <EasyTable title="최근 릴스 반응" rows={item.reels || []} />}
-    {tab === 'naver' && <EasyTable title="검색·키워드 점검 자료" rows={(item.channels || []).filter((row) => /naver|네이버/i.test(JSON.stringify(row)))} />}
+    {tab === 'analytics' && <AnalyticsVisual item={item} />}
+    {tab === 'youtube' && <YoutubeVisual item={item} />}
+    {tab === 'instagram' && <InstagramVisual item={item} />}
+    {tab === 'naver' && <NaverVisual item={item} />}
+    {!section && tab === 'analytics' && <div className="mbd-data-grid"><EasyTable title="기기별 방문·가입" rows={objectRows(item.devices)} /><EasyTable title="유입 화면·UTM" rows={objectRows(item.landing)} /><EasyTable title="신규·재방문" rows={objectRows(item.audience)} /><EasyTable title="채널별 유입" rows={item.channels || []} /></div>}
+    {!section && tab === 'instagram' && <EasyTable title="최근 릴스 반응" rows={item.reels || []} />}
+    {!section && tab === 'naver' && <EasyTable title="검색·키워드 점검 자료" rows={(item.channels || []).filter((row) => /naver|네이버/i.test(JSON.stringify(row)))} />}
     <Findings item={item} matcher={FINDING_MATCH[tab]} />
-    {section ? <section className="mbd-channel-report"><h3>조사 내용과 해설</h3><SimpleMarkdown source={section} /></section> : !hasTables && <div className="mbd-empty">이번 보고서에는 이 채널의 상세 조사 내용이 없습니다. 다음 수신 자료부터 같은 위치에 자동으로 표시됩니다.</div>}
+    {!section && !hasTables && <div className="mbd-empty">이번 보고서에는 이 채널의 상세 조사 내용이 없습니다. 다음 수신 자료부터 같은 위치에 자동으로 표시됩니다.</div>}
   </>;
 }
 
@@ -213,7 +325,7 @@ function ExpandedReport({ item, previousChecks }: { item: Briefing; previousChec
     <Findings item={item} />
     {!!item.highlights?.length && <div className="mbd-highlight-grid">{item.highlights.slice(0, 3).map((highlight, index) => <article key={index}><span>{highlight.label}</span><strong>{formatValue(highlight.value)}</strong>{highlight.note && <p>{highlight.note}</p>}</article>)}</div>}
     {!!item.checks?.some((check) => previous.has(check.key) && previous.get(check.key) !== check.status) && <p className="mbd-changed-note">직전 보고서와 상태가 달라진 진행 항목이 있습니다. 위 진행 상황을 확인하세요.</p>}
-    {item.content_md && <details className="mbd-original"><summary>보고서 전문 펼쳐보기</summary><SimpleMarkdown source={item.content_md} /></details>}
+    {item.content_md && <details className="mbd-original"><summary>전체 보고서를 항목별로 자세히 보기</summary><ReadableReport source={item.content_md} /></details>}
   </div>;
 }
 

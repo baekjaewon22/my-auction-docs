@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, ArrowRight, Check, Clipboard, XCircle } from 'lucide-react';
 import { api } from '../api';
-import MarketingBriefingDashboard from '../components/MarketingBriefingDashboard';
+import MarketingBriefingDashboard, { ReadableReport } from '../components/MarketingBriefingDashboard';
 
 type CheckStatus = 'done' | 'pending' | 'partial';
 type Briefing = {
@@ -25,23 +25,6 @@ function formatValue(value: unknown, percent = false) {
   if (!Number.isFinite(number)) return String(value);
   if (percent) return `${(number * 100).toLocaleString('ko-KR', { maximumFractionDigits: 1 })}%`;
   return number.toLocaleString('ko-KR', { maximumFractionDigits: 1 });
-}
-
-function MarkdownContent({ source }: { source: string }) {
-  const nodes: React.ReactNode[] = []; let list: string[] = [];
-  const flushList = () => { if (list.length) { nodes.push(<ul key={`list-${nodes.length}`}>{list.map((item, index) => <li key={index}>{item}</li>)}</ul>); list = []; } };
-  source.split(/\r?\n/).forEach((raw, index) => {
-    const line = raw.trimEnd(); const listMatch = line.match(/^\s*[-*]\s+(.+)$/);
-    if (listMatch) { list.push(listMatch[1]); return; }
-    flushList(); if (!line.trim()) return;
-    const heading = line.match(/^(#{1,4})\s+(.+)$/);
-    if (heading) {
-      const Tag = `h${heading[1].length}` as 'h1' | 'h2' | 'h3' | 'h4';
-      nodes.push(<Tag key={index}>{heading[2]}</Tag>);
-    } else if (line.startsWith('> ')) nodes.push(<blockquote key={index}>{line.slice(2)}</blockquote>);
-    else nodes.push(<p key={index}>{line}</p>);
-  });
-  flushList(); return <div className="briefing-markdown">{nodes}</div>;
 }
 
 function DataTable({ rows, kind }: { rows: Array<Record<string, any>>; kind: 'channels' | 'reels' }) {
@@ -107,7 +90,7 @@ function BriefingDetail() {
     {(objectRows(item.devices).length > 0 || objectRows(item.landing).length > 0 || objectRows(item.audience).length > 0 || typeof item.kpis.app_webview_signups === 'number') && <section className="briefing-analytics-section"><div className="briefing-section-title"><h3>애널리틱스</h3></div><div className="briefing-analytics-grid"><AnalyticsTable title="기기별 성과" value={item.devices} /><LandingBars landing={item.landing} kpis={item.kpis} /><AnalyticsTable title="신규·재방문" value={item.audience} /></div></section>}
     <Corrections items={item.corrections} />
     <DataTable rows={item.channels} kind="channels" /><DataTable rows={item.reels} kind="reels" />
-    {item.html && <div className="briefing-content-tabs"><button className={tab === 'report' ? 'active' : ''} onClick={() => setTab('report')}>리포트 전문</button><button className={tab === 'html' ? 'active' : ''} onClick={() => setTab('html')}>HTML 리포트</button></div>}{tab === 'report' ? <section className="briefing-report-content"><MarkdownContent source={item.content_md} /></section> : <iframe className="briefing-html-frame" title="월간 HTML 리포트" sandbox="" srcDoc={item.html || ''} />}
+    {item.html && <div className="briefing-content-tabs"><button className={tab === 'report' ? 'active' : ''} onClick={() => setTab('report')}>항목별 상세 보고서</button><button className={tab === 'html' ? 'active' : ''} onClick={() => setTab('html')}>HTML 리포트</button></div>}{tab === 'report' ? <section className="briefing-report-content"><ReadableReport source={item.content_md} /></section> : <iframe className="briefing-html-frame" title="월간 HTML 리포트" sandbox="" srcDoc={item.html || ''} />}
   </div>;
 }
 
