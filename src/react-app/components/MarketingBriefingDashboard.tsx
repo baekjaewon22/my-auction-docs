@@ -6,6 +6,9 @@ import {
 import { useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
+import instagramLogo from '../../../instar.jpg';
+import naverLogo from '../../../naver.jpg';
+import youtubeLogo from '../../../youtube.jpg';
 
 type TabKey = 'overview' | 'analytics' | 'youtube' | 'instagram' | 'naver';
 type Briefing = {
@@ -32,12 +35,12 @@ type Briefing = {
 type DetailResponse = { briefing: Briefing; previous_checks?: Briefing['checks'] };
 type BriefingKey = { id: string; name: string; site: string | null; token_prefix: string; last_used_at: string | null; revoked_at: string | null };
 
-const TABS: Array<{ key: TabKey; label: string; icon: typeof BarChart3; description: string }> = [
+const TABS: Array<{ key: TabKey; label: string; icon: typeof BarChart3; description: string; logo?: string }> = [
   { key: 'overview', label: '종합', icon: BarChart3, description: '전체 광고·마케팅 상태' },
   { key: 'analytics', label: 'Google 애널리틱스', icon: Activity, description: '유입·UTM·가입 변화' },
-  { key: 'youtube', label: '유튜브', icon: PlayCircle, description: '조회수·인기 콘텐츠' },
-  { key: 'instagram', label: '인스타', icon: Camera, description: '도달·조회·반응' },
-  { key: 'naver', label: '네이버센터', icon: Search, description: '검색광고·키워드 점검' },
+  { key: 'youtube', label: '유튜브', icon: PlayCircle, description: '조회수·인기 콘텐츠', logo: youtubeLogo },
+  { key: 'instagram', label: '인스타', icon: Camera, description: '도달·조회·반응', logo: instagramLogo },
+  { key: 'naver', label: '네이버센터', icon: Search, description: '검색광고·키워드 점검', logo: naverLogo },
 ];
 
 const METRICS: Array<{ key: string; label: string; tab: TabKey; percent?: boolean; lowerBetter?: boolean; help: string }> = [
@@ -267,7 +270,10 @@ export default function MarketingBriefingDashboard() {
     <header className="mbd-hero"><div><span>MARKETING CHECK CENTER</span><h2>마이옥션 주간 브리핑</h2><p>광고를 잘 몰라도 문제와 변화를 바로 이해할 수 있는 마케팅 점검판입니다.</p></div><div className="mbd-actions"><button className="btn btn-secondary" onClick={() => void load()}><RefreshCw size={16} /> 새로고침</button>{isMaster && <button className="btn btn-secondary" onClick={() => void toggleKeys()}><KeyRound size={16} /> API 키</button>}</div></header>
     {keyPanel && <section className="briefing-key-panel"><div className="briefing-section-title"><div><h3>수신 API 키</h3><p>원문 키는 발급 직후 한 번만 표시됩니다.</p></div></div><div className="briefing-key-create"><input value={keyName} onChange={(event) => setKeyName(event.target.value)} aria-label="키 이름" /><button className="btn btn-primary" onClick={() => void createKey()}>새 키 발급</button></div>{newToken && <div className="briefing-token-once"><strong>지금 안전하게 보관하세요.</strong><code>{newToken}</code><button onClick={() => void navigator.clipboard.writeText(newToken)}><Clipboard size={15} /> 복사</button></div>}<div className="briefing-key-list">{keys.map((key) => <div key={key.id}><span><strong>{key.name}</strong><small>{key.token_prefix}… · {key.site || '전체 사이트'} · 최근 사용 {key.last_used_at || '없음'}</small></span>{key.revoked_at ? <em>폐기됨</em> : <button onClick={() => void revokeKey(key.id)}>폐기</button>}</div>)}</div></section>}
 
-    <nav className="mbd-channel-tabs" aria-label="마케팅 채널 선택">{TABS.map(({ key, label, icon: Icon, description }) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)} aria-pressed={tab === key}><Icon size={21} /><strong>{label}</strong><small>{description}</small></button>)}</nav>
+    <nav className="mbd-channel-tabs" aria-label="마케팅 채널 선택">{TABS.map(({ key, label, icon: Icon, description, logo }) => <button key={key} data-channel={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)} aria-pressed={tab === key}>
+      <span className="mbd-channel-logo" aria-hidden="true">{logo ? <img src={logo} alt="" /> : key === 'analytics' ? <span className="mbd-ga-logo"><i /><i /><i /></span> : <Icon size={27} />}</span>
+      <span className="mbd-channel-copy"><strong>{label}</strong><small>{description}</small></span>
+    </button>)}</nav>
     <div className="mbd-toolbar"><div><button className={type === 'weekly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'weekly' })}>주간</button><button className={type === 'monthly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'monthly' })}>월간</button></div>{latest && <span>최근 조사일 <b>{latest.report_date}</b></span>}</div>
 
     {loading ? <div className="briefing-state">자료를 정리하고 있습니다...</div> : error ? <div className="briefing-state error">{error}</div> : !latest ? <div className="briefing-state">아직 수신된 브리핑이 없습니다.</div> : tab === 'overview' ? <>

@@ -78,8 +78,13 @@ test('briefing dashboard provides five channel tabs and date-based inline report
   assert.match(dashboard, /출처 미확인 비중/);
   assert.match(dashboard, /무엇이 달라졌고 무엇을 확인해야 하는지/);
   assert.match(dashboard, /extractSections\(item\.content_md/);
+  assert.match(dashboard, /youtubeLogo/);
+  assert.match(dashboard, /instagramLogo/);
+  assert.match(dashboard, /naverLogo/);
+  assert.match(dashboard, /mbd-ga-logo/);
   assert.match(css, /\.mbd-channel-tabs[\s\S]*grid-template-columns:\s*repeat\(5/);
-  assert.match(css, /\.mbd-channel-tabs button[\s\S]*border-radius:\s*0/);
+  assert.match(css, /\.mbd-channel-tabs button:hover[\s\S]*scale\(1\.045\)/);
+  assert.match(css, /button:hover \.mbd-channel-logo[\s\S]*scale\(1\.15\)/);
   assert.match(css, /@media \(max-width:\s*720px\)[\s\S]*\.mbd-channel-tabs/);
 });
 

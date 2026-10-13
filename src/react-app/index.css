@@ -87,33 +87,109 @@
 .mbd-channel-tabs {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  margin: 20px 0 14px;
-  border: 1px solid var(--mbd-line);
-  background: #fff;
+  gap: 10px;
+  margin: 22px 0 16px;
+  padding: 10px;
+  border: 1px solid #d9e1eb;
+  background: #edf2f7;
+  box-shadow: 0 8px 24px rgba(28, 48, 74, .08);
+  overflow: visible;
 }
 
 .mbd-channel-tabs button {
-  min-height: 82px;
-  padding: 12px 10px;
-  border: 0;
-  border-right: 1px solid var(--mbd-line);
-  border-radius: 0;
-  background: #fff;
+  --channel-color: #1769e0;
+  position: relative;
+  isolation: isolate;
+  min-width: 0;
+  min-height: 116px;
+  padding: 14px 10px 12px;
+  border: 1px solid #dbe3ec;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #fff 0%, #fafcff 100%);
   color: #506176;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 11px;
+  transform: translateZ(0) scale(1);
+  transform-origin: center;
+  transition: transform .28s cubic-bezier(.2,.8,.2,1), box-shadow .28s ease, border-color .22s ease, background .22s ease;
 }
 
-.mbd-channel-tabs button:last-child { border-right: 0; }
-.mbd-channel-tabs button strong { font-size: 14px; color: var(--mbd-ink); }
-.mbd-channel-tabs button small { font-size: 11px; color: #8491a3; white-space: nowrap; }
-.mbd-channel-tabs button:hover { background: #f2f7fc; }
-.mbd-channel-tabs button.active { background: var(--mbd-navy); color: #7ed7ff; box-shadow: inset 0 -4px #4fc3f7; }
-.mbd-channel-tabs button.active strong, .mbd-channel-tabs button.active small { color: #fff; }
+.mbd-channel-tabs button::after {
+  content: '';
+  position: absolute;
+  inset: auto 14px 0;
+  height: 3px;
+  background: var(--channel-color);
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform .25s ease;
+}
+
+.mbd-channel-tabs button[data-channel='overview'] { --channel-color: #1769e0; }
+.mbd-channel-tabs button[data-channel='analytics'] { --channel-color: #f4a100; }
+.mbd-channel-tabs button[data-channel='youtube'] { --channel-color: #ff0033; }
+.mbd-channel-tabs button[data-channel='instagram'] { --channel-color: #d62976; }
+.mbd-channel-tabs button[data-channel='naver'] { --channel-color: #03c75a; }
+.mbd-channel-tabs button:hover {
+  z-index: 3;
+  border-color: color-mix(in srgb, var(--channel-color) 55%, #dbe3ec);
+  background: #fff;
+  box-shadow: 0 14px 30px rgba(25, 43, 68, .18);
+  transform: translateY(-5px) scale(1.045);
+}
+.mbd-channel-tabs button:hover::after,
+.mbd-channel-tabs button.active::after { transform: scaleX(1); }
+.mbd-channel-tabs button:active { transform: translateY(-1px) scale(.985); transition-duration: .09s; }
+.mbd-channel-tabs button:focus-visible { z-index: 4; outline: 3px solid color-mix(in srgb, var(--channel-color) 35%, transparent); outline-offset: 2px; }
+.mbd-channel-tabs button.active {
+  border-color: color-mix(in srgb, var(--channel-color) 55%, #dbe3ec);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--channel-color) 8%, #fff), #fff 78%);
+  box-shadow: 0 5px 16px rgba(25, 43, 68, .1);
+}
+
+.mbd-channel-logo {
+  position: relative;
+  flex: 0 0 54px;
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(16, 42, 76, .1);
+  border-radius: 13px;
+  background: #fff;
+  color: var(--channel-color);
+  box-shadow: 0 4px 12px rgba(18, 36, 60, .12);
+  transition: transform .32s cubic-bezier(.2,.8,.2,1), box-shadow .28s ease;
+}
+.mbd-channel-tabs button:hover .mbd-channel-logo { transform: scale(1.15); box-shadow: 0 8px 19px rgba(18, 36, 60, .2); }
+.mbd-channel-tabs button.active .mbd-channel-logo { box-shadow: 0 0 0 3px color-mix(in srgb, var(--channel-color) 22%, transparent), 0 5px 14px rgba(18, 36, 60, .16); }
+.mbd-channel-logo img { width: 100%; height: 100%; display: block; object-fit: cover; transform: scale(1.08); }
+.mbd-channel-tabs button[data-channel='youtube'] .mbd-channel-logo img { transform: scale(1.34); }
+.mbd-channel-copy { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; }
+.mbd-channel-copy strong { max-width: 100%; color: var(--mbd-ink); font-size: 14px; line-height: 1.25; }
+.mbd-channel-copy small { max-width: 100%; color: #8491a3; font-size: 11px; line-height: 1.35; white-space: normal; }
+.mbd-channel-tabs button.active .mbd-channel-copy strong { color: var(--channel-color); }
+
+.mbd-ga-logo { width: 35px; height: 36px; display: flex; align-items: flex-end; justify-content: center; gap: 3px; }
+.mbd-ga-logo i { display: block; width: 8px; border-radius: 4px 4px 2px 2px; background: #f9ab00; }
+.mbd-ga-logo i:nth-child(1) { height: 14px; background: #f6c344; }
+.mbd-ga-logo i:nth-child(2) { height: 25px; background: #f9ab00; }
+.mbd-ga-logo i:nth-child(3) { height: 35px; background: #e37400; }
+
+@media (hover: none) {
+  .mbd-channel-tabs button:hover { transform: none; box-shadow: none; }
+  .mbd-channel-tabs button:hover .mbd-channel-logo { transform: none; box-shadow: 0 4px 12px rgba(18, 36, 60, .12); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mbd-channel-tabs button,
+  .mbd-channel-tabs button::after,
+  .mbd-channel-logo { transition: none; }
+}
 
 .mbd-toolbar {
   display: flex;
@@ -212,9 +288,11 @@
 @media (max-width: 720px) {
   .mbd-hero { align-items: flex-start; flex-direction: column; padding: 23px 20px; }
   .mbd-hero h2 { font-size: 24px; }
-  .mbd-channel-tabs { display: flex; overflow-x: auto; }
-  .mbd-channel-tabs button { flex: 0 0 132px; min-height: 72px; }
-  .mbd-channel-tabs button:last-child { border-right: 1px solid var(--mbd-line); }
+  .mbd-channel-tabs { display: flex; gap: 8px; padding: 8px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; }
+  .mbd-channel-tabs button { flex: 0 0 158px; min-height: 92px; padding: 10px 8px; gap: 8px; scroll-snap-align: start; }
+  .mbd-channel-tabs button:hover { transform: scale(1.02); }
+  .mbd-channel-logo { width: 45px; height: 45px; flex-basis: 45px; border-radius: 11px; }
+  .mbd-channel-tabs button:hover .mbd-channel-logo { transform: scale(1.08); }
   .mbd-toolbar, .mbd-section-heading { align-items: flex-start; }
   .mbd-section-heading { flex-direction: column; gap: 7px; }
   .mbd-section-heading > p { text-align: left; }
