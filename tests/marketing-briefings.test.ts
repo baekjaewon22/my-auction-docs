@@ -76,7 +76,6 @@ test('briefing dashboard provides six channel tabs and date-based inline reports
   assert.match(dashboard, /aria-expanded=\{open\}/);
   assert.match(dashboard, /날짜를 누르면 다른 페이지로 이동하지 않고 바로 펼쳐집니다/);
   assert.match(dashboard, /출처 미확인 비중/);
-  assert.match(dashboard, /무엇이 달라졌고 무엇을 확인해야 하는지/);
   assert.match(dashboard, /extractSections\(item\.content_md/);
   assert.match(dashboard, /youtubeLogo/);
   assert.match(dashboard, /instagramLogo/);

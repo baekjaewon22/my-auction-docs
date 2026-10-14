@@ -538,7 +538,7 @@ function ChannelView({ tab, item, items }: { tab: Exclude<TabKey, 'overview'>; i
   const crm = dashboardOf(item)?.crm;
   const hasTables = tab === 'analytics' ? objectRows(item.devices).length + objectRows(item.landing).length + objectRows(item.audience).length > 0
     : tab === 'youtube' ? false : tab === 'instagram' ? !!item.reels?.length : tab === 'crm' ? !!crm : !!item.channels?.length;
-  const heading = <header className="mbd-section-heading"><div><span>{title.description}</span><h3>{title.label} 조사 결과</h3></div><p>전문용어 대신 “무엇이 달라졌고 무엇을 확인해야 하는지” 중심으로 정리했습니다.</p></header>;
+  const heading = <header className="mbd-section-heading"><div><span>{title.description}</span><h3>{title.label} 조사 결과</h3></div></header>;
   if (tab === 'crm' && (!crm || crm.status === 'missing')) return <>{heading}<CrmVisual item={item} /></>;
   return <>
     {heading}
