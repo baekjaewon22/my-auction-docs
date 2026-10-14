@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, ArrowRight, Check, Clipboard, XCircle } from 'lucide-react';
 import { api } from '../api';
 import MarketingBriefingDashboard, { ReadableReport } from '../components/MarketingBriefingDashboard';
@@ -76,11 +76,11 @@ function Corrections({ items }: { items: Briefing['corrections'] }) {
 }
 
 function BriefingDetail() {
-  const { site = 'myauction', reportDate = '' } = useParams(); const [data, setData] = useState<{ briefing: Briefing; previous?: any; next?: any; previous_checks: Briefing['checks'] } | null>(null); const [error, setError] = useState(''); const [tab, setTab] = useState<'report' | 'html'>('report');
-  useEffect(() => { api.briefings.byDate(site, reportDate).then((result) => setData(result as any)).catch((err) => setError(err?.message || '브리핑을 불러오지 못했습니다.')); }, [site, reportDate]);
+  const { site = 'myauction', reportDate = '' } = useParams(); const [searchParams] = useSearchParams(); const requestedType = searchParams.get('type') === 'monthly' ? 'monthly' : searchParams.get('type') === 'weekly' ? 'weekly' : undefined; const [data, setData] = useState<{ briefing: Briefing; previous?: any; next?: any; previous_checks: Briefing['checks'] } | null>(null); const [error, setError] = useState(''); const [tab, setTab] = useState<'report' | 'html'>('report');
+  useEffect(() => { api.briefings.byDate(site, reportDate, requestedType).then((result) => setData(result as any)).catch((err) => setError(err?.message || '브리핑을 불러오지 못했습니다.')); }, [site, reportDate, requestedType]);
   if (error) return <div className="briefings-page"><div className="briefing-state error">{error}</div></div>; if (!data) return <div className="briefings-page"><div className="briefing-state">불러오는 중...</div></div>;
   const item = data.briefing; const previousStatus = new Map((data.previous_checks || []).map((check) => [check.key, check.status]));
-  return <div className="briefings-page briefing-detail-page"><div className="briefing-detail-nav"><Link to={`/briefings?site=${site}&type=${item.type}`}><ArrowLeft size={16} /> 목록</Link><div>{data.previous && <Link to={`/briefings/${site}/${data.previous.report_date}`}><ArrowLeft size={15} /> 이전</Link>}{data.next && <Link to={`/briefings/${site}/${data.next.report_date}`}>다음 <ArrowRight size={15} /></Link>}<button onClick={() => navigator.clipboard.writeText(item.content_md)}><Clipboard size={15} /> 원문 복사</button></div></div>
+  return <div className="briefings-page briefing-detail-page"><div className="briefing-detail-nav"><Link to={`/briefings?site=${site}&type=${item.type}`}><ArrowLeft size={16} /> 목록</Link><div>{data.previous && <Link to={`/briefings/${site}/${data.previous.report_date}?type=${item.type}`}><ArrowLeft size={15} /> 이전</Link>}{data.next && <Link to={`/briefings/${site}/${data.next.report_date}?type=${item.type}`}>다음 <ArrowRight size={15} /></Link>}<button onClick={() => navigator.clipboard.writeText(item.content_md)}><Clipboard size={15} /> 원문 복사</button></div></div>
     <header className="briefing-detail-hero"><span>{SITE_LABELS[item.site] || item.site} · {item.type === 'monthly' ? '월간 정밀 분석' : '주간 브리핑'}</span><h2>{item.title}</h2><time>{item.period_start} — {item.period_end}</time><p>{item.summary}</p></header>
     {!!item.warnings.length && <section className="briefing-warning-box"><h3><AlertTriangle size={18} /> 확인이 필요한 항목</h3>{item.warnings.map((warning, index) => <p key={index}>{warning.text}</p>)}</section>}
     {!!item.highlights.length && <section><div className="briefing-section-title"><h3>큰 변화</h3></div><div className="briefing-highlight-grid">{item.highlights.slice(0, 3).map((highlight, index) => <article key={index}><span>{highlight.label}</span><strong>{formatValue(highlight.value)}</strong>{highlight.previous !== undefined && <small>직전 {formatValue(highlight.previous)}</small>}<p>{highlight.note}</p></article>)}</div></section>}

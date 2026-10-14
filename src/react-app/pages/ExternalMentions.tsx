@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Activity, Bell, CheckCircle2, ChevronDown, ChevronUp, Clipboard,
-  ExternalLink, KeyRound, Newspaper, RefreshCw, Search, ShieldAlert,
+  BarChart3, CalendarDays, ExternalLink, KeyRound, Newspaper, RefreshCw, Search, ShieldAlert,
 } from 'lucide-react';
 import { api } from '../api';
 import { useAuthStore } from '../store';
 
-type TabKey = 'summary' | 'all' | 'risk' | 'sources';
+type TabKey = 'summary' | 'daily' | 'monthly' | 'all' | 'risk' | 'sources';
 type Mention = {
   id: string; external_id: string; url: string; source_type: string; source_name: string; author?: string;
   published_at?: string | null; collected_at: string; title: string; snippet: string;
@@ -17,7 +17,7 @@ type Mention = {
   duplicate?: { similar_count?: number }; evidence: string[]; workflow_status: string;
 };
 type Digest = {
-  id: string; report_date: string; summary: { status?: string; headline?: string; description?: string; what_changed?: string[]; what_to_check?: string[] };
+  id: string; report_date: string; revision?: number; summary: { status?: string; headline?: string; description?: string; what_changed?: string[]; what_to_check?: string[] };
   stats: Record<string, number | null>; urgent_mentions: Array<{ external_id: string; reason: string }>;
   top_topics: Array<{ key?: string; label?: string; count?: number; previous_count?: number | null; sentiment?: string }>;
   emerging_issues: Array<{ title?: string; count?: number; reason?: string }>;
@@ -26,6 +26,18 @@ type Digest = {
   source_breakdown: Array<{ source_type?: string; collected?: number; unique_mentions?: number; negative?: number }>;
   keyword_breakdown: Array<{ keyword?: string; count?: number }>;
   data_quality: string[];
+};
+type MonthlySummary = {
+  id: string; month: string; period_start: string; period_end: string; generated_at: string;
+  stats: Record<string, number>;
+  source_breakdown: Array<{ key: string; value: number; share: number }>;
+  daily_trend: Array<{ date: string; value: number; risk: number }>;
+  sentiment_breakdown: Array<{ key: string; value: number; share: number }>;
+  risk_breakdown: Array<{ key: string; value: number; share: number }>;
+  top_topics: Array<{ key: string; label: string; count: number }>;
+  repeated_issues: Array<{ key: string; label: string; count: number }>;
+  discovered_keywords: Array<{ key: string; count: number }>;
+  workflow_breakdown: Array<{ key: string; value: number; share: number }>;
 };
 type Run = { run_id: string; started_at: string; finished_at?: string; status: string; received_count: number; accepted_count: number; sources: Array<{ source?: string; status?: string; searched?: number; collected?: number; new_mentions?: number; error?: string | null }> };
 type MentionKey = { id: string; name: string; token_prefix: string; last_used_at?: string | null; revoked_at?: string | null };
@@ -45,6 +57,16 @@ function shortDate(value?: string | null) {
   return value.replace('T', ' ').slice(0, 16);
 }
 
+function monthRange(month: string) {
+  const [year, value] = month.split('-').map(Number);
+  return { date_from: `${month}-01`, date_to: new Date(Date.UTC(year, value, 0)).toISOString().slice(0, 10) };
+}
+
+function percent(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${(number * 100).toFixed(1)}%` : '-';
+}
+
 export default function ExternalMentions() {
   const { user } = useAuthStore();
   const isMaster = user?.role === 'master';
@@ -62,22 +84,52 @@ export default function ExternalMentions() {
   const [keys, setKeys] = useState<MentionKey[]>([]);
   const [keyName, setKeyName] = useState('Claude Cowork 외부 언급 수집');
   const [newToken, setNewToken] = useState('');
+  const [historyMonth, setHistoryMonth] = useState(() => new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 7));
+  const [historyDigests, setHistoryDigests] = useState<Digest[]>([]);
+  const [historyMentions, setHistoryMentions] = useState<Mention[]>([]);
+  const [selectedDate, setSelectedDate] = useState('');
+  const [monthly, setMonthly] = useState<MonthlySummary | null>(null);
+  const [revisions, setRevisions] = useState<any[]>([]);
 
   const load = async () => {
     setLoading(true); setError('');
     try {
-      const [mentionResult, digestResult, runResult] = await Promise.all([
-        api.mentions.list({ limit: 200 }), api.mentions.digests({ limit: 30 }), api.mentions.runs(20),
+      const [mentionResult, digestResult, runResult, monthResult] = await Promise.all([
+        api.mentions.list({ limit: 200 }), api.mentions.digests({ limit: 30 }), api.mentions.runs(20), api.mentions.monthly({ month: historyMonth }),
       ]);
       setMentions(mentionResult.mentions as Mention[]);
       setDigests(digestResult.digests as Digest[]);
       setRuns(runResult.runs as Run[]);
+      setMonthly((monthResult.monthly_summaries[0] || null) as MonthlySummary | null);
       if (!openDate && digestResult.digests[0]) setOpenDate(digestResult.digests[0].report_date);
     } catch (err: any) { setError(err?.message || '외부 언급 자료를 불러오지 못했습니다.'); }
     finally { setLoading(false); }
   };
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    if (tab !== 'daily' && tab !== 'monthly') return;
+    const range = monthRange(historyMonth);
+    void Promise.all([
+      api.mentions.digests({ ...range, limit: 100 }),
+      api.mentions.monthly({ month: historyMonth }),
+    ]).then(([digestResult, monthResult]) => {
+      const next = digestResult.digests as Digest[];
+      setHistoryDigests(next);
+      setMonthly((monthResult.monthly_summaries[0] || null) as MonthlySummary | null);
+      const nextDate = selectedDate.startsWith(historyMonth) ? selectedDate : (next[0]?.report_date || '');
+      setSelectedDate(nextDate);
+      if (nextDate) void api.mentions.list({ date: nextDate, limit: 200 }).then((result) => setHistoryMentions(result.mentions as Mention[]));
+      else setHistoryMentions([]);
+    }).catch((err: any) => setError(err?.message || '과거 이력을 불러오지 못했습니다.'));
+  }, [historyMonth, tab]);
+
+  const openDailyDate = async (date: string) => {
+    setHistoryMonth(date.slice(0, 7)); setSelectedDate(date); setTab('daily'); setRevisions([]);
+    const result = await api.mentions.list({ date, limit: 200 });
+    setHistoryMentions(result.mentions as Mention[]);
+  };
+  const loadRevisions = async (digest: Digest) => setRevisions((await api.mentions.digestRevisions(digest.id)).revisions);
   useEffect(() => {
     const existing = document.querySelector('meta[name="robots"]') as HTMLMetaElement | null;
     const previous = existing?.content;
@@ -119,7 +171,7 @@ export default function ExternalMentions() {
 
     {keyPanel && <section className="briefing-key-panel"><div className="briefing-section-title"><div><h3>외부 언급 전용 API 키</h3><p>주간 브리핑·오늘의 뉴스 키와 분리되며, 원문은 발급 직후 한 번만 표시됩니다.</p></div></div><div className="briefing-key-create"><input value={keyName} onChange={(event) => setKeyName(event.target.value)} aria-label="키 이름" /><button className="btn btn-primary" onClick={() => void createKey()}>새 키 발급</button></div>{newToken && <div className="briefing-token-once"><strong>지금 안전하게 보관하세요.</strong><code>{newToken}</code><button onClick={() => void navigator.clipboard.writeText(newToken)}><Clipboard size={15} /> 복사</button></div>}<div className="briefing-key-list">{keys.map((key) => <div key={key.id}><span><strong>{key.name}</strong><small>{key.token_prefix}… · 최근 사용 {key.last_used_at || '없음'}</small></span>{key.revoked_at ? <em>폐기됨</em> : <button onClick={() => void revokeKey(key.id)}>폐기</button>}</div>)}</div></section>}
 
-    <nav className="emm-tabs" aria-label="외부 언급 화면 선택"><button className={tab === 'summary' ? 'active' : ''} onClick={() => setTab('summary')}><Activity /> 오늘 요약</button><button className={tab === 'all' ? 'active' : ''} onClick={() => setTab('all')}><Newspaper /> 전체 언급</button><button className={tab === 'risk' ? 'active' : ''} onClick={() => setTab('risk')}><ShieldAlert /> 주의 언급 <b>{riskMentions.length}</b></button><button className={tab === 'sources' ? 'active' : ''} onClick={() => setTab('sources')}><Search /> 수집 상태</button></nav>
+    <nav className="emm-tabs" aria-label="외부 언급 화면 선택"><button className={tab === 'summary' ? 'active' : ''} onClick={() => setTab('summary')}><Activity /> 오늘 요약</button><button className={tab === 'daily' ? 'active' : ''} onClick={() => setTab('daily')}><CalendarDays /> 일간 이력</button><button className={tab === 'monthly' ? 'active' : ''} onClick={() => setTab('monthly')}><BarChart3 /> 월간 통계</button><button className={tab === 'all' ? 'active' : ''} onClick={() => setTab('all')}><Newspaper /> 전체 언급</button><button className={tab === 'risk' ? 'active' : ''} onClick={() => setTab('risk')}><ShieldAlert /> 주의 언급 <b>{riskMentions.length}</b></button><button className={tab === 'sources' ? 'active' : ''} onClick={() => setTab('sources')}><Search /> 수집 상태</button></nav>
 
     {loading ? <div className="emm-state">외부 언급 자료를 불러오고 있습니다...</div> : error ? <div className="emm-state error">{error}</div> : <>
       {tab === 'summary' && <>
@@ -131,6 +183,10 @@ export default function ExternalMentions() {
           <section className="emm-digest-history"><div className="emm-section-head"><div><span>날짜별 기록</span><h2>일일 언급 브리핑</h2></div></div>{digests.map((digest) => { const open = openDate === digest.report_date; return <article className={open ? 'open' : ''} key={digest.id}><button onClick={() => setOpenDate(open ? '' : digest.report_date)}><time>{digest.report_date}</time><span><strong>{digest.summary?.headline}</strong><small>실제 언급 {count(digest.stats?.unique_mentions)}건 · 주의 이상 {count((digest.stats?.critical || 0) + (digest.stats?.high || 0) + (digest.stats?.watch || 0))}건</small></span>{open ? <ChevronUp /> : <ChevronDown />}</button>{open && <div className="emm-digest-body"><div><h4>많이 언급된 주제</h4>{digest.top_topics?.map((topic, index) => <p key={index}><b>{topic.label || topic.key}</b><span>{count(topic.count)}건</span></p>)}</div><div><h4>새로 나타난 내용</h4>{digest.emerging_issues?.length ? digest.emerging_issues.map((issue, index) => <p key={index}><b>{issue.title}</b><span>{issue.reason}</span></p>) : <p><span>특이사항 없음</span></p>}</div>{!!digest.data_quality?.length && <div className="quality"><h4>수집 확인 사항</h4>{digest.data_quality.map((item, index) => <p key={index}><span>{item}</span></p>)}</div>}</div>}</article>; })}</section>
         </> : <div className="emm-state">아직 수신된 일일 종합 보고가 없습니다. 개별 언급은 전체 언급 탭에서 확인할 수 있습니다.</div>}
       </>}
+
+      {tab === 'daily' && <section className="emm-history-view"><div className="emm-section-head"><div><span>원본을 그대로 보관</span><h2>일간 보고 이력</h2></div><label className="emm-month-picker">연도·월 <input type="month" value={historyMonth} onChange={(event) => setHistoryMonth(event.target.value)} /></label></div><div className="emm-history-layout"><aside>{historyDigests.length ? historyDigests.map((digest) => <button key={digest.id} className={selectedDate === digest.report_date ? 'active' : ''} onClick={() => void openDailyDate(digest.report_date)}><time>{digest.report_date}</time><strong>{digest.summary?.headline || '일일 외부 언급 보고'}</strong><small>언급 {count(digest.stats?.unique_mentions)}건 · 수정 {count(digest.revision || 1)}회차</small></button>) : <div className="emm-state">이 달의 일간 보고가 없습니다.</div>}</aside><div className="emm-history-detail">{selectedDate ? <>{historyDigests.filter((digest) => digest.report_date === selectedDate).map((digest) => <div className="emm-daily-summary" key={digest.id}><span>{digest.report_date} 종합 판단</span><h3>{digest.summary?.headline}</h3><p>{digest.summary?.description}</p>{(digest.revision || 1) > 1 && <button onClick={() => void loadRevisions(digest)}>수정 전 내용 {Number(digest.revision) - 1}개 보기</button>}</div>)}{!!revisions.length && <details className="emm-revision-box" open><summary>수정 전 보고서</summary>{revisions.map((item) => <article key={item.revision}><b>{item.revision}회차 · {shortDate(item.archived_at)}</b><p>{item.digest?.summary?.headline}</p><small>{item.digest?.summary?.description}</small></article>)}</details>}<div className="emm-mention-list">{historyMentions.length ? historyMentions.map(renderMention) : <div className="emm-state">이 날짜에 연결된 원문이 없습니다.</div>}</div></> : <div className="emm-state">왼쪽에서 날짜를 선택하세요.</div>}</div></div></section>}
+
+      {tab === 'monthly' && <section className="emm-monthly-view"><div className="emm-section-head"><div><span>한 달 흐름을 한눈에</span><h2>월간 외부 언급 통계</h2></div><label className="emm-month-picker">연도·월 <input type="month" value={historyMonth} onChange={(event) => setHistoryMonth(event.target.value)} /></label></div>{monthly ? <><section className="emm-scorecards"><article><span>전체 언급</span><strong>{count(monthly.stats.unique_mentions)}</strong><small>전월 {count(monthly.stats.previous_mentions)}건 · {Number(monthly.stats.month_over_month) >= 0 ? '▲' : '▼'} {percent(Math.abs(Number(monthly.stats.month_over_month)))}</small></article><article><span>긍정 / 부정</span><strong>{count(monthly.stats.positive)} / {count(monthly.stats.negative)}</strong><small>사람들의 반응 방향</small></article><article><span>주의 언급</span><strong>{count(monthly.stats.risk_mentions)}</strong><small>즉시 또는 추가 확인 대상</small></article><article><span>대응 완료율</span><strong>{percent(monthly.stats.response_rate)}</strong><small>{count(monthly.stats.resolved)}건 처리 완료</small></article></section><div className="emm-month-grid"><article><h3>출처 비중</h3>{monthly.source_breakdown.map((item) => <div className="emm-stat-row" key={item.key}><button onClick={() => { setSource(item.key); setTab('all'); }}>{SOURCE_LABELS[item.key] || item.key} <b>{count(item.value)}건</b></button><span><i style={{ width: `${item.share * 100}%` }} /></span></div>)}</article><article><h3>반응 비율</h3>{monthly.sentiment_breakdown.map((item) => <div className="emm-stat-row" key={item.key}><span>{SENTIMENT_LABELS[item.key] || item.key} <b>{count(item.value)}건</b></span><span><i style={{ width: `${item.share * 100}%` }} /></span></div>)}</article><article><h3>반복 문제</h3>{monthly.repeated_issues.length ? monthly.repeated_issues.map((item) => <p key={item.key}><b>{item.label}</b><span>{count(item.count)}회</span></p>) : <p>반복해서 나타난 문제가 없습니다.</p>}</article><article><h3>새 키워드</h3><div className="emm-keywords">{monthly.discovered_keywords.length ? monthly.discovered_keywords.map((item) => <span key={item.key}>{item.key} {item.count}</span>) : <span>새 키워드 없음</span>}</div></article></div><section className="emm-month-days"><h3>날짜별 언급 수 · 숫자를 누르면 그날 원문으로 이동합니다</h3><div>{monthly.daily_trend.map((item) => <button key={item.date} onClick={() => void openDailyDate(item.date)} title={`${item.date}: ${item.value}건`}><span><i style={{ height: `${Math.max(8, item.value / Math.max(...monthly.daily_trend.map((day) => day.value), 1) * 100)}%` }} /></span><b>{item.value}</b><small>{item.date.slice(8)}</small>{item.risk > 0 && <em>{item.risk}</em>}</button>)}</div></section></> : <div className="emm-state">이 달의 월간 통계를 계산할 자료가 없습니다.</div>}</section>}
 
       {(tab === 'all' || tab === 'risk') && <section><div className="emm-section-head"><div><span>{tab === 'risk' ? '위험도 우선' : '수집 원문'}</span><h2>{tab === 'risk' ? '주의가 필요한 언급' : '전체 외부 언급'}</h2></div></div><div className="emm-filters"><label><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="제목·내용·키워드 검색" /></label><select value={source} onChange={(event) => setSource(event.target.value)}><option value="">모든 출처</option>{Object.entries(SOURCE_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><select value={sentiment} onChange={(event) => setSentiment(event.target.value)}><option value="">모든 반응</option>{Object.entries(SENTIMENT_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></div><div className="emm-mention-list">{visibleMentions.length ? visibleMentions.map(renderMention) : <div className="emm-state">조건에 맞는 외부 언급이 없습니다.</div>}</div></section>}
 

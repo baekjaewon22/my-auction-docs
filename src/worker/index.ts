@@ -652,6 +652,12 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
         (err) => console.error('[cron analytics-monthly] error', err),
       ),
     ));
+    ctx.waitUntil(import('./lib/external-mention-monthly').then(({ runPreviousMonthMentionAggregation }) =>
+      runPreviousMonthMentionAggregation(env, new Date(event.scheduledTime)).then(
+        (r) => console.log('[cron mention-monthly] done', { month: r.month, mentions: r.stats.unique_mentions }),
+        (err) => console.error('[cron mention-monthly] error', err),
+      ),
+    ));
   } else if (cron === '45 15 1 * *') {
     // 매월 1일 00:45 KST: 전월이 짝수월이면 안건 수당(구 명도성과금) 매출 자동 INSERT
     const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);

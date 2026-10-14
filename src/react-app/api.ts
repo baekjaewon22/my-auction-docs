@@ -1522,15 +1522,19 @@ export const api = {
   },
 
   briefings: {
-    list: (params: { site?: string; type?: 'weekly' | 'monthly'; limit?: number } = {}) => {
+    list: (params: { site?: string; type?: 'weekly' | 'monthly'; month?: string; date_from?: string; date_to?: string; limit?: number } = {}) => {
       const query = new URLSearchParams();
       if (params.site) query.set('site', params.site);
       if (params.type) query.set('type', params.type);
+      if (params.month) query.set('month', params.month);
+      if (params.date_from) query.set('date_from', params.date_from);
+      if (params.date_to) query.set('date_to', params.date_to);
       if (params.limit) query.set('limit', String(params.limit));
       return request<{ briefings: any[] }>(`/briefings?${query.toString()}`);
     },
-    byDate: (site: string, reportDate: string) =>
-      request<{ briefing: any; previous?: any; next?: any; previous_checks: any[] }>(`/briefings/by-date/${encodeURIComponent(site)}/${encodeURIComponent(reportDate)}`),
+    byDate: (site: string, reportDate: string, type?: 'weekly' | 'monthly') =>
+      request<{ briefing: any; previous?: any; next?: any; previous_checks: any[] }>(`/briefings/by-date/${encodeURIComponent(site)}/${encodeURIComponent(reportDate)}${type ? `?type=${type}` : ''}`),
+    revisions: (id: string) => request<{ revisions: any[] }>(`/briefings/${encodeURIComponent(id)}/revisions`),
     keys: () => request<{ api_keys: any[] }>('/briefings/keys'),
     createKey: (data: { name: string; site?: string }) =>
       request<{ api_key: any; token: string }>('/briefings/keys', { method: 'POST', body: JSON.stringify(data) }),
@@ -1538,17 +1542,23 @@ export const api = {
   },
 
   mentions: {
-    list: (params: { date?: string; source_type?: string; sentiment?: string; risk?: string; workflow_status?: string; limit?: number } = {}) => {
+    list: (params: { date?: string; date_from?: string; date_to?: string; source_type?: string; sentiment?: string; risk?: string; workflow_status?: string; limit?: number } = {}) => {
       const query = new URLSearchParams();
       for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') query.set(key, String(value));
       return request<{ mentions: any[] }>(`/mentions?${query.toString()}`);
     },
-    digests: (params: { date?: string; limit?: number } = {}) => {
+    digests: (params: { date?: string; date_from?: string; date_to?: string; limit?: number } = {}) => {
       const query = new URLSearchParams();
-      if (params.date) query.set('date', params.date);
-      if (params.limit) query.set('limit', String(params.limit));
+      for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') query.set(key, String(value));
       return request<{ digests: any[] }>(`/mention-digests?${query.toString()}`);
     },
+    monthly: (params: { month?: string; limit?: number } = {}) => {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') query.set(key, String(value));
+      return request<{ monthly_summaries: any[] }>(`/mention-digests/monthly?${query.toString()}`);
+    },
+    rebuildMonthly: (month: string) => request<{ monthly_summary: any }>('/mention-digests/monthly/rebuild', { method: 'POST', body: JSON.stringify({ month }) }),
+    digestRevisions: (id: string) => request<{ revisions: any[] }>(`/mention-digests/${encodeURIComponent(id)}/revisions`),
     runs: (limit = 20) => request<{ runs: any[] }>(`/mentions/runs?limit=${limit}`),
     updateStatus: (id: string, data: { workflow_status: string; internal_note?: string; exclusion_reason?: string }) =>
       request<{ success: boolean }>(`/mentions/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: JSON.stringify(data) }),

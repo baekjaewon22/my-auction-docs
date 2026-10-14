@@ -34,6 +34,7 @@ type Briefing = {
   landing?: Record<string, unknown> | Array<Record<string, unknown>>;
   audience?: Array<Record<string, unknown>>;
   content_md?: string;
+  revision?: number;
   extra?: { dashboard?: Record<string, any> };
 };
 type DetailResponse = { briefing: Briefing; previous_checks?: Briefing['checks'] };
@@ -557,6 +558,8 @@ function ChannelView({ tab, item, items }: { tab: Exclude<TabKey, 'overview'>; i
 }
 
 function ExpandedReport({ item, previousChecks }: { item: Briefing; previousChecks?: Briefing['checks'] }) {
+  const [revisions, setRevisions] = useState<any[]>([]);
+  const [revisionOpen, setRevisionOpen] = useState(false);
   const previous = new Map((previousChecks || []).map((check) => [check.key, check.status]));
   return <div className="mbd-expanded">
     <div className="mbd-expanded-summary"><span>한눈에 보는 결론</span><p>{item.summary}</p></div>
@@ -564,6 +567,7 @@ function ExpandedReport({ item, previousChecks }: { item: Briefing; previousChec
     {!!item.highlights?.length && <div className="mbd-highlight-grid">{item.highlights.slice(0, 3).map((highlight, index) => <article key={index}><span>{highlight.label}</span><strong>{formatValue(highlight.value)}</strong>{highlight.note && <p>{highlight.note}</p>}</article>)}</div>}
     {!!item.checks?.some((check) => previous.has(check.key) && previous.get(check.key) !== check.status) && <p className="mbd-changed-note">직전 보고서와 상태가 달라진 진행 항목이 있습니다. 위 진행 상황을 확인하세요.</p>}
     {item.content_md && <details className="mbd-original"><summary>전체 보고서를 항목별로 자세히 보기</summary><ReadableReport source={item.content_md} /></details>}
+    {(item.revision || 1) > 1 && <div className="mbd-revisions"><button onClick={() => { const next = !revisionOpen; setRevisionOpen(next); if (next && !revisions.length) void api.briefings.revisions(item.id).then((result) => setRevisions(result.revisions)); }}>수정 전 보고서 {Number(item.revision) - 1}개 {revisionOpen ? '닫기' : '보기'}</button>{revisionOpen && <div>{revisions.map((entry) => <details key={entry.revision}><summary>{entry.revision}회차 · {String(entry.archived_at || '').replace('T', ' ').slice(0, 16)}</summary><h4>{entry.briefing?.title}</h4><p>{entry.briefing?.summary}</p>{entry.briefing?.content_md && <ReadableReport source={entry.briefing.content_md} />}</details>)}</div>}</div>}
   </div>;
 }
 
@@ -583,6 +587,7 @@ export default function MarketingBriefingDashboard() {
   const [keys, setKeys] = useState<BriefingKey[]>([]);
   const [newToken, setNewToken] = useState('');
   const [keyName, setKeyName] = useState('마이옥션 주간 브리핑 자동화');
+  const [archiveMonth, setArchiveMonth] = useState('');
   const [textSize, setTextSize] = useState<'normal' | 'large' | 'xlarge'>(() => {
     if (typeof window === 'undefined') return 'normal';
     const saved = window.localStorage.getItem('marketing-briefing-text-size');
@@ -595,19 +600,19 @@ export default function MarketingBriefingDashboard() {
   const load = async () => {
     setLoading(true); setError('');
     try {
-      const result = await api.briefings.list({ site, type, limit: 20 });
+      const result = await api.briefings.list({ site, type, month: archiveMonth || undefined, limit: archiveMonth ? 100 : 20 });
       const nextItems = (result.briefings as Briefing[]).filter((briefing) => briefing.report_key !== 'myauction-weekly-2026-10-12');
       setItems(nextItems);
       if (nextItems[0]) {
-        const detail = await api.briefings.byDate(site, nextItems[0].report_date) as DetailResponse;
-        setDetails((current) => ({ ...current, [nextItems[0].report_date]: detail }));
+        const detail = await api.briefings.byDate(site, nextItems[0].report_date, type) as DetailResponse;
+        setDetails((current) => ({ ...current, [`${type}:${nextItems[0].report_date}`]: detail }));
       }
     } catch (err: any) { setError(err?.message || '브리핑을 불러오지 못했습니다.'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { void load(); }, [site, type]);
+  useEffect(() => { setOpenDate(null); void load(); }, [site, type, archiveMonth]);
 
-  const latest = details[items[0]?.report_date]?.briefing || items[0];
+  const latest = details[`${type}:${items[0]?.report_date}`]?.briefing || items[0];
   const structuredFindings = latest ? dashboardOf(latest)?.overview?.findings || [] : [];
   const structuredProblemCount = structuredFindings.filter((finding: any) => !/^(ok|good|success|positive|win|info)$/i.test(finding.severity || '')).length;
   const problemCount = structuredFindings.length ? structuredProblemCount : (latest?.warnings?.length || 0) + (latest?.checks || []).filter((check) => check.status !== 'done').length;
@@ -616,9 +621,10 @@ export default function MarketingBriefingDashboard() {
   const toggleReport = async (item: Briefing) => {
     if (openDate === item.report_date) { setOpenDate(null); return; }
     setOpenDate(item.report_date);
-    if (!details[item.report_date]) {
-      const detail = await api.briefings.byDate(item.site, item.report_date) as DetailResponse;
-      setDetails((current) => ({ ...current, [item.report_date]: detail }));
+    const cacheKey = `${item.type}:${item.report_date}`;
+    if (!details[cacheKey]) {
+      const detail = await api.briefings.byDate(item.site, item.report_date, item.type) as DetailResponse;
+      setDetails((current) => ({ ...current, [cacheKey]: detail }));
     }
   };
   const loadKeys = async () => setKeys((await api.briefings.keys()).api_keys as BriefingKey[]);
@@ -638,7 +644,7 @@ export default function MarketingBriefingDashboard() {
       <span className="mbd-channel-logo" aria-hidden="true">{logo ? <img src={logo} alt="" /> : key === 'analytics' ? <span className="mbd-ga-logo"><i /><i /><i /></span> : <Icon size={27} />}</span>
       <span className="mbd-channel-copy"><strong>{label}</strong><small>{description}</small></span>
     </button>)}</nav>
-    <div className="mbd-toolbar"><div className="mbd-period-control"><button className={type === 'weekly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'weekly' })}>주간</button><button className={type === 'monthly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'monthly' })}>월간</button></div><div className="mbd-toolbar-options"><div className="mbd-font-controls" role="group" aria-label="글자 크기"><span>글자 크기</span><button className={textSize === 'normal' ? 'active' : ''} onClick={() => setTextSize('normal')} aria-pressed={textSize === 'normal'} title="기본 글자">가</button><button className={textSize === 'large' ? 'active' : ''} onClick={() => setTextSize('large')} aria-pressed={textSize === 'large'} title="큰 글자">가</button><button className={textSize === 'xlarge' ? 'active' : ''} onClick={() => setTextSize('xlarge')} aria-pressed={textSize === 'xlarge'} title="아주 큰 글자">가</button></div>{latest && <span>최근 조사일 <b>{latest.report_date}</b></span>}</div></div>
+    <div className="mbd-toolbar"><div className="mbd-period-control"><button className={type === 'weekly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'weekly' })}>주간</button><button className={type === 'monthly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'monthly' })}>월간</button></div><label className="mbd-archive-month">과거 이력 <input type="month" value={archiveMonth} onChange={(event) => setArchiveMonth(event.target.value)} />{archiveMonth && <button onClick={() => setArchiveMonth('')}>최근으로</button>}</label><div className="mbd-toolbar-options"><div className="mbd-font-controls" role="group" aria-label="글자 크기"><span>글자 크기</span><button className={textSize === 'normal' ? 'active' : ''} onClick={() => setTextSize('normal')} aria-pressed={textSize === 'normal'} title="기본 글자">가</button><button className={textSize === 'large' ? 'active' : ''} onClick={() => setTextSize('large')} aria-pressed={textSize === 'large'} title="큰 글자">가</button><button className={textSize === 'xlarge' ? 'active' : ''} onClick={() => setTextSize('xlarge')} aria-pressed={textSize === 'xlarge'} title="아주 큰 글자">가</button></div>{latest && <span>{archiveMonth ? '선택 기간' : '최근 조사일'} <b>{archiveMonth || latest.report_date}</b></span>}</div></div>
 
     {loading ? <div className="briefing-state">자료를 정리하고 있습니다...</div> : error ? <div className="briefing-state error">{error}</div> : !latest ? <div className="briefing-state">아직 수신된 브리핑이 없습니다.</div> : tab === 'overview' ? <>
       <section className="mbd-overview-top"><article className={`mbd-status ${problemCount ? 'attention' : 'good'}`}><span>현재 종합 상태</span><strong>{problemCount ? '확인 필요' : '특이사항 없음'}</strong><p>{problemCount ? `문제 또는 미완료 항목이 ${problemCount}개 있습니다. 아래에서 쉬운 설명과 할 일을 확인하세요.` : '현재 보고된 자료에서는 급하게 확인할 문제가 없습니다.'}</p></article><article className="mbd-conclusion"><span>이번 주 변화 소견</span><h3>{latest.summary}</h3><p>수치 변화와 채널별 조사 결과를 함께 보고 판단한 결론입니다.</p></article></section>
@@ -647,7 +653,7 @@ export default function MarketingBriefingDashboard() {
       {!dashboardOf(latest)?.overview && <Findings item={latest} />}
       <section className="mbd-history"><header className="mbd-section-heading"><div><span>보고 날짜별 기록</span><h3>브리핑 목록</h3></div><p>날짜를 누르면 다른 페이지로 이동하지 않고 바로 펼쳐집니다.</p></header><div className="mbd-report-list">{items.map((item) => {
         const open = openDate === item.report_date;
-        const detail = details[item.report_date];
+        const detail = details[`${item.type}:${item.report_date}`];
         return <article key={item.id} className={open ? 'open' : ''}><button className="mbd-report-row" onClick={() => void toggleReport(item)} aria-expanded={open}><time>{item.report_date}</time><span><strong>{item.title}</strong><small>{item.summary}</small></span><em>{item.type === 'monthly' ? '월간' : '주간'} · 문제 {item.warnings?.length || 0}</em>{open ? <ChevronUp /> : <ChevronDown />}</button>{open && (detail ? <ExpandedReport item={detail.briefing} previousChecks={detail.previous_checks} /> : <div className="mbd-expanded-loading">보고서를 불러오는 중...</div>)}</article>;
       })}</div></section>
     </> : <ChannelView tab={tab} item={latest} items={items} />}

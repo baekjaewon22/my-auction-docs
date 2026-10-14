@@ -192,7 +192,7 @@ briefings.post('/', async (c) => {
 
   const known = new Set(['report_key', 'site', 'type', 'report_date', 'period', 'compare_period', 'title', 'summary', 'kpis', 'highlights', 'warnings', 'checks', 'todos', 'reels', 'channels', 'devices', 'landing', 'audience', 'corrections', 'content_md', 'html', 'notes', 'generator']);
   const extra = Object.fromEntries(Object.entries(body).filter(([key]) => !known.has(key)));
-  const existing = await c.env.DB.prepare('SELECT id FROM briefings WHERE report_key = ?').bind(body.report_key).first<{ id: string }>();
+  const existing = await c.env.DB.prepare('SELECT * FROM briefings WHERE report_key = ?').bind(body.report_key).first<any>();
   const id = existing?.id || crypto.randomUUID();
   const params = [
     id, body.report_key, body.site, body.type as BriefingType, body.report_date, body.period.start, body.period.end,
@@ -202,6 +202,12 @@ briefings.post('/', async (c) => {
     JSON.stringify(body.notes || []), JSON.stringify(body.compare_period || null), JSON.stringify(body.generator || null), JSON.stringify(extra),
     body.content_md, body.html || null,
   ];
+  if (existing) {
+    await c.env.DB.prepare(`
+      INSERT OR IGNORE INTO briefing_revisions (id, briefing_id, report_key, revision, snapshot)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(crypto.randomUUID(), id, existing.report_key, existing.revision, JSON.stringify(existing)).run();
+  }
   await c.env.DB.prepare(`
     INSERT INTO briefings (
       id, report_key, site, type, report_date, period_start, period_end, title, summary, kpis,
@@ -223,7 +229,7 @@ briefings.post('/', async (c) => {
   await c.env.DB.prepare("UPDATE briefing_api_keys SET last_used_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
     .bind(authenticated.id).run();
 
-  const url = `${new URL(c.req.url).origin}/briefings/${body.site}/${body.report_date}`;
+  const url = `${new URL(c.req.url).origin}/briefings/${body.site}/${body.report_date}?type=${body.type}`;
   logPost(body.site, body.report_key, bodyBytes, existing ? 200 : 201);
   return c.json({ id, url, created: !existing }, existing ? 200 : 201);
 });
@@ -231,11 +237,17 @@ briefings.post('/', async (c) => {
 briefings.get('/', readerAuth, async (c) => {
   const site = String(c.req.query('site') || '').trim();
   const type = String(c.req.query('type') || '').trim();
+  const month = String(c.req.query('month') || '').trim();
+  const dateFrom = String(c.req.query('date_from') || '').trim();
+  const dateTo = String(c.req.query('date_to') || '').trim();
   const limit = Math.min(Math.max(Number(c.req.query('limit') || 20), 1), 100);
   const where: string[] = [];
   const binds: any[] = [];
   if (site) { where.push('site = ?'); binds.push(site); }
   if (type === 'weekly' || type === 'monthly') { where.push('type = ?'); binds.push(type); }
+  if (month) { where.push('substr(report_date, 1, 7) = ?'); binds.push(month); }
+  if (dateFrom) { where.push('report_date >= ?'); binds.push(dateFrom); }
+  if (dateTo) { where.push('report_date <= ?'); binds.push(dateTo); }
   const result = await c.env.DB.prepare(`
     SELECT id, report_key, site, type, report_date, period_start, period_end, title, summary,
            kpis, warnings, revision, created_at, updated_at
@@ -246,17 +258,35 @@ briefings.get('/', readerAuth, async (c) => {
 });
 
 briefings.get('/by-date/:site/:reportDate', readerAuth, async (c) => {
+  const type = String(c.req.query('type') || '').trim();
+  const typed = type === 'weekly' || type === 'monthly';
+  const typeClause = typed ? ' AND type = ?' : '';
+  const binds = typed
+    ? [c.req.param('site'), c.req.param('reportDate'), type]
+    : [c.req.param('site'), c.req.param('reportDate')];
   const row = await c.env.DB.prepare(`
-    SELECT * FROM briefings WHERE site = ? AND report_date = ? ORDER BY updated_at DESC LIMIT 1
-  `).bind(c.req.param('site'), c.req.param('reportDate')).first();
+    SELECT * FROM briefings WHERE site = ? AND report_date = ?${typeClause} ORDER BY updated_at DESC LIMIT 1
+  `).bind(...binds).first();
   if (!row) return errorJson(c, 404, 'not_found', '브리핑을 찾을 수 없습니다.');
-  const previous = await c.env.DB.prepare(`SELECT id, report_date, title FROM briefings WHERE site = ? AND report_date < ? ORDER BY report_date DESC LIMIT 1`)
-    .bind(c.req.param('site'), c.req.param('reportDate')).first();
-  const next = await c.env.DB.prepare(`SELECT id, report_date, title FROM briefings WHERE site = ? AND report_date > ? ORDER BY report_date ASC LIMIT 1`)
-    .bind(c.req.param('site'), c.req.param('reportDate')).first();
-  const priorChecks = await c.env.DB.prepare(`SELECT checks FROM briefings WHERE site = ? AND report_date < ? ORDER BY report_date DESC LIMIT 1`)
-    .bind(c.req.param('site'), c.req.param('reportDate')).first<{ checks: string }>();
+  const previous = await c.env.DB.prepare(`SELECT id, report_date, title, type FROM briefings WHERE site = ? AND report_date < ?${typeClause} ORDER BY report_date DESC LIMIT 1`)
+    .bind(...binds).first();
+  const next = await c.env.DB.prepare(`SELECT id, report_date, title, type FROM briefings WHERE site = ? AND report_date > ?${typeClause} ORDER BY report_date ASC LIMIT 1`)
+    .bind(...binds).first();
+  const priorChecks = await c.env.DB.prepare(`SELECT checks FROM briefings WHERE site = ? AND report_date < ?${typeClause} ORDER BY report_date DESC LIMIT 1`)
+    .bind(...binds).first<{ checks: string }>();
   return c.json({ briefing: mapRow(row), previous, next, previous_checks: safeJson(priorChecks?.checks || null, []) });
+});
+
+briefings.get('/:id/revisions', readerAuth, async (c) => {
+  const result = await c.env.DB.prepare(`
+    SELECT revision, snapshot, archived_at FROM briefing_revisions
+    WHERE briefing_id = ? ORDER BY revision DESC
+  `).bind(c.req.param('id')).all();
+  return c.json({ revisions: result.results.map((row: any) => ({
+    revision: row.revision,
+    archived_at: row.archived_at,
+    briefing: mapRow(safeJson(row.snapshot, {})),
+  })) });
 });
 
 briefings.get('/:id', readerAuth, async (c) => {

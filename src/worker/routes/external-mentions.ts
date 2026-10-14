@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AuthEnv } from '../types';
 import { authMiddleware, requireHumanMaster } from '../middleware/auth';
 import { canViewExternalMentions, validateMentionBatch, validateMentionDigest } from '../../shared/external-mentions';
+import { buildMentionMonthlySummary, isMonth } from '../lib/external-mention-monthly';
 
 type MentionApiKeyRecord = { id: string; revoked_at: string | null };
 
@@ -50,6 +51,22 @@ function mapDigest(row: any) {
     keyword_breakdown: safeJson(row.keyword_breakdown, []),
     discovered_keywords: safeJson(row.discovered_keywords, []),
     data_quality: safeJson(row.data_quality, []),
+    extra: safeJson(row.extra, {}),
+  };
+}
+
+function mapMonthly(row: any) {
+  return {
+    ...row,
+    stats: safeJson(row.stats, {}),
+    source_breakdown: safeJson(row.source_breakdown, []),
+    daily_trend: safeJson(row.daily_trend, []),
+    sentiment_breakdown: safeJson(row.sentiment_breakdown, []),
+    risk_breakdown: safeJson(row.risk_breakdown, []),
+    top_topics: safeJson(row.top_topics, []),
+    repeated_issues: safeJson(row.repeated_issues, []),
+    discovered_keywords: safeJson(row.discovered_keywords, []),
+    workflow_breakdown: safeJson(row.workflow_breakdown, []),
     extra: safeJson(row.extra, {}),
   };
 }
@@ -225,11 +242,15 @@ mentionsRoute.get('/', requireViewer, async (c) => {
   const where: string[] = ['excluded = 0'];
   const binds: any[] = [];
   const date = String(c.req.query('date') || '').trim();
+  const dateFrom = String(c.req.query('date_from') || '').trim();
+  const dateTo = String(c.req.query('date_to') || '').trim();
   const sourceType = String(c.req.query('source_type') || '').trim();
   const sentiment = String(c.req.query('sentiment') || '').trim();
   const risk = String(c.req.query('risk') || '').trim();
   const workflow = String(c.req.query('workflow_status') || '').trim();
   if (date) { where.push("substr(COALESCE(published_at, collected_at), 1, 10) = ?"); binds.push(date); }
+  if (dateFrom) { where.push("substr(COALESCE(published_at, collected_at), 1, 10) >= ?"); binds.push(dateFrom); }
+  if (dateTo) { where.push("substr(COALESCE(published_at, collected_at), 1, 10) <= ?"); binds.push(dateTo); }
   if (sourceType) { where.push('source_type = ?'); binds.push(sourceType); }
   if (sentiment) { where.push("json_extract(sentiment, '$.label') = ?"); binds.push(sentiment); }
   if (risk) { where.push("json_extract(risk, '$.level') = ?"); binds.push(risk); }
@@ -269,12 +290,51 @@ mentionDigestsRoute.onError((error, c) => {
 });
 
 mentionDigestsRoute.get('/', requireViewer, async (c) => {
-  const limit = Math.min(Math.max(Number(c.req.query('limit') || 30), 1), 100);
+  const limit = Math.min(Math.max(Number(c.req.query('limit') || 30), 1), 366);
   const date = String(c.req.query('date') || '').trim();
-  const result = date
-    ? await c.env.DB.prepare('SELECT * FROM mention_digests WHERE report_date = ? LIMIT 1').bind(date).all()
-    : await c.env.DB.prepare('SELECT * FROM mention_digests ORDER BY report_date DESC LIMIT ?').bind(limit).all();
+  const dateFrom = String(c.req.query('date_from') || '').trim();
+  const dateTo = String(c.req.query('date_to') || '').trim();
+  const where: string[] = [];
+  const binds: any[] = [];
+  if (date) { where.push('report_date = ?'); binds.push(date); }
+  if (dateFrom) { where.push('report_date >= ?'); binds.push(dateFrom); }
+  if (dateTo) { where.push('report_date <= ?'); binds.push(dateTo); }
+  const result = await c.env.DB.prepare(`SELECT * FROM mention_digests ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY report_date DESC LIMIT ?`)
+    .bind(...binds, limit).all();
   return c.json({ digests: result.results.map(mapDigest) });
+});
+
+mentionDigestsRoute.get('/monthly', requireViewer, async (c) => {
+  const month = String(c.req.query('month') || '').trim();
+  const limit = Math.min(Math.max(Number(c.req.query('limit') || 24), 1), 120);
+  if (month) {
+    if (!isMonth(month)) return errorJson(c, 400, 'validation_failed', '연도와 월 형식을 확인해 주세요.', ['month']);
+    return c.json({ monthly_summaries: [await buildMentionMonthlySummary(c.env.DB, month, false)] });
+  }
+  const result = await c.env.DB.prepare('SELECT * FROM mention_monthly_summaries ORDER BY month DESC LIMIT ?').bind(limit).all();
+  const currentMonth = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 7);
+  const current = await buildMentionMonthlySummary(c.env.DB, currentMonth, false);
+  const stored = result.results.map(mapMonthly).filter((item: any) => item.month !== currentMonth);
+  return c.json({ monthly_summaries: [current, ...stored].slice(0, limit) });
+});
+
+mentionDigestsRoute.post('/monthly/rebuild', authMiddleware, requireHumanMaster(), async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { month?: string };
+  const month = String(body.month || '').trim();
+  if (!isMonth(month)) return errorJson(c, 400, 'validation_failed', '연도와 월 형식을 확인해 주세요.', ['month']);
+  return c.json({ monthly_summary: await buildMentionMonthlySummary(c.env.DB, month, true) });
+});
+
+mentionDigestsRoute.get('/:id/revisions', requireViewer, async (c) => {
+  const result = await c.env.DB.prepare(`
+    SELECT revision, snapshot, archived_at FROM mention_digest_revisions
+    WHERE digest_id = ? ORDER BY revision DESC
+  `).bind(c.req.param('id')).all();
+  return c.json({ revisions: result.results.map((row: any) => ({
+    revision: row.revision,
+    archived_at: row.archived_at,
+    digest: mapDigest(safeJson(row.snapshot, {})),
+  })) });
 });
 
 mentionDigestsRoute.post('/', async (c) => {
@@ -287,8 +347,8 @@ mentionDigestsRoute.post('/', async (c) => {
   const fields = validateMentionDigest(parsed.body);
   if (fields.length) return errorJson(c, 400, 'validation_failed', '일일 보고의 필수 값 또는 형식이 올바르지 않습니다.', fields);
   if (c.req.query('dry_run') === '1') return c.json({ valid: true });
-  const existing = await c.env.DB.prepare('SELECT id FROM mention_digests WHERE report_key = ? OR report_date = ? LIMIT 1')
-    .bind(parsed.body.report_key, parsed.body.report_date).first<{ id: string }>();
+  const existing = await c.env.DB.prepare('SELECT * FROM mention_digests WHERE report_key = ? OR report_date = ? LIMIT 1')
+    .bind(parsed.body.report_key, parsed.body.report_date).first<any>();
   const id = existing?.id || crypto.randomUUID();
   const known = new Set(['report_key', 'report_date', 'period', 'summary', 'stats', 'urgent_mentions', 'top_topics', 'emerging_issues', 'repeated_issues', 'positive_mentions', 'source_breakdown', 'keyword_breakdown', 'discovered_keywords', 'data_quality', 'extra']);
   const unknown = Object.fromEntries(Object.entries(parsed.body).filter(([key]) => !known.has(key)));
@@ -302,6 +362,10 @@ mentionDigestsRoute.post('/', async (c) => {
     JSON.stringify(parsed.body.discovered_keywords || []), JSON.stringify(parsed.body.data_quality || []), JSON.stringify(extra),
   ];
   if (existing) {
+    await c.env.DB.prepare(`
+      INSERT OR IGNORE INTO mention_digest_revisions (id, digest_id, report_key, revision, snapshot)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(crypto.randomUUID(), id, existing.report_key, existing.revision, JSON.stringify(existing)).run();
     await c.env.DB.prepare(`
       UPDATE mention_digests SET report_key = ?, report_date = ?, period_start = ?, period_end = ?,
         summary = ?, stats = ?, urgent_mentions = ?, top_topics = ?, emerging_issues = ?, repeated_issues = ?,
