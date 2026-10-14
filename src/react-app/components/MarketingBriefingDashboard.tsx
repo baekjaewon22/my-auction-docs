@@ -10,6 +10,7 @@ import briefingHero from '../assets/marketing-briefing-hero.jpg';
 import instagramLogo from '../../../instar.jpg';
 import naverLogo from '../../../naver.jpg';
 import youtubeLogo from '../../../youtube.jpg';
+import crmLogo from '../../../crm+logo.png';
 
 type TabKey = 'overview' | 'analytics' | 'youtube' | 'instagram' | 'naver' | 'crm';
 type Briefing = {
@@ -44,7 +45,7 @@ const TABS: Array<{ key: TabKey; label: string; icon: typeof BarChart3; descript
   { key: 'youtube', label: '유튜브', icon: PlayCircle, description: '조회수·인기 콘텐츠', logo: youtubeLogo },
   { key: 'instagram', label: '인스타', icon: Camera, description: '도달·조회·반응', logo: instagramLogo },
   { key: 'naver', label: '네이버센터', icon: Search, description: '검색광고·키워드 점검', logo: naverLogo },
-  { key: 'crm', label: '회원(CRM)', icon: Users, description: '실제 가입·탈퇴·회원 구성' },
+  { key: 'crm', label: '회원(CRM)', icon: Users, description: '실제 가입·탈퇴·회원 구성', logo: crmLogo },
 ];
 
 const METRICS: Array<{ key: string; label: string; tab: TabKey; percent?: boolean; lowerBetter?: boolean; help: string }> = [

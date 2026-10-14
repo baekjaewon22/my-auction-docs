@@ -212,6 +212,7 @@
 .mbd-channel-tabs button.active .mbd-channel-logo { box-shadow: 0 0 0 3px color-mix(in srgb, var(--channel-color) 22%, transparent), 0 5px 14px rgba(18, 36, 60, .16); }
 .mbd-channel-logo img { width: 100%; height: 100%; display: block; object-fit: cover; transform: scale(1.08); }
 .mbd-channel-tabs button[data-channel='youtube'] .mbd-channel-logo img { transform: scale(1.34); }
+.mbd-channel-tabs button[data-channel='crm'] .mbd-channel-logo img { object-fit: contain; transform: scale(.82); }
 .mbd-channel-copy { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; }
 .mbd-channel-copy strong { max-width: 100%; color: var(--mbd-ink); font-size: 14px; line-height: 1.25; }
 .mbd-channel-copy small { max-width: 100%; color: #8491a3; font-size: 11px; line-height: 1.35; white-space: normal; }
