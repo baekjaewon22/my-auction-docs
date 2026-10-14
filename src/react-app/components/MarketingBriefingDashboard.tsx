@@ -6,7 +6,7 @@ import {
 import { useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { useAuthStore } from '../store';
-import briefingHero from '../assets/marketing-briefing-hero.jpg';
+import briefingHero from '../../../market_header.png';
 import instagramLogo from '../../../instar.jpg';
 import naverLogo from '../../../naver.jpg';
 import youtubeLogo from '../../../youtube.jpg';

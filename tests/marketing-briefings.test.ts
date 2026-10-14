@@ -82,7 +82,7 @@ test('briefing dashboard provides six channel tabs and date-based inline reports
   assert.match(dashboard, /instagramLogo/);
   assert.match(dashboard, /naverLogo/);
   assert.match(dashboard, /mbd-ga-logo/);
-  assert.match(dashboard, /marketing-briefing-hero\.jpg/);
+  assert.match(dashboard, /market_header\.png/);
   assert.match(dashboard, /className="mbd-hero-image"/);
   assert.match(css, /\.mbd-channel-tabs[\s\S]*grid-template-columns:\s*repeat\(6/);
   assert.match(css, /\.mbd-hero::after[\s\S]*linear-gradient/);
