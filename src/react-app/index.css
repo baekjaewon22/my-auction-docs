@@ -21754,7 +21754,7 @@ html[data-theme='dark'] .lawitgo-current-summary {
 
 /* External brand mention monitoring */
 .emm-page { --emm-ink: #172b46; --emm-muted: #52657b; max-width: 1380px; margin: 0 auto; padding: 24px; color: var(--emm-ink); font-size: 16px; line-height: 1.65; }
-.emm-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; min-height: 260px; padding: 38px; overflow: hidden; border: 1px solid #183968; border-radius: 2px; background: linear-gradient(90deg, rgba(2, 20, 53, .96) 0%, rgba(4, 36, 82, .82) 34%, rgba(4, 40, 85, .2) 68%, rgba(1, 15, 37, .08) 100%), url('/mentionhead.png') center center / cover no-repeat; color: #fff; box-shadow: 0 16px 38px rgba(10, 43, 83, .24); }
+.emm-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; min-height: 260px; padding: 38px; overflow: hidden; border: 1px solid #183968; border-radius: 2px; background: linear-gradient(90deg, rgba(2, 20, 53, .96) 0%, rgba(4, 36, 82, .82) 34%, rgba(4, 40, 85, .2) 68%, rgba(1, 15, 37, .08) 100%), url('./assets/mentionhead.png') center center / cover no-repeat; color: #fff; box-shadow: 0 16px 38px rgba(10, 43, 83, .24); }
 .emm-hero > div:first-child { max-width: 710px; }
 .emm-hero span { color: #8ee2ff; font-size: 14px; font-weight: 900; letter-spacing: .16em; text-shadow: 0 1px 5px rgba(0, 0, 0, .55); }
 .emm-hero h1 { margin: 10px 0; font-size: clamp(36px, 4.3vw, 54px); line-height: 1.16; letter-spacing: -.04em; text-shadow: 0 3px 14px rgba(0, 0, 0, .58); }
