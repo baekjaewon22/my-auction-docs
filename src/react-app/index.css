@@ -21753,12 +21753,12 @@ html[data-theme='dark'] .lawitgo-current-summary {
 }
 
 /* External brand mention monitoring */
-.emm-page { --emm-ink: #172b46; --emm-muted: #6f7e91; max-width: 1380px; margin: 0 auto; padding: 24px; color: var(--emm-ink); }
-.emm-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; min-height: 210px; padding: 36px; overflow: hidden; border: 1px solid #183968; border-radius: 2px; background: radial-gradient(circle at 86% 18%, rgba(42, 166, 255, .52), transparent 28%), linear-gradient(125deg, #071b3b 0%, #0a4c91 55%, #0786c6 100%); color: #fff; box-shadow: 0 16px 38px rgba(10, 43, 83, .2); }
+.emm-page { --emm-ink: #172b46; --emm-muted: #52657b; max-width: 1380px; margin: 0 auto; padding: 24px; color: var(--emm-ink); font-size: 16px; line-height: 1.65; }
+.emm-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; min-height: 260px; padding: 38px; overflow: hidden; border: 1px solid #183968; border-radius: 2px; background: linear-gradient(90deg, rgba(2, 20, 53, .96) 0%, rgba(4, 36, 82, .82) 34%, rgba(4, 40, 85, .2) 68%, rgba(1, 15, 37, .08) 100%), url('/mentionhead.png') center center / cover no-repeat; color: #fff; box-shadow: 0 16px 38px rgba(10, 43, 83, .24); }
 .emm-hero > div:first-child { max-width: 710px; }
-.emm-hero span { color: #83d7ff; font-size: 12px; font-weight: 900; letter-spacing: .16em; }
-.emm-hero h1 { margin: 9px 0; font-size: clamp(30px, 4vw, 46px); letter-spacing: -.04em; }
-.emm-hero p { margin: 0; color: #d9ecff; font-size: 15px; line-height: 1.7; }
+.emm-hero span { color: #8ee2ff; font-size: 14px; font-weight: 900; letter-spacing: .16em; text-shadow: 0 1px 5px rgba(0, 0, 0, .55); }
+.emm-hero h1 { margin: 10px 0; font-size: clamp(36px, 4.3vw, 54px); line-height: 1.16; letter-spacing: -.04em; text-shadow: 0 3px 14px rgba(0, 0, 0, .58); }
+.emm-hero p { margin: 0; color: #f1f8ff; font-size: 17px; font-weight: 600; line-height: 1.75; text-shadow: 0 2px 8px rgba(0, 0, 0, .65); }
 .emm-hero-actions { display: flex; gap: 8px; }
 .emm-hero-actions button { display: inline-flex; align-items: center; gap: 7px; min-height: 42px; padding: 0 14px; border: 1px solid rgba(173, 225, 255, .6); border-radius: 2px; background: rgba(4, 35, 73, .64); color: #fff; cursor: pointer; }
 .emm-hero-actions button:hover { background: rgba(8, 104, 171, .9); }
@@ -21774,7 +21774,7 @@ html[data-theme='dark'] .lawitgo-current-summary {
 .emm-scorecards strong { margin: 8px 0 3px; color: #173656; font-size: 29px; }
 .emm-scorecards small { color: #8a97a7; }
 .emm-summary { padding: 27px 30px; border: 1px solid #cbddec; border-left: 6px solid #1681c5; background: linear-gradient(105deg, #eff8ff, #fff); }
-.emm-summary.status-attention { border-left-color: #e58b25; background: linear-gradient(105deg, #fff8e9, #fff); }
+.emm-summary.status-attention, .emm-summary.status-caution { border-left-color: #e58b25; background: linear-gradient(105deg, #fff8e9, #fff); }
 .emm-summary.status-critical { border-left-color: #d4493d; background: linear-gradient(105deg, #fff0ee, #fff); }
 .emm-summary > span { color: #2581bd; font-size: 11px; font-weight: 900; letter-spacing: .08em; }
 .emm-summary h2 { margin: 8px 0; color: #173958; font-size: 24px; }
@@ -21855,6 +21855,38 @@ html[data-theme='dark'] .lawitgo-current-summary {
 .emm-state { padding: 34px; border: 1px solid #dce4ed; background: #f6f8fa; color: #758397; text-align: center; }
 .emm-state.error { border-color: #efb4ad; background: #fff0ee; color: #a33d33; }
 
+/* Readable type scale for non-marketers reviewing dense monitoring data. */
+.emm-tabs button { font-size: 15px; }
+.emm-tabs button b { font-size: 12px; }
+.emm-scorecards span { color: #455c75; font-size: 14px; }
+.emm-scorecards strong { font-size: 34px; line-height: 1.2; }
+.emm-scorecards small { color: #63758a; font-size: 13px; }
+.emm-summary > span, .emm-section-head span { font-size: 13px; }
+.emm-summary h2 { font-size: 28px; line-height: 1.38; }
+.emm-summary p { color: #4c6178; font-size: 16px; line-height: 1.8; }
+.emm-change-grid h3 { font-size: 18px; }
+.emm-change-grid p { color: #4f6277; font-size: 15px; line-height: 1.75; }
+.emm-section-head h2 { font-size: 25px; line-height: 1.35; }
+.emm-section-head > button { font-size: 14px; }
+.emm-mention-meta { color: #586b80; font-size: 13px; }
+.emm-mention-head strong { font-size: 19px; line-height: 1.5; }
+.emm-mention-head p { color: #4f6277; font-size: 16px; line-height: 1.75; }
+.emm-risk { font-size: 13px; }
+.emm-reasons b, .emm-reasons p { font-size: 14px; line-height: 1.65; }
+.emm-keywords span { font-size: 12px; }
+.emm-mention-footer > div > span, .emm-mention-footer small { font-size: 13px; }
+.emm-actions button, .emm-actions a { min-height: 38px; font-size: 13px; font-weight: 700; }
+.emm-filters input, .emm-filters select, .emm-filters label input { font-size: 14px; }
+.emm-digest-history time { font-size: 15px; }
+.emm-digest-history button strong { font-size: 16px; line-height: 1.5; }
+.emm-digest-history button small { color: #65758a; font-size: 13px; }
+.emm-digest-body h4 { font-size: 16px; }
+.emm-digest-body p { color: #52657a; font-size: 14px; line-height: 1.6; }
+.emm-run-list header strong { font-size: 16px; }
+.emm-run-list header time, .emm-run-list header > span, .emm-run-list article > div span { font-size: 12px; }
+.emm-run-list article > p { color: #52657a; font-size: 14px; }
+.emm-state { color: #52657a; font-size: 15px; }
+
 :root[data-theme='dark'] .emm-page { --emm-ink: #e5edf7; --emm-muted: #9cacbe; }
 :root[data-theme='dark'] :where(.emm-tabs, .emm-scorecards article, .emm-change-grid article, .emm-mention, .emm-filters label, .emm-filters input, .emm-filters select, .emm-digest-history > article, .emm-run-list article) { border-color: #334155; background: #111827; color: #dbe7f5; }
 :root[data-theme='dark'] :where(.emm-scorecards strong, .emm-summary h2, .emm-section-head h2, .emm-change-grid h3, .emm-mention-head strong, .emm-digest-history button strong, .emm-run-list header strong) { color: #e5edf7; }
@@ -21864,13 +21896,17 @@ html[data-theme='dark'] .lawitgo-current-summary {
 
 @media (max-width: 720px) {
   .emm-page { padding: 12px; }
-  .emm-hero { min-height: 300px; align-items: flex-start; flex-direction: column; justify-content: flex-end; padding: 22px 18px; }
+  .emm-hero { min-height: 330px; align-items: flex-start; flex-direction: column; justify-content: flex-end; padding: 24px 19px; background-position: 62% center; }
+  .emm-hero h1 { font-size: clamp(32px, 10vw, 42px); }
+  .emm-hero p { font-size: 16px; }
   .emm-hero-actions { width: 100%; }
   .emm-hero-actions button { flex: 1; justify-content: center; }
   .emm-tabs { display: flex; overflow-x: auto; }
   .emm-tabs button { flex: 0 0 145px; }
   .emm-scorecards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .emm-scorecards article { padding: 15px; }
+  .emm-scorecards strong { font-size: 30px; }
+  .emm-scorecards span { font-size: 13px; }
   .emm-change-grid { grid-template-columns: 1fr; }
   .emm-summary { padding: 21px 18px; }
   .emm-mention { padding: 15px; }
@@ -21882,6 +21918,7 @@ html[data-theme='dark'] .lawitgo-current-summary {
   .emm-filters { grid-template-columns: 1fr; }
   .emm-digest-history > article > button { grid-template-columns: 84px minmax(0, 1fr) 18px; padding: 11px; }
   .emm-digest-body { grid-template-columns: 1fr; padding: 0 11px 11px; }
+  .emm-digest-history button strong { font-size: 15px; }
 }
 
 /* Mobile hotfixes for pages with dense horizontal controls/cards.
