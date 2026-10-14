@@ -14,7 +14,10 @@ if (-not $SecretPath) {
   $SecretPath = Join-Path $env:USERPROFILE "Desktop\$marketingCheckFolder\.secrets\MYDOCS_MENTIONS_API_KEY.txt"
 }
 
-$credential = Get-Credential -Message 'Enter the email and password for a my-docs.kr master account.'
+Write-Host 'my-docs.kr master login is required.' -ForegroundColor Cyan
+$masterEmail = Read-Host 'Master account email'
+$masterPassword = Read-Host 'Master account password' -AsSecureString
+$credential = [System.Management.Automation.PSCredential]::new($masterEmail, $masterPassword)
 $loginBody = @{
   email = $credential.UserName
   password = $credential.GetNetworkCredential().Password
