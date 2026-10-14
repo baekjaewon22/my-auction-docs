@@ -1,13 +1,20 @@
 [CmdletBinding()]
 param(
   [string]$BaseUrl = 'https://my-docs.kr',
-  [string]$KeyName = 'Claude Cowork 외부 언급 수집',
-  [string]$SecretPath = (Join-Path $env:USERPROFILE 'Desktop\마케팅점검\.secrets\MYDOCS_MENTIONS_API_KEY.txt')
+  [string]$KeyName = 'Claude Cowork external mention collector',
+  [string]$SecretPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $base = $BaseUrl.TrimEnd('/')
-$credential = Get-Credential -Message 'my-docs.kr 마스터 계정의 이메일과 비밀번호를 입력하세요.'
+
+if (-not $SecretPath) {
+  # ASCII-only source keeps Windows PowerShell 5 from corrupting the Korean folder name.
+  $marketingCheckFolder = -join ([char[]](0xB9C8, 0xCF00, 0xD305, 0xC810, 0xAC80))
+  $SecretPath = Join-Path $env:USERPROFILE "Desktop\$marketingCheckFolder\.secrets\MYDOCS_MENTIONS_API_KEY.txt"
+}
+
+$credential = Get-Credential -Message 'Enter the email and password for a my-docs.kr master account.'
 $loginBody = @{
   email = $credential.UserName
   password = $credential.GetNetworkCredential().Password
@@ -16,7 +23,7 @@ $loginBody = @{
 
 $login = Invoke-RestMethod -Method Post -Uri "$base/api/auth/login" -ContentType 'application/json; charset=utf-8' -Body $loginBody
 if ($login.user.role -ne 'master') {
-  throw 'API 키 발급은 마스터 계정으로만 가능합니다.'
+  throw 'Only a master account can issue this API key.'
 }
 
 $authHeaders = @{ Authorization = "Bearer $($login.token)" }
@@ -24,7 +31,7 @@ $keyBody = @{ name = $KeyName } | ConvertTo-Json -Compress
 $issued = Invoke-RestMethod -Method Post -Uri "$base/api/mentions/keys" -Headers $authHeaders -ContentType 'application/json; charset=utf-8' -Body $keyBody
 $apiKey = [string]$issued.token
 if (-not $apiKey.StartsWith('mmn_')) {
-  throw '외부 언급 전용 키 형식이 올바르지 않습니다.'
+  throw 'The issued key does not have the expected mmn_ prefix.'
 }
 
 $secretDirectory = Split-Path -Parent $SecretPath
@@ -52,7 +59,13 @@ $digestDryRun = @{
   report_key = "myauction_mentions_key_check_$date"
   report_date = $date
   period = @{ start = $now.ToString('o'); end = $now.ToString('o') }
-  summary = @{ status = 'normal'; headline = 'API 키 검증용 보고서'; description = '저장되지 않는 dry run입니다.'; what_changed = @(); what_to_check = @() }
+  summary = @{
+    status = 'normal'
+    headline = 'API key validation'
+    description = 'This dry run is not stored.'
+    what_changed = @()
+    what_to_check = @()
+  }
   stats = @{}
   urgent_mentions = @()
   top_topics = @()
@@ -66,10 +79,10 @@ $digestDryRun = @{
 } | ConvertTo-Json -Depth 8 -Compress
 $digestResult = Invoke-RestMethod -Method Post -Uri "$base/api/mention-digests?dry_run=1" -Headers $apiHeaders -ContentType 'application/json; charset=utf-8' -Body $digestDryRun
 
-Write-Host '외부 언급 전용 API 키 발급이 완료되었습니다.' -ForegroundColor Green
-Write-Host "키 접두사: $($issued.api_key.token_prefix)..."
-Write-Host "저장 경로: $SecretPath"
-Write-Host '사용자 환경변수: MYDOCS_MENTIONS_API_KEY'
-Write-Host "개별 언급 dry_run: $($batchResult.valid)"
-Write-Host "일일 보고 dry_run: $($digestResult.valid)"
-Write-Host '보안을 위해 키 원문은 화면에 출력하지 않았습니다.'
+Write-Host 'External mention API key issued successfully.' -ForegroundColor Green
+Write-Host "Key prefix: $($issued.api_key.token_prefix)..."
+Write-Host "Saved to: $SecretPath"
+Write-Host 'User environment variable: MYDOCS_MENTIONS_API_KEY'
+Write-Host "Mention batch dry_run: $($batchResult.valid)"
+Write-Host "Daily digest dry_run: $($digestResult.valid)"
+Write-Host 'The full key was not printed.'
