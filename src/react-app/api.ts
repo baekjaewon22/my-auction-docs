@@ -1537,6 +1537,27 @@ export const api = {
     revokeKey: (id: string) => request<{ success: boolean }>(`/briefings/keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
 
+  mentions: {
+    list: (params: { date?: string; source_type?: string; sentiment?: string; risk?: string; workflow_status?: string; limit?: number } = {}) => {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') query.set(key, String(value));
+      return request<{ mentions: any[] }>(`/mentions?${query.toString()}`);
+    },
+    digests: (params: { date?: string; limit?: number } = {}) => {
+      const query = new URLSearchParams();
+      if (params.date) query.set('date', params.date);
+      if (params.limit) query.set('limit', String(params.limit));
+      return request<{ digests: any[] }>(`/mention-digests?${query.toString()}`);
+    },
+    runs: (limit = 20) => request<{ runs: any[] }>(`/mentions/runs?limit=${limit}`),
+    updateStatus: (id: string, data: { workflow_status: string; internal_note?: string; exclusion_reason?: string }) =>
+      request<{ success: boolean }>(`/mentions/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: JSON.stringify(data) }),
+    keys: () => request<{ api_keys: any[] }>('/mentions/keys'),
+    createKey: (data: { name: string }) =>
+      request<{ api_key: any; token: string }>('/mentions/keys', { method: 'POST', body: JSON.stringify(data) }),
+    revokeKey: (id: string) => request<{ success: boolean }>(`/mentions/keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+
   announcementPopups: {
     active: () =>
       request<{ popup: any | null }>('/announcement-popups/active'),

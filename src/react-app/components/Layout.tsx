@@ -8,6 +8,7 @@ import { canUseBusinessAutomation } from '../../shared/automation-access';
 import { canViewAuctionSchedule } from '../../shared/auction-schedule';
 import { canViewConsultantJournal } from '../../shared/consultant-journal-access';
 import { canViewMarketingBriefings } from '../../shared/marketing-briefing-access';
+import { canViewExternalMentions } from '../../shared/external-mentions';
 import {
   canUploadBriefingMaterial,
   canViewBriefingMaterial,
@@ -19,7 +20,7 @@ import {
   Users, UserCog, LogOut, CalendarDays, BarChart3,
   PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
   Scale, ExternalLink, Activity, Send, ShieldCheck,
-  Moon, Sun, Video, Megaphone,
+  Moon, Sun, Video, Megaphone, Radar,
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
@@ -108,6 +109,7 @@ export default function Layout() {
   const isRestrictedAsst = role === 'accountant_asst' && isRestrictedAccountingAsstBranch(user?.branch);
   const canApprove = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager', 'accountant'].includes(role);
   const canViewMarketingBriefingsPage = canViewMarketingBriefings(user);
+  const canViewExternalMentionsPage = canViewExternalMentions(user);
   const canViewOrg = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin', 'director', 'accountant', 'accountant_asst'].includes(role);
   const canManageUsers = !isFreelancer && ['master', 'ceo', 'admin', 'manager', 'accountant', 'accountant_asst'].includes(role);
   const canManage = !isFreelancer && ['master', 'ceo', 'cc_ref', 'admin'].includes(role);
@@ -276,6 +278,11 @@ export default function Layout() {
             {canViewMarketingBriefingsPage && (
               <Link to="/briefings" className={`nav-item ${isActive('/briefings') ? 'active' : ''}`} title="마이옥션 주간브리핑" onClick={() => setMobileOpen(false)}>
                 <Megaphone size={18} /> {!collapsed && '마이옥션 주간브리핑'}
+              </Link>
+            )}
+            {canViewExternalMentionsPage && (
+              <Link to="/external-mentions" className={`nav-item ${isActive('/external-mentions') ? 'active' : ''}`} title="마이옥션 외부 언급" onClick={() => setMobileOpen(false)}>
+                <Radar size={18} /> {!collapsed && '마이옥션 외부 언급'}
               </Link>
             )}
             {canViewBidHistory && (

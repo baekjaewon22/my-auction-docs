@@ -70,6 +70,8 @@ import AutomationDiagnosticsAdmin from './pages/AutomationDiagnosticsAdmin';
 import VideoProductionRequests from './pages/VideoProductionRequests';
 import MarketingBriefings from './pages/MarketingBriefings';
 import { canViewMarketingBriefings } from '../shared/marketing-briefing-access';
+import ExternalMentions from './pages/ExternalMentions';
+import { canViewExternalMentions } from '../shared/external-mentions';
 import { X } from 'lucide-react';
 import { canUseBusinessAutomation } from '../shared/automation-access';
 import { canViewAuctionStoryAnomalies } from '../shared/auction-story-anomaly-access';
@@ -193,6 +195,14 @@ function MarketingBriefingsRoute({ children }: { children: React.ReactNode }) {
   if (loading) return <div className="page-loading">로딩중...</div>;
   if (!user) return <Navigate to="/login" replace />;
   if (!canViewMarketingBriefings(user)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function ExternalMentionsRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuthStore();
+  if (loading) return <div className="page-loading">로딩중...</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!canViewExternalMentions(user)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -913,6 +923,7 @@ export default function App() {
           <Route path="briefings" element={<MarketingBriefingsRoute><MarketingBriefings /></MarketingBriefingsRoute>} />
           <Route path="briefings/:site" element={<MarketingBriefingsRoute><MarketingBriefings /></MarketingBriefingsRoute>} />
           <Route path="briefings/:site/:reportDate" element={<MarketingBriefingsRoute><MarketingBriefings /></MarketingBriefingsRoute>} />
+          <Route path="external-mentions" element={<ExternalMentionsRoute><ExternalMentions /></ExternalMentionsRoute>} />
           <Route
             path="cooperation"
             element={
