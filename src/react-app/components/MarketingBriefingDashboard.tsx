@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Activity, AlertTriangle, BarChart3, CheckCircle2, ChevronDown, ChevronUp,
-  Camera, Clipboard, KeyRound, PlayCircle, RefreshCw, Search,
+  Camera, Clipboard, KeyRound, PlayCircle, RefreshCw, Search, Users,
 } from 'lucide-react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
@@ -11,7 +11,7 @@ import instagramLogo from '../../../instar.jpg';
 import naverLogo from '../../../naver.jpg';
 import youtubeLogo from '../../../youtube.jpg';
 
-type TabKey = 'overview' | 'analytics' | 'youtube' | 'instagram' | 'naver';
+type TabKey = 'overview' | 'analytics' | 'youtube' | 'instagram' | 'naver' | 'crm';
 type Briefing = {
   id: string;
   report_key?: string;
@@ -44,10 +44,12 @@ const TABS: Array<{ key: TabKey; label: string; icon: typeof BarChart3; descript
   { key: 'youtube', label: '유튜브', icon: PlayCircle, description: '조회수·인기 콘텐츠', logo: youtubeLogo },
   { key: 'instagram', label: '인스타', icon: Camera, description: '도달·조회·반응', logo: instagramLogo },
   { key: 'naver', label: '네이버센터', icon: Search, description: '검색광고·키워드 점검', logo: naverLogo },
+  { key: 'crm', label: '회원(CRM)', icon: Users, description: '실제 가입·탈퇴·회원 구성' },
 ];
 
 const METRICS: Array<{ key: string; label: string; tab: TabKey; percent?: boolean; lowerBetter?: boolean; help: string }> = [
-  { key: 'signups', label: '전체 가입', tab: 'overview', help: '선택 기간에 새로 가입한 전체 인원입니다.' },
+  { key: 'crm_signups', label: '실제 가입 (CRM)', tab: 'overview', help: '회원 DB에 실제로 저장된 가입 인원입니다.' },
+  { key: 'signups', label: '가입 (GA4 기록)', tab: 'overview', help: 'GA4가 가입 행동으로 기록한 횟수입니다. 실제 회원 가입은 CRM 수치를 확인하세요.' },
   { key: 'signups_per_day', label: '하루 평균 가입', tab: 'overview', help: '매일 평균 몇 명이 가입했는지 보여줍니다.' },
   { key: 'direct_share', label: '출처 미확인 비중', tab: 'analytics', percent: true, lowerBetter: true, help: '어디서 방문했는지 확인하기 어려운 가입 비중입니다. 낮을수록 광고 판단이 정확합니다.' },
   { key: 'google_organic_signups', label: '구글 자연검색 가입', tab: 'analytics', help: '광고가 아닌 구글 검색을 통해 가입한 수입니다.' },
@@ -70,6 +72,7 @@ const SECTION_WORDS: Record<Exclude<TabKey, 'overview'>, string[]> = {
   youtube: ['유튜브', 'youtube'],
   instagram: ['인스타', '릴스', 'instagram'],
   naver: ['네이버', '검색광고', '키워드'],
+  crm: ['회원', 'crm', '가입', '탈퇴'],
 };
 
 const FINDING_MATCH: Record<Exclude<TabKey, 'overview'>, RegExp> = {
@@ -77,6 +80,7 @@ const FINDING_MATCH: Record<Exclude<TabKey, 'overview'>, RegExp> = {
   youtube: /유튜브|youtube|영상|조회|구독/i,
   instagram: /인스타|instagram|릴스|도달|팔로워|조회|반응/i,
   naver: /네이버|naver|키워드|검색|광고|클릭|노출|cpa/i,
+  crm: /회원|crm|가입|탈퇴|연령|성별|지역|앱/i,
 };
 
 function formatValue(value: unknown, percent = false, money = false) {
@@ -102,6 +106,7 @@ function opinion(delta: number | null, lowerBetter = false, tab: TabKey = 'overv
     overview: '각 채널의 원인을 차례로 확인하세요.', analytics: '유입 경로와 측정 누락 여부를 확인하세요.',
     youtube: '최근 영상 소재와 사이트 이동 연결을 확인하세요.', instagram: '게시물 소재와 업로드 시점을 확인하세요.',
     naver: '키워드 비용과 광고 추적 상태를 확인하세요.',
+    crm: '실제 가입·탈퇴와 회원 구성 변화를 확인하세요.',
   };
   return `${size} 나빠졌습니다. ${nextStep[tab]}`;
 }
@@ -220,7 +225,9 @@ function metricSnapshot(item: Briefing, key: string) {
   const devices = dashboard?.ga4?.devices || [];
   const account = dashboard?.instagram?.account || {};
   const naver = dashboard?.naver || {};
+  const crm = dashboard?.crm || {};
   const mapped: Record<string, { value?: number | null; prev?: number | null; goodDirection?: 'up' | 'down'; explain?: string }> = {
+    crm_signups: { value: crm.totals?.signups ?? item.kpis?.crm_signups, prev: crm.totals?.prev_signups ?? item.kpis?.crm_signups_prev, goodDirection: 'up', explain: crm.explain || '회원 DB에 실제로 저장된 가입 인원입니다.' },
     google_organic_signups: (() => { const row = channels.find((entry: any) => entry.source_medium === 'google / organic'); return { value: row?.signups, prev: row?.prev_signups, goodDirection: 'up', explain: '광고가 아닌 구글 검색으로 들어와 가입한 수입니다.' }; })(),
     desktop_cvr: (() => { const row = devices.find((entry: any) => entry.device === 'desktop'); return { value: row?.cvr, prev: null, goodDirection: 'up', explain: 'GA4가 제공한 PC 방문자의 실제 가입률입니다.' }; })(),
     mobile_cvr: (() => { const row = devices.find((entry: any) => entry.device === 'mobile'); return { value: row?.cvr, prev: null, goodDirection: 'up', explain: 'GA4가 제공한 모바일 방문자의 실제 가입률입니다.' }; })(),
@@ -276,7 +283,13 @@ function MetricCards({ tab, items }: { tab: TabKey; items: Briefing[] }) {
     const fallbackPrevious = previousItem && !periodsOverlap(currentItem, previousItem) ? previousSnapshot?.value : undefined;
     const comparison = typeof snapshot.prev === 'number' ? snapshot.prev : fallbackPrevious;
     const current = snapshot.value as number;
-    const values = typeof comparison === 'number' ? [comparison, current] : chronological.map((item) => metricSnapshot(item, metric.key).value).filter((value): value is number => typeof value === 'number');
+    const historicalValues = chronological.map((item) => {
+      const value = metricSnapshot(item, metric.key).value;
+      return metric.key === 'crm_signups' && typeof value !== 'number' ? item.kpis?.signups : value;
+    }).filter((value): value is number => typeof value === 'number');
+    const values = metric.key === 'crm_signups' && historicalValues.length > 1
+      ? historicalValues
+      : typeof comparison === 'number' ? [comparison, current] : historicalValues;
     const delta = deltaOf(current, comparison);
     const lowerBetter = snapshot.goodDirection ? snapshot.goodDirection === 'down' : metric.lowerBetter;
     const positive = delta !== null && (lowerBetter ? delta < 0 : delta > 0);
@@ -432,6 +445,87 @@ function InstagramVisual({ item }: { item: Briefing }) {
   </div>;
 }
 
+function CrmDailyChart({ rows }: { rows: any[] }) {
+  const recent = rows.slice(-14);
+  if (!recent.length) return null;
+  const width = 760;
+  const height = 240;
+  const top = 20;
+  const bottom = 42;
+  const baseY = height - bottom;
+  const chartHeight = baseY - top;
+  const groupWidth = width / recent.length;
+  const max = Math.max(...recent.flatMap((row) => [Number(row.signups) || 0, Number(row.withdrawals) || 0, Number(row.ga4_signups) || 0]), 1);
+  const y = (value: number) => baseY - (value / max) * chartHeight;
+  const points = recent.map((row, index) => `${groupWidth * index + groupWidth / 2},${y(Number(row.ga4_signups) || 0)}`).join(' ');
+  return <div className="mbd-crm-daily">
+    <div className="mbd-crm-legend"><span className="signup">실제 가입</span><span className="withdrawal">탈퇴</span><span className="ga4">GA4 가입 기록</span></div>
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="날짜별 실제 가입, 탈퇴, GA4 가입 기록 비교">
+      <line x1="0" y1={baseY} x2={width} y2={baseY} className="axis" />
+      {recent.map((row, index) => {
+        const center = groupWidth * index + groupWidth / 2;
+        const signup = Number(row.signups) || 0;
+        const withdrawal = Number(row.withdrawals) || 0;
+        const signupY = y(signup);
+        const withdrawalY = y(withdrawal);
+        return <g key={`${row.date}-${index}`}>
+          <rect className="signup-bar" x={center - 20} y={signupY} width="18" height={baseY - signupY}><title>{row.date} 실제 가입 {signup}명</title></rect>
+          <rect className="withdrawal-bar" x={center + 4} y={withdrawalY} width="13" height={Math.max(baseY - withdrawalY, withdrawal ? 3 : 0)}><title>{row.date} 탈퇴 {withdrawal}명</title></rect>
+          <text x={center} y={height - 17} textAnchor="middle">{String(row.date || '').slice(5)}</text>
+        </g>;
+      })}
+      <polyline points={points} className="ga4-line" />
+      {recent.map((row, index) => <circle key={`ga4-${row.date}-${index}`} cx={groupWidth * index + groupWidth / 2} cy={y(Number(row.ga4_signups) || 0)} r="4" className="ga4-point"><title>{row.date} GA4 기록 {row.ga4_signups ?? 0}건</title></circle>)}
+    </svg>
+  </div>;
+}
+
+function CrmVisual({ item }: { item: Briefing }) {
+  const crm = dashboardOf(item)?.crm;
+  if (!crm || crm.status === 'missing') return <div className="mbd-crm-missing">{crm?.note || '이번 회차에는 회원 CRM 자료가 없습니다.'}</div>;
+  const totals = crm.totals || {};
+  const signupDelta = deltaOf(totals.signups, totals.prev_signups);
+  const withdrawalDelta = deltaOf(totals.withdrawals, totals.prev_withdrawals);
+  const previousNet = typeof totals.prev_signups === 'number' && typeof totals.prev_withdrawals === 'number' ? totals.prev_signups - totals.prev_withdrawals : null;
+  const netDelta = deltaOf(totals.net, previousNet);
+  const inflow = crm.inflow || [];
+  const age = crm.age || [];
+  const sex = crm.sex || [];
+  const regions = (crm.region || []).slice(0, 10);
+  const inflowTotal = inflow.reduce((sum: number, row: any) => sum + (Number(row.value) || 0), 0) || 1;
+  const ageMax = Math.max(...age.flatMap((row: any) => [Number(row.value) || 0, Number(row.prev) || 0]), 1);
+  const sexTotal = sex.reduce((sum: number, row: any) => sum + (Number(row.value) || 0), 0) || 1;
+  let sexCursor = 0;
+  const sexColors = ['#1769e0', '#e24b83', '#f0a12b', '#7b68c8'];
+  const sexGradient = sex.map((row: any, index: number) => { const start = sexCursor; sexCursor += ((Number(row.value) || 0) / sexTotal) * 100; return `${sexColors[index % sexColors.length]} ${start}% ${sexCursor}%`; }).join(', ');
+  const ratio = Number(totals.ga4_ratio) || 0;
+  const ratioDiff = Math.abs(ratio - 1);
+  const ratioTone = ratioDiff <= .05 ? 'good' : ratioDiff <= .15 ? 'watch' : 'bad';
+  const ratioLabel = ratioTone === 'good' ? '측정이 정확합니다' : ratioTone === 'watch' ? '측정 차이를 확인하세요' : '측정 점검이 필요합니다';
+  const card = (label: string, value: string, delta: number | null, lowerBetter = false, help = '') => {
+    const good = delta !== null && (lowerBetter ? delta <= 0 : delta >= 0);
+    return <article><span>{label}</span><strong>{value}</strong>{delta !== null && <em className={good ? 'good' : 'bad'}>{delta > 0 ? '+' : ''}{delta.toFixed(1)}%</em>}<small>{help}</small></article>;
+  };
+  return <div className="mbd-channel-visual crm">
+    <section className="mbd-crm-kpis">
+      {card('실제 가입', formatValue(totals.signups), signupDelta, false, `직전 ${formatValue(totals.prev_signups)}명`)}
+      {card('탈퇴', formatValue(totals.withdrawals), withdrawalDelta, true, `직전 ${formatValue(totals.prev_withdrawals)}명`)}
+      {card('순증', formatValue(totals.net), netDelta, false, '가입에서 탈퇴를 뺀 실제 증가')}
+      {card('앱 가입 비중', formatValue(totals.app_share, true), null, false, '안드로이드와 아이폰 앱 합계')}
+    </section>
+    {!!crm.daily?.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>CRM VS GA4</span><h4>통계 기록과 실제 비교</h4></div><p>막대는 회원 DB의 실제 가입·탈퇴, 점선은 GA4 가입 기록입니다.</p></div><CrmDailyChart rows={crm.daily} /></section>}
+    {!!inflow.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>SIGNUP INFLOW</span><h4>어떤 경로로 가입했나요?</h4></div><p>전체 실제 가입에서 각 경로가 차지하는 비중입니다.</p></div><div className="mbd-crm-stack" aria-label="가입 경로 100% 누적 막대">{inflow.map((row: any, index: number) => <i key={row.key || index} style={{ width: `${((Number(row.value) || 0) / inflowTotal) * 100}%` }} title={`${row.label}: ${formatValue(row.value)}명`} />)}</div><div className="mbd-crm-inflow-list">{inflow.map((row: any, index: number) => { const change = deltaOf(row.value, row.prev); return <article key={row.key || index}><i style={{ background: sexColors[index % sexColors.length] }} /><span>{row.label}</span><strong>{formatValue(row.value)}명</strong><em className={change === null ? '' : change >= 0 ? 'up' : 'down'}>{change === null ? '비교 없음' : `${change >= 0 ? '↑' : '↓'} ${Math.abs(change).toFixed(1)}%`}</em><small>직전 {formatValue(row.prev)}명 · 비중 {formatValue(row.share, true)}</small></article>; })}</div></section>}
+    <div className="mbd-crm-demographics">
+      {!!age.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>AGE</span><h4>연령대별 가입</h4></div><p>진한 막대가 이번 주, 연한 막대가 직전 주입니다.</p></div><div className="mbd-crm-age">{age.map((row: any) => <article key={row.key}><span>{row.label}</span><div><i className="current" style={{ width: `${((Number(row.value) || 0) / ageMax) * 100}%` }} /><i className="previous" style={{ width: `${((Number(row.prev) || 0) / ageMax) * 100}%` }} /></div><strong>{formatValue(row.value)}</strong><small>직전 {formatValue(row.prev)}</small></article>)}</div></section>}
+      {!!sex.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>SEX</span><h4>성별 가입 구성</h4></div></div><div className="mbd-crm-sex"><div className="donut" style={{ background: `conic-gradient(${sexGradient})` }}><span><strong>{formatValue(sexTotal)}</strong><small>전체 가입</small></span></div><div>{sex.map((row: any, index: number) => <p key={row.key}><i style={{ background: sexColors[index % sexColors.length] }} /><span>{row.label}</span><strong>{formatValue(row.value)}명</strong><small>{formatValue(row.share, true)}</small></p>)}</div></div></section>}
+    </div>
+    {!!regions.length && <section className="mbd-visual-panel"><div className="mbd-panel-title"><div><span>REGION TOP 10</span><h4>가입 지역 상위 10개</h4></div></div><ReportTable table={{ columns: ['순위', '지역', '이번 주', '직전 주', '비중', '변화'], rows: regions.map((row: any, index: number) => { const change = deltaOf(row.value, row.prev); return [String(index + 1), row.label || row.key, `${formatValue(row.value)}명`, `${formatValue(row.prev)}명`, formatValue(row.share, true), change === null ? '-' : `${change >= 0 ? '↑' : '↓'} ${Math.abs(change).toFixed(1)}%`]; }) }} /></section>}
+    <section className={`mbd-crm-accuracy ${ratioTone}`}><div><span>GA4 측정 정확도</span><strong>{formatValue(ratio, true)}</strong><em>{ratioLabel}</em></div><div className="gauge"><i style={{ width: `${Math.max(0, Math.min((ratio / 1.3) * 100, 100))}%` }} /><b style={{ left: `${(1 / 1.3) * 100}%` }} /></div><p>GA4 가입 기록 ÷ CRM 실제 가입입니다. 100%에 가까울수록 통계와 실제 회원 수가 잘 맞습니다.</p></section>
+    {!!crm.data_quality?.length && <section className="mbd-crm-quality"><h4><AlertTriangle size={18} /> 데이터 확인 필요</h4><PlainNotes lines={crm.data_quality} /></section>}
+    {crm.explain && <section className="mbd-easy-explain"><h4>CRM 수치를 쉽게 읽으면</h4><PlainNotes lines={[crm.explain]} /></section>}
+  </div>;
+}
+
 export function ReadableReport({ source }: { source: string }) {
   const sections = splitReportSections(source);
   return <div className="mbd-readable-report">{Object.entries(sections).map(([heading, body]) => <section key={heading}><h4>{heading}</h4><PlainNotes lines={withoutTables(body)} />{parseMarkdownTables(body).map((table, index) => <ReportTable table={table} key={index} />)}</section>)}</div>;
@@ -440,15 +534,19 @@ export function ReadableReport({ source }: { source: string }) {
 function ChannelView({ tab, item, items }: { tab: Exclude<TabKey, 'overview'>; item: Briefing; items: Briefing[] }) {
   const section = extractSections(item.content_md || '', SECTION_WORDS[tab]);
   const title = TABS.find((entry) => entry.key === tab)!;
+  const crm = dashboardOf(item)?.crm;
   const hasTables = tab === 'analytics' ? objectRows(item.devices).length + objectRows(item.landing).length + objectRows(item.audience).length > 0
-    : tab === 'youtube' ? false : tab === 'instagram' ? !!item.reels?.length : !!item.channels?.length;
+    : tab === 'youtube' ? false : tab === 'instagram' ? !!item.reels?.length : tab === 'crm' ? !!crm : !!item.channels?.length;
+  const heading = <header className="mbd-section-heading"><div><span>{title.description}</span><h3>{title.label} 조사 결과</h3></div><p>전문용어 대신 “무엇이 달라졌고 무엇을 확인해야 하는지” 중심으로 정리했습니다.</p></header>;
+  if (tab === 'crm' && (!crm || crm.status === 'missing')) return <>{heading}<CrmVisual item={item} /></>;
   return <>
-    <header className="mbd-section-heading"><div><span>{title.description}</span><h3>{title.label} 조사 결과</h3></div><p>전문용어 대신 “무엇이 달라졌고 무엇을 확인해야 하는지” 중심으로 정리했습니다.</p></header>
-    <MetricCards tab={tab} items={items} />
+    {heading}
+    {tab !== 'crm' && <MetricCards tab={tab} items={items} />}
     {tab === 'analytics' && <AnalyticsVisual item={item} />}
     {tab === 'youtube' && <YoutubeVisual item={item} />}
     {tab === 'instagram' && <InstagramVisual item={item} />}
     {tab === 'naver' && <NaverVisual item={item} />}
+    {tab === 'crm' && <CrmVisual item={item} />}
     {!section && tab === 'analytics' && <div className="mbd-data-grid"><EasyTable title="기기별 방문·가입" rows={objectRows(item.devices)} /><EasyTable title="유입 화면·UTM" rows={objectRows(item.landing)} /><EasyTable title="신규·재방문" rows={objectRows(item.audience)} /><EasyTable title="채널별 유입" rows={item.channels || []} /></div>}
     {!section && tab === 'instagram' && <EasyTable title="최근 릴스 반응" rows={item.reels || []} />}
     {!section && tab === 'naver' && <EasyTable title="검색·키워드 점검 자료" rows={(item.channels || []).filter((row) => /naver|네이버/i.test(JSON.stringify(row)))} />}

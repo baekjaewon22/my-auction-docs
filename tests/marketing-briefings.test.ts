@@ -67,11 +67,11 @@ test('briefing UI renders markdown as React text and monthly HTML only in a sand
   assert.match(page, /신규·재방문/);
 });
 
-test('briefing dashboard provides five channel tabs and date-based inline reports', () => {
+test('briefing dashboard provides six channel tabs and date-based inline reports', () => {
   const dashboard = readFileSync('src/react-app/components/MarketingBriefingDashboard.tsx', 'utf8');
   const css = readFileSync('src/react-app/index.css', 'utf8');
-  for (const label of ['종합', 'Google 애널리틱스', '유튜브', '인스타', '네이버센터']) {
-    assert.match(dashboard, new RegExp(label));
+  for (const label of ['종합', 'Google 애널리틱스', '유튜브', '인스타', '네이버센터', '회원(CRM)']) {
+    assert.ok(dashboard.includes(label), `${label} tab missing`);
   }
   assert.match(dashboard, /aria-expanded=\{open\}/);
   assert.match(dashboard, /날짜를 누르면 다른 페이지로 이동하지 않고 바로 펼쳐집니다/);
@@ -84,7 +84,7 @@ test('briefing dashboard provides five channel tabs and date-based inline report
   assert.match(dashboard, /mbd-ga-logo/);
   assert.match(dashboard, /marketing-briefing-hero\.jpg/);
   assert.match(dashboard, /className="mbd-hero-image"/);
-  assert.match(css, /\.mbd-channel-tabs[\s\S]*grid-template-columns:\s*repeat\(5/);
+  assert.match(css, /\.mbd-channel-tabs[\s\S]*grid-template-columns:\s*repeat\(6/);
   assert.match(css, /\.mbd-hero::after[\s\S]*linear-gradient/);
   assert.match(css, /\.mbd-hero-image[\s\S]*object-fit:\s*cover/);
   assert.match(css, /\.mbd-channel-tabs button:hover[\s\S]*scale\(1\.045\)/);
@@ -121,6 +121,17 @@ test('briefing dashboard provides five channel tabs and date-based inline report
   assert.match(css, /\.mbd-daily-chart/);
   assert.match(css, /\.mbd-coverage/);
   assert.match(css, /\.mbd-structured-findings/);
+  assert.match(dashboard, /crm_signups/);
+  assert.match(dashboard, /가입 \(GA4 기록\)/);
+  assert.match(dashboard, /function CrmVisual/);
+  assert.match(dashboard, /function CrmDailyChart/);
+  assert.match(dashboard, /crm\.status === 'missing'/);
+  assert.match(dashboard, /ga4_ratio/);
+  assert.match(dashboard, /data_quality/);
+  assert.match(dashboard, /가입 지역 상위 10개/);
+  assert.match(css, /\.mbd-crm-daily/);
+  assert.match(css, /\.mbd-crm-accuracy/);
+  assert.match(css, /\.mbd-crm-sex/);
 });
 
 test('briefing API is mounted and navigation is in the management section', () => {
