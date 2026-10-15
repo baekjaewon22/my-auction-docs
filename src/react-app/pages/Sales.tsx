@@ -27,6 +27,11 @@ import {
   normalizeCustomerPhone,
   uniqueContractPhones,
 } from '../../shared/sales-customer-identity';
+import {
+  matchesSalesDocumentFilter,
+  SALES_DOCUMENT_FILTER_OPTIONS,
+  type SalesDocumentFilter,
+} from '../../shared/sales-document-filter';
 
 const TYPE_OPTIONS = [
   { value: '계약', label: '계약' },
@@ -344,6 +349,7 @@ export default function Sales() {
   const [filterUser, setFilterUser] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [filterDocumentStatus, setFilterDocumentStatus] = useState<SalesDocumentFilter>('');
   const [showBranchSummary, setShowBranchSummary] = useState(false);
   // 빈값이면 서버가 허용한 전체 범위이며, director도 관할 지사 + 본인 매출을 함께 본다.
   const [filterBranch, setFilterBranch] = useState('');
@@ -689,6 +695,7 @@ export default function Sales() {
         setFilterUser('');
         setFilterType('');
         setFilterStatus('');
+        setFilterDocumentStatus('');
         setSearchQuery('');
         setExpandedIds(prev => new Set(prev).add(dashboardFocusId));
       }
@@ -988,6 +995,7 @@ export default function Sales() {
   if (filterStatus === 'confirm_waiting') branchRecords = branchRecords.filter(r => CONFIRM_WAITING_STATUSES.includes(r.status));
   else if (filterStatus === 'missing_action') branchRecords = branchRecords.filter(isMissingAction);
   else if (filterStatus) branchRecords = branchRecords.filter(r => r.status === filterStatus);
+  if (filterDocumentStatus) branchRecords = branchRecords.filter(r => matchesSalesDocumentFilter(r, filterDocumentStatus));
 
   // 동명이인 중복 감지: (이름 + 전화번호)가 allRecords에서 2건+인 경우
   const duplicateKeys = new Set<string>();
@@ -1063,7 +1071,8 @@ export default function Sales() {
       </div>
       {/* 지사별 요약 (전체 지사 선택 시) */}
       {!filterBranch && (isAdminPlus || isAccountant || isDirector) && (() => {
-        const allRecs = filterType ? records.filter(r => r.type === filterType) : records;
+        let allRecs = filterType ? records.filter(r => r.type === filterType) : records;
+        if (filterDocumentStatus) allRecs = allRecs.filter(r => matchesSalesDocumentFilter(r, filterDocumentStatus));
         if (filterStatus) return null;
         const branchSet = [...new Set(allRecs.map(r => effectiveBranch(r)).filter(Boolean))].sort();
         if (branchSet.length <= 1) return null;
@@ -1263,6 +1272,16 @@ export default function Sales() {
               { value: 'missing_action', label: '미작성 액션' },
             ].find(o => o.value === filterStatus) || { value: '', label: '전체 상태' }}
             onChange={(o: any) => setFilterStatus(o?.value || '')} placeholder="상태" isClearable />
+        </div>
+        <div style={{ minWidth: 210 }}>
+          <Select
+            size="sm"
+            options={SALES_DOCUMENT_FILTER_OPTIONS}
+            value={SALES_DOCUMENT_FILTER_OPTIONS.find(o => o.value === filterDocumentStatus) || SALES_DOCUMENT_FILTER_OPTIONS[0]}
+            onChange={(o: any) => setFilterDocumentStatus((o?.value || '') as SalesDocumentFilter)}
+            placeholder="계약서/물건분석보고서"
+            isClearable
+          />
         </div>
       </div>
 
