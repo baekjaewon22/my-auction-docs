@@ -82,7 +82,7 @@ interface Props {
     activity_subtype: string;
     data: Record<string, unknown>;
   }) => Promise<unknown>;
-  checkInspectionDuplicate?: (caseNo: string, court?: string) => Promise<{ exists: boolean; entries: { id: string; user_id: string; user_name: string; target_date: string; court: string }[] }>;
+  checkInspectionDuplicate?: (caseNo: string, court?: string, itemNo?: string, ownerId?: string) => Promise<{ exists: boolean; entries: { id: string; user_id: string; user_name: string; target_date: string; court: string }[] }>;
 }
 
 function stringValue(data: Record<string, unknown>, key: string): string {
@@ -330,14 +330,19 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
     }
     const fullCase = `${inspYear}타경${inspCaseNo}`;
     const timer = setTimeout(() => {
-      (checkInspectionDuplicate || api.journal.checkCaseNo)(fullCase, inspCourt)
+      (checkInspectionDuplicate || api.journal.checkCaseNo)(
+        fullCase,
+        inspCourt,
+        inspItemNo,
+        canChooseAssignee ? assigneeId : undefined,
+      )
         .then(res => {
           setInspDupWarning(res.exists ? res.entries : null);
         })
         .catch(() => setInspDupWarning(null));
     }, 500);
     return () => clearTimeout(timer);
-  }, [inspYear, inspCaseNo, inspCourt, activityType, companion, checkInspectionDuplicate, inspAuctionKind]);
+  }, [inspYear, inspCaseNo, inspCourt, inspItemNo, activityType, companion, checkInspectionDuplicate, inspAuctionKind, canChooseAssignee, assigneeId]);
 
   // 사무
   const [officeType, setOfficeType] = useState('고객관리');

@@ -1069,6 +1069,46 @@ export const api = {
     },
   },
 
+  myStatistics: {
+    get: (params: { user_id?: string; from?: string; to?: string } = {}) => {
+      const q = new URLSearchParams();
+      if (params.user_id) q.set('user_id', params.user_id);
+      if (params.from) q.set('from', params.from);
+      if (params.to) q.set('to', params.to);
+      const qs = q.toString();
+      return request<{
+        summary: {
+          total_bids: number; decided_bids: number; won_bids: number; lost_bids: number;
+          pending_bids: number; cancelled_bids: number; overall_win_rate: number; result_completion_rate: number;
+        };
+        property_types: Array<{ label: string; total_count: number; total_share: number; won_count: number; won_share: number; win_rate: number; revenue_case_count: number; total_revenue: number; average_revenue: number; revenue_share: number; revenue_missing_count: number }>;
+        courts: Array<{ label: string; total_count: number; total_share: number; won_count: number; won_share: number; win_rate: number; revenue_case_count: number; total_revenue: number; average_revenue: number; revenue_share: number; revenue_missing_count: number }>;
+        monthly: Array<{ month: string; total_count: number; won_count: number; win_rate: number }>;
+        insights: { strengths: string[]; weaknesses: string[]; notes: string[] };
+        source_counts: { journal: number; schedule: number; legacy: number; historical: number };
+        price_accuracy: {
+          suggested_actual_count: number; winning_comparison_count: number;
+          avg_suggested_actual_gap_rate: number; avg_winning_gap_rate: number;
+          within_five_percent_rate: number; coverage_from: string;
+        };
+        court_property_matrix: Array<{ court: string; property_type: string; total_count: number; won_count: number; win_rate: number }>;
+        rolling_win_rates: Array<{ months: 3 | 6 | 12; total_count: number; decided_count: number; won_count: number; win_rate: number }>;
+        revenue: {
+          coverage_from: string; confirmed_case_count: number; pending_case_count: number; refunded_case_count: number;
+          missing_record_count: number; total: number; average_per_case: number; top_case_amount: number;
+          top_case_share: number; top_three_share: number;
+        };
+        rolling_revenue: Array<{ months: 3 | 6 | 12; total: number; case_count: number; previous_total: number; change_rate: number | null; has_records: boolean; coverage_complete: boolean }>;
+        monthly_revenue: Array<{ month: string; total: number; case_count: number }>;
+        coverage: { historical_bid_file: boolean; historical_bid_count: number; price_from_myoffice_only: boolean; revenue_from_myoffice_only: boolean; linked_revenue_record_count: number };
+        viewer_can_select_user: boolean;
+        selected_user: { id: string; name: string; role: string; branch: string; department: string; position_title: string; login_type: string };
+        users: Array<{ id: string; name: string; role: string; branch: string; department: string; position_title: string; login_type: string }>;
+        period: { from: string; to: string };
+      }>(`/my-statistics${qs ? '?' + qs : ''}`);
+    },
+  },
+
   sales: {
     list: (params?: { month?: string; month_end?: string; user_id?: string; date_mode?: string }) => {
       const q = new URLSearchParams();
@@ -1734,13 +1774,15 @@ export const api = {
       request('/journal/dismiss-alerts-bulk', { method: 'POST', body: JSON.stringify({ keys }) }),
     dismissedAlerts: () =>
       request<{ keys: string[] }>('/journal/dismissed-alerts'),
-    checkCaseNo: (caseNo: string, court?: string) => {
+    checkCaseNo: (caseNo: string, court?: string, itemNo?: string, ownerId?: string) => {
       const q = new URLSearchParams({ case_no: caseNo });
       if (court) q.set('court', court);
+      if (itemNo !== undefined) q.set('item_no', itemNo);
+      if (ownerId) q.set('owner_id', ownerId);
       return request<{ exists: boolean; entries: { id: string; user_id: string; user_name: string; target_date: string; court: string }[] }>('/journal/check-case-no?' + q.toString());
     },
     duplicateInspections: (all?: boolean) =>
-      request<{ duplicates: { case_no: string; court: string; branch: string; user_names: string; user_count: number; first_date: string; last_date: string }[] }>('/journal/duplicate-inspections' + (all ? '?all=true' : '')),
+      request<{ duplicates: { case_no: string; court: string; item_no: string; branch: string; user_names: string; user_count: number; first_date: string; last_date: string }[] }>('/journal/duplicate-inspections' + (all ? '?all=true' : '')),
   },
 
   freelancerBids: {
@@ -1841,9 +1883,11 @@ export const api = {
     ),
     delete: (id: string) =>
       request<{ success: boolean }>('/auction-schedule/' + id, { method: 'DELETE' }),
-    checkCaseNo: (caseNo: string, court?: string) => {
+    checkCaseNo: (caseNo: string, court?: string, itemNo?: string, ownerId?: string) => {
       const q = new URLSearchParams({ case_no: caseNo });
       if (court) q.set('court', court);
+      if (itemNo !== undefined) q.set('item_no', itemNo);
+      if (ownerId) q.set('owner_id', ownerId);
       return request<{ exists: boolean; entries: { id: string; user_id: string; user_name: string; target_date: string; court: string }[] }>(
         '/auction-schedule/check-case-no?' + q.toString(),
       );

@@ -464,7 +464,7 @@ export default function Dashboard() {
   const [contractAlerts, setContractAlerts] = useState<SalesRecord[]>([]);
   const [myMissingDocs, setMyMissingDocs] = useState<SalesRecord[]>([]);
   const [missingPhoneSales, setMissingPhoneSales] = useState<SalesRecord[]>([]);
-  const [dupInspections, setDupInspections] = useState<{ case_no: string; court: string; user_names: string; user_count: number; first_date: string; last_date: string; branch?: string }[]>([]);
+  const [dupInspections, setDupInspections] = useState<{ case_no: string; court: string; item_no: string; user_names: string; user_count: number; first_date: string; last_date: string; branch?: string }[]>([]);
   const dupAllBranches = true;
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [pendingSalesBranch, setPendingSalesBranch] = useState('');
@@ -840,7 +840,11 @@ export default function Dashboard() {
 
         // 10. 중복 임장
         if (dupRes) {
-          setDupInspections((dupRes.duplicates || []).filter((d: any) => !localDismissed.has(`dup_${d.case_no}_${d.court}_${d.branch || ''}`)));
+          setDupInspections((dupRes.duplicates || []).filter((d: any) => {
+            const legacyKey = `dup_${d.case_no}_${d.court}_${d.branch || ''}`;
+            const itemKey = `dup_${d.case_no}_${d.court}_${d.item_no || ''}_${d.branch || ''}`;
+            return !localDismissed.has(legacyKey) && !localDismissed.has(itemKey);
+          }));
         }
 
         if (noticeRes) {
@@ -1393,7 +1397,7 @@ export default function Dashboard() {
             <span style={{ background: '#7b1fa2', color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: '0.7rem' }}>{dupInspections.length}건</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 'auto' }}>
               <span style={{ fontSize: '0.68rem', color: '#7b1fa2', fontWeight: 700 }}>전 지사 중복 기준</span>
-              <MasterCloseBtn alertType="dup_inspection" keys={dupInspections.map(d => `dup_${d.case_no}_${d.court}_${d.branch || ''}`)} onClose={() => setDupInspections([])} />
+              <MasterCloseBtn alertType="dup_inspection" keys={dupInspections.map(d => `dup_${d.case_no}_${d.court}_${d.item_no || ''}_${d.branch || ''}`)} onClose={() => setDupInspections([])} />
             </div>
           </h3>
           <div className="missing-alert-list">
@@ -1407,10 +1411,11 @@ export default function Dashboard() {
               ));
               return (
                 <div key={i} className="missing-alert-item" style={{ borderLeft: '3px solid #7b1fa2', position: 'relative' }}>
-                  {canDismissAlertItems && <div style={{ position: 'absolute', top: 6, right: 6 }}><AlertItemCloseBtn alertType="dup_inspection" alertKey={`dup_${dup.case_no}_${dup.court}_${dup.branch || ''}`} /></div>}
+                  {canDismissAlertItems && <div style={{ position: 'absolute', top: 6, right: 6 }}><AlertItemCloseBtn alertType="dup_inspection" alertKey={`dup_${dup.case_no}_${dup.court}_${dup.item_no || ''}_${dup.branch || ''}`} /></div>}
                   <div className="missing-alert-content">
                     <div className="missing-alert-main" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 700, background: '#f3e5f5', color: '#7b1fa2' }}>{dup.case_no}</span>
+                      {dup.item_no && <span style={{ padding: '2px 6px', borderRadius: 8, fontSize: '0.68rem', background: '#ede7f6', color: '#5e35b1' }}>물건 {dup.item_no}번</span>}
                       {dup.court && <span style={{ padding: '2px 6px', borderRadius: 8, fontSize: '0.68rem', background: '#e8eaf6', color: '#3949ab' }}>{dup.court}</span>}
                       {dupAllBranches && dup.branch && <span style={{ padding: '2px 6px', borderRadius: 8, fontSize: '0.68rem', background: '#e0f2f1', color: '#00695c' }}>{dup.branch}</span>}
                       <span style={{ fontSize: '0.82rem' }}>

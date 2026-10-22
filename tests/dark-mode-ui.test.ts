@@ -18,57 +18,80 @@ test('dark theme defines global variables and common surface overrides', () => {
   const css = readFileSync('src/react-app/index.css', 'utf8');
 
   assert.match(css, /:root\[data-theme='dark'\]/);
-  assert.match(css, /--bg: #0b1120/);
+  assert.match(css, /--bg: #0c1521/);
+  assert.match(css, /--surface: #132131/);
+  assert.match(css, /--surface-elevated: #1d3044/);
+  assert.match(css, /--text: #dce7f1/);
+  assert.match(css, /--text-muted: #b7c5d4/);
   assert.match(css, /\.theme-toggle-btn\[aria-pressed='true'\]/);
   assert.match(css, /\.mobile-theme-btn/);
   assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.card[\s\S]*?\.modal[\s\S]*?\.table-wrap/);
   assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.form-input[\s\S]*?\.table-input/);
 });
 
-test('dark theme keeps dashboard notice surfaces and text readable', () => {
+test('dark theme applies the comfortable navy safeguard after legacy page overrides', () => {
+  const css = readFileSync('src/react-app/index.css', 'utf8');
+  const safeguardIndex = css.indexOf('Comfortable navy dark mode safeguard');
+
+  assert.ok(safeguardIndex > css.lastIndexOf('background: #94a3b8 !important'), 'navy safeguard must override legacy light-gray surfaces');
+  const safeguard = css.slice(safeguardIndex);
+  assert.match(safeguard, /\[class\$='-card'\][\s\S]*?\[class\$='-panel'\][\s\S]*?\[class\$='-wrapper'\]/);
+  assert.match(safeguard, /:not\(\.document-page\):not\(\.print-page\):not\(\.minutes-pdf-page\):not\(\.pdf-page\)/);
+  assert.match(safeguard, /background: var\(--surface\) !important/);
+  assert.match(safeguard, /background: var\(--surface-elevated\) !important/);
+  assert.match(safeguard, /background-color: var\(--input-bg\) !important/);
+  assert.match(safeguard, /color: var\(--text\) !important/);
+  assert.match(safeguard, /color: var\(--text-muted\) !important/);
+  assert.match(safeguard, /\.alert-success[\s\S]*?\.alert-warning[\s\S]*?\.alert-danger/);
+  assert.match(safeguard, /tbody tr:hover/);
+  assert.match(safeguard, /::selection/);
+});
+
+test('dark theme replaces legacy black inline text while preserving printable pages', () => {
+  const css = readFileSync('src/react-app/index.css', 'utf8');
+  const select = readFileSync('src/react-app/components/Select.tsx', 'utf8');
+  const safeguard = css.slice(css.indexOf('Comfortable navy dark mode safeguard'));
+
+  assert.match(safeguard, /\[style\*='color: #0f172a' i\]/);
+  assert.match(safeguard, /\[style\*='color: rgb\(15, 23, 42\)' i\]/);
+  assert.match(safeguard, /\[style\*='color: #3c4043' i\]/);
+  assert.match(safeguard, /\[style\*='color: #5f6368' i\]/);
+  assert.match(safeguard, /:not\(\.document-page, \.document-page \*, \.print-page, \.print-page \*, \.pr-page, \.pr-page \*/);
+  assert.match(safeguard, /:where\(h1, h2, h3, h4, h5, h6, legend, pre, code\):not/);
+  assert.match(safeguard, /color: var\(--text\) !important/);
+  assert.match(safeguard, /color: var\(--text-muted\) !important/);
+  assert.match(select, /backgroundColor: 'var\(--input-bg\)'/);
+  assert.match(select, /color: 'var\(--text\)'/);
+  assert.match(select, /color: 'var\(--text-subtle\)'/);
+});
+
+test('calendar and My Page routes receive a dedicated dark text scope', () => {
+  const layout = readFileSync('src/react-app/components/Layout.tsx', 'utf8');
   const css = readFileSync('src/react-app/index.css', 'utf8');
 
-  assert.match(css, /:root\[data-theme='dark'\] \.page :where\([\s\S]*?\[class\$='-card'\][\s\S]*?\[class\$='-panel'\][\s\S]*?\[class\$='-tabs'\][\s\S]*?\[class\$='-wrapper'\]/);
-  assert.match(css, /:not\(\.document-page\):not\(\.print-page\):not\(\.minutes-pdf-page\):not\(\.pdf-page\)/);
-  assert.match(css, /background: #94a3b8 !important/);
-  assert.match(css, /color: #0b1120 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.page :where\([\s\S]*?\[class\$='-list'\][\s\S]*?\)[\s\S]*?background: transparent !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.page :where\([\s\S]*?\[class\$='-item'\][\s\S]*?\[class\$='-row'\][\s\S]*?background: #a8b5c6 !important/);
-  assert.match(css, /\.admin-notes-section-tabs/);
-  assert.match(css, /:where\(button, a, \.btn\)/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.dashboard-notice-panel[\s\S]*?\.dashboard-today-news-panel[\s\S]*?\.dashboard-top-alert-panel/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.announcement-popup-card[\s\S]*?\.popup-manager-panel[\s\S]*?\.popup-manager-item/);
-  assert.match(css, /:root\[data-theme='dark'\] \.dashboard-notice-panel/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.dashboard-notice-item[\s\S]*?\.dashboard-today-news-item[\s\S]*?\.dashboard-my-alert-item/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.dashboard-notice-line strong[\s\S]*?\.dashboard-today-news-title/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.dashboard-notice-line time[\s\S]*?\.dashboard-today-news-empty/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.announcement-popup-head[\s\S]*?\.announcement-popup-foot/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.page-header[\s\S]*?\.filter-bar[\s\S]*?\.sales-filter-bar[\s\S]*?\)[\s\S]*?background: var\(--bg\) !important/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.stats-grid \.stat-card[\s\S]*?\.bid-stats-grid \.bid-stat-card[\s\S]*?\)[\s\S]*?background: var\(--bg\) !important/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.dashboard-today-bids-date[\s\S]*?\.doc-meta[\s\S]*?\.archive-doc-meta[\s\S]*?\)[\s\S]*?color: var\(--text\) !important/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\(\.lawitgo-case-sidebar, \.lawitgo-case-search\)[\s\S]*?background: #94a3b8 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.auction-schedule-current-week,[\s\S]*?:root\[data-theme='dark'\] \.auction-schedule-current-week strong[\s\S]*?color: #f8fafc !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.filter-bar \.filter-btn[\s\S]*?color: #0b1120 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.filter-bar \.filter-btn\.active[\s\S]*?color: #f8fafc !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.document-select-wrap[\s\S]*?border-radius: 18px !important/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\(\.freelancer-bid-page, \.unified-bid-history-page\)[\s\S]*?color: #f8fafc !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.ct-card-grid \.ct-card[\s\S]*?background: #94a3b8 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\(\.doc-card, \.template-card, \.management-support-card\)[\s\S]*?background: #94a3b8 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\(\.doc-card, \.template-card, \.management-support-card\) :where\([\s\S]*?\.management-support-title[\s\S]*?\.management-support-desc[\s\S]*?\)[\s\S]*?color: #0b1120 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.template-card \.template-myauction-btn :where\(span, svg\),[\s\S]*?:root\[data-theme='dark'\] \.template-card \.template-myauction-btn\.active[\s\S]*?color: #f8fafc !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.management-support-icon[\s\S]*?background: #0b1120 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.announcement-popup-body[\s\S]*?font-size: 1rem !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.expense-receipt-archive-item[\s\S]*?background: #94a3b8 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.expense-receipt-archive-summary > div[\s\S]*?background: #94a3b8 !important[\s\S]*?border-color: #7f8fa4 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.expense-receipt-archive-summary :where\(span, strong, small\)[\s\S]*?color: #0b1120 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.expense-receipt-archive-page \.archive-category-tabs[\s\S]*?background: #94a3b8 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.expense-receipt-archive-item \.status-badge[\s\S]*?color: #f8fafc !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.expense-receipt-archive-actions \.btn,[\s\S]*?:root\[data-theme='dark'\] \.expense-receipt-pagination \.btn[\s\S]*?color: #f8fafc !important/);
-  assert.match(css, /:root\[data-theme='dark'\] :where\([\s\S]*?\.expense-receipt-page-header h2[\s\S]*?\.expense-receipt-archive-header h2[\s\S]*?\)[\s\S]*?color: #f8fafc !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.auction-bid-result-dashboard-alert[\s\S]*?background: #94a3b8 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.auction-bid-result-dashboard-alert \.missing-alert-item[\s\S]*?background: #a8b5c6 !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.auction-bid-result-dashboard-alert \.missing-alert-main[\s\S]*?color: #06101f !important/);
-  assert.match(css, /:root\[data-theme='dark'\] \.auction-bid-result-dashboard-alert \.missing-alert-doc[\s\S]*?color: #991b1b !important/);
+  assert.match(layout, /const MY_PAGE_ROUTE_PREFIXES = \[/);
+  assert.match(layout, /'\/auction-schedule'/);
+  assert.match(layout, /'\/personal-calendar'/);
+  assert.match(layout, /'\/my-statistics'/);
+  assert.match(layout, /'\/rooms'/);
+  assert.match(layout, /main-content\$\{isMyPageRoute \? ' my-page-dark-scope' : ''\}/);
+  assert.match(css, /:where\(\.page, \.main-content\.my-page-dark-scope\)/);
+  assert.match(css, /\.personal-calendar-page[\s\S]*?\.personal-calendar-day[\s\S]*?\.personal-calendar-event-chip/);
+  assert.match(css, /\.personal-calendar-toolbar \.personal-calendar-month-title strong[\s\S]*?color: #dce7f1 !important/);
+  assert.match(css, /\.personal-calendar-weekdays > span[\s\S]*?color: #b7c5d4 !important/);
+  assert.match(css, /\.auction-schedule-page[\s\S]*?\.auction-schedule-day[\s\S]*?\.auction-schedule-item/);
+});
+
+test('My Statistics has a final high-contrast dark text layer', () => {
+  const css = readFileSync('src/react-app/index.css', 'utf8');
+  const layer = css.slice(css.indexOf('My statistics: final high-contrast layer'));
+
+  assert.match(layer, /\.my-stats-summary-card strong[\s\S]*?color: #f1f6fb !important/);
+  assert.match(layer, /\.my-stats-summary-card > div > span[\s\S]*?color: #c6d4e1 !important/);
+  assert.match(layer, /\.my-stats-bar-result span[\s\S]*?color: #add5fa !important/);
+  assert.match(layer, /\.my-stats-coverage-note span[\s\S]*?color: #d6e3ee !important/);
+  assert.match(layer, /\.my-stats-filters :where\(input, select, option\)[\s\S]*?color: #f4f8fc !important/);
+  assert.match(layer, /\.my-stats-no-record[\s\S]*?color: #ffe09a !important/);
 });
 
 test('announcement popup window uses larger readable text', () => {

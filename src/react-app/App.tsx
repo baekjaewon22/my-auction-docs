@@ -22,6 +22,7 @@ import ExpenseReceiptApplication from './pages/ExpenseReceiptApplication';
 import ExpenseReceiptArchive from './pages/ExpenseReceiptArchive';
 import ExpenseReceiptApprovalManage from './pages/ExpenseReceiptApprovalManage';
 import Statistics from './pages/Statistics';
+import MyStatistics from './pages/MyStatistics';
 import Cases from './pages/Cases';
 import OrgChart from './pages/OrgChart';
 import MeetingMinutes from './pages/MeetingMinutes';
@@ -82,6 +83,7 @@ import {
   canViewBriefingMaterial,
 } from '../shared/briefing-material-access';
 import { canManageVideoProduction } from '../shared/video-production';
+import { canViewMyStatistics } from '../shared/my-statistics-access';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -267,6 +269,12 @@ function StatsRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
   const allowed = ['master', 'ceo', 'admin'];
   if (!user || ((user as any).login_type === 'freelancer' && user.role !== 'master') || !allowed.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+function MyStatisticsRoute({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  if (!user || !canViewMyStatistics(user)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -608,6 +616,7 @@ export default function App() {
               </StatsRoute>
             }
           />
+          <Route path="my-statistics" element={<MyStatisticsRoute><MyStatistics /></MyStatisticsRoute>} />
           <Route path="cases" element={<Cases />} />
           <Route path="lawitgo-settlement-ledger" element={<AccountingRoute><LawitgoSettlementLedger /></AccountingRoute>} />
           <Route path="lawitgo-winning-admin" element={<MasterRoute><LawitgoWinningAdmin /></MasterRoute>} />

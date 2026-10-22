@@ -545,6 +545,7 @@ auctionSchedule.get('/check-case-no', async (c) => {
   const db = c.env.DB;
   const caseNo = String(c.req.query('case_no') || '').trim();
   const court = String(c.req.query('court') || '').trim();
+  const itemNo = c.req.query('item_no');
   if (!caseNo) return c.json({ exists: false, entries: [] });
   await ensureAuctionScheduleTable(db);
   await ensureAuctionScheduleResultSchema(db);
@@ -561,6 +562,14 @@ auctionSchedule.get('/check-case-no', async (c) => {
     query += " AND COALESCE(json_extract(s.data, '$.court'), '') = ?";
     params.push(court);
   }
+  if (itemNo !== undefined) {
+    query += " AND REPLACE(REPLACE(TRIM(COALESCE(json_extract(s.data, '$.itemNo'), '')), ' ', ''), '번', '') = ?";
+    params.push(String(itemNo).trim().replace(/\s+/g, '').replace(/번/g, ''));
+  }
+  const requestedOwnerId = String(c.req.query('owner_id') || '').trim();
+  const ownerId = user.role === 'master' && requestedOwnerId ? requestedOwnerId : user.sub;
+  query += ' AND s.user_id != ?';
+  params.push(ownerId);
   if (user.role === 'admin' && !isHeadOfficeBranch(user.branch)) {
     const branches = await getAdminVisibleBranches(db, user);
     query += ` AND s.branch IN (${branches.map(() => '?').join(',')})`;

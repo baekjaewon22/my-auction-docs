@@ -234,6 +234,11 @@ __pycache__/
 ### Local test and inspection artifacts ###
 .tmp/
 
+### Local My Statistics history import data ###
+/입찰일정.xls
+/outputs/입찰일정_통계정제.xlsx
+/d1/import-my-statistics-history-*.sql
+
 ### Local AI collaboration review artifacts ###
 .ai/reviews/*
 .ai/collaboration/*

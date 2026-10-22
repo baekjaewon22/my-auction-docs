@@ -14,6 +14,7 @@ import {
   canViewBriefingMaterial,
 } from '../../shared/briefing-material-access';
 import { canManageVideoProduction } from '../../shared/video-production';
+import { canViewMyStatistics } from '../../shared/my-statistics-access';
 import WebPushConsentPrompt from './WebPushConsentPrompt';
 import {
   LayoutDashboard, FileText, ClipboardList, CheckCircle,
@@ -33,6 +34,23 @@ function shouldShowDiagnosisBox(pathname: string): boolean {
 // 컨설턴트 계약관리: 대표/마스터/총무급 + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
 const PAYROLL_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
+
+const MY_PAGE_ROUTE_PREFIXES = [
+  '/admin-notes',
+  '/auction-schedule',
+  '/journal',
+  '/case-progress',
+  '/sales',
+  '/missing-documents',
+  '/minutes',
+  '/freelancer-bids',
+  '/bid-history',
+  '/leave',
+  '/personal-calendar',
+  '/my-statistics',
+  '/video-production',
+  '/rooms',
+] as const;
 
 function isRestrictedAccountingAsstBranch(branch: unknown): boolean {
   return isRestrictedAccountingBranch(branch);
@@ -69,6 +87,7 @@ export default function Layout() {
   const isAccountingBookActive = location.pathname === '/accounting' || location.pathname.startsWith('/accounting/');
   const navTo = (path: string) => { navigate(path); setMobileOpen(false); };
   const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'));
+  const isMyPageRoute = MY_PAGE_ROUTE_PREFIXES.some((path) => location.pathname.startsWith(path));
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -136,6 +155,7 @@ export default function Layout() {
   const canViewBriefingArchive = canViewBriefingMaterial(user);
   const canUseMasterAutomationTools = role === 'master';
   const canManageVideoProductionRequests = canManageVideoProduction(user);
+  const showMyStatistics = canViewMyStatistics(user);
 
   const sidebarContent = (
     <>
@@ -205,6 +225,11 @@ export default function Layout() {
         <Link to="/personal-calendar" className={`nav-item ${isActive('/personal-calendar') ? 'active' : ''}`} title="캘린더" onClick={() => setMobileOpen(false)}>
           <CalendarDays size={18} /> {!collapsed && '캘린더'}
         </Link>
+        {showMyStatistics && (
+          <Link to="/my-statistics" className={`nav-item ${isActive('/my-statistics') ? 'active' : ''}`} title="마이통계" onClick={() => setMobileOpen(false)}>
+            <BarChart3 size={18} /> {!collapsed && '마이통계'}
+          </Link>
+        )}
         {canManageVideoProductionRequests && (
           <Link to="/video-production" className={`nav-item ${isActive('/video-production') ? 'active' : ''}`} title="영상제작 의뢰" onClick={() => setMobileOpen(false)}>
             <Video size={18} /> {!collapsed && '영상제작 의뢰'}
@@ -461,7 +486,7 @@ export default function Layout() {
         {sidebarContent}
       </aside>
 
-      <main className="main-content">
+      <main className={`main-content${isMyPageRoute ? ' my-page-dark-scope' : ''}`}>
         <Outlet />
       </main>
 

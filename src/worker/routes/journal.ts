@@ -9,6 +9,7 @@ import { isNonWorkingDate, previousWorkDate } from '../../shared/work-calendar';
 import { loadSystemHolidayDates } from '../lib/system-holidays';
 import { canViewSuggestedBidPrice, redactSuggestedBidPrice } from '../../shared/auction-schedule';
 import { canDismissDashboardAlertItems } from '../../shared/dashboard-alert-dismiss';
+import { DUPLICATE_INSPECTIONS_QUERY } from '../lib/duplicate-inspections';
 
 function fmtDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
@@ -463,7 +464,7 @@ function filterDuplicateActivityRows(
   return results;
 }
 
-// GET /api/journal/duplicate-inspections — 중복 임장 사건번호+법원 조회
+// GET /api/journal/duplicate-inspections — 중복 임장 법원+사건번호+물건번호 조회
 // 열람 권한:
 //   - master/ceo/cc_ref/admin/director: 전체 열람 가능
 //   - manager (팀장): 본인 팀에 관련된 중복건만
@@ -485,34 +486,7 @@ journal.get('/duplicate-inspections', async (c) => {
   // 알림 종료 조건:
   //   1) 첫 임장 등록일 기준 1개월(30일) 경과 → 알림 제외
   // 입찰 등록 여부와 무관하게 동일 사건 임장은 계속 알려야 한다.
-  let query = `
-    SELECT j.activity_subtype as case_no,
-           json_extract(j.data, '$.court') as court,
-           GROUP_CONCAT(DISTINCT j.branch) as branch,
-           GROUP_CONCAT(DISTINCT u.name) as user_names,
-           GROUP_CONCAT(DISTINCT j.user_id) as user_ids,
-           GROUP_CONCAT(DISTINCT u.department) as user_departments,
-           COUNT(DISTINCT j.user_id) as user_count,
-           MIN(j.target_date) as first_date,
-           MAX(j.target_date) as last_date
-    FROM journal_entries j
-    LEFT JOIN users u ON j.user_id = u.id
-    WHERE j.activity_type = '임장'
-      AND j.activity_subtype != ''
-      AND COALESCE(json_extract(j.data, '$.companion'), 0) != 1
-  `;
-  const params: string[] = [];
-
-  query += `
-    GROUP BY j.activity_subtype, json_extract(j.data, '$.court')
-    HAVING COUNT(DISTINCT j.user_id) > 1
-       AND MIN(j.target_date) >= date('now', '-30 days')
-    ORDER BY MAX(j.target_date) DESC
-  `;
-
-  const rows = params.length > 0
-    ? await db.prepare(query).bind(...params).all()
-    : await db.prepare(query).all();
+  const rows = await db.prepare(DUPLICATE_INSPECTIONS_QUERY).all();
 
   const results = filterDuplicateActivityRows(rows.results || [], {
     isTopRole,
@@ -530,10 +504,14 @@ journal.get('/duplicate-inspections', async (c) => {
 journal.get('/check-case-no', async (c) => {
   const caseNo = c.req.query('case_no');
   const court = c.req.query('court');
+  const itemNo = c.req.query('item_no');
   if (!caseNo) return c.json({ exists: false, entries: [] });
 
   const user = c.get('user');
   const db = c.env.DB;
+  const requestedOwnerId = String(c.req.query('owner_id') || '').trim();
+  const canCheckForAssignee = ['master', 'ceo', 'cc_ref', 'admin', 'director', 'manager'].includes(user.role);
+  const ownerId = canCheckForAssignee && requestedOwnerId ? requestedOwnerId : user.sub;
 
   let query = `
     SELECT j.id, j.user_id, u.name as user_name, j.target_date, json_extract(j.data, '$.court') as court
@@ -545,11 +523,15 @@ journal.get('/check-case-no', async (c) => {
       AND j.branch = ?
       AND COALESCE(json_extract(j.data, '$.companion'), 0) != 1
   `;
-  const params: string[] = [caseNo, user.sub, user.branch];
+  const params: string[] = [caseNo, ownerId, user.branch];
 
   if (court) {
     query += ' AND json_extract(j.data, \'$.court\') = ?';
     params.push(court);
+  }
+  if (itemNo !== undefined) {
+    query += " AND REPLACE(REPLACE(TRIM(COALESCE(json_extract(j.data, '$.itemNo'), '')), ' ', ''), '번', '') = ?";
+    params.push(String(itemNo).trim().replace(/\s+/g, '').replace(/번/g, ''));
   }
   query += ' ORDER BY j.target_date DESC';
 
