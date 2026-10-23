@@ -234,6 +234,8 @@ __pycache__/
 ### Local test and inspection artifacts ###
 .tmp/
 /output/pdf/
+/output/business-card-kit-*/
+/output/business-card-kit-*.zip
 
 ### Local My Statistics history import data ###
 /입찰일정.xls

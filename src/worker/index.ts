@@ -366,6 +366,15 @@ app.get('/api/embed/config', (c) => c.json({
 }));
 
 // Slack 총무 체크리스트 테스트 발송. SLACK_ACCOUNTING_TEST_TOKEN secret과 query token이 일치해야 실행된다.
+app.post('/api/_test-slack-sales-proxy', async c => {
+  const expected = String((c.env as any).SLACK_PROXY_TEST_TOKEN || '').trim();
+  if (!expected || c.req.header('Authorization') !== `Bearer ${expected}`) return c.json({ error: '권한 없음' }, 403);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(expected));
+  const requestId = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  const { sendSalesProxySlackTest } = await import('./lib/sales-proxy-slack');
+  return c.json(await sendSalesProxySlackTest(c.env as any, requestId));
+});
+
 app.post('/api/_test-slack-accounting-checklist', async (c) => {
   const token = c.req.query('token') || '';
   const expectedTokens = [
@@ -541,6 +550,12 @@ async function scheduled(event: ScheduledEvent, env: any, ctx: ExecutionContext)
     ctx.waitUntil(runBackupBatch(env, { triggered_by: 'cron', limit: 5 }).then(
       (r) => console.log('[cron drive] done', r),
       (err) => console.error('[cron drive] error', err),
+    ));
+    ctx.waitUntil(import('./lib/sales-proxy-slack').then(({ sendDueSalesProxySlack }) =>
+      sendDueSalesProxySlack(env, scheduledAt).then(
+        r => { if (r.sent || r.skipped) console.log('[cron sales-proxy-slack]', r); },
+        () => console.error('[cron sales-proxy-slack] failed'),
+      ),
     ));
     ctx.waitUntil(import('./lib/accounting-slack-checklist').then(({ sendDueAccountingSlackChecklist }) =>
       sendDueAccountingSlackChecklist(env, new Date((event as any).scheduledTime || Date.now())).then(

@@ -213,6 +213,9 @@ export interface SalesRecord {
   contract_not_approved_by: string | null;
   // 매수신청대리비용
   proxy_cost: number;
+  proxy_agent?: string;
+  proxy_date?: string;
+  proxy_undecided?: number;
   // 결제정보
   payment_type: string;
   receipt_type: string;

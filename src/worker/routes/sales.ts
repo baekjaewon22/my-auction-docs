@@ -1,3 +1,5 @@
+import { validateSalesProxy } from '../../shared/sales-proxy.ts';
+import { ensureSalesProxySchema } from '../lib/sales-proxy-schema.ts';
 import { Hono } from 'hono';
 import { winningAuctionKind, winningAuctionDetail } from '../../shared/winning-auction.ts';
 import { ensureAuctionScheduleTable } from '../lib/auction-schedule-schema.ts';
@@ -60,6 +62,7 @@ import {
 
 const sales = new Hono<AuthEnv>();
 sales.use('*', authMiddleware);
+sales.use('*', async (c, next) => { await ensureSalesProxySchema(c.env.DB); await next(); });
 
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 const EDIT_ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
@@ -935,6 +938,7 @@ sales.post('/', async (c) => {
     client_phone?: string;
     payment_type?: string; receipt_type?: string; receipt_phone?: string;
     proxy_cost?: number;
+    proxy_agent?: string; proxy_date?: string; proxy_undecided?: boolean;
     user_id?: string;
     customer_id?: string;
     court?: string;
@@ -947,6 +951,11 @@ sales.post('/', async (c) => {
     return c.json({ error: '유효하지 않은 매출 유형입니다.' }, 400);
   }
 
+  let proxy = { proxy_agent: '', proxy_date: '', proxy_undecided: 1 };
+  if (body.type === '매수신청대리') {
+    try { proxy = validateSalesProxy(body); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : '대리 정보를 확인해 주세요.' }, 400); }
+  }
   const direction = body.direction === 'expense' ? 'expense' : 'income';
   let ownerId = user.sub;
   let ownerName = user.name || '';
@@ -1082,8 +1091,8 @@ sales.post('/', async (c) => {
   let inserted = false;
   try {
     await db.prepare(`
-      INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, attribution_branch, payment_type, receipt_type, receipt_phone, proxy_cost, customer_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sales_records (id, user_id, type, type_detail, client_name, depositor_name, depositor_different, amount, contract_date, journal_entry_id, direction, branch, department, attribution_branch, payment_type, receipt_type, receipt_phone, proxy_cost, customer_id, proxy_agent, proxy_date, proxy_undecided)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id, ownerId, body.type, winningOverrideInput ? winningAuctionDetail(winningOverrideInput, body.type_detail) : body.type_detail || '', body.client_name,
       body.depositor_name || '', body.depositor_different ? 1 : 0,
@@ -1091,7 +1100,7 @@ sales.post('/', async (c) => {
       body.journal_entry_id || null, direction, ownerBranch, ownerDepartment,
       resolveSalesAttributionBranch(ownerName),
       body.payment_type || '', body.receipt_type || '', body.receipt_phone || '',
-      body.proxy_cost || 0, customerId
+      body.proxy_cost || 0, customerId, proxy.proxy_agent, proxy.proxy_date, proxy.proxy_undecided
     ).run();
     inserted = true;
 
@@ -1153,6 +1162,29 @@ sales.get('/duplicate-check', async (c) => {
   `).bind(normalizedClient, amount).all();
 
   return c.json({ duplicates: rows.results || [] });
+});
+
+// Proxy scheduling metadata may be corrected by the owner after payment confirmation.
+// This endpoint cannot change financial or approval fields.
+sales.put('/:id/proxy', async c => {
+  const id = c.req.param('id');
+  const actor = c.get('user');
+  const record = await c.env.DB.prepare('SELECT * FROM sales_records WHERE id=?').bind(id).first<any>();
+  if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
+  if (record.user_id !== actor.sub && !ACCOUNTING_ROLES.includes(actor.role as typeof ACCOUNTING_ROLES[number])) return c.json({ error: '권한이 없습니다.' }, 403);
+  if (record.type !== '매수신청대리' || ['refunded', 'refund_requested'].includes(record.status)) return c.json({ error: '대리 정보를 수정할 수 없는 매출입니다.' }, 400);
+  let proxy;
+  try { proxy = validateSalesProxy(await c.req.json()); }
+  catch (error) { return c.json({ error: error instanceof Error ? error.message : '입력 오류' }, 400); }
+  const result = await c.env.DB.prepare(
+    "UPDATE sales_records SET proxy_agent=?,proxy_date=?,proxy_undecided=?,updated_at=datetime('now','+9 hours') WHERE id=? AND type='매수신청대리' AND status NOT IN ('refunded','refund_requested')"
+  ).bind(proxy.proxy_agent,proxy.proxy_date,proxy.proxy_undecided,id).run();
+  if (!result.meta.changes) return c.json({ error: '매출 상태가 변경되었습니다. 새로고침해 주세요.' }, 409);
+  await logActivity(c.env.DB, actor as LogUser, {
+    action: 'update', target_id: id, target_label: recordLabel(record),
+    diff_summary: '매수신청 대리인·대리일·미정 여부 수정', before: record, after: { ...record, ...proxy },
+  }, getSourcePage(c));
+  return c.json({ success: true, ...proxy });
 });
 
 // PUT /api/sales/:id — 매출 내역 수정 (본인 건, pending 상태만)
@@ -1237,6 +1269,7 @@ sales.put('/:id', async (c) => {
   // (총무가 detail 뷰에서 proxy_cost를 편집할 때 type_detail이 stale로 남는 문제 방지)
   let resolvedTypeDetail = body.type_detail ?? record.type_detail;
   const resolvedType = body.type || record.type;
+  const proxyTypeChanged = resolvedType !== record.type;
   const resolvedAmount = body.amount ?? record.amount;
   const resolvedProxyCost = body.proxy_cost ?? record.proxy_cost ?? 0;
   if (
@@ -1296,6 +1329,9 @@ sales.put('/:id', async (c) => {
       payment_type = ?, receipt_type = ?, receipt_phone = ?, card_deposit_date = ?,
       tax_invoice_date = ?, tax_invoice_type = ?,
       appraisal_rate = ?, winning_rate = ?, client_phone = ?, proxy_cost = ?,
+      proxy_agent = CASE WHEN ? THEN '' ELSE proxy_agent END,
+      proxy_date = CASE WHEN ? THEN '' ELSE proxy_date END,
+      proxy_undecided = CASE WHEN ? THEN 1 ELSE proxy_undecided END,
       status = ?, updated_at = datetime('now', '+9 hours')
     WHERE id = ? AND NOT EXISTS (
       SELECT 1 FROM refund_recovery_resolutions WHERE sales_record_id = ?
@@ -1313,6 +1349,7 @@ sales.put('/:id', async (c) => {
     body.appraisal_rate ?? record.appraisal_rate ?? 0, body.winning_rate ?? record.winning_rate ?? 0,
     body.client_phone ?? record.client_phone ?? '',
     resolvedProxyCost,
+    proxyTypeChanged ? 1 : 0, proxyTypeChanged ? 1 : 0, proxyTypeChanged ? 1 : 0,
     statusUpdate, id, id,
     ...lockedPayrollMutationGuardBindings,
     ...lockedDestinationPayrollGuardBindings,

@@ -1,3 +1,5 @@
+import { SalesProxyFields, SalesProxyEditor, type ProxyForm } from '../components/SalesProxyFields';
+import { validateSalesProxy, PROXY_UNDECIDED_WARNING } from '../../shared/sales-proxy';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, setSourcePage } from '../api';
@@ -458,6 +460,7 @@ export default function Sales() {
   const [formWinningRate, setFormWinningRate] = useState('');
   // 매수신청대리비용
   const [formProxyCost, setFormProxyCost] = useState('');
+  const [formProxy, setFormProxy] = useState<ProxyForm>({ proxy_agent: '', proxy_date: '', proxy_undecided: false });
   // 결제방식 / 지출증빙
   const [formPaymentType, setFormPaymentType] = useState<'이체' | '카드'>('이체');
   const [formReceiptType, setFormReceiptType] = useState<'' | '현금영수증' | '세금계산서'>('');
@@ -734,6 +737,7 @@ export default function Sales() {
     setCustomerSuggestions([]);
     setCustomerSuggestionsOpen(false);
     setFormProxyCost('');
+    setFormProxy({ proxy_agent: '', proxy_date: '', proxy_undecided: false });
     setFormPaymentType('이체'); setFormReceiptType(''); setFormReceiptPhone('');
     setFormAssigneeId(currentUser?.id || '');
     setShowAddForm(false);
@@ -752,6 +756,10 @@ export default function Sales() {
   };
 
   const handleAdd = async () => {
+    if (formType === '매수신청대리') {
+      try { validateSalesProxy(formProxy); } catch (error) { alert(error instanceof Error ? error.message : '대리 정보를 입력해 주세요.'); return; }
+      if (formProxy.proxy_undecided && !confirm(PROXY_UNDECIDED_WARNING + '\n\n미정으로 등록하시겠습니까?')) return;
+    }
     if (!formClientName) { alert('계약자명을 입력하세요.'); return; }
     if (!fromMoneyDisplay(formAmount) || Number(fromMoneyDisplay(formAmount)) <= 0) { alert('금액을 입력하세요.'); return; }
     const rawAmount = Number(fromMoneyDisplay(formAmount)) || 0;
@@ -845,6 +853,7 @@ export default function Sales() {
         receipt_type: formPaymentType === '이체' ? formReceiptType : '',
         receipt_phone: formReceiptType === '현금영수증' ? formReceiptPhone : '',
         proxy_cost: proxyCost,
+        ...(formType === '매수신청대리' ? formProxy : {}),
         ...((formType === '계약' || formType === '낙찰') ? { client_phone: formPhone } : {}),
         ...((formType === '계약' || formType === '낙찰') && selectedCustomerId ? { customer_id: selectedCustomerId } : {}),
         ...(formType === '낙찰' ? {
@@ -2101,6 +2110,7 @@ export default function Sales() {
             return (
               <div style={{ marginTop: 14, padding: 16, background: '#f0f4ff', borderRadius: 8, border: '1px solid #c8d6e5' }}>
                 <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: 10, color: '#3c4043' }}>매수신청대리비용</div>
+                <SalesProxyFields value={formProxy} onChange={setFormProxy} />
                 <div className="mobile-stack-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'end' }}>
                   <div>
                     <label className="form-label">대리비용 (담당자 지급금액)</label>
@@ -2790,6 +2800,9 @@ export default function Sales() {
                     </label>
                   </div>
                 )}
+                {(detailRecord.type as string) === '매수신청대리' && <div style={{ gridColumn: '1 / -1' }}><SalesProxyEditor key={detailRecord.id} record={detailRecord}
+                  canEdit={(detailRecord.user_id === currentUser?.id || canModifyAccounting) && !['refunded', 'refund_requested'].includes(detailRecord.status)}
+                  onSaved={value => { setDetailRecord({ ...detailRecord, ...value, proxy_undecided: value.proxy_undecided ? 1 : 0 }); void load(true); }} /></div>}
                 {/* 계약조건 — 감정가/낙찰가 (인라인 수정) */}
                 {detailRecord.type === '계약' && (
                   <>

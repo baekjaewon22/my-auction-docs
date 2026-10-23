@@ -1177,7 +1177,7 @@ export const api = {
         cases: Array<{ court: string; case_number: string; item_number: string; status: string }>;
       }> }>('/sales/customer-search?' + query.toString());
     },
-    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; appraisal_rate?: number; winning_rate?: number; client_phone?: string; user_id?: string; customer_id?: string; court?: string; case_number?: string; property_type?: string; auction_kind?: 'court' | 'public' }) =>
+    create: (data: { type: string; type_detail?: string; client_name: string; depositor_name?: string; depositor_different?: boolean; amount: number; contract_date?: string; journal_entry_id?: string; direction?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; proxy_cost?: number; proxy_agent?: string; proxy_date?: string; proxy_undecided?: boolean; appraisal_rate?: number; winning_rate?: number; client_phone?: string; user_id?: string; customer_id?: string; court?: string; case_number?: string; property_type?: string; auction_kind?: 'court' | 'public' }) =>
       request<{ success: boolean; id: string }>('/sales', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { type?: string; type_detail?: string; client_name?: string; depositor_name?: string; depositor_different?: boolean; amount?: number; contract_date?: string; deposit_date?: string; payment_type?: string; receipt_type?: string; receipt_phone?: string; card_deposit_date?: string; tax_invoice_date?: string; tax_invoice_type?: string }) =>
       request('/sales/' + id, { method: 'PUT', body: JSON.stringify(data) }),
@@ -1187,6 +1187,8 @@ export const api = {
       request('/sales/by-entry/' + entryId, { method: 'DELETE' }),
     updatePaymentMethod: (id: string, payment_method: string) =>
       request('/sales/' + id + '/payment-method', { method: 'PUT', body: JSON.stringify({ payment_method }) }),
+    updateProxy: (id: string, data: { proxy_agent: string; proxy_date: string; proxy_undecided: boolean }) =>
+      request('/sales/' + id + '/proxy', { method: 'PUT', body: JSON.stringify(data) }),
     updatePhone: (id: string, client_phone: string) =>
       request('/sales/' + id + '/phone', { method: 'PUT', body: JSON.stringify({ client_phone }) }),
     updateExcludeCount: (id: string, exclude: boolean) =>
