@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import BusinessCard from './pages/BusinessCard';
 import { useAuthStore } from './store';
 import { api } from './api';
 import Layout from './components/Layout';
@@ -621,6 +622,7 @@ export default function App() {
           <Route path="lawitgo-settlement-ledger" element={<AccountingRoute><LawitgoSettlementLedger /></AccountingRoute>} />
           <Route path="lawitgo-winning-admin" element={<MasterRoute><LawitgoWinningAdmin /></MasterRoute>} />
           <Route path="profile" element={<Profile />} />
+          <Route path="business-card" element={<BusinessCard />} />
           <Route path="personal-calendar" element={<PersonalCalendar />} />
           <Route
             path="video-production"

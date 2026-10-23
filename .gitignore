@@ -233,6 +233,7 @@ __pycache__/
 
 ### Local test and inspection artifacts ###
 .tmp/
+/output/pdf/
 
 ### Local My Statistics history import data ###
 /입찰일정.xls

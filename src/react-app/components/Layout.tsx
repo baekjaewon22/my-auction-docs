@@ -21,7 +21,7 @@ import {
   Users, UserCog, LogOut, CalendarDays, BarChart3,
   PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
   Scale, ExternalLink, Activity, Send, ShieldCheck,
-  Moon, Sun, Video, Megaphone, Radar,
+  Moon, Sun, Video, Megaphone, Radar, ContactRound,
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
@@ -48,6 +48,7 @@ const MY_PAGE_ROUTE_PREFIXES = [
   '/leave',
   '/personal-calendar',
   '/my-statistics',
+  '/business-card',
   '/video-production',
   '/rooms',
 ] as const;
@@ -224,6 +225,9 @@ export default function Layout() {
         )}
         <Link to="/personal-calendar" className={`nav-item ${isActive('/personal-calendar') ? 'active' : ''}`} title="캘린더" onClick={() => setMobileOpen(false)}>
           <CalendarDays size={18} /> {!collapsed && '캘린더'}
+        </Link>
+        <Link to="/business-card" className={`nav-item ${isActive('/business-card') ? 'active' : ''}`} title="전자명함" onClick={() => setMobileOpen(false)}>
+          <ContactRound size={18} /> {!collapsed && '전자명함'}
         </Link>
         {showMyStatistics && (
           <Link to="/my-statistics" className={`nav-item ${isActive('/my-statistics') ? 'active' : ''}`} title="마이통계" onClick={() => setMobileOpen(false)}>

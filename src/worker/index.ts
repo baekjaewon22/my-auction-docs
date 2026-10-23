@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import businessCardsRoute from './routes/business-cards';
 import { cors } from 'hono/cors';
 import { appendFrameAncestorsDirective } from '../shared/content-security-policy';
 import auth from './routes/auth';
@@ -350,6 +351,7 @@ app.get('/api/print/expense-receipts/:docId/attachments/:attachmentId', async (c
 });
 
 // Health check
+app.route('/card', businessCardsRoute);
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 app.get('/api/embed/config', (c) => c.json({
