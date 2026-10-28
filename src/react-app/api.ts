@@ -1564,7 +1564,7 @@ export const api = {
   },
 
   briefings: {
-    list: (params: { site?: string; type?: 'weekly' | 'monthly'; month?: string; date_from?: string; date_to?: string; limit?: number } = {}) => {
+    list: (params: { site?: string; type?: 'weekly' | 'monthly'; month?: string; date_from?: string; date_to?: string; limit?: number; offset?: number } = {}) => {
       const query = new URLSearchParams();
       if (params.site) query.set('site', params.site);
       if (params.type) query.set('type', params.type);
@@ -1572,7 +1572,8 @@ export const api = {
       if (params.date_from) query.set('date_from', params.date_from);
       if (params.date_to) query.set('date_to', params.date_to);
       if (params.limit) query.set('limit', String(params.limit));
-      return request<{ briefings: any[] }>(`/briefings?${query.toString()}`);
+      if (params.offset) query.set('offset', String(params.offset));
+      return request<{ briefings: any[]; has_more: boolean }>(`/briefings?${query.toString()}`);
     },
     byDate: (site: string, reportDate: string, type?: 'weekly' | 'monthly') =>
       request<{ briefing: any; previous?: any; next?: any; previous_checks: any[] }>(`/briefings/by-date/${encodeURIComponent(site)}/${encodeURIComponent(reportDate)}${type ? `?type=${type}` : ''}`),

@@ -193,6 +193,9 @@ briefings.post('/', async (c) => {
   const known = new Set(['report_key', 'site', 'type', 'report_date', 'period', 'compare_period', 'title', 'summary', 'kpis', 'highlights', 'warnings', 'checks', 'todos', 'reels', 'channels', 'devices', 'landing', 'audience', 'corrections', 'content_md', 'html', 'notes', 'generator']);
   const extra = Object.fromEntries(Object.entries(body).filter(([key]) => !known.has(key)));
   const existing = await c.env.DB.prepare('SELECT * FROM briefings WHERE report_key = ?').bind(body.report_key).first<any>();
+  if (existing && (existing.site !== body.site || existing.type !== body.type || existing.report_date !== body.report_date)) {
+    return errorJson(c, 409, 'report_key_conflict', '다른 회차에 사용된 report_key입니다. 새 회차는 새로운 report_key로 등록해 주세요.', ['report_key']);
+  }
   const id = existing?.id || crypto.randomUUID();
   const params = [
     id, body.report_key, body.site, body.type as BriefingType, body.report_date, body.period.start, body.period.end,
@@ -208,7 +211,7 @@ briefings.post('/', async (c) => {
       VALUES (?, ?, ?, ?, ?)
     `).bind(crypto.randomUUID(), id, existing.report_key, existing.revision, JSON.stringify(existing)).run();
   }
-  await c.env.DB.prepare(`
+  const saved = await c.env.DB.prepare(`
     INSERT INTO briefings (
       id, report_key, site, type, report_date, period_start, period_end, title, summary, kpis,
       highlights, warnings, checks, todos, reels, channels, devices, landing, audience, corrections,
@@ -225,7 +228,10 @@ briefings.post('/', async (c) => {
       compare_period = excluded.compare_period, generator = excluded.generator, extra = excluded.extra,
       content_md = excluded.content_md, html = excluded.html, revision = briefings.revision + 1,
       updated_at = datetime('now')
+    WHERE briefings.site = excluded.site AND briefings.type = excluded.type
+      AND briefings.report_date = excluded.report_date
   `).bind(...params).run();
+  if (!saved.meta.changes) return errorJson(c, 409, 'report_key_conflict', '다른 회차에 사용된 report_key입니다. 새 회차는 새로운 report_key로 등록해 주세요.', ['report_key']);
   await c.env.DB.prepare("UPDATE briefing_api_keys SET last_used_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
     .bind(authenticated.id).run();
 
@@ -241,6 +247,8 @@ briefings.get('/', readerAuth, async (c) => {
   const dateFrom = String(c.req.query('date_from') || '').trim();
   const dateTo = String(c.req.query('date_to') || '').trim();
   const limit = Math.min(Math.max(Number(c.req.query('limit') || 20), 1), 100);
+  const rawOffset = Number(c.req.query('offset') || 0);
+  const offset = Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
   const where: string[] = [];
   const binds: any[] = [];
   if (site) { where.push('site = ?'); binds.push(site); }
@@ -252,9 +260,9 @@ briefings.get('/', readerAuth, async (c) => {
     SELECT id, report_key, site, type, report_date, period_start, period_end, title, summary,
            kpis, warnings, revision, created_at, updated_at
     FROM briefings ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-    ORDER BY report_date DESC, updated_at DESC LIMIT ?
-  `).bind(...binds, limit).all();
-  return c.json({ briefings: result.results.map(mapRow) });
+    ORDER BY report_date DESC, updated_at DESC, id DESC LIMIT ? OFFSET ?
+  `).bind(...binds, limit + 1, offset).all();
+  return c.json({ briefings: result.results.slice(0, limit).map(mapRow), has_more: result.results.length > limit });
 });
 
 briefings.get('/by-date/:site/:reportDate', readerAuth, async (c) => {

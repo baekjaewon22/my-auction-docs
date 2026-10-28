@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, AlertTriangle, BarChart3, CheckCircle2, ChevronDown, ChevronUp,
   Camera, Clipboard, KeyRound, PlayCircle, RefreshCw, Search, Users,
@@ -35,7 +35,7 @@ type Briefing = {
   audience?: Array<Record<string, unknown>>;
   content_md?: string;
   revision?: number;
-  extra?: { dashboard?: Record<string, any> };
+  extra?: { dashboard?: Record<string, any>; youtube?: Record<string, any>; ads?: Record<string, any> };
 };
 type DetailResponse = { briefing: Briefing; previous_checks?: Briefing['checks'] };
 type BriefingKey = { id: string; name: string; site: string | null; token_prefix: string; last_used_at: string | null; revoked_at: string | null };
@@ -135,7 +135,7 @@ const REPORT_HEADINGS = [
 ];
 
 function cleanMarkdown(value: string) {
-  return value.replace(/^#{1,4}\s*/, '').replace(/\*\*/g, '').replace(/`/g, '').trim();
+  return value.replace(/^#{1,4}\s*/, '').replace(/^\d+[.)]\s*/, '').replace(/\*\*/g, '').replace(/`/g, '').trim();
 }
 
 function splitReportSections(markdown: string) {
@@ -145,7 +145,7 @@ function splitReportSections(markdown: string) {
   const flush = () => { if (body.some((line) => line.trim())) sections[heading] = body.join('\n').trim(); body = []; };
   for (const raw of (markdown || '').split(/\r?\n/)) {
     const candidate = cleanMarkdown(raw);
-    const matched = REPORT_HEADINGS.find((item) => candidate === item);
+    const matched = REPORT_HEADINGS.find((item) => candidate === item || candidate.startsWith(`${item} (`) || candidate.startsWith(`${item} ·`));
     if (matched) { flush(); heading = matched; }
     else body.push(raw);
   }
@@ -210,8 +210,91 @@ function EasyTable({ title, rows }: { title: string; rows: Array<Record<string, 
   return <div className="mbd-table-card"><h4>{title}</h4><div className="mbd-table-scroll"><table><thead><tr>{columns.map((key) => <th key={key}>{labels[key] || key}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map((key) => <td key={key}>{typeof row[key] === 'number' ? formatValue(row[key], key === 'cvr') : String(row[key] ?? '-')}</td>)}</tr>)}</tbody></table></div></div>;
 }
 
-function dashboardOf(item: Briefing) {
-  return item.extra?.dashboard as Record<string, any> | undefined;
+function legacyYoutubeDashboard(item: Briefing) {
+  const source = item.extra?.youtube;
+  if (!source) return undefined;
+  const totals = source.totals || {};
+  const candidates = [
+    ...(source.new_uploads || []).map((video: any) => ({ ...video, type: video.format === 'short' ? 'shorts' : 'long', views: video.week_views ?? video.day1_views })),
+    ...(source.evergreen || []).map((video: any) => ({ ...video, type: 'long', views: video.week_views })),
+  ];
+  const seen = new Set<string>();
+  const topVideos = candidates
+    .filter((video: any) => { const key = String(video.video_id || video.title || ''); if (!key || seen.has(key)) return false; seen.add(key); return true; })
+    .map((video: any) => ({ ...video, url: video.url || (video.video_id ? `https://www.youtube.com/watch?v=${video.video_id}` : undefined), why: video.why || '해당 보고 기간에 조회 반응이 확인된 영상입니다.' }))
+    .sort((a: any, b: any) => Number(b.views || 0) - Number(a.views || 0))
+    .slice(0, 12);
+  const views = Number(source.views_total || 0);
+  return {
+    totals: {
+      views,
+      prev_views: Number(source.views_total_prev || 0),
+      ad_share: views ? Number(source.advertising_views || 0) / views : null,
+      subscribers_gained: Number(totals.longform?.subs || 0) + Number(totals.shorts?.subs || 0),
+      site_sessions: item.kpis?.youtube_sessions,
+      site_signups: item.kpis?.youtube_signups ?? null,
+    },
+    top_videos: topVideos,
+    traffic_sources: source.traffic_sources || [],
+    issues: [],
+  };
+}
+
+function legacyNaverDashboard(item: Briefing) {
+  const source = item.extra?.ads;
+  if (!source) return undefined;
+  const current = source.period || {};
+  const previous = source.compare || {};
+  const keywordSources = [source.keywords_top_spend, source.keywords_efficient, source.keywords_high_cpa, source.keywords_no_conversion];
+  const seen = new Set<string>();
+  const topKeywords = keywordSources.flatMap((rows: any) => Array.isArray(rows) ? rows : [])
+    .filter((row: any) => { const key = `${row.keyword || ''}|${row.adgroup || ''}`; if (!row.keyword || seen.has(key)) return false; seen.add(key); return true; })
+    .map((row: any) => ({
+      ...row,
+      clk: row.clk ?? row.clicks,
+      cost: row.cost ?? row.cost_krw,
+      naver_conv: row.naver_conv ?? row.conversions,
+      avg_rank: row.avg_rank,
+    }))
+    .sort((a: any, b: any) => Number(b.clk || 0) - Number(a.clk || 0));
+  const trackedSignups = Number(item.kpis?.naver_ad_tracked_signups || 0);
+  return {
+    totals: {
+      imp: current.imp ?? current.impressions,
+      clk: current.clk ?? current.clicks,
+      cost: current.cost ?? current.cost_krw,
+      ctr: current.ctr,
+      cpc: current.cpc ?? current.cpc_krw,
+      naver_conv: current.naver_conv ?? current.conversions,
+      cpa: current.cpa ?? current.cpa_krw,
+    },
+    prev_totals: {
+      imp: previous.imp ?? previous.impressions,
+      clk: previous.clk ?? previous.clicks,
+      cost: previous.cost ?? previous.cost_krw,
+      ctr: previous.ctr,
+      cpc: previous.cpc ?? previous.cpc_krw,
+      naver_conv: previous.naver_conv ?? previous.conversions,
+      cpa: previous.cpa ?? previous.cpa_krw,
+    },
+    top_keywords: topKeywords,
+    campaigns: source.campaigns || [],
+    devices: source.devices || [],
+    ga4_match: {
+      signups: trackedSignups,
+      cpa: trackedSignups ? Number(current.cost_krw || current.cost || 0) / trackedSignups : null,
+      coverage: Number(current.conversions || 0) ? trackedSignups / Number(current.conversions) : null,
+      explain: '기존 보고서의 네이버 광고 전환과 GA4 식별 가입을 연결한 값입니다.',
+    },
+  };
+}
+
+function dashboardOf(item: Briefing): Record<string, any> | undefined {
+  const dashboard = item.extra?.dashboard as Record<string, any> | undefined;
+  const youtube = dashboard?.youtube || legacyYoutubeDashboard(item);
+  const naver = dashboard?.naver || legacyNaverDashboard(item);
+  if (!dashboard && !youtube && !naver) return undefined;
+  return { ...(dashboard || {}), youtube, naver } as Record<string, any>;
 }
 
 function periodsOverlap(current: Briefing, previous?: Briefing) {
@@ -588,6 +671,10 @@ export default function MarketingBriefingDashboard() {
   const [newToken, setNewToken] = useState('');
   const [keyName, setKeyName] = useState('마이옥션 주간 브리핑 자동화');
   const [archiveMonth, setArchiveMonth] = useState('');
+  const [selectedDate, setSelectedDate] = useState('');
+  const [selectedLoading, setSelectedLoading] = useState(false);
+  const loadSequence = useRef(0);
+  const selectSequence = useRef(0);
   const [textSize, setTextSize] = useState<'normal' | 'large' | 'xlarge'>(() => {
     if (typeof window === 'undefined') return 'normal';
     const saved = window.localStorage.getItem('marketing-briefing-text-size');
@@ -598,25 +685,52 @@ export default function MarketingBriefingDashboard() {
   useEffect(() => { window.localStorage.setItem('marketing-briefing-text-size', textSize); }, [textSize]);
 
   const load = async () => {
+    const sequence = ++loadSequence.current;
     setLoading(true); setError('');
     try {
-      const result = await api.briefings.list({ site, type, month: archiveMonth || undefined, limit: archiveMonth ? 100 : 20 });
-      const nextItems = (result.briefings as Briefing[]).filter((briefing) => briefing.report_key !== 'myauction-weekly-2026-10-12');
+      const nextItems: Briefing[] = [];
+      let hasMore = true;
+      while (hasMore) {
+        const result = await api.briefings.list({ site, type, month: archiveMonth || undefined, limit: 100, offset: nextItems.length });
+        if (sequence !== loadSequence.current) return;
+        nextItems.push(...result.briefings as Briefing[]);
+        hasMore = result.has_more && result.briefings.length > 0;
+      }
       setItems(nextItems);
+      setSelectedDate((current) => nextItems.some((item) => item.report_date === current) ? current : (nextItems[0]?.report_date || ''));
       if (nextItems[0]) {
         const detail = await api.briefings.byDate(site, nextItems[0].report_date, type) as DetailResponse;
+        if (sequence !== loadSequence.current) return;
         setDetails((current) => ({ ...current, [`${type}:${nextItems[0].report_date}`]: detail }));
       }
-    } catch (err: any) { setError(err?.message || '브리핑을 불러오지 못했습니다.'); }
-    finally { setLoading(false); }
+    } catch (err: any) { if (sequence === loadSequence.current) setError(err?.message || '브리핑을 불러오지 못했습니다.'); }
+    finally { if (sequence === loadSequence.current) setLoading(false); }
   };
-  useEffect(() => { setOpenDate(null); void load(); }, [site, type, archiveMonth]);
+  useEffect(() => { setOpenDate(null); setDetails({}); void load(); return () => { loadSequence.current++; }; }, [site, type, archiveMonth]);
 
-  const latest = details[`${type}:${items[0]?.report_date}`]?.briefing || items[0];
-  const structuredFindings = latest ? dashboardOf(latest)?.overview?.findings || [] : [];
+  const selectedKey = `${type}:${selectedDate}`;
+  const selected = details[selectedKey]?.briefing || items.find((item) => item.report_date === selectedDate) || items[0];
+  const structuredFindings = selected ? dashboardOf(selected)?.overview?.findings || [] : [];
   const structuredProblemCount = structuredFindings.filter((finding: any) => !/^(ok|good|success|positive|win|info)$/i.test(finding.severity || '')).length;
-  const problemCount = structuredFindings.length ? structuredProblemCount : (latest?.warnings?.length || 0) + (latest?.checks || []).filter((check) => check.status !== 'done').length;
+  const problemCount = structuredFindings.length ? structuredProblemCount : (selected?.warnings?.length || 0) + (selected?.checks || []).filter((check) => check.status !== 'done').length;
   const overviewMetrics = useMemo(() => items.map((item) => ({ ...item, kpis: item.kpis || {} })), [items]);
+
+  const selectReport = async (reportDate: string) => {
+    const sequence = ++selectSequence.current;
+    setSelectedDate(reportDate);
+    setError('');
+    const cacheKey = `${type}:${reportDate}`;
+    if (!reportDate || details[cacheKey]) { setSelectedLoading(false); return; }
+    setSelectedLoading(true);
+    try {
+      const detail = await api.briefings.byDate(site, reportDate, type) as DetailResponse;
+      setDetails((current) => ({ ...current, [cacheKey]: detail }));
+    } catch (err: any) {
+      if (sequence === selectSequence.current) setError(err?.message || '선택한 회차를 불러오지 못했습니다.');
+    } finally {
+      if (sequence === selectSequence.current) setSelectedLoading(false);
+    }
+  };
 
   const toggleReport = async (item: Briefing) => {
     if (openDate === item.report_date) { setOpenDate(null); return; }
@@ -644,18 +758,18 @@ export default function MarketingBriefingDashboard() {
       <span className="mbd-channel-logo" aria-hidden="true">{logo ? <img src={logo} alt="" /> : key === 'analytics' ? <span className="mbd-ga-logo"><i /><i /><i /></span> : <Icon size={27} />}</span>
       <span className="mbd-channel-copy"><strong>{label}</strong><small>{description}</small></span>
     </button>)}</nav>
-    <div className="mbd-toolbar"><div className="mbd-period-control"><button className={type === 'weekly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'weekly' })}>주간</button><button className={type === 'monthly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'monthly' })}>월간</button></div><label className="mbd-archive-month">과거 이력 <input type="month" value={archiveMonth} onChange={(event) => setArchiveMonth(event.target.value)} />{archiveMonth && <button onClick={() => setArchiveMonth('')}>최근으로</button>}</label><div className="mbd-toolbar-options"><div className="mbd-font-controls" role="group" aria-label="글자 크기"><span>글자 크기</span><button className={textSize === 'normal' ? 'active' : ''} onClick={() => setTextSize('normal')} aria-pressed={textSize === 'normal'} title="기본 글자">가</button><button className={textSize === 'large' ? 'active' : ''} onClick={() => setTextSize('large')} aria-pressed={textSize === 'large'} title="큰 글자">가</button><button className={textSize === 'xlarge' ? 'active' : ''} onClick={() => setTextSize('xlarge')} aria-pressed={textSize === 'xlarge'} title="아주 큰 글자">가</button></div>{latest && <span>{archiveMonth ? '선택 기간' : '최근 조사일'} <b>{archiveMonth || latest.report_date}</b></span>}</div></div>
+    <div className="mbd-toolbar"><div className="mbd-period-control"><button className={type === 'weekly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'weekly' })}>주간</button><button className={type === 'monthly' ? 'active' : ''} onClick={() => setSearchParams({ type: 'monthly' })}>월간</button></div><label className="mbd-archive-month">과거 이력 <input type="month" value={archiveMonth} onChange={(event) => setArchiveMonth(event.target.value)} />{archiveMonth && <button onClick={() => setArchiveMonth('')}>최근으로</button>}</label><label className="mbd-edition-select">조회 회차<select value={selectedDate} onChange={(event) => void selectReport(event.target.value)} disabled={!items.length}>{items.map((item, index) => <option key={item.id} value={item.report_date}>{item.report_date}{index === 0 ? ' · 최신' : ''} · {item.title}</option>)}</select></label><div className="mbd-toolbar-options"><div className="mbd-font-controls" role="group" aria-label="글자 크기"><span>글자 크기</span><button className={textSize === 'normal' ? 'active' : ''} onClick={() => setTextSize('normal')} aria-pressed={textSize === 'normal'} title="기본 글자">가</button><button className={textSize === 'large' ? 'active' : ''} onClick={() => setTextSize('large')} aria-pressed={textSize === 'large'} title="큰 글자">가</button><button className={textSize === 'xlarge' ? 'active' : ''} onClick={() => setTextSize('xlarge')} aria-pressed={textSize === 'xlarge'} title="아주 큰 글자">가</button></div>{selected && <span>선택 회차 <b>{selected.report_date}</b></span>}</div></div>
 
-    {loading ? <div className="briefing-state">자료를 정리하고 있습니다...</div> : error ? <div className="briefing-state error">{error}</div> : !latest ? <div className="briefing-state">아직 수신된 브리핑이 없습니다.</div> : tab === 'overview' ? <>
-      <section className="mbd-overview-top"><article className={`mbd-status ${problemCount ? 'attention' : 'good'}`}><span>현재 종합 상태</span><strong>{problemCount ? '확인 필요' : '특이사항 없음'}</strong><p>{problemCount ? `문제 또는 미완료 항목이 ${problemCount}개 있습니다. 아래에서 쉬운 설명과 할 일을 확인하세요.` : '현재 보고된 자료에서는 급하게 확인할 문제가 없습니다.'}</p></article><article className="mbd-conclusion"><span>이번 주 변화 소견</span><h3>{latest.summary}</h3><p>수치 변화와 채널별 조사 결과를 함께 보고 판단한 결론입니다.</p></article></section>
+    {loading || selectedLoading ? <div className="briefing-state">{selectedLoading ? '선택한 회차를 불러오고 있습니다...' : '자료를 정리하고 있습니다...'}</div> : error ? <div className="briefing-state error">{error}</div> : !selected ? <div className="briefing-state">아직 수신된 브리핑이 없습니다.</div> : tab === 'overview' ? <>
+      <section className="mbd-overview-top"><article className={`mbd-status ${problemCount ? 'attention' : 'good'}`}><span>현재 종합 상태</span><strong>{problemCount ? '확인 필요' : '특이사항 없음'}</strong><p>{problemCount ? `문제 또는 미완료 항목이 ${problemCount}개 있습니다. 아래에서 쉬운 설명과 할 일을 확인하세요.` : '현재 보고된 자료에서는 급하게 확인할 문제가 없습니다.'}</p></article><article className="mbd-conclusion"><span>이번 주 변화 소견</span><h3>{selected.summary}</h3><p>수치 변화와 채널별 조사 결과를 함께 보고 판단한 결론입니다.</p></article></section>
       <section><header className="mbd-section-heading"><div><span>숫자를 쉽게 읽기</span><h3>주요 수치와 변화 소견</h3></div><p>그래프는 최근 보고 순서이며, 변화가 좋은지 나쁜지도 문장으로 설명합니다.</p></header><MetricCards tab="overview" items={overviewMetrics} /></section>
-      <StructuredOverview item={latest} />
-      {!dashboardOf(latest)?.overview && <Findings item={latest} />}
+      <StructuredOverview item={selected} />
+      {!dashboardOf(selected)?.overview && <Findings item={selected} />}
       <section className="mbd-history"><header className="mbd-section-heading"><div><span>보고 날짜별 기록</span><h3>브리핑 목록</h3></div><p>날짜를 누르면 다른 페이지로 이동하지 않고 바로 펼쳐집니다.</p></header><div className="mbd-report-list">{items.map((item) => {
         const open = openDate === item.report_date;
         const detail = details[`${item.type}:${item.report_date}`];
         return <article key={item.id} className={open ? 'open' : ''}><button className="mbd-report-row" onClick={() => void toggleReport(item)} aria-expanded={open}><time>{item.report_date}</time><span><strong>{item.title}</strong><small>{item.summary}</small></span><em>{item.type === 'monthly' ? '월간' : '주간'} · 문제 {item.warnings?.length || 0}</em>{open ? <ChevronUp /> : <ChevronDown />}</button>{open && (detail ? <ExpandedReport item={detail.briefing} previousChecks={detail.previous_checks} /> : <div className="mbd-expanded-loading">보고서를 불러오는 중...</div>)}</article>;
       })}</div></section>
-    </> : <ChannelView tab={tab} item={latest} items={items} />}
+    </> : <ChannelView tab={tab} item={selected} items={items} />}
   </div>;
 }

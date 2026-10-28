@@ -107,6 +107,9 @@ test('briefing dashboard provides six channel tabs and date-based inline reports
   assert.match(css, /\.mbd-text-large/);
   assert.match(css, /\.mbd-text-xlarge/);
   assert.match(dashboard, /extra\?\.dashboard/);
+  assert.match(dashboard, /legacyYoutubeDashboard/);
+  assert.match(dashboard, /legacyNaverDashboard/);
+  assert.match(dashboard, /candidate\.startsWith\(`\$\{item\} \(`/);
   assert.match(dashboard, /scorecards\?\.find/);
   assert.match(dashboard, /periodsOverlap/);
   assert.match(dashboard, /highlight\?\.previous/);
@@ -115,7 +118,12 @@ test('briefing dashboard provides six channel tabs and date-based inline reports
   assert.match(dashboard, /instagram\.posts/);
   assert.match(dashboard, /naver\.ga4_match/);
   assert.match(dashboard, /what_to_do/);
-  assert.match(dashboard, /myauction-weekly-2026-10-12/);
+  assert.doesNotMatch(dashboard, /myauction-weekly-2026-10-12/);
+  assert.match(dashboard, /offset: nextItems.length/);
+  assert.match(dashboard, /hasMore = result.has_more/);
+  assert.match(dashboard, /조회 회차/);
+  assert.match(dashboard, /selectReport\(event\.target\.value\)/);
+  assert.match(dashboard, /<ChannelView tab=\{tab\} item=\{selected\}/);
   assert.match(dashboard, /네이버 모바일 자연검색과 광고 클릭이 섞인 전체 유입/);
   assert.match(css, /\.mbd-daily-chart/);
   assert.match(css, /\.mbd-coverage/);
@@ -153,4 +161,28 @@ test('marketing briefing page is limited to representative and internal top admi
     assert.equal(canViewMarketingBriefings({ role }), false, `${role} must not view marketing briefings`);
   }
   assert.equal(canViewMarketingBriefings(null), false);
+});
+
+test('briefing upsert preserves older dates and updates only the same report edition', () => {
+  const route = readFileSync('src/worker/routes/briefings.ts', 'utf8');
+  const template = route.match(/const saved = await c\.env\.DB\.prepare\(`([\s\S]*?)`\)\.bind\(\.\.\.params\)/)?.[1];
+  assert.ok(template);
+  const db = new Database(':memory:');
+  db.exec('CREATE TABLE users (id TEXT PRIMARY KEY)');
+  db.exec(readFileSync('d1/migrate-marketing-briefings.sql', 'utf8'));
+  const sql = template.replace("${params.map(() => '?').join(', ')}", Array(26).fill('?').join(', '));
+  const save = db.prepare(sql);
+  const values = (key: string, date: string, title: string) => [
+    key, key, 'myauction', 'weekly', date, '2026-10-05', '2026-10-11', title, 'summary', '{}',
+    '[]', '[]', '[]', '[]', '[]', '[]', '[]', '{}', '[]', '[]', '[]', 'null', 'null', '{}', 'body', null,
+  ];
+  assert.equal(save.run(...values('original', '2026-10-12', 'old')).changes, 1);
+  assert.equal(save.run(...values('original', '2026-10-19', 'new')).changes, 0);
+  assert.equal(db.prepare('SELECT title FROM briefings').get().title, 'old');
+  assert.equal(save.run(...values('new-key', '2026-10-19', 'new')).changes, 1);
+  assert.equal(save.run(...values('original', '2026-10-12', 'corrected')).changes, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM briefings').get().count, 2);
+  assert.match(route, /INSERT OR IGNORE INTO briefing_revisions/);
+  assert.match(route, /existing\.report_date !== body\.report_date/);
+  db.close();
 });

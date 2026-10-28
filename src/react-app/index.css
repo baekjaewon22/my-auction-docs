@@ -21895,13 +21895,16 @@ html[data-theme='dark'] .lawitgo-current-summary {
 .mbd-archive-month { display: flex; align-items: center; gap: 8px; color: #526980; font-weight: 800; }
 .mbd-archive-month input { min-height: 38px; padding: 0 8px; border: 1px solid #cbd8e5; background: #fff; color: #294865; font: inherit; }
 .mbd-archive-month button, .mbd-revisions > button { padding: 8px 11px; border: 1px solid #a9c8df; background: #f4faff; color: #176da8; font-weight: 800; cursor: pointer; }
+.mbd-edition-select { display: flex; align-items: center; gap: 8px; color: #526980; font-weight: 800; }
+.mbd-edition-select select { min-height: 38px; max-width: 320px; padding: 0 32px 0 10px; border: 1px solid #cbd8e5; border-radius: 6px; background: #fff; color: #294865; font: inherit; font-weight: 700; cursor: pointer; }
+.mbd-edition-select select:focus { outline: 2px solid #7ab8e5; outline-offset: 1px; }
 .mbd-revisions { margin-top: 15px; padding-top: 14px; border-top: 1px solid #dce5ed; }
 .mbd-revisions > div { display: grid; gap: 8px; margin-top: 10px; }
 .mbd-revisions details { padding: 12px; border: 1px solid #e3c982; background: #fff9e9; }
 .mbd-revisions summary { color: #755b1e; font-weight: 900; cursor: pointer; }
 .mbd-revisions h4 { margin: 10px 0 4px; color: #304b67; }
 .mbd-revisions p { color: #5b6e82; }
-@media (max-width: 760px) { .mbd-archive-month { width: 100%; flex-wrap: wrap; } }
+@media (max-width: 760px) { .mbd-archive-month, .mbd-edition-select { width: 100%; flex-wrap: wrap; } .mbd-edition-select select { width: 100%; max-width: none; } }
 
 /* Readable type scale for non-marketers reviewing dense monitoring data. */
 .emm-tabs button { font-size: 15px; }
