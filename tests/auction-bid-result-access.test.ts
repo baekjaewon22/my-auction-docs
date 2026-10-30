@@ -219,6 +219,84 @@ test('bid-result 실제 route는 won·failed·withdrawn·cancelled·pending side
   sqlite.close();
 });
 
+test('대리입찰 결과는 입찰일 기준 9만원 매수신청대리를 한 번만 만들고 총무 수정 금액을 보존한다', async () => {
+  const { sqlite, request } = setup();
+  const missingAgent = await request('owner', '/bid-1/bid-result', 'POST', {
+    ...failedResult,
+    bid_proxy: true,
+    proxy_agent: '',
+  });
+  assert.equal(missingAgent.status, 400);
+  assert.match(String((await missingAgent.json() as any).error), /대리인/);
+
+  const first = await request('owner', '/bid-1/bid-result', 'POST', {
+    ...failedResult,
+    bid_proxy: true,
+    proxy_agent: '홍대리',
+  });
+  assert.equal(first.status, 200, await first.clone().text());
+  assert.ok((await first.json() as any).proxy_sales_record_id);
+  assert.deepEqual(sqlite.prepare(`
+    SELECT type, amount, contract_date, proxy_agent, proxy_date, proxy_undecided, external_id
+    FROM sales_records WHERE external_id = 'auction-schedule-proxy:bid-1'
+  `).get(), {
+    type: '매수신청대리',
+    amount: 90_000,
+    contract_date: '2000-01-01',
+    proxy_agent: '홍대리',
+    proxy_date: '2000-01-01',
+    proxy_undecided: 0,
+    external_id: 'auction-schedule-proxy:bid-1',
+  });
+  const stored = JSON.parse(sqlite.prepare("SELECT data FROM freelancer_auction_schedules WHERE id = 'bid-1'").pluck().get() as string);
+  assert.equal(stored.bidProxy, true);
+  assert.equal(stored.proxyAgent, '홍대리');
+
+  sqlite.prepare("UPDATE sales_records SET amount = 120000 WHERE external_id = 'auction-schedule-proxy:bid-1'").run();
+  const repeated = await request('owner', '/bid-1/bid-result', 'POST', {
+    ...failedResult,
+    bid_proxy: true,
+    proxy_agent: '김대리',
+  });
+  assert.equal(repeated.status, 200, await repeated.clone().text());
+  assert.deepEqual(sqlite.prepare(`
+    SELECT COUNT(*) AS count, MAX(amount) AS amount, MAX(proxy_agent) AS proxy_agent
+    FROM sales_records WHERE external_id = 'auction-schedule-proxy:bid-1'
+  `).get(), { count: 1, amount: 120_000, proxy_agent: '김대리' });
+  sqlite.close();
+});
+
+test('대리입찰 낙찰은 낙찰과 매수신청대리 업무성과를 각각 생성한다', async () => {
+  const { sqlite, request } = setup();
+  const response = await request('owner', '/bid-1/bid-result', 'POST', {
+    ...wonResult,
+    bid_proxy: true,
+    proxy_agent: '입찰대리인',
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(sqlite.prepare('SELECT type, COUNT(*) AS count FROM sales_records GROUP BY type ORDER BY type').all(), [
+    { type: '낙찰', count: 1 },
+    { type: '매수신청대리', count: 1 },
+  ]);
+  sqlite.close();
+});
+
+test('취소 결과도 대리입찰이면 매수신청대리 업무성과를 생성한다', async () => {
+  const { sqlite, request } = setup();
+  const response = await request('owner', '/bid-1/bid-result', 'POST', {
+    result: 'cancelled',
+    bid_proxy: true,
+    proxy_agent: '취소건 대리인',
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(sqlite.prepare('SELECT type, amount, proxy_agent FROM sales_records').get(), {
+    type: '매수신청대리',
+    amount: 90_000,
+    proxy_agent: '취소건 대리인',
+  });
+  sqlite.close();
+});
+
 test('신규 POST는 provenance 내부 필드를 제거하고 일반 PUT은 위조 덮어쓰기를 허용하지 않는다', async () => {
   const { sqlite, request } = setup();
   const createdResponse = await request('master', '', 'POST', {

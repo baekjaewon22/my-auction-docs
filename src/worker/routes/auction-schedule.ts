@@ -8,6 +8,7 @@ import { sendAlimtalkByTemplate, APP_URL } from '../alimtalk.ts';
 import {
   auctionScheduleBidResult,
   auctionScheduleBidResultMissingFields,
+  auctionScheduleProxySalesExternalId,
   auctionScheduleSalesExternalId,
   auctionScheduleSalesExternalIds,
   calculateAuctionScheduleWinningFee,
@@ -26,6 +27,7 @@ import { isValidCustomerPhone } from '../../shared/sales-customer-identity.ts';
 import { linkSalesCustomerCase, resolveSalesCustomer } from '../lib/sales-customer-master.ts';
 import { ensureBidAnalysisTable, normalizeAmount, upsertBidAnalysisEntry } from '../lib/bid-analysis.ts';
 import { ensureAuctionScheduleTable } from '../lib/auction-schedule-schema.ts';
+import { ensureSalesProxySchema } from '../lib/sales-proxy-schema.ts';
 import { findCanonicalBidSale, type LinkedBidSale } from '../lib/performance-activity.ts';
 import {
   assertLawitgoWinningSaleDeletable,
@@ -65,6 +67,7 @@ auctionSchedule.use('*', requireHumanUser());
 const auctionResultSchemaPromises = new WeakMap<object, Promise<void>>();
 
 const ADMIN_VIEW_ROLES = new Set(['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst']);
+const AUCTION_PROXY_DEFAULT_AMOUNT = 90_000;
 
 function hasAlimtalkBranch(settings: string | null | undefined, branch: string | null | undefined): boolean {
   const normalizedBranch = normalizeBranchName(branch);
@@ -249,9 +252,57 @@ type AuctionBidResultRow = {
   updated_at: string;
 };
 
+function auctionProxySaleStatements(
+  db: D1Database,
+  input: {
+    schedule: AuctionBidResultRow;
+    clientName: string;
+    proxyAgent: string;
+  },
+): D1PreparedStatement[] {
+  const externalId = auctionScheduleProxySalesExternalId(input.schedule.id);
+  return [
+    db.prepare(`
+      INSERT OR IGNORE INTO sales_records (
+        id, user_id, type, type_detail, client_name, depositor_name, depositor_different,
+        amount, contract_date, status, direction, branch, department, payment_type,
+        proxy_agent, proxy_date, proxy_undecided, memo, external_id
+      ) VALUES (?, ?, '매수신청대리', ?, ?, ?, 0, ?, ?, 'pending', 'income', ?, ?, '이체', ?, ?, 0, ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      input.schedule.user_id,
+      '경매 스케줄 대리입찰 자동등록 / 기본금액 90,000원',
+      input.clientName,
+      input.clientName,
+      AUCTION_PROXY_DEFAULT_AMOUNT,
+      input.schedule.target_date,
+      input.schedule.branch || '',
+      input.schedule.department || '',
+      input.proxyAgent,
+      input.schedule.target_date,
+      '경매 스케줄 입찰결과에서 대리입찰 자동 등록',
+      externalId,
+    ),
+    db.prepare(`
+      UPDATE sales_records
+      SET proxy_agent = ?, proxy_date = ?, proxy_undecided = 0
+      WHERE external_id = ? AND type = '매수신청대리'
+        AND status NOT IN ('refunded', 'refund_requested')
+    `).bind(input.proxyAgent, input.schedule.target_date, externalId),
+  ];
+}
+
+async function auctionProxySaleId(db: D1Database, scheduleId: string): Promise<string | null> {
+  const row = await db.prepare(`
+    SELECT id FROM sales_records WHERE external_id = ? AND type = '매수신청대리' LIMIT 1
+  `).bind(auctionScheduleProxySalesExternalId(scheduleId)).first<{ id: string }>();
+  return row?.id || null;
+}
+
 const BID_RESULT_EDITOR_DATA_FIELDS = [
   'auctionKind', 'caseNo', 'court', 'itemNo', 'propertyCategory', 'propertyType',
   'client', 'bidder', 'clientPhone',
+  'bidProxy', 'proxyAgent',
   'suggestedPrice', 'bidPrice', 'winPrice',
   'bidWon', 'bidFailed', 'bidCancelled', 'bidResultCancelled',
   'bidResultCancelledAutomatically', 'bidResultCancelledAt',
@@ -262,6 +313,7 @@ const GENERAL_EDIT_PROTECTED_DATA_FIELDS = [
   'bidWon', 'bidFailed', 'bidCancelled', 'bidResultCancelled',
   'bidResultCancelledAutomatically', 'bidResultCancelledAt',
   'clientPhone', 'inspectionSourceId', 'materializedBidGroup', 'materializedBidItem',
+  'bidProxy', 'proxyAgent',
 ] as const;
 
 function mergeGeneralScheduleEditData(
@@ -970,6 +1022,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
   const db = c.env.DB;
   await ensureAuctionScheduleTable(db);
   await ensureAuctionScheduleResultSchema(db);
+  await ensureSalesProxySchema(db);
   await ensureCalendarAuctionDeletionSchema(db);
   const requested = await loadAuctionBidResultRow(db, c.req.param('id'));
   if (!requested) return c.json({ error: '경매 스케줄을 찾을 수 없습니다.' }, 404);
@@ -982,9 +1035,17 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     actual_bid_price?: number;
     winning_price?: number;
     client_phone?: string;
+    bid_proxy?: boolean;
+    proxy_agent?: string;
   }>();
   const result = String(body.result || '');
   if (!['won', 'failed', 'withdrawn', 'cancelled', 'pending'].includes(result)) return c.json({ error: '입찰 결과를 확인해 주세요.' }, 400);
+  if (body.bid_proxy !== undefined && typeof body.bid_proxy !== 'boolean') {
+    return c.json({ error: '대리입찰 여부를 확인해 주세요.' }, 400);
+  }
+  if (body.proxy_agent !== undefined && (typeof body.proxy_agent !== 'string' || body.proxy_agent.length > 100 || /[\r\n]/.test(body.proxy_agent))) {
+    return c.json({ error: '대리인은 100자 이내 한 줄로 입력해 주세요.' }, 400);
+  }
   if (result === 'won' || result === 'failed') {
     const suggestedPrice = normalizeAmount(body.suggested_price);
     const actualBidPrice = normalizeAmount(body.actual_bid_price);
@@ -1023,6 +1084,11 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
   }
 
   const data = parseJsonObject(existing.data);
+  const bidProxy = body.bid_proxy === undefined
+    ? data.bidProxy === true || data.bidProxy === 1
+    : body.bid_proxy;
+  const proxyAgent = bidProxy ? String(body.proxy_agent ?? data.proxyAgent ?? '').trim() : '';
+  if (bidProxy && !proxyAgent) return c.json({ error: '대리입찰 대리인을 입력해 주세요.' }, 400);
   const clientName = String(data.client || data.bidder || '');
   const depositorName = String(data.bidder || data.client || '');
   const externalId = auctionScheduleSalesExternalId(id);
@@ -1061,6 +1127,9 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     commissionKeys: linkedCommissionKeys,
     requireUnlockedLawitgo: result === 'pending',
   });
+  const proxySaleStatements = bidProxy && result !== 'pending'
+    ? auctionProxySaleStatements(db, { schedule: existing, clientName, proxyAgent })
+    : [];
 
   if (result === 'won' || result === 'failed') {
     const suggestedPrice = normalizeAmount(body.suggested_price);
@@ -1083,14 +1152,19 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         bidResultCancelled: false,
         bidResultCancelledAutomatically: false,
         bidResultCancelledAt: '',
+        bidProxy,
+        proxyAgent,
       });
-      const updated = await db.prepare(`
-        UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours')
-        WHERE id = ?
-          AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
-          ${businessGate.sql}
-      `).bind(nextData, id, id, mutationClaim, ...businessGate.params).run();
-      if (Number(updated.meta?.changes || 0) !== 1) {
+      const failedBatch = await db.batch([
+        db.prepare(`
+          UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours')
+          WHERE id = ?
+            AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+            ${businessGate.sql}
+        `).bind(nextData, id, id, mutationClaim, ...businessGate.params),
+        ...proxySaleStatements,
+      ]);
+      if (Number((failedBatch[0] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1) {
         return c.json({ error: '일정이 변경되어 입찰 결과를 저장하지 못했습니다.' }, 409);
       }
       await db.prepare("DELETE FROM bid_analysis_entries WHERE source_type = 'freelancer' AND source_id = ?").bind(externalId).run();
@@ -1110,7 +1184,13 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         source_id: externalId,
         uploaded_by: existing.user_id,
       });
-      return c.json({ success: true, schedule_id: id, sales_record_id: null, sales_status: null });
+      return c.json({
+        success: true,
+        schedule_id: id,
+        sales_record_id: null,
+        sales_status: null,
+        proxy_sales_record_id: bidProxy ? await auctionProxySaleId(db, id) : null,
+      });
     }
     const normalized = normalizeWonSalesInput({
       actual_bid_price: winningPrice,
@@ -1153,6 +1233,8 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       bidPrice: String(actualBidPrice),
       winPrice: String(winningPrice),
       clientPhone,
+      bidProxy,
+      proxyAgent,
     });
     const salesId = linkedSale?.id || crypto.randomUUID();
     const operationAuditId = crypto.randomUUID();
@@ -1228,6 +1310,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         String(normalized.sales_amount), externalId, operationAuditId,
       ));
     }
+    statements.push(...proxySaleStatements);
     const batchResults = await db.batch(statements);
     if (Number((batchResults[0] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1) {
       return c.json({ error: '일정이 변경되어 낙찰 결과를 저장하지 못했습니다.' }, 409);
@@ -1292,6 +1375,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       schedule_id: id,
       sales_record_id: savedSale.id,
       sales_status: savedSale.status,
+      proxy_sales_record_id: bidProxy ? await auctionProxySaleId(db, id) : null,
       phone_required: !isValidCustomerPhone(savedSale.client_phone),
     });
   }
@@ -1328,6 +1412,8 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     bidResultCancelledAutomatically: false,
     bidResultCancelledAt: result === 'cancelled' ? new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19) : '',
     ...(result === 'pending' ? { winPrice: '' } : {}),
+    bidProxy,
+    proxyAgent,
   });
   const pendingRollback = result === 'pending' && linkedSale?.source === 'schedule';
   const rollbackAuditId = pendingRollback ? crypto.randomUUID() : '';
@@ -1378,6 +1464,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
         ${businessGate.sql}
     `).bind(linkedCommission?.journal_entry_id || externalId, id, nextData, id, mutationClaim, ...businessGate.params));
   }
+  statements.push(...proxySaleStatements);
   const batchResults = await db.batch(statements);
   if (Number((batchResults[0] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1) {
     return c.json({ error: '일정이 변경되어 입찰 결과를 저장하지 못했습니다.' }, 409);
@@ -1407,7 +1494,13 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
       uploaded_by: existing.user_id,
     });
   }
-  return c.json({ success: true, schedule_id: id, sales_record_id: null, sales_status: null });
+  return c.json({
+    success: true,
+    schedule_id: id,
+    sales_record_id: null,
+    sales_status: null,
+    proxy_sales_record_id: bidProxy && result !== 'pending' ? await auctionProxySaleId(db, id) : null,
+  });
   } finally {
     await Promise.all(claimTokens.map(token => releaseAuctionScheduleMutationClaim(db, token)));
   }

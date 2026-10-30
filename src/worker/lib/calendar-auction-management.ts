@@ -1,4 +1,5 @@
 import {
+  auctionScheduleProxySalesExternalId,
   auctionScheduleSalesExternalIds,
 } from '../../shared/auction-schedule.ts';
 import { canManagePersonalCalendar } from '../../shared/personal-calendar-management.ts';
@@ -334,17 +335,22 @@ export async function linkedBusinessData(
   if (await tableExists(db, 'sales_records')) {
     for (const target of targets.filter(item => item.source_kind === 'bid')) {
       const data = parseData(target.data);
-      const scheduleAliases = auctionScheduleSalesExternalIds(target.id);
+      const scheduleAliases = [
+        ...auctionScheduleSalesExternalIds(target.id),
+        auctionScheduleProxySalesExternalId(target.id),
+      ];
       const directRows = await db.prepare(`
         SELECT id, status, amount, winning_price, external_id
-        FROM sales_records WHERE external_id IN (?, ?)
+        FROM sales_records WHERE external_id IN (?, ?, ?)
         ORDER BY CASE WHEN external_id = ? THEN 0 ELSE 1 END, id
       `).bind(...scheduleAliases, scheduleAliases[0]).all<Omit<LinkedBidSale, 'source'>>();
       if ((directRows.results || []).length > 0) {
         for (const sale of directRows.results || []) {
           if (!sales.some(item => item.id === sale.id)) sales.push({ ...sale, source: 'schedule' });
         }
-        continue;
+        if ((directRows.results || []).some(sale => sale.external_id !== auctionScheduleProxySalesExternalId(target.id))) {
+          continue;
+        }
       }
       const legacy = await findCanonicalBidSale(
         db,
@@ -498,8 +504,14 @@ export async function deleteCalendarAuctionEvent(
     .filter(target => target.source_kind === 'inspection')
     .map(target => inspectionMaterializedBidId(target.id));
   const protectedExternalIds = Array.from(new Set([
-    ...protectedSnapshots.flatMap(snapshot => auctionScheduleSalesExternalIds(snapshot.id)),
-    ...deterministicRelatedIds.flatMap(auctionScheduleSalesExternalIds),
+    ...protectedSnapshots.flatMap(snapshot => [
+      ...auctionScheduleSalesExternalIds(snapshot.id),
+      auctionScheduleProxySalesExternalId(snapshot.id),
+    ]),
+    ...deterministicRelatedIds.flatMap(id => [
+      ...auctionScheduleSalesExternalIds(id),
+      auctionScheduleProxySalesExternalId(id),
+    ]),
     ...legacyStates.flatMap(state => state.exact_rows.map(row => `freelancer-bid:${row.id}`)),
   ]));
   const protectedExternalIdPlaceholders = protectedExternalIds.map(() => '?').join(', ');

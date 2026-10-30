@@ -66,6 +66,7 @@ sales.use('*', async (c, next) => { await ensureSalesProxySchema(c.env.DB); awai
 
 const ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
 const EDIT_ACCOUNTING_ROLES = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'] as const;
+const PROXY_FINANCIAL_EDIT_ROLES = ['master', 'accountant', 'accountant_asst'] as const;
 const TEST_ACCOUNT_KEYWORDS = ['test', '테스트', 'dummy', 'sample', 'example', '임시'];
 const CASE_ALLOWANCE_SALES_EXCLUDE_FROM_DATE = '2026-06-01';
 const NO_LOCKED_PAYROLL_SALE_SQL = `NOT EXISTS (
@@ -1205,6 +1206,19 @@ sales.put('/:id', async (c) => {
 
   const record = await db.prepare('SELECT * FROM sales_records WHERE id = ?').bind(id).first<any>();
   if (!record) return c.json({ error: '매출 내역을 찾을 수 없습니다.' }, 404);
+  const isOwner = record.user_id === user.sub;
+  const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user.role);
+  const canEditProxyFinancials = PROXY_FINANCIAL_EDIT_ROLES.includes(user.role as typeof PROXY_FINANCIAL_EDIT_ROLES[number]);
+  const changesProxyFinancials = (
+    (record.type === '매수신청대리' || body.type === '매수신청대리')
+    && (
+      (body.amount !== undefined && Number(body.amount) !== Number(record.amount || 0))
+      || (body.proxy_cost !== undefined && Number(body.proxy_cost) !== Number(record.proxy_cost || 0))
+    )
+  );
+  if (changesProxyFinancials && !canEditProxyFinancials) {
+    return c.json({ error: '매수신청대리 금액과 대리비용은 총무만 수정할 수 있습니다.' }, 403);
+  }
   const completedRecovery = await db.prepare(
     'SELECT 1 AS found FROM refund_recovery_resolutions WHERE sales_record_id = ?'
   ).bind(id).first<{ found: number }>();
@@ -1231,8 +1245,6 @@ sales.put('/:id', async (c) => {
     }
   }
 
-  const isOwner = record.user_id === user.sub;
-  const isAdminPlus = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(user.role);
   if (!isOwner && !isAdminPlus) return c.json({ error: '권한이 없습니다.' }, 403);
   if (record.status !== 'pending' && !isAdminPlus) return c.json({ error: '확정된 매출은 수정할 수 없습니다.' }, 400);
   if (!isAdminPlus && (

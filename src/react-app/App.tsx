@@ -85,6 +85,7 @@ import {
 } from '../shared/briefing-material-access';
 import { canManageVideoProduction } from '../shared/video-production';
 import { canViewMyStatistics } from '../shared/my-statistics-access';
+import DeveloperSettings from './pages/DeveloperSettings';
 
 // 컨설턴트 계약관리 열람 가능: master/ceo/accountant/accountant_asst + 정민호 예외
 const CONTRACT_TRACKER_EXTRA_IDS = ['2b6b3606-e425-4361-a115-9283cfef842f'];
@@ -981,6 +982,14 @@ export default function App() {
             element={
               <MasterRoute>
                 <AutomationDiagnosticsAdmin />
+              </MasterRoute>
+            }
+          />
+          <Route
+            path="developer-settings"
+            element={
+              <MasterRoute>
+                <DeveloperSettings />
               </MasterRoute>
             }
           />

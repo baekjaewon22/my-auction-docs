@@ -50,6 +50,7 @@ import lawitgoWinningAdminRoute from './routes/lawitgo-winning-admin';
 import videoProductionRequestsRoute from './routes/video-production-requests';
 import briefingsRoute from './routes/briefings';
 import { mentionDigestsRoute, mentionsRoute } from './routes/external-mentions';
+import developerSettingsRoute from './routes/developer-settings';
 import { createDriveFileVerifier, verifyPrintToken, runBackupBatch } from './drive-backup-runner';
 import { encryptToken, exchangeCodeForTokens, fetchUserEmail, resolveRedirectUri } from './drive-oauth';
 import { ALIMTALK_TEMPLATES, sendAlimtalkByTemplate } from './alimtalk';
@@ -169,6 +170,7 @@ app.route('/api/automation-agent', automationAgentQueueRoute);
 app.route('/api/auction-reference', auctionReferenceRoute);
 app.route('/api/announcement-popups', announcementPopupsRoute);
 app.route('/api/web-push', webPushRoute);
+app.route('/api/developer-settings', developerSettingsRoute);
 
 // OAuth 콜백 — Google이 /oauth/drive/callback 으로 redirect (최상위 경로)
 app.get('/oauth/drive/callback', async (c) => {

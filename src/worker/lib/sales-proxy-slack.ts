@@ -1,6 +1,6 @@
 import { ensureSalesProxySchema } from './sales-proxy-schema.ts';
 
-type ProxyRow = { id: string; user_name: string; branch: string; department: string; proxy_agent: string; proxy_date: string; proxy_cost: number; focus_date: string };
+type ProxyRow = { id: string; user_name: string; branch: string; department: string; proxy_agent: string; proxy_date: string; amount?: number; proxy_cost: number; focus_date: string };
 type ProxyEnv = { DB: D1Database; SLACK_EXPENSE_RECEIPT_WEBHOOK_URL?: string; SLACK_ACCOUNTING_WEBHOOK_URL?: string };
 
 // Same channel precedence as expense-receipt-slack, explicitly requested by owner.
@@ -19,7 +19,7 @@ export function renderSalesProxySlack(row: ProxyRow): string {
   const query = new URLSearchParams({ focus: 'sales', id: row.id });
   if (/^\d{4}-\d{2}/.test(row.focus_date || '')) query.set('month', row.focus_date.slice(0, 7));
   return [':calendar: 매수신청 대리일 안내', `신청자: ${safe(row.user_name)}`, `지사/부서: ${safe(row.branch)} / ${safe(row.department)}`,
-    `대리인: ${safe(row.proxy_agent)}`, `대리일: ${safe(row.proxy_date)}`, `금액: ${Number(row.proxy_cost || 0).toLocaleString('ko-KR')}원`,
+    `대리인: ${safe(row.proxy_agent)}`, `대리일: ${safe(row.proxy_date)}`, `금액: ${Number(row.amount || row.proxy_cost || 0).toLocaleString('ko-KR')}원`,
     `결재/확인: https://my-docs.kr/sales?${query}`].join('\n');
 }
 export function salesProxyDueDate(now: Date): string | null {
@@ -53,7 +53,7 @@ export async function sendSalesProxySlackTest(env: ProxyEnv, requestId: string, 
     return { sent: false, reason: 'uncertain_do_not_retry', schema_ready: true };
   }
 }
-export const DUE_SALES_PROXY_SQL = `SELECT sr.id,u.name AS user_name,sr.branch,sr.department,sr.proxy_agent,sr.proxy_date,sr.proxy_cost,
+export const DUE_SALES_PROXY_SQL = `SELECT sr.id,u.name AS user_name,sr.branch,sr.department,sr.proxy_agent,sr.proxy_date,sr.amount,sr.proxy_cost,
   CASE WHEN sr.status IN ('confirmed','card_pending') THEN
     CASE WHEN sr.payment_type='카드' THEN COALESCE(NULLIF(sr.card_deposit_date,''),sr.contract_date)
     ELSE COALESCE(NULLIF(sr.deposit_date,''),sr.contract_date) END ELSE sr.contract_date END AS focus_date

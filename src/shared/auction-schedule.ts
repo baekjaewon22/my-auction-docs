@@ -79,6 +79,10 @@ export function auctionScheduleSalesExternalId(scheduleId: string): string {
   return `auction-schedule:${String(scheduleId || '').trim()}`;
 }
 
+export function auctionScheduleProxySalesExternalId(scheduleId: string): string {
+  return `auction-schedule-proxy:${String(scheduleId || '').trim()}`;
+}
+
 /**
  * Schedule sales originally used an underscore prefix. Keep both keys when
  * resolving/protecting historical business records; new writes use the first

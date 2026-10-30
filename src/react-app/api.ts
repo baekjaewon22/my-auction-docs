@@ -72,6 +72,29 @@ export interface WebPushSetupStatus {
   }>;
 }
 
+export interface CodexConversationSummary {
+  id: string;
+  source_session_id: string;
+  title: string;
+  source: 'codex';
+  working_directory: string;
+  client_version: string;
+  message_count: number;
+  started_at: string;
+  last_message_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CodexConversationDetail extends CodexConversationSummary {
+  messages: Array<{
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    created_at: string;
+  }>;
+}
+
 export interface LawitgoProgressItem {
   id: string;
   title: string;
@@ -287,6 +310,7 @@ export interface AuctionBidScheduleSaveResponse {
 export interface AuctionBidResultSaveResponse extends AuctionBidScheduleSaveResponse {
   sales_record_id?: string | null;
   sales_status?: string | null;
+  proxy_sales_record_id?: string | null;
   phone_required?: boolean;
 }
 
@@ -416,6 +440,15 @@ async function authenticatedBlobUrl(path: string): Promise<string> {
 
 // Auth
 export const api = {
+  developerSettings: {
+    codexConversations: () => request<{ conversations: CodexConversationSummary[] }>(
+      '/developer-settings/codex-conversations',
+    ),
+    codexConversation: (id: string) => request<{ conversation: CodexConversationDetail }>(
+      '/developer-settings/codex-conversations/' + encodeURIComponent(id),
+    ),
+  },
+
   auth: {
     login: (email: string, password: string, login_type?: string) =>
       request<{ token: string; user: import('./types').User }>('/auth/login', {
@@ -1880,6 +1913,8 @@ export const api = {
       actual_bid_price?: number;
       winning_price?: number;
       client_phone?: string;
+      bid_proxy?: boolean;
+      proxy_agent?: string;
     }) => request<AuctionBidResultSaveResponse>(
       '/auction-schedule/' + id + '/bid-result',
       { method: 'POST', body: JSON.stringify(data) },

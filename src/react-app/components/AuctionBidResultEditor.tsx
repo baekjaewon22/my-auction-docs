@@ -61,6 +61,8 @@ export default function AuctionBidResultEditor({
   const [actualBidPrice, setActualBidPrice] = useState(currency(data.bidPrice));
   const [winningPrice, setWinningPrice] = useState(currency(data.winPrice));
   const [clientPhone, setClientPhone] = useState(phone(data.clientPhone));
+  const [bidProxy, setBidProxy] = useState(data.bidProxy === true);
+  const [proxyAgent, setProxyAgent] = useState(String(data.proxyAgent || ''));
   const [contractPhones, setContractPhones] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -72,6 +74,8 @@ export default function AuctionBidResultEditor({
     setActualBidPrice(currency(next.bidPrice));
     setWinningPrice(currency(next.winPrice));
     setClientPhone(phone(next.clientPhone));
+    setBidProxy(next.bidProxy === true);
+    setProxyAgent(String(next.proxyAgent || ''));
   }, [entry.id, entry.data, initialResult, blocking]);
 
   useEffect(() => {
@@ -126,6 +130,10 @@ export default function AuctionBidResultEditor({
     if (result === 'pending' && !confirm('현재 입찰 결과를 대기 상태로 초기화할까요? 연결된 입금신청이 있으면 서버 정책에 따라 초기화가 제한될 수 있습니다.')) {
       return;
     }
+    if (bidProxy && !proxyAgent.trim()) {
+      alert('대리입찰 대리인을 입력해 주세요.');
+      return;
+    }
     setSaving(true);
     try {
       const saved = await api.auctionSchedule.setBidResult(entry.id, {
@@ -134,11 +142,16 @@ export default function AuctionBidResultEditor({
         actual_bid_price: won(actualBidPrice),
         winning_price: won(winningPrice),
         client_phone: result === 'won' ? clientPhone : undefined,
+        bid_proxy: bidProxy,
+        proxy_agent: bidProxy ? proxyAgent.trim() : '',
       });
       if (result === 'won') {
-        alert(saved.phone_required
+        const wonMessage = saved.phone_required
           ? '낙찰 업무성과가 입금대기로 등록되었습니다. 고객 전화번호가 비어 있습니다. 대시보드의 고객 전화번호 등록 알림에서 반드시 보완해 주세요.'
-          : '낙찰 처리와 업무성과 입금대기 등록이 완료되었습니다.');
+          : '낙찰 처리와 업무성과 입금대기 등록이 완료되었습니다.';
+        alert(wonMessage + (saved.proxy_sales_record_id ? '\n매수신청대리 업무성과도 기본금액 90,000원으로 등록되었습니다.' : ''));
+      } else if (saved.proxy_sales_record_id) {
+        alert('매수신청대리 업무성과가 기본금액 90,000원으로 등록되었습니다.');
       }
       await onSaved(saved);
     } catch (error: unknown) {
@@ -187,6 +200,22 @@ export default function AuctionBidResultEditor({
         <div className="auction-bid-result-fields">
           <label><span>고객 전화번호 <small>(나중에 입력 가능)</small></span><input inputMode="tel" value={clientPhone} onChange={(e) => setClientPhone(phone(e.target.value))} list={contractPhones.length > 1 ? `auction-contract-phones-${entry.id}` : undefined} placeholder="미입력 시 대시보드에서 알림" maxLength={13} /></label>
           {contractPhones.length > 1 && <datalist id={`auction-contract-phones-${entry.id}`}>{contractPhones.map(value => <option key={value} value={value} />)}</datalist>}
+        </div>
+      )}
+
+      {!priceOnly && result && result !== 'pending' && (
+        <div className="auction-bid-proxy-panel">
+          <label className="auction-bid-proxy-choice">
+            <input type="checkbox" checked={bidProxy} onChange={(event) => setBidProxy(event.target.checked)} />
+            <span className={`auction-bid-proxy-circle${bidProxy ? ' checked' : ''}`} aria-hidden="true" />
+            <strong>대리입찰</strong>
+          </label>
+          {bidProxy && (
+            <label className="auction-bid-proxy-agent">
+              <span>대리인 *</span>
+              <input type="text" maxLength={100} value={proxyAgent} onChange={(event) => setProxyAgent(event.target.value)} placeholder="대리인 이름 입력" />
+            </label>
+          )}
         </div>
       )}
 

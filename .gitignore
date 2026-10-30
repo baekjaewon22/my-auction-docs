@@ -201,6 +201,7 @@ worker-configuration.d.ts
 
 ### Local import artifacts ###
 tmp-expense-classification/
+/my marketing/myauction-weekly-briefing/
 
 ### Auction report automation reference/runtime artifacts ###
 auction-report-web/

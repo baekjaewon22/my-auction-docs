@@ -8398,6 +8398,73 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   font-size: 0.9rem;
 }
 
+/* Master-only developer settings / Codex conversation archive */
+.developer-settings-page { max-width: 1600px; }
+.developer-settings-header h2 { display: inline-flex; align-items: center; gap: 9px; }
+.developer-security-notice {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding: 12px 14px;
+  border: 1px solid #bfdbfe; border-radius: var(--radius); background: #eff6ff; color: #1e3a8a; font-size: .86rem;
+}
+.developer-log-layout {
+  display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); min-height: 620px;
+  border: 1px solid var(--gray-200); border-radius: var(--radius); overflow: hidden; background: #fff;
+}
+.developer-log-sidebar { border-right: 1px solid var(--gray-200); background: #f8fafc; min-width: 0; }
+.developer-log-search {
+  display: flex; align-items: center; gap: 8px; margin: 12px; padding: 9px 11px;
+  border: 1px solid var(--gray-300); border-radius: 8px; background: #fff; color: var(--gray-500);
+}
+.developer-log-search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--gray-900); }
+.developer-log-list { max-height: 690px; overflow-y: auto; }
+.developer-log-item {
+  display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 5px; padding: 14px 16px;
+  border: 0; border-top: 1px solid var(--gray-200); background: transparent; color: var(--gray-900); text-align: left; cursor: pointer;
+}
+.developer-log-item:hover { background: #eef2ff; }
+.developer-log-item.active { background: #dbeafe; box-shadow: inset 3px 0 #2563eb; }
+.developer-log-item strong { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; }
+.developer-log-item span, .developer-log-item small { color: var(--gray-500); font-size: .72rem; }
+.developer-log-item small { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.developer-transcript { min-width: 0; background: #fff; }
+.developer-transcript-header {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 15px 18px;
+  border-bottom: 1px solid var(--gray-200); background: #fff;
+}
+.developer-transcript-header div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.developer-transcript-header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.developer-transcript-header > span { flex: 0 0 auto; color: var(--gray-500); font-size: .75rem; }
+.developer-message-list { max-height: 650px; overflow-y: auto; padding: 20px; }
+.developer-message { max-width: 88%; margin-bottom: 18px; padding: 13px 15px; border-radius: 12px; }
+.developer-message.user { margin-left: auto; background: #e0ecff; }
+.developer-message.assistant { margin-right: auto; border: 1px solid var(--gray-200); background: #f8fafc; }
+.developer-message-meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; font-size: .72rem; }
+.developer-message-meta span { color: var(--gray-500); }
+.developer-message pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.55; color: var(--gray-900); }
+.developer-log-empty { display: flex; min-height: 220px; align-items: center; justify-content: center; gap: 10px; padding: 24px; color: var(--gray-500); text-align: center; }
+
+@media (max-width: 900px) {
+  .developer-log-layout { grid-template-columns: 1fr; }
+  .developer-log-sidebar { border-right: 0; border-bottom: 1px solid var(--gray-200); }
+  .developer-log-list { max-height: 230px; }
+  .developer-transcript-header { align-items: flex-start; flex-direction: column; }
+  .developer-message { max-width: 96%; }
+}
+
+:root[data-theme='dark'] .developer-security-notice { border-color: #1e40af; background: #172554; color: #bfdbfe; }
+:root[data-theme='dark'] .developer-log-layout,
+:root[data-theme='dark'] .developer-transcript,
+:root[data-theme='dark'] .developer-transcript-header { background: #111827; border-color: #334155; }
+:root[data-theme='dark'] .developer-log-sidebar { background: #0f172a; border-color: #334155; }
+:root[data-theme='dark'] .developer-log-search { background: #111827; border-color: #475569; }
+:root[data-theme='dark'] .developer-log-search input,
+:root[data-theme='dark'] .developer-log-item,
+:root[data-theme='dark'] .developer-message pre { color: #e5e7eb; }
+:root[data-theme='dark'] .developer-log-item { border-color: #334155; }
+:root[data-theme='dark'] .developer-log-item:hover { background: #1e293b; }
+:root[data-theme='dark'] .developer-log-item.active { background: #1e3a5f; }
+:root[data-theme='dark'] .developer-message.user { background: #1e3a5f; }
+:root[data-theme='dark'] .developer-message.assistant { border-color: #334155; background: #1e293b; }
+
 /* ========================= */
 /* File Import               */
 /* ========================= */
@@ -17782,6 +17849,93 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border: 1px solid #ccd2da;
   border-radius: 7px;
   background: #fff;
+}
+
+.auction-bid-proxy-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #d7dce3;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.auction-bid-proxy-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.auction-bid-proxy-choice input {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.auction-bid-proxy-circle {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #64748b;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: inset 0 0 0 3px #fff;
+  transition: background-color .15s ease, border-color .15s ease, transform .15s ease;
+}
+
+.auction-bid-proxy-circle.checked {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+  transform: scale(1.04);
+}
+
+.auction-bid-proxy-choice input:focus-visible + .auction-bid-proxy-circle {
+  outline: 3px solid rgba(37, 99, 235, .25);
+  outline-offset: 2px;
+}
+
+.auction-bid-proxy-agent {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  font-size: .78rem;
+  font-weight: 700;
+}
+
+.auction-bid-proxy-agent input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #ccd2da;
+  border-radius: 7px;
+  background: #fff;
+  color: #202124;
+}
+
+html[data-theme='dark'] .auction-bid-proxy-panel {
+  border-color: #3b4c63;
+  background: #172235;
+  color: #e5edf7;
+}
+
+html[data-theme='dark'] .auction-bid-proxy-circle {
+  border-color: #91a4bb;
+  background: #172235;
+  box-shadow: inset 0 0 0 3px #172235;
+}
+
+html[data-theme='dark'] .auction-bid-proxy-circle.checked {
+  border-color: #78a9ff;
+  background: #78a9ff;
+}
+
+html[data-theme='dark'] .auction-bid-proxy-agent input {
+  border-color: #52647b;
+  background: #101a2b;
+  color: #eef4fb;
 }
 
 .auction-bid-result-withdrawn-note {

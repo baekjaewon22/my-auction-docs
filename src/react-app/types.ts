@@ -172,7 +172,7 @@ export interface SalesRecord {
   user_id: string;
   user_name?: string;
   position_title?: string;
-  type: '계약' | '낙찰' | '중개' | '기타';
+  type: '계약' | '낙찰' | '중개' | '권리분석보증서' | '매수신청대리' | '기타';
   type_detail: string;
   client_name: string;
   depositor_name: string;

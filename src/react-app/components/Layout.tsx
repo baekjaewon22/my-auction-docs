@@ -22,6 +22,7 @@ import {
   PanelLeftClose, PanelLeftOpen, UserPen, Menu, X, Archive, Network, BookOpen, DollarSign, BookOpenCheck, Receipt, CalendarCheck, PieChart, StickyNote, MessageSquare, DoorOpen, FileSignature, Briefcase, FileSpreadsheet,
   Scale, ExternalLink, Activity, Send, ShieldCheck,
   Moon, Sun, Video, Megaphone, Radar, ContactRound,
+  Settings,
 } from 'lucide-react';
 
 // 명승 진단 바로가기 노출 페이지: 대시보드 + 마이페이지 하위 전부
@@ -407,6 +408,15 @@ export default function Layout() {
                 <FileSpreadsheet size={18} /> {!collapsed && '출력물'}
               </Link>
             )}
+          </>
+        )}
+        {role === 'master' && (
+          <>
+            <div className="nav-divider" />
+            {!collapsed && <span className="nav-label">개발자 설정</span>}
+            <Link to="/developer-settings" className={`nav-item ${isActive('/developer-settings') ? 'active' : ''}`} title="Codex 대화 로그" onClick={() => setMobileOpen(false)}>
+              <Settings size={18} /> {!collapsed && 'Codex 대화 로그'}
+            </Link>
           </>
         )}
       </nav>

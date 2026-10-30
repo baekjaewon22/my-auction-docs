@@ -9,7 +9,7 @@ import { proxySlackWebhook, renderSalesProxySlack, salesProxyDueDate, sendDueSal
 function setup() {
   const db = new Database(':memory:');
   db.exec(`CREATE TABLE users(id TEXT PRIMARY KEY,name TEXT); INSERT INTO users VALUES('owner','신청자');
-    CREATE TABLE sales_records(id TEXT PRIMARY KEY,user_id TEXT,type TEXT,branch TEXT,department TEXT,proxy_cost INTEGER,
+    CREATE TABLE sales_records(id TEXT PRIMARY KEY,user_id TEXT,type TEXT,branch TEXT,department TEXT,amount INTEGER NOT NULL DEFAULT 0,proxy_cost INTEGER,
     status TEXT,direction TEXT,contract_date TEXT,payment_type TEXT,deposit_date TEXT,card_deposit_date TEXT);`);
   const d1 = { prepare(sql: string) {
     let values: unknown[] = [];
@@ -123,4 +123,16 @@ test('등록·수정 API 검증과 권한, 예약 작업 연결 및 화면 구�
   const ui=readFileSync('src/react-app/pages/Sales.tsx','utf8');
   assert.match(ui,/SalesProxyFields value=\{formProxy\}/);
   assert.match(ui,/SalesProxyEditor/);
+  assert.match(route,/PROXY_FINANCIAL_EDIT_ROLES/);
+  assert.match(route,/매수신청대리 금액과 대리비용은 총무만 수정할 수 있습니다/);
+  assert.match(ui,/canEditProxyFinancials/);
+});
+
+test('경매 스케줄 입찰결과 화면은 원형 대리입찰 선택과 대리인 필수 입력을 제공한다',()=>{
+  const editor=readFileSync('src/react-app/components/AuctionBidResultEditor.tsx','utf8');
+  const css=readFileSync('src/react-app/index.css','utf8');
+  assert.match(editor,/auction-bid-proxy-circle/);
+  assert.match(editor,/대리입찰 대리인을 입력해 주세요/);
+  assert.match(editor,/bid_proxy: bidProxy/);
+  assert.match(css,/\.auction-bid-proxy-circle\.checked/);
 });

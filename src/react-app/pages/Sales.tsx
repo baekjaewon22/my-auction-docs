@@ -394,6 +394,7 @@ export default function Sales() {
   // 총무메모 hover popup (총무급만)
   const [adminMemosMap, setAdminMemosMap] = useState<Record<string, string>>({});
   const [hoveredMemoRow, setHoveredMemoRow] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [hoveredMissingReason, setHoveredMissingReason] = useState<{ id: string; reason: string; x: number; y: number } | null>(null);
   // 상세 팝업
   const [detailRecord, setDetailRecord] = useState<SalesRecord | null>(null);
   const detailRecordId = detailRecord?.id;
@@ -557,6 +558,7 @@ export default function Sales() {
   const isAccountant = ['accountant', 'accountant_asst'].includes(role);
   const isMaster = role === 'master' || role === 'accountant' || role === 'accountant_asst'; // 총무/총무보조 = master 동급 (유형변경/확인취소)
   const canModifyAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 수정 권한
+  const canEditProxyFinancials = ['master', 'accountant', 'accountant_asst'].includes(role);
   const canApproveAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 입금확인/결제확인
   const canCancelRefundRequest = canCancelSalesRefundRequest(role);
   const canRevertCompletedRefund = canRevertCompletedSalesRefund(role);
@@ -2364,9 +2366,18 @@ export default function Sales() {
               const isConfirming = confirmingId === r.id;
               return (
                 <tr key={r.id} data-dashboard-focus={`sales-${r.id}`} onClick={() => openDetail(r)} className={`clickable-row${dashboardFocusType === 'sales' && dashboardFocusId === r.id ? ' dashboard-focus-target' : ''}`}
-                  onMouseEnter={(e) => { if ((isAccountant || isMaster) && adminMemosMap[r.id]) setHoveredMemoRow({ id: r.id, x: e.clientX, y: e.clientY }); }}
-                  onMouseMove={(e) => { if (hoveredMemoRow && hoveredMemoRow.id === r.id) setHoveredMemoRow({ id: r.id, x: e.clientX, y: e.clientY }); }}
-                  onMouseLeave={() => { if (hoveredMemoRow && hoveredMemoRow.id === r.id) setHoveredMemoRow(null); }}
+                  onMouseEnter={(e) => {
+                    if ((e.target as HTMLElement).closest('[data-missing-reason]')) return;
+                    if ((isAccountant || isMaster) && adminMemosMap[r.id]) setHoveredMemoRow({ id: r.id, x: e.clientX, y: e.clientY });
+                  }}
+                  onMouseMove={(e) => {
+                    if ((e.target as HTMLElement).closest('[data-missing-reason]')) return;
+                    if ((isAccountant || isMaster) && adminMemosMap[r.id]) setHoveredMemoRow({ id: r.id, x: e.clientX, y: e.clientY });
+                  }}
+                  onMouseLeave={() => {
+                    if (hoveredMemoRow && hoveredMemoRow.id === r.id) setHoveredMemoRow(null);
+                    if (hoveredMissingReason && hoveredMissingReason.id === r.id) setHoveredMissingReason(null);
+                  }}
                   style={{ cursor: 'pointer', ...(isRefunded ? { color: '#d93025', textDecoration: 'line-through', background: '#fef7f6' } : r.type === '낙찰' ? { background: '#f3f0ff' } : r.type === '계약' ? { background: '#f0f7ff' } : {}) }}>
                   {canDeleteAccounting && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} /></td>}
                   <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{r.contract_date}</td>
@@ -2428,7 +2439,24 @@ export default function Sales() {
                       <div style={{ textAlign: 'center' }}>
                         <span style={{ color: '#e65100', fontSize: '0.72rem', fontWeight: 600 }}>미제출</span>
                         {r.contract_not_reason && (
-                          <div style={{ fontSize: '0.65rem', color: '#5f6368', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.contract_not_reason}>
+                          <div
+                            data-missing-reason
+                            style={{ fontSize: '0.65rem', color: '#5f6368', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'help' }}
+                            title={r.contract_not_reason}
+                            onMouseEnter={(e) => {
+                              e.stopPropagation();
+                              setHoveredMemoRow(null);
+                              setHoveredMissingReason({ id: r.id, reason: r.contract_not_reason || '', x: e.clientX, y: e.clientY });
+                            }}
+                            onMouseMove={(e) => {
+                              e.stopPropagation();
+                              setHoveredMissingReason({ id: r.id, reason: r.contract_not_reason || '', x: e.clientX, y: e.clientY });
+                            }}
+                            onMouseLeave={(e) => {
+                              e.stopPropagation();
+                              setHoveredMissingReason(null);
+                            }}
+                          >
                             {r.contract_not_reason}
                           </div>
                         )}
@@ -2441,7 +2469,24 @@ export default function Sales() {
                       <div style={{ textAlign: 'center' }}>
                         <span style={{ color: '#d93025', fontSize: '0.72rem', fontWeight: 600 }}>미작성</span>
                         {r.contract_not_reason && (
-                          <div style={{ fontSize: '0.65rem', color: '#5f6368', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.contract_not_reason}>
+                          <div
+                            data-missing-reason
+                            style={{ fontSize: '0.65rem', color: '#5f6368', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'help' }}
+                            title={r.contract_not_reason}
+                            onMouseEnter={(e) => {
+                              e.stopPropagation();
+                              setHoveredMemoRow(null);
+                              setHoveredMissingReason({ id: r.id, reason: r.contract_not_reason || '', x: e.clientX, y: e.clientY });
+                            }}
+                            onMouseMove={(e) => {
+                              e.stopPropagation();
+                              setHoveredMissingReason({ id: r.id, reason: r.contract_not_reason || '', x: e.clientX, y: e.clientY });
+                            }}
+                            onMouseLeave={(e) => {
+                              e.stopPropagation();
+                              setHoveredMissingReason(null);
+                            }}
+                          >
                             {r.contract_not_reason}
                           </div>
                         )}
@@ -2974,6 +3019,7 @@ export default function Sales() {
                     <div>
                       <label className="form-label" style={{ fontSize: '0.72rem' }}>금액 (부가세포함)</label>
                       <input className="form-input" defaultValue={detailRecord.amount ? detailRecord.amount.toLocaleString() : ''}
+                        disabled={detailRecord.type === '매수신청대리' && !canEditProxyFinancials}
                         style={{ width: '100%', fontSize: '0.82rem' }} placeholder="금액 입력"
                         onBlur={async (e) => {
                           const val = Number(e.target.value.replace(/[^0-9]/g, '')) || 0;
@@ -2981,6 +3027,9 @@ export default function Sales() {
                             try { await api.sales.update(detailRecord.id, { amount: val }); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
                           }
                         }} />
+                      {detailRecord.type === '매수신청대리' && !canEditProxyFinancials && (
+                        <div style={{ fontSize: '0.68rem', color: '#9aa0a6', marginTop: 4 }}>매수신청대리 금액은 총무만 수정할 수 있습니다.</div>
+                      )}
                     </div>
                     <div>
                       <label className="form-label" style={{ fontSize: '0.72rem' }}>입금자명</label>
@@ -3033,6 +3082,7 @@ export default function Sales() {
                       <div style={{ gridColumn: '1 / -1' }}>
                         <label className="form-label" style={{ fontSize: '0.72rem' }}>대리비용 (담당자 지급금액)</label>
                         <input className="form-input" defaultValue={detailRecord.proxy_cost ? detailRecord.proxy_cost.toLocaleString() : '0'}
+                          disabled={!canEditProxyFinancials}
                           style={{ width: '100%', fontSize: '0.82rem' }} placeholder="대리비용"
                           onBlur={async (e) => {
                             const val = Number(e.target.value.replace(/[^0-9]/g, '')) || 0;
@@ -3040,6 +3090,7 @@ export default function Sales() {
                               try { await api.sales.update(detailRecord.id, { proxy_cost: val } as any); setDetailRecord(null); load(true); } catch (err: any) { alert(err.message); }
                             }
                           }} />
+                        {!canEditProxyFinancials && <div style={{ fontSize: '0.68rem', color: '#9aa0a6', marginTop: 4 }}>대리비용은 총무만 수정할 수 있습니다.</div>}
                         <div style={{ fontSize: '0.72rem', color: '#9aa0a6', marginTop: 4 }}>급여반영액 = 매출금액({formatCurrency(detailRecord.amount)}) ÷ 1.1 - 대리비용</div>
                       </div>
                     )}
@@ -3199,7 +3250,7 @@ export default function Sales() {
         </div>
       )}
       {/* 총무메모 hover 팝업 */}
-      {hoveredMemoRow && adminMemosMap[hoveredMemoRow.id] && (
+      {hoveredMemoRow && !hoveredMissingReason && adminMemosMap[hoveredMemoRow.id] && (
         <div style={{
           position: 'fixed', top: hoveredMemoRow.y + 14, left: hoveredMemoRow.x + 14, zIndex: 9999,
           background: '#fffde7', padding: '8px 12px', borderRadius: 6, border: '1px solid #fbc02d',
@@ -3208,6 +3259,18 @@ export default function Sales() {
         }}>
           <div style={{ fontSize: '0.66rem', color: '#6d4c00', fontWeight: 700, marginBottom: 3 }}>총무메모</div>
           {adminMemosMap[hoveredMemoRow.id]}
+        </div>
+      )}
+      {/* 미작성 사유 hover 팝업: 총무메모보다 우선 표시 */}
+      {hoveredMissingReason && (
+        <div style={{
+          position: 'fixed', top: hoveredMissingReason.y + 14, left: hoveredMissingReason.x + 14, zIndex: 10000,
+          background: '#fff7ed', color: '#3f2d20', padding: '8px 12px', borderRadius: 6, border: '1px solid #fb923c',
+          fontSize: '0.78rem', lineHeight: 1.5, maxWidth: 360, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.18)', pointerEvents: 'none',
+        }}>
+          <div style={{ fontSize: '0.66rem', color: '#9a3412', fontWeight: 700, marginBottom: 3 }}>미작성 사유</div>
+          {hoveredMissingReason.reason}
         </div>
       )}
     </div>
