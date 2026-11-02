@@ -25,6 +25,7 @@ $setupScript = Join-Path $root "automation-service\installer\setup_agent.py"
 $setupBuildExePath = Join-Path $downloadDir "$setupBuildName.exe"
 $setupExePath = Join-Path $downloadDir "$setupName.exe"
 $iconPath = Join-Path $root "automation-service\installer\myauction.ico"
+$templateStageDir = ""
 $popplerCandidates = @(
   (Join-Path $backendDir "bin\poppler\Library\bin"),
   "C:\poppler\Library\bin",
@@ -62,6 +63,18 @@ if (!$tesseractDir) {
 
 Push-Location $backendDir
 try {
+  $templateStageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("my-auction-agent-templates-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $templateStageDir | Out-Null
+  $templateSourceDir = Join-Path $backendDir "templates"
+  Get-ChildItem -LiteralPath $templateSourceDir -Recurse -File |
+    Where-Object { $_.Name -notlike '~$*' } |
+    ForEach-Object {
+      $relativePath = $_.FullName.Substring($templateSourceDir.Length).TrimStart('\', '/')
+      $stagedPath = Join-Path $templateStageDir $relativePath
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stagedPath) | Out-Null
+      Copy-Item -LiteralPath $_.FullName -Destination $stagedPath -Force
+    }
+
   & $venvPython -c "import PyInstaller, win32com.client, pythoncom, pywintypes" *> $null
   if ($LASTEXITCODE -ne 0) {
     & $venvPython -m pip install -r requirements.txt
@@ -87,7 +100,7 @@ try {
     --hidden-import pywintypes `
     --add-binary "$popplerBin;bin/poppler/Library/bin" `
     --add-binary "$tesseractDir;bin/tesseract" `
-    --add-data "templates;templates" `
+    --add-data "$templateStageDir;templates" `
     run_server.py
   if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller build failed."
@@ -95,6 +108,9 @@ try {
 }
 finally {
   Pop-Location
+  if ($templateStageDir -and (Test-Path -LiteralPath $templateStageDir)) {
+    Remove-Item -LiteralPath $templateStageDir -Recurse -Force
+  }
 }
 
 if (Test-Path $buildRoot) {
@@ -181,7 +197,29 @@ New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
 if (Test-Path $zipPath) {
   Remove-Item -LiteralPath $zipPath -Force
 }
-Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipPath -Force
+$zipCreated = $false
+for ($attempt = 1; $attempt -le 5; $attempt++) {
+  try {
+    if (Test-Path -LiteralPath $zipPath) {
+      Remove-Item -LiteralPath $zipPath -Force
+    }
+    Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipPath -Force -ErrorAction Stop
+    $zipCreated = Test-Path -LiteralPath $zipPath
+    if ($zipCreated) {
+      break
+    }
+  }
+  catch {
+    if ($attempt -eq 5) {
+      throw
+    }
+    Write-Warning "Agent archive is temporarily locked; retrying ($attempt/5): $($_.Exception.Message)"
+    Start-Sleep -Seconds 2
+  }
+}
+if (!$zipCreated) {
+  throw "Automation agent archive was not created: $zipPath"
+}
 
 Write-Host "Created $zipPath"
 
