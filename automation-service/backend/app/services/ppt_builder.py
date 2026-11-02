@@ -406,95 +406,14 @@ def move_slide(prs, old_index, new_index):
     xml_slides.insert(new_index, slide_id)
 
 
-def _remove_slide(prs: Presentation, slide) -> None:
-    """Remove a slide from the presentation by object identity."""
-    xml_slides = prs.slides._sldIdLst
-    slide_id = None
-    for candidate in xml_slides:
-        rel_id = candidate.rId
-        if prs.part.related_slide(rel_id) is slide:
-            slide_id = candidate
-            break
-    if slide_id is None:
-        return
-    xml_slides.remove(slide_id)
-
-
-def _slide_notes_text(slide) -> str:
-    try:
-        return slide.notes_slide.notes_text_frame.text or ""
-    except Exception:
-        return ""
-
-
-def _is_yellow_placeholder_picture(shape) -> bool:
-    try:
-        if getattr(shape, "shape_type", None) != 13:
-            return False
-        with PILImage.open(BytesIO(shape.image.blob)) as img:
-            avg = img.convert("RGB").resize((1, 1)).getpixel((0, 0))
-        red, green, blue = avg
-        return red >= 230 and 150 <= green <= 215 and blue <= 80
-    except Exception:
-        return False
-
-
-def _is_optional_template_title(text: str) -> bool:
-    compact = re.sub(r"\s+", "", str(text or ""))
-    if not compact or re.fullmatch(r"\d+", compact):
-        return True
-    optional_titles = (
-        "실거래가", "네이버매물현황", "낙찰사례분석", "개발호재",
-        "관련법령", "적정입찰가", "취득세및대출", "입찰가산정표", "취득비용계산표",
-    )
-    return any(title in compact for title in optional_titles)
-
-
-def _optional_slide_has_real_content(slide) -> bool:
-    for shape in slide.shapes:
-        if getattr(shape, "has_table", False):
-            return True
-        if getattr(shape, "shape_type", None) == 13:
-            if not _is_yellow_placeholder_picture(shape):
-                return True
-            continue
-        text = _shape_text(shape)
-        if text and not _is_optional_template_title(text):
-            return True
-    return False
-
-
 def cleanup_optional_empty_slides(prs: Presentation) -> int:
     """
-    Remove optional briefing-template pages that still contain only guide text or
-    yellow placeholders. Filled pages are kept when an actual image/table/text was
-    inserted by the automation or by a planner snapshot.
-    """
-    removable_note_markers = (
-        "※ 세부목록",
-        "※ 텍스트 작성하세요",
-        "취득세 및 대출",
-        "EXCEL_RANGE:",
-        "SLIDE_KEY=OPINION_RELATED_LAW",
-    )
-    removed = 0
-    for slide in list(prs.slides):
-        notes = _slide_notes_text(slide)
-        if not any(marker in notes for marker in removable_note_markers):
-            continue
-        if _optional_slide_has_real_content(slide):
-            continue
-        _remove_slide(prs, slide)
-        removed += 1
+    Keep optional briefing-template pages even when no material was supplied.
 
-    has_investment_detail = any("※ 세부목록" in _slide_notes_text(slide) for slide in prs.slides)
-    if not has_investment_detail:
-        for slide in list(prs.slides):
-            if "SLIDE_KEY=INVESTMENT_TOC" in _slide_notes_text(slide):
-                _remove_slide(prs, slide)
-                removed += 1
-                break
-    return removed
+    This remains as a backward-compatible pipeline hook. Empty template pages and
+    their category pages are intentional output and must not be removed.
+    """
+    return 0
 
 
 # ============================================================

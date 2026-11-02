@@ -395,8 +395,9 @@ class RightsCertificateTests(unittest.TestCase):
             reloaded_text = "\n".join(_slide_text(slide) for slide in reloaded.slides)
             self.assertIn("임차인7", reloaded_text)
 
-    def test_optional_empty_briefing_pages_are_removed_but_filled_pages_remain(self):
+    def test_optional_empty_briefing_pages_and_category_are_preserved(self):
         prs = Presentation(str(BACKEND_PATH / "templates" / "sample2_configured.pptx"))
+        before_count = len(prs.slides)
         with tempfile.TemporaryDirectory() as tmp:
             image_path = Path(tmp) / "filled.png"
             Image.new("RGB", (640, 360), "blue").save(image_path)
@@ -408,10 +409,12 @@ class RightsCertificateTests(unittest.TestCase):
             (slide.notes_slide.notes_text_frame.text or "")
             for slide in prs.slides
         ]
-        self.assertGreaterEqual(removed, 8)
+        self.assertEqual(removed, 0)
+        self.assertEqual(len(prs.slides), before_count)
         self.assertTrue(any("실거래가" in _slide_text(slide) for slide in prs.slides))
-        self.assertFalse(any("네이버 매물 현황 -2" in _slide_text(slide) for slide in prs.slides))
-        self.assertFalse(any("SLIDE_KEY=OPINION_RELATED_LAW" in note for note in notes))
+        self.assertTrue(any("네이버 매물 현황 -2" in _slide_text(slide) for slide in prs.slides))
+        self.assertTrue(any("SLIDE_KEY=INVESTMENT_TOC" in note for note in notes))
+        self.assertTrue(any("SLIDE_KEY=OPINION_RELATED_LAW" in note for note in notes))
 
     def test_appraisal_sentence_cleanup_removes_entities_and_mechanical_endings(self):
         sentence = briefing_opinion._ensure_sentence(
