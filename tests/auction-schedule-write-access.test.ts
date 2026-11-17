@@ -195,6 +195,7 @@ test('일반 PUT은 숨은 메타·결과·가격을 보존하고 활동유형 �
     bidResultCancelled: false,
     bidResultCancelledAutomatically: false,
     bidResultCancelledAt: '',
+    bidProxy: false,
     timeFrom: '09:00',
   }));
 
@@ -216,6 +217,7 @@ test('일반 PUT은 숨은 메타·결과·가격을 보존하고 활동유형 �
       bidFailed: true,
       bidCancelled: true,
       bidResultCancelled: true,
+      bidProxy: true,
     },
   });
   assert.equal(sameType.status, 200, await sameType.clone().text());
@@ -235,6 +237,7 @@ test('일반 PUT은 숨은 메타·결과·가격을 보존하고 활동유형 �
   assert.equal(merged.bidFailed, false);
   assert.equal(merged.bidCancelled, false);
   assert.equal(merged.bidResultCancelled, false);
+  assert.equal(merged.bidProxy, true);
   assert.equal(merged.timeFrom, undefined);
 
   const changedType = await request('master', '/metadata-merge', 'PUT', {
@@ -261,10 +264,12 @@ test('결과가 처리된 입찰 일정은 일반 PUT을 차단하지만 DELETE�
     insertSchedule(id);
     sqlite.prepare('UPDATE freelancer_auction_schedules SET data = ? WHERE id = ?')
       .run(JSON.stringify({ ...VALID_BID_DATA, ...state }), id);
-    const response = await request('master', `/${id}`, 'PUT', {
-      data: { ...VALID_BID_DATA, propertyType: '연립주택' },
-    });
-    assert.equal(response.status, 409, `${label}: ${await response.clone().text()}`);
+    for (const actor of ['accountant', 'ceo', 'asst']) {
+      const response = await request(actor, `/${id}`, 'PUT', {
+        data: { ...VALID_BID_DATA, propertyType: '연립주택' },
+      });
+      assert.equal(response.status, 409, `${label}/${actor}: ${await response.clone().text()}`);
+    }
     const stored = JSON.parse(sqlite.prepare('SELECT data FROM freelancer_auction_schedules WHERE id = ?').pluck().get(id) as string);
     assert.equal(stored.propertyType, '아파트');
   }
@@ -274,6 +279,38 @@ test('결과가 처리된 입찰 일정은 일반 PUT을 차단하지만 DELETE�
     .run(JSON.stringify({ ...VALID_BID_DATA, bidFailed: true }));
   const remove = await request('accountant', '/delete-resolved', 'DELETE');
   assert.equal(remove.status, 200, await remove.clone().text());
+  sqlite.close();
+});
+
+test('마스터는 결과가 처리된 지난 입찰 일정의 사건번호를 정정할 수 있고 결과·대리입찰 필드는 보호된다', async () => {
+  const { sqlite, insertSchedule, request } = setup();
+  const states = [
+    ['won', { bidWon: true, bidPrice: '100000000', winPrice: '100000000' }],
+    ['failed', { bidFailed: true, bidPrice: '90000000', winPrice: '100000000' }],
+    ['withdrawn', { bidCancelled: true }],
+    ['cancelled', { bidResultCancelled: true, bidResultCancelledAutomatically: true }],
+  ] as const;
+  for (const [label, state] of states) {
+    const id = `master-resolved-${label}`;
+    insertSchedule(id, '2000-01-01');
+    const original = { ...VALID_BID_DATA, ...state, bidProxy: true, proxyAgent: '대리인' };
+    sqlite.prepare('UPDATE freelancer_auction_schedules SET data = ? WHERE id = ?')
+      .run(JSON.stringify(original), id);
+    const response = await request('master', `/${id}`, 'PUT', {
+      data: {
+        ...VALID_BID_DATA,
+        caseNo: '2099타경999',
+        bidWon: false, bidFailed: false, bidCancelled: false, bidResultCancelled: false,
+        bidPrice: '1', winPrice: '1', bidProxy: false, proxyAgent: '',
+      },
+    });
+    assert.equal(response.status, 200, `${label}: ${await response.clone().text()}`);
+    const stored = JSON.parse(sqlite.prepare('SELECT data FROM freelancer_auction_schedules WHERE id = ?').pluck().get(id) as string);
+    assert.equal(stored.caseNo, '2099타경999', label);
+    for (const [key, value] of Object.entries(state)) assert.deepEqual(stored[key], value, `${label}.${key}`);
+    assert.equal(stored.bidProxy, true, `${label}.bidProxy`);
+    assert.equal(stored.proxyAgent, '대리인', `${label}.proxyAgent`);
+  }
   sqlite.close();
 });
 

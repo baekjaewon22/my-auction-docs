@@ -16,7 +16,7 @@ import {
 } from '../../shared/refund-recovery';
 import { loadPayrollRefundRecoveries, resolveRefundRecovery } from '../lib/refund-recovery';
 import { accountingEntryInitialStatus, effectiveSalesStatus, normalizeSalesRecognition } from '../../shared/sales-recognition';
-import { confirmedSalesSql, recognizedSalesDateSql, salesPeriodSql } from '../lib/sales-recognition';
+import { confirmedSalesSql, recognizedSalesDateSql, salesMonthlyReportingPeriodSql, salesPeriodSql } from '../lib/sales-recognition';
 import { canUseRequestedSalesOwner } from '../../shared/sales-assignment';
 import {
   canCancelSalesRefundRequest,
@@ -59,6 +59,8 @@ import {
   resolvePayTypeSnapshotFromHistory,
   type PayTypeHistorySnapshot,
 } from '../lib/pay-type-history';
+import { SALES_EXPORT_ROLES } from '../../shared/sales-export';
+import { monthlySalesContribution } from '../../shared/sales-monthly-reporting';
 
 const sales = new Hono<AuthEnv>();
 sales.use('*', authMiddleware);
@@ -572,6 +574,7 @@ sales.get('/', async (c) => {
   `;
   const conditions: string[] = [];
   const params: any[] = [];
+  let reportingPeriod: { from: string; to: string } | null = null;
   conditions.push(excludeCaseAllowanceSalesSql('sr'));
 
   const salesScope = await resolveSalesRecordSqlScope(db, user);
@@ -602,8 +605,9 @@ sales.get('/', async (c) => {
     } else {
       // 확정매출은 실제 인식일(카드=정산일, 그 외=입금일),
       // 비확정 건은 기존 계약일 기준으로 조회한다.
-      conditions.push(salesPeriodSql('sr'));
+      conditions.push(salesMonthlyReportingPeriodSql('sr'));
       params.push(mStart, mEnd, mStart, mEnd);
+      reportingPeriod = { from: mStart, to: mEnd };
     }
   }
 
@@ -623,7 +627,60 @@ sales.get('/', async (c) => {
         record.type_detail = winningAuctionDetail({ auctionKind: 'public', caseNumber: source.caseNo || winning_case_number, propertyType: source.propertyType || winning_property_type });
       }
     }
-    return normalizeSalesRecognition(record);
+    const normalized = normalizeSalesRecognition(record);
+    return reportingPeriod ? { ...normalized, ...monthlySalesContribution(normalized, reportingPeriod.from, reportingPeriod.to) } : normalized;
+  }) });
+});
+
+// GET /api/sales/export — 월별 업무성과 엑셀 원본 (마스터·총무 전용)
+sales.get('/export', requireRole(...SALES_EXPORT_ROLES), async (c) => {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const month = String(c.req.query('month') || '');
+  const monthEnd = String(c.req.query('month_end') || month);
+  const filterUserId = String(c.req.query('user_id') || '');
+
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(monthEnd)) {
+    return c.json({ error: '조회 월 형식이 올바르지 않습니다.' }, 400);
+  }
+  if (monthEnd < month) return c.json({ error: '종료월은 시작월보다 빠를 수 없습니다.' }, 400);
+
+  const [endYear, endMonthNumber] = monthEnd.split('-').map(Number);
+  const monthStartDate = `${month}-01`;
+  const monthEndDate = `${monthEnd}-${String(new Date(endYear, endMonthNumber, 0).getDate()).padStart(2, '0')}`;
+  // 업무성과 엑셀은 매출만 내보낸다. 지출(대리입찰 비용 등)은 회계장부에서 관리한다.
+  const conditions = [
+    excludeCaseAllowanceSalesSql('sr'),
+    salesMonthlyReportingPeriodSql('sr'),
+    `COALESCE(NULLIF(sr.direction, ''), 'income') != 'expense'`,
+  ];
+  const params: any[] = [monthStartDate, monthEndDate, monthStartDate, monthEndDate];
+  const salesScope = await resolveSalesRecordSqlScope(db, user);
+  if (salesScope.sql) {
+    conditions.push(salesScope.sql);
+    params.push(...salesScope.params);
+  }
+  if (filterUserId) {
+    conditions.push('sr.user_id = ?');
+    params.push(filterUserId);
+  }
+
+  const result = await db.prepare(`
+    SELECT sr.id, sr.user_id, u.name AS user_name, sr.type, sr.type_detail,
+      sr.client_name, sr.depositor_name, sr.client_phone,
+      sr.amount, sr.contract_date, sr.payment_type, sr.deposit_date,
+      sr.card_deposit_date, sr.status, sr.direction, sr.branch, sr.attribution_branch,
+      sr.refund_amount, sr.refund_approved_at,
+      sr.contract_submitted, sr.contract_not_submitted, sr.contract_not_approved
+    FROM sales_records sr
+    JOIN users u ON u.id = sr.user_id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY sr.contract_date DESC, sr.created_at DESC
+  `).bind(...params).all();
+
+  return c.json({ records: (result.results || []).map((row: any) => {
+    const normalized = normalizeSalesRecognition(row);
+    return { ...normalized, ...monthlySalesContribution(normalized, monthStartDate, monthEndDate) };
   }) });
 });
 

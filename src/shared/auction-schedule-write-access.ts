@@ -23,6 +23,14 @@ export function canManageAuctionSchedule(
   return !!actor && (AUCTION_SCHEDULE_MUTATION_ROLES as readonly string[]).includes(String(actor.role || ''));
 }
 
+// 입찰 결과(낙찰·실패·취하·취소)가 처리된 지난 입찰 일정은 원칙적으로 일반정보 수정이 잠긴다.
+// 마스터만 예외로 사건번호 등 일반정보를 정정할 수 있다(결과·입찰가·대리입찰 필드는 계속 보호).
+export function canEditResolvedAuctionBid(
+  actor: AuctionScheduleMutationActor | null | undefined,
+): boolean {
+  return !!actor && String(actor.role || '') === 'master';
+}
+
 export function canCreateAuctionSchedule(
   actor: (AuctionScheduleMutationActor & { login_type?: string | null }) | null | undefined,
 ): boolean {

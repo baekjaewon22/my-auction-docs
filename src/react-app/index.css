@@ -8405,6 +8405,18 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding: 12px 14px;
   border: 1px solid #bfdbfe; border-radius: var(--radius); background: #eff6ff; color: #1e3a8a; font-size: .86rem;
 }
+.developer-sync-panel {
+  display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)) minmax(250px, auto) auto;
+  align-items: center; gap: 10px; margin-bottom: 16px; padding: 12px;
+  border: 1px solid var(--gray-200); border-radius: var(--radius); background: #fff;
+}
+.developer-sync-stat { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 2px 8px; min-width: 0; }
+.developer-sync-stat svg { grid-row: 1 / 3; color: var(--primary); }
+.developer-sync-stat span { color: var(--gray-500); font-size: .7rem; }
+.developer-sync-stat strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; }
+.developer-sync-retention { display: flex; align-items: center; gap: 6px; font-size: .78rem; }
+.developer-sync-retention input { width: 76px; padding: 7px 8px; border: 1px solid var(--gray-300); border-radius: 7px; text-align: right; }
+.developer-sync-command { white-space: nowrap; }
 .developer-log-layout {
   display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); min-height: 620px;
   border: 1px solid var(--gray-200); border-radius: var(--radius); overflow: hidden; background: #fff;
@@ -8433,6 +8445,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .developer-transcript-header div { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .developer-transcript-header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .developer-transcript-header > span { flex: 0 0 auto; color: var(--gray-500); font-size: .75rem; }
+.developer-transcript-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.developer-transcript-actions > span { color: var(--gray-500); font-size: .75rem; }
 .developer-message-list { max-height: 650px; overflow-y: auto; padding: 20px; }
 .developer-message { max-width: 88%; margin-bottom: 18px; padding: 13px 15px; border-radius: 12px; }
 .developer-message.user { margin-left: auto; background: #e0ecff; }
@@ -8443,6 +8457,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .developer-log-empty { display: flex; min-height: 220px; align-items: center; justify-content: center; gap: 10px; padding: 24px; color: var(--gray-500); text-align: center; }
 
 @media (max-width: 900px) {
+  .developer-sync-panel { grid-template-columns: 1fr 1fr; }
+  .developer-sync-retention, .developer-sync-command { grid-column: 1 / -1; }
   .developer-log-layout { grid-template-columns: 1fr; }
   .developer-log-sidebar { border-right: 0; border-bottom: 1px solid var(--gray-200); }
   .developer-log-list { max-height: 230px; }
@@ -8452,10 +8468,12 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 :root[data-theme='dark'] .developer-security-notice { border-color: #1e40af; background: #172554; color: #bfdbfe; }
 :root[data-theme='dark'] .developer-log-layout,
+:root[data-theme='dark'] .developer-sync-panel,
 :root[data-theme='dark'] .developer-transcript,
 :root[data-theme='dark'] .developer-transcript-header { background: #111827; border-color: #334155; }
 :root[data-theme='dark'] .developer-log-sidebar { background: #0f172a; border-color: #334155; }
 :root[data-theme='dark'] .developer-log-search { background: #111827; border-color: #475569; }
+:root[data-theme='dark'] .developer-sync-retention input { background: #0f172a; border-color: #475569; color: #e5e7eb; }
 :root[data-theme='dark'] .developer-log-search input,
 :root[data-theme='dark'] .developer-log-item,
 :root[data-theme='dark'] .developer-message pre { color: #e5e7eb; }
@@ -9548,6 +9566,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--gray-500);
+  background: transparent;
+  font-family: inherit;
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -14672,6 +14692,49 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .diagnosis-floating-toggle:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 3px;
+}
+
+/* 급여정산 전용 프리랜서 원천세 조정 계산기 */
+.payroll-withholding-calculator-toggle {
+  position: fixed;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 19px;
+  z-index: 90;
+  box-shadow: 0 0 0 1px rgba(15,23,42,.04),0 4px 14px rgba(15,23,42,.08),0 14px 28px rgba(15,23,42,.04);
+  transition: transform .2s ease, box-shadow .2s ease, background .2s ease;
+}
+.payroll-withholding-calculator-toggle:hover { background: #e8f0fe; transform: translateY(-50%) translateX(-3px); box-shadow: 0 4px 16px rgba(26,115,232,.22); }
+.payroll-withholding-calculator-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.payroll-calculator-backdrop { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(15,23,42,.58); backdrop-filter: blur(3px); }
+.payroll-calculator-dialog { width: min(1040px,100%); height: min(880px,calc(100vh - 48px)); background: #fff; border-radius: 18px; overflow: hidden; box-shadow: 0 24px 70px rgba(15,23,42,.3); display: flex; flex-direction: column; }
+.payroll-calculator-dialog-header { height: 52px; flex: 0 0 52px; padding: 0 12px 0 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e5e7eb; color: #172033; }
+.payroll-calculator-window-actions { display: flex; align-items: center; gap: 6px; }
+.payroll-calculator-dialog-header button { width: 34px; height: 34px; border: 0; border-radius: 50%; background: #f3f4f6; color: #475467; font-size: 20px; line-height: 1; cursor: pointer; }
+.payroll-calculator-dialog-header button:hover { background: #e8f0fe; color: #174ea6; }
+.payroll-calculator-dialog iframe { width: 100%; min-height: 0; flex: 1; border: 0; background: #f3f6fb; }
+.payroll-calculator-backdrop.minimized { inset: auto 18px 18px auto; padding: 0; background: transparent; backdrop-filter: none; pointer-events: none; }
+.payroll-calculator-dialog.minimized { width: min(360px,calc(100vw - 36px)); height: 52px; border-radius: 14px; pointer-events: auto; box-shadow: 0 10px 30px rgba(15,23,42,.24); }
+.payroll-calculator-dialog.minimized .payroll-calculator-dialog-header { border-bottom: 0; cursor: default; }
+.payroll-calculator-dialog.minimized iframe { display: none; }
+@media (max-width: 768px) {
+  .payroll-withholding-calculator-toggle { right: 12px; top: auto; bottom: 74px; transform: none; }
+  .payroll-withholding-calculator-toggle:hover { transform: translateY(-2px); }
+  .payroll-calculator-backdrop { padding: 0; }
+  .payroll-calculator-dialog { width: 100%; height: 100%; max-height: none; border-radius: 0; }
+  .payroll-calculator-backdrop.minimized { right: 12px; bottom: 72px; }
+  .payroll-calculator-dialog.minimized { width: min(340px,calc(100vw - 24px)); height: 52px; border-radius: 14px; }
 }
 
 /* 좁은 데스크톱: 사이즈 약간 축소 */
@@ -23216,4 +23279,74 @@ html[data-theme='dark'] .lawitgo-current-summary {
   -webkit-text-fill-color: #ffe09a !important;
   font-style: normal;
   font-weight: 800;
+}
+
+.sales-vat-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 9px 5px 11px;
+  border: 1px solid #d2d8e2;
+  border-radius: 18px;
+  background: #fff;
+  color: #5f6368;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.sales-vat-view-toggle i {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: #c7cdd5;
+  transition: background 0.18s ease;
+}
+
+.sales-vat-view-toggle i::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 24%);
+  transition: transform 0.18s ease;
+}
+
+.sales-vat-view-toggle.active {
+  border-color: #81c995;
+  background: #e6f4ea;
+  color: #137333;
+}
+
+.sales-vat-view-toggle.active i {
+  background: #188038;
+}
+
+.sales-vat-view-toggle.active i::after {
+  transform: translateX(16px);
+}
+
+.sales-vat-view-toggle:focus-visible {
+  outline: 3px solid rgb(26 115 232 / 25%);
+  outline-offset: 2px;
+}
+
+:root[data-theme='dark'] .sales-vat-view-toggle {
+  border-color: #52677c;
+  background: #182b3f;
+  color: #d7e2ec;
+}
+
+:root[data-theme='dark'] .sales-vat-view-toggle.active {
+  border-color: #6fc48b;
+  background: #173b2a;
+  color: #9ce6b4;
 }

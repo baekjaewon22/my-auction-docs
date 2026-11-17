@@ -149,9 +149,9 @@ export default function AuctionBidResultEditor({
         const wonMessage = saved.phone_required
           ? '낙찰 업무성과가 입금대기로 등록되었습니다. 고객 전화번호가 비어 있습니다. 대시보드의 고객 전화번호 등록 알림에서 반드시 보완해 주세요.'
           : '낙찰 처리와 업무성과 입금대기 등록이 완료되었습니다.';
-        alert(wonMessage + (saved.proxy_sales_record_id ? '\n매수신청대리 업무성과도 기본금액 90,000원으로 등록되었습니다.' : ''));
+        alert(wonMessage + (saved.proxy_sales_record_id ? '\n대리입찰 비용 90,000원이 회사 지출로 등록되었습니다.' : ''));
       } else if (saved.proxy_sales_record_id) {
-        alert('매수신청대리 업무성과가 기본금액 90,000원으로 등록되었습니다.');
+        alert('대리입찰 비용 90,000원이 회사 지출로 등록되었습니다.');
       }
       await onSaved(saved);
     } catch (error: unknown) {

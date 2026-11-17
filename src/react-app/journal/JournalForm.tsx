@@ -10,6 +10,7 @@ import { Plus, X, Trash2 } from 'lucide-react';
 import { parseAuctionCaseNumber } from '../../shared/auction-schedule';
 import { getRequiredInspectionBidDateError, isValidAuctionScheduleDate } from '../../shared/auction-schedule-write-access';
 import { auctionScheduleEditBaseData } from './auction-schedule-form';
+import { formatAuctionPrice } from '../lib/auctionScheduleDetailCopy';
 
 const TIME_OPTS = toOptions(generateTimeOptions());
 const YEAR_OPTS = generateYears().map((y) => ({ value: String(y), label: String(y) }));
@@ -140,9 +141,10 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
   );
   const [bidBidder, setBidBidder] = useState(initialClient);
   const [bidCourt, setBidCourt] = useState(stringValue(initialData, 'court'));
-  const [bidSuggestedPrice, setBidSuggestedPrice] = useState(stringValue(initialData, 'suggestedPrice'));
-  const [bidPrice, setBidPrice] = useState(stringValue(initialData, 'bidPrice'));
-  const [bidWinPrice, setBidWinPrice] = useState(stringValue(initialData, 'winPrice'));
+  // 기존 값이 숫자만 저장돼 있어도 수정 화면을 열 때 바로 콤마 형식으로 보이게 한다.
+  const [bidSuggestedPrice, setBidSuggestedPrice] = useState(formatAuctionPrice(stringValue(initialData, 'suggestedPrice')));
+  const [bidPrice, setBidPrice] = useState(formatAuctionPrice(stringValue(initialData, 'bidPrice')));
+  const [bidWinPrice, setBidWinPrice] = useState(formatAuctionPrice(stringValue(initialData, 'winPrice')));
   const [bidWon, setBidWon] = useState(!!initialData.bidWon);
   const [bidProxy, setBidProxy] = useState(!!initialData.bidProxy); // 대리입찰
   const [bidCancelled, setBidCancelled] = useState(!!initialData.bidCancelled); // 취하/변경 — 작성입찰가/낙찰가 미작성 허용
@@ -772,9 +774,16 @@ export default function JournalForm({ targetDate, onCreated, onClose, assignable
                       <input type="checkbox" checked={bidWon} onChange={(e) => { setBidWon(e.target.checked); if (e.target.checked) setBidWinPrice(''); }} />낙찰
                     </label>
                   )}
-                  <label className={`field-check-label ${bidProxy ? 'checked' : ''}`} style={{ display: 'inline-flex' }}>
-                    <input type="checkbox" checked={bidProxy} onChange={(e) => setBidProxy(e.target.checked)} />대리입찰
-                  </label>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={bidProxy}
+                    className={`field-check-label ${bidProxy ? 'checked' : ''}`}
+                    style={{ display: 'inline-flex' }}
+                    onClick={() => setBidProxy(current => !current)}
+                  >
+                    대리입찰
+                  </button>
                   {!editingSchedule && (
                     <label className={`field-check-label ${bidCancelled ? 'checked' : ''}`} style={{ display: 'inline-flex', fontSize: '0.78rem', padding: '4px 8px' }}>
                       <input type="checkbox" checked={bidCancelled} onChange={(e) => setBidCancelled(e.target.checked)} />취하/변경

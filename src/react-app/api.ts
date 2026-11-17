@@ -95,6 +95,15 @@ export interface CodexConversationDetail extends CodexConversationSummary {
   }>;
 }
 
+export interface CodexSyncStatus {
+  conversation_count: number;
+  latest_sync_at: string | null;
+  latest_message_at: string | null;
+  active_token_count: number;
+  latest_token_use_at: string | null;
+  retention_days: number;
+}
+
 export interface LawitgoProgressItem {
   id: string;
   title: string;
@@ -446,6 +455,15 @@ export const api = {
     ),
     codexConversation: (id: string) => request<{ conversation: CodexConversationDetail }>(
       '/developer-settings/codex-conversations/' + encodeURIComponent(id),
+    ),
+    deleteCodexConversation: (id: string) => request<{ success: boolean }>(
+      '/developer-settings/codex-conversations/' + encodeURIComponent(id),
+      { method: 'DELETE' },
+    ),
+    codexSyncStatus: () => request<CodexSyncStatus>('/developer-settings/codex-sync-status'),
+    updateCodexSyncSettings: (retentionDays: number) => request<{ success: boolean; retention_days: number }>(
+      '/developer-settings/codex-sync-settings',
+      { method: 'PUT', body: JSON.stringify({ retention_days: retentionDays }) },
     ),
   },
 
@@ -1151,6 +1169,12 @@ export const api = {
       if (params?.date_mode) q.set('date_mode', params.date_mode);
       const qs = q.toString();
       return request<{ records: import('./types').SalesRecord[] }>('/sales' + (qs ? '?' + qs : ''));
+    },
+    exportRows: (params: { month: string; month_end?: string; user_id?: string }) => {
+      const q = new URLSearchParams({ month: params.month });
+      if (params.month_end) q.set('month_end', params.month_end);
+      if (params.user_id) q.set('user_id', params.user_id);
+      return request<{ records: import('./types').SalesRecord[] }>('/sales/export?' + q.toString());
     },
     ranking: (period_start: string, period_end: string) =>
       request<{ ranking: Array<{ user_id: string; user_name: string; eff_branch: string; position: string; count: number; total_amount: number; rank?: number }> }>(

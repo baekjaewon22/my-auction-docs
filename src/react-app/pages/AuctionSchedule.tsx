@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
 import { Calendar, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Pencil, Plus, Trash2, Trophy, X } from 'lucide-react';
 import DatePicker, { registerLocale } from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
@@ -13,7 +13,8 @@ import AuctionBidResultEditor from '../components/AuctionBidResultEditor';
 import { useSearchParams } from 'react-router-dom';
 import { AUCTION_SCHEDULE_BRANCH_OPTIONS, canSelectAuctionScheduleBranch, defaultAuctionScheduleBranch } from '../../shared/auction-schedule-branch';
 import { canManageAuctionBidResult } from '../../shared/auction-bid-result-access';
-import { auctionScheduleKstDateKey, canCreateAuctionSchedule, canEditAuctionScheduleEntry, canManageAuctionSchedule } from '../../shared/auction-schedule-write-access';
+import { buildAuctionDetailCopy, formatAuctionDetailValue } from '../lib/auctionScheduleDetailCopy';
+import { auctionScheduleKstDateKey, canCreateAuctionSchedule, canEditAuctionScheduleEntry, canEditResolvedAuctionBid, canManageAuctionSchedule } from '../../shared/auction-schedule-write-access';
 
 registerLocale('ko-auction-schedule', ko);
 
@@ -274,11 +275,29 @@ export default function AuctionSchedule() {
       { user_id: selected.user_id, target_date: selected.target_date },
     ),
   );
+  // 결과가 처리된 입찰 일정은 일반정보 수정이 잠긴다. 마스터만 사건번호 등 정정을 위해 예외 허용.
   const editLockedByBidResult = Boolean(
-    selected?.activity_type === '입찰' && selectedBidResult !== 'pending',
+    selected?.activity_type === '입찰' && selectedBidResult !== 'pending'
+    && !canEditResolvedAuctionBid({ role: user?.role }),
   );
   const canEditSelected = canEditBase && !editLockedByBidResult;
   const canDeleteSelected = canManageSelected; // 삭제는 관리자급만 (과거·미래 무관)
+
+  // 상세 항목을 여러 줄 드래그해 복사하면 "라벨<TAB>값" 한 줄씩 줄맞춤해 클립보드에 넣는다.
+  const handleDetailCopy = (event: ClipboardEvent<HTMLDivElement>) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    const rows = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('.auction-schedule-detail-row'))
+      .filter(row => selection.containsNode(row, true));
+    if (rows.length < 2) return; // 한 칸 안의 일부만 복사할 때는 기본 동작 유지
+    const copy = buildAuctionDetailCopy(rows.map(row => [
+      row.querySelector('span')?.textContent || '',
+      row.querySelector('strong')?.textContent || '',
+    ]));
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', copy.text);
+    event.clipboardData.setData('text/html', copy.html);
+  };
 
   const handleCalendarSelect = (date: Date | null) => {
     if (!date) return;
@@ -444,7 +463,7 @@ export default function AuctionSchedule() {
               <div><h3>{selected.user_name}{schedulePosition(selected) ? ` · ${schedulePosition(selected)}` : ''} · {selected.activity_type}</h3><span>{selected.target_date}</span></div>
               <button className="btn-close" onClick={() => setSelected(null)}><X size={18} /></button>
             </div>
-            <div className="auction-schedule-detail-grid">
+            <div className="auction-schedule-detail-grid" onCopy={handleDetailCopy}>
               {selected.read_only ? <div className="auction-schedule-detail-row"><span>기록 출처</span><strong>정규직 시절 컨설턴트 일지</strong></div> : null}
               {selected.activity_type === '입찰' && selectedBidResult === 'won' ? <div className="auction-schedule-detail-row"><span>입찰 결과</span><strong style={{ color: '#188038' }}>낙찰</strong></div> : null}
               {selected.activity_type === '입찰' && selectedBidResult === 'failed' ? <div className="auction-schedule-detail-row"><span>입찰 결과</span><strong style={{ color: '#d93025' }}>실패</strong></div> : null}
@@ -455,7 +474,7 @@ export default function AuctionSchedule() {
                 const value = selectedData[key];
                 if (value === undefined || value === null || value === '' || typeof value === 'boolean') return null;
                 const resolvedLabel = key === 'caseNo' && selectedData.auctionKind === 'public' ? '물건번호' : label;
-                return <div className="auction-schedule-detail-row" key={key}><span>{resolvedLabel}</span><strong>{String(value)}</strong></div>;
+                return <div className="auction-schedule-detail-row" key={key}><span>{resolvedLabel}</span><strong>{formatAuctionDetailValue(key, value)}</strong></div>;
               })}
             </div>
             {canEditBase && editLockedByBidResult && (

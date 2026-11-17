@@ -66,6 +66,7 @@ test('경매스케줄 편집은 기존 필드를 채우고 일반 update API 흐
   assert.match(form, /disabled=\{editingSchedule\}[\s\S]*?onClick=\{\(\) => setActivityType\(t\)\}/);
   assert.match(form, /\{!editingSchedule && \([\s\S]*?제시입찰가[\s\S]*?작성입찰가/);
   assert.match(form, /입찰가와 낙찰·실패·취소·취하\/변경 결과는 일정 상세의 전용 버튼/);
+  assert.match(form, /role="switch"[\s\S]*?aria-checked=\{bidProxy\}[\s\S]*?onClick=\{\(\) => setBidProxy\(current => !current\)\}/);
   assert.match(css, /\.activity-tab:disabled[\s\S]*?cursor:\s*not-allowed/);
 });
 

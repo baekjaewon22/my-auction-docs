@@ -55,3 +55,8 @@ export function normalizeSalesRecognition<T extends SalesRecognitionRecord>(reco
 export function accountingEntryInitialStatus(direction: string, paymentType: string): 'confirmed' | 'card_pending' {
   return direction !== 'expense' && paymentType === '카드' ? 'card_pending' : 'confirmed';
 }
+
+/** 매출(수입) 레코드인지 여부. direction='expense'(회계장부 지출·경매스케줄 대리입찰 비용 등)는 업무성과 매출이 아니다. */
+export function isSalesIncomeRecord(record: { direction?: string | null }): boolean {
+  return String(record.direction || 'income') !== 'expense';
+}

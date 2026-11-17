@@ -157,12 +157,12 @@ test('일반 director는 본인 지사 aliases와 본인 매출만 사용한다'
   assert.equal(scope.visibleBranches.includes('대전지사'), false);
 });
 
-test('일반 목록과 미작성 목록은 같은 서버 범위 resolver를 사용하고 director UI에 대전 선택을 노출하지 않는다', () => {
+test('일반 목록·엑셀 출력·미작성 목록은 같은 서버 범위 resolver를 사용하고 director UI에 대전 선택을 노출하지 않는다', () => {
   const route = readFileSync(new URL('../src/worker/routes/sales.ts', import.meta.url), 'utf8');
   const dashboard = readFileSync(new URL('../src/react-app/pages/Dashboard.tsx', import.meta.url), 'utf8');
   const salesPage = readFileSync(new URL('../src/react-app/pages/Sales.tsx', import.meta.url), 'utf8');
 
-  assert.equal((route.match(/resolveSalesRecordSqlScope\(db, user\)/g) || []).length, 2);
+  assert.equal((route.match(/resolveSalesRecordSqlScope\(db, user\)/g) || []).length, 3);
   assert.match(dashboard, /salesMissingAlertScopeTitle\(user \|\| \{\}\)/);
   const directorFilterStart = salesPage.indexOf('{/* 총괄이사: 본인 관할 지사 + 본인 매출 */}');
   const directorFilterEnd = salesPage.indexOf('{/* 담당자 필터:', directorFilterStart);

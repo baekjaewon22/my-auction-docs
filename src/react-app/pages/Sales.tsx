@@ -8,7 +8,7 @@ import type { SalesRecord, DepositNotice } from '../types';
 import { useBranches } from '../hooks/useBranches';
 import Select from '../components/Select';
 import {
-  DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity, ChevronDown, ChevronUp, Trash2
+  DollarSign, Plus, CheckCircle, RotateCcw, Clock, X, Upload, Activity, ChevronDown, ChevronUp, Trash2, Download
 } from 'lucide-react';
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { JournalEntry } from '../journal/types';
@@ -18,7 +18,7 @@ import {
   contractRankingPeriods,
 } from '../lib/contractAwardUi';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
-import { normalizeSalesRecognition } from '../../shared/sales-recognition';
+import { isSalesIncomeRecord, normalizeSalesRecognition } from '../../shared/sales-recognition';
 import { canAssignSalesToAnotherUser } from '../../shared/sales-assignment';
 import { dashboardFocusKey, shouldPrepareDashboardFocus } from '../../shared/dashboard-focus';
 import { salesDirectorManagedBranch } from '../../shared/sales-record-scope';
@@ -34,6 +34,9 @@ import {
   SALES_DOCUMENT_FILTER_OPTIONS,
   type SalesDocumentFilter,
 } from '../../shared/sales-document-filter';
+import { canExportMonthlySales, salesExportActionLabel } from '../../shared/sales-export';
+import { canUseSalesVatView, salesDisplayAmount } from '../../shared/sales-vat-view';
+import { recognizedSalesContribution } from '../../shared/sales-recognized-amount';
 
 const TYPE_OPTIONS = [
   { value: '계약', label: '계약' },
@@ -313,12 +316,38 @@ function contractCustomerKey(r: SalesRecord): string {
 function calculateContractCount(rows: SalesRecord[]): number {
   const grouped = new Map<string, number>();
   rows
-    .filter(r => r.type === '계약' && r.status === 'confirmed' && !r.exclude_from_count)
+    .filter(r => r.type === '계약'
+      && (r.period_sale_status || r.status) === 'confirmed'
+      && (r.period_sale_amount ?? r.amount) > 0
+      && !r.exclude_from_count)
     .forEach(r => {
       const key = contractCustomerKey(r);
       grouped.set(key, (grouped.get(key) || 0) + (r.amount || 0));
     });
   return [...grouped.values()].reduce((sum, amount) => sum + (amount >= 2200000 ? 2 : 1), 0);
+}
+
+function reportingAmount(record: SalesRecord): number {
+  return Number(record.period_net_amount ?? record.amount) || 0;
+}
+
+function reportingDate(record: SalesRecord): string {
+  return record.period_display_date || record.contract_date;
+}
+
+function reportingType(record: SalesRecord): string {
+  if (record.period_entry_kind === 'refund') return `환불 · ${record.type}`;
+  if (record.period_entry_kind === 'net') return `당월환불 · ${record.type}`;
+  return record.type;
+}
+
+function reportingStatus(record: SalesRecord): { label: string; color: string; bg: string } {
+  if (record.period_entry_kind === 'refund') return { label: '환불차감', color: '#d93025', bg: '#fce8e6' };
+  if (record.period_entry_kind === 'net') return { label: '당월 환불차감', color: '#e65100', bg: '#fff3e0' };
+  if (record.period_entry_kind === 'sale' && ['refunded', 'refund_requested'].includes(record.status)) {
+    return STATUS_LABELS.confirmed;
+  }
+  return STATUS_LABELS[record.status] || { label: record.status, color: '#5f6368', bg: '#f1f3f4' };
 }
 
 function isMissingAction(r: SalesRecord): boolean {
@@ -387,6 +416,8 @@ export default function Sales() {
   }, [currentUser?.id, dashboardFocusType, dashboardFocusId]);
   const [filterMonth, setFilterMonth] = useState(() => searchParams.get('month') || new Date().toISOString().slice(0, 7));
   const [filterMonthEnd, setFilterMonthEnd] = useState('');
+  const [exportingExcel, setExportingExcel] = useState(false);
+  const [excludeVatView, setExcludeVatView] = useState(false);
 
   // 입금확인 시 입금일자
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
@@ -566,6 +597,10 @@ export default function Sales() {
   const canDepositUpload = ['master', 'accountant', 'accountant_asst'].includes(role); // 입금등록/엑셀업로드 (총무 전용)
   const canDeleteAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 삭제/유형변경 (총무보조 로그 강제)
   const canViewAuditLog = role === 'master' || role === 'accountant'; // 활동 로그 조회 (총무보조 제외)
+  const canExportSalesExcel = canExportMonthlySales(role);
+  const canUseVatView = canUseSalesVatView(role);
+  const displaySalesAmount = (amount: number) => salesDisplayAmount(amount, canUseVatView && excludeVatView);
+  const summarySalesAmount = (record: SalesRecord, amount: number) => recognizedSalesContribution(record, amount, canUseVatView && excludeVatView);
   // const canViewAccounting = ['master', 'ceo', 'cc_ref', 'admin', 'accountant', 'accountant_asst'].includes(role); // 열람 (현재 미사용)
   const isDirector = role === 'director';
   const directorManagedBranch = salesDirectorManagedBranch(currentUser || {});
@@ -636,7 +671,8 @@ export default function Sales() {
     setLoadError('');
     try {
       const salesRes = await api.sales.list({ month: filterMonth, month_end: filterMonthEnd || undefined, user_id: filterUser || undefined });
-      setRecords(salesRes.records.map(normalizeSalesRecognition) as SalesRecord[]);
+      // 지출(direction='expense', 예: 경매스케줄 대리입찰 비용)은 매출이 아니므로 업무성과에서 제외한다. 회계장부 지출에서 관리.
+      setRecords(salesRes.records.filter(isSalesIncomeRecord).map(normalizeSalesRecognition) as SalesRecord[]);
       // 총무급이면 총무메모 맵 로드 (row hover 팝업용)
       if (isAccountant || isMaster) {
         try {
@@ -940,7 +976,7 @@ export default function Sales() {
         api.sales.list({ user_id: userId || undefined }),
       ]);
       setActivityEntries(jRes.entries);
-      setAllRecords(sRes.records.map(normalizeSalesRecognition) as SalesRecord[]);
+      setAllRecords(sRes.records.filter(isSalesIncomeRecord).map(normalizeSalesRecognition) as SalesRecord[]);
       setSelectedClient(null);
       setActivityPage(0);
     } catch { setActivityEntries([]); setAllRecords([]); }
@@ -1021,14 +1057,82 @@ export default function Sales() {
 
   // 상단 계약건수는 매출월 SELECT 기준, 하단 계약 랭킹은 선택된 랭킹 기간 기준으로 표시한다.
   const contractCount = calculateContractCount(branchRecords);
-  // 확정매출/카드대기/입금신청: 공급가액 기준 (÷1.1)
-  const toSupply = (amount: number) => Math.round(amount / 1.1);
-  const confirmedTotal = branchRecords.filter(r => r.status === 'confirmed').reduce((sum, r) => sum + toSupply(r.amount), 0);
-  const cardPendingTotal = branchRecords.filter(r => r.status === 'card_pending').reduce((sum, r) => sum + toSupply(r.amount), 0);
-  const pendingTotal = branchRecords.filter(r => r.status === 'pending').reduce((sum, r) => sum + toSupply(r.amount), 0);
+  // 기본은 부가세 포함 원금, VAT 제외 열람 토글을 켠 경우에만 화면에서 ÷1.1 한다.
+  const confirmedTotal = branchRecords.reduce((sum, r) => sum + summarySalesAmount(r, r.period_confirmed_amount ?? (r.status === 'confirmed' ? r.amount : 0)), 0);
+  const cardPendingTotal = branchRecords.reduce((sum, r) => sum + summarySalesAmount(r, r.period_card_pending_amount ?? (r.status === 'card_pending' ? r.amount : 0)), 0);
+  const pendingTotal = branchRecords.reduce((sum, r) => sum + summarySalesAmount(r, r.period_pending_amount ?? (r.status === 'pending' ? r.amount : 0)), 0);
   const summaryPeriodLabel = filterMonthEnd && filterMonthEnd !== filterMonth
     ? `${Number(filterMonth.slice(5, 7))}~${Number(filterMonthEnd.slice(5, 7))}월`
     : `${Number(filterMonth.slice(5, 7))}월`;
+
+  const handleExportExcel = async () => {
+    if (!canExportSalesExcel || exportingExcel) return;
+    setExportingExcel(true);
+    try {
+      const response = await api.sales.exportRows({
+        month: filterMonth,
+        month_end: filterMonthEnd || undefined,
+        user_id: filterUser || undefined,
+      });
+      let exportRecords = response.records || [];
+      if (filterBranch) exportRecords = exportRecords.filter(r => sameBranchName(r.attribution_branch || r.branch, filterBranch));
+      if (filterType) exportRecords = exportRecords.filter(r => r.type === filterType);
+      if (filterStatus === 'confirm_waiting') exportRecords = exportRecords.filter(r => CONFIRM_WAITING_STATUSES.includes(r.status));
+      else if (filterStatus === 'missing_action') exportRecords = exportRecords.filter(isMissingAction);
+      else if (filterStatus) exportRecords = exportRecords.filter(r => r.status === filterStatus);
+      if (filterDocumentStatus) exportRecords = exportRecords.filter(r => matchesSalesDocumentFilter(r, filterDocumentStatus));
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase();
+        const queryDigits = query.replace(/\D/g, '');
+        exportRecords = exportRecords.filter(r =>
+          (r.client_name || '').toLowerCase().includes(query)
+          || (r.user_name || '').toLowerCase().includes(query)
+          || (r.depositor_name || '').toLowerCase().includes(query)
+          || (!!queryDigits && (r.client_phone || '').replace(/\D/g, '').includes(queryDigits))
+        );
+      }
+      exportRecords.sort((a: any, b: any) => {
+        const av = a[sortKey] ?? '';
+        const bv = b[sortKey] ?? '';
+        const comparison = typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv));
+        return sortDir === 'asc' ? comparison : -comparison;
+      });
+      if (exportRecords.length === 0) {
+        alert('현재 조건에 해당하는 매출 내역이 없습니다.');
+        return;
+      }
+
+      const XLSX = await import('xlsx');
+      const sheet = XLSX.utils.aoa_to_sheet([
+        ['일자', '담당자', '유형', '금액', '결제방식', '결제일', '상태', '액션'],
+        ...exportRecords.map(record => [
+          reportingDate(record),
+          record.user_name || '',
+          record.type_detail ? `${reportingType(record)} (${record.type_detail})` : reportingType(record),
+          reportingAmount(record),
+          record.payment_type || '미입력',
+          record.deposit_date || '',
+          reportingStatus(record).label,
+          record.period_entry_kind === 'refund' ? '환불 차감 반영' : salesExportActionLabel(record.status, record.payment_type),
+        ]),
+      ]);
+      sheet['!cols'] = [
+        { wch: 12 }, { wch: 12 }, { wch: 24 }, { wch: 16 },
+        { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 20 },
+      ];
+      for (let row = 2; row <= exportRecords.length + 1; row += 1) {
+        if (sheet[`D${row}`]) sheet[`D${row}`].z = '#,##0';
+      }
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, sheet, '월별 매출 내역');
+      const period = filterMonthEnd && filterMonthEnd !== filterMonth ? `${filterMonth}_${filterMonthEnd}` : filterMonth;
+      XLSX.writeFile(workbook, `업무성과_매출내역_${period}.xlsx`);
+    } catch (error: any) {
+      alert(error?.message || '엑셀 파일을 만들지 못했습니다.');
+    } finally {
+      setExportingExcel(false);
+    }
+  };
 
   if (loading) return <div className="page-loading">로딩중...</div>;
 
@@ -1036,7 +1140,23 @@ export default function Sales() {
     <div className="page">
       <div className="page-header">
         <h2><DollarSign size={24} style={{ marginRight: 8, verticalAlign: 'middle' }} /> 매출확인</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {canExportSalesExcel && (
+            <div className="sales-header-excel" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input
+                type="month"
+                className="form-input"
+                value={filterMonth}
+                onChange={(event) => { setFilterMonth(event.target.value); setFilterMonthEnd(''); }}
+                style={{ width: 140 }}
+                title="엑셀 출력 기준월"
+                aria-label="엑셀 출력 기준월"
+              />
+              <button type="button" className="btn btn-sm btn-success sales-excel-export-btn" onClick={handleExportExcel} disabled={exportingExcel} title="선택한 월의 매출 내역을 엑셀로 다운로드">
+                <Download size={14} /> {exportingExcel ? '출력 중...' : '엑셀 출력'}
+              </button>
+            </div>
+          )}
           <button className="btn btn-primary" onClick={() => {
             if (canAssignSalesOwner && !formAssigneeId) setFormAssigneeId(currentUser?.id || '');
             setShowAddForm(true);
@@ -1050,6 +1170,19 @@ export default function Sales() {
             <Link to="/missing-documents" className="premium-filter-btn">
               미제출 현황
             </Link>
+          )}
+          {canUseVatView && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={excludeVatView}
+              className={`sales-vat-view-toggle${excludeVatView ? ' active' : ''}`}
+              onClick={() => setExcludeVatView(value => !value)}
+              title="저장값은 변경하지 않고 화면의 매출금액만 부가세 제외 금액으로 표시합니다"
+            >
+              <span>VAT 제외</span>
+              <i aria-hidden="true" />
+            </button>
           )}
         </div>
       </div>
@@ -1068,7 +1201,7 @@ export default function Sales() {
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#1a73e8' }}>{contractCount}<span style={{ fontSize: '0.8rem', fontWeight: 400 }}>건</span></div>
         </div>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #188038' }}>
-          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>확정매출 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({summaryPeriodLabel})</span></div>
+          <div style={{ fontSize: '0.75rem', color: '#5f6368', marginBottom: 4 }}>확정매출 <span style={{ fontSize: '0.65rem', color: '#9aa0a6' }}>({summaryPeriodLabel}{excludeVatView ? ' · VAT 제외' : ''})</span></div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: '#188038' }}>{formatCurrency(confirmedTotal)}</div>
         </div>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #7b1fa2' }}>
@@ -1108,15 +1241,15 @@ export default function Sales() {
                 <tbody>
                   {branchSet.map(b => {
                     const br = allRecs.filter(r => effectiveBranch(r) === b);
-                    const c = br.filter(r => r.status === 'confirmed').reduce((s, r) => s + toSupply(r.amount), 0);
-                    const cp = br.filter(r => r.status === 'card_pending').reduce((s, r) => s + toSupply(r.amount), 0);
-                    const p = br.filter(r => r.status === 'pending').reduce((s, r) => s + toSupply(r.amount), 0);
+                    const c = br.reduce((s, r) => s + summarySalesAmount(r, r.period_confirmed_amount ?? (r.status === 'confirmed' ? r.amount : 0)), 0);
+                    const cp = br.reduce((s, r) => s + summarySalesAmount(r, r.period_card_pending_amount ?? (r.status === 'card_pending' ? r.amount : 0)), 0);
+                    const p = br.reduce((s, r) => s + summarySalesAmount(r, r.period_pending_amount ?? (r.status === 'pending' ? r.amount : 0)), 0);
                     return (
                       <tr key={b} style={{ borderBottom: '1px solid #f3f4f6', cursor: 'pointer' }} onClick={() => setFilterBranch(b)}>
                         <td style={{ padding: '6px 8px', fontWeight: 600 }}>{b}</td>
                         <td style={{ padding: '6px 8px', textAlign: 'right', color: '#188038', fontWeight: 600 }}>{formatCurrency(c)}</td>
-                        <td style={{ padding: '6px 8px', textAlign: 'right', color: '#7b1fa2', fontWeight: 600 }}>{cp > 0 ? formatCurrency(cp) : '-'}</td>
-                        <td style={{ padding: '6px 8px', textAlign: 'right', color: '#e65100', fontWeight: 600 }}>{p > 0 ? formatCurrency(p) : '-'}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: '#7b1fa2', fontWeight: 600 }}>{cp !== 0 ? formatCurrency(cp) : '-'}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: '#e65100', fontWeight: 600 }}>{p !== 0 ? formatCurrency(p) : '-'}</td>
                       </tr>
                     );
                   })}
@@ -1213,7 +1346,7 @@ export default function Sales() {
                     <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#1a1a2e' }}>
                       {u.name} {u.position && <span style={{ fontSize: '0.7rem', fontWeight: 400, color: '#5f6368' }}>{u.position}</span>}
                     </div>
-                    <div style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>{u.branch} · {u.totalAmount.toLocaleString()}원</div>
+                    <div style={{ fontSize: '0.7rem', color: '#9aa0a6' }}>{u.branch} · {displaySalesAmount(u.totalAmount).toLocaleString()}원</div>
                   </div>
                   <div style={{ marginLeft: 'auto', fontSize: '1.1rem', fontWeight: 700, color: isMedal ? medalBorder[ri] || medalBorder[2] : '#1a73e8' }}>
                     {u.count}<span style={{ fontSize: '0.7rem', fontWeight: 400 }}>건</span>
@@ -1374,7 +1507,7 @@ export default function Sales() {
                 <div className="sales-customer-timeline-head" style={{ padding: '16px 20px', background: '#f8f9fa', borderBottom: '1px solid #e8eaed' }}>
                   <strong style={{ fontSize: '1.1rem' }}>{selectedClient}</strong>
                   <span style={{ marginLeft: 12, fontSize: '0.82rem', color: '#9aa0a6' }}>총 {timeline.length}건</span>
-                  {totalAmount > 0 && <span style={{ marginLeft: 12, fontWeight: 700, color: '#1a73e8' }}>확정매출 {formatCurrency(totalAmount)}</span>}
+                  {totalAmount > 0 && <span style={{ marginLeft: 12, fontWeight: 700, color: '#1a73e8' }}>확정매출 {formatCurrency(displaySalesAmount(totalAmount))}</span>}
                 </div>
                 <div className="sales-customer-timeline-list" style={{ padding: '8px 20px' }}>
                   {timeline.length === 0 && <div className="empty-state">활동 기록이 없습니다.</div>}
@@ -1386,7 +1519,7 @@ export default function Sales() {
                           <span className="sales-customer-timeline-date" style={{ color: '#9aa0a6', minWidth: 80, fontSize: '0.78rem' }}>{r.contract_date}</span>
                           <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: '#fce4ec', color: '#d93025' }}>매출</span>
                           <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: '0.72rem', fontWeight: 600, background: '#f3f4f6', color: '#5f6368' }}>{r.type}</span>
-                          <span style={{ fontWeight: 600 }}>{formatCurrency(r.amount)}</span>
+                          <span style={{ fontWeight: 600 }}>{formatCurrency(displaySalesAmount(r.amount))}</span>
                           <span style={{ padding: '2px 6px', borderRadius: 8, fontSize: '0.68rem', fontWeight: 600, background: STATUS_LABELS[r.status].bg, color: STATUS_LABELS[r.status].color }}>{STATUS_LABELS[r.status].label}</span>
                           {r.user_name && <span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>{r.user_name}</span>}
                         </div>
@@ -2361,8 +2494,8 @@ export default function Sales() {
               const cmp = typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv));
               return sortDir === 'asc' ? cmp : -cmp;
             }).map((r) => {
-              const st = STATUS_LABELS[r.status];
-              const isRefunded = r.status === 'refunded';
+              const st = reportingStatus(r);
+              const isRefundAdjustment = r.period_entry_kind === 'refund' || r.period_entry_kind === 'net';
               const isConfirming = confirmingId === r.id;
               return (
                 <tr key={r.id} data-dashboard-focus={`sales-${r.id}`} onClick={() => openDetail(r)} className={`clickable-row${dashboardFocusType === 'sales' && dashboardFocusId === r.id ? ' dashboard-focus-target' : ''}`}
@@ -2378,12 +2511,12 @@ export default function Sales() {
                     if (hoveredMemoRow && hoveredMemoRow.id === r.id) setHoveredMemoRow(null);
                     if (hoveredMissingReason && hoveredMissingReason.id === r.id) setHoveredMissingReason(null);
                   }}
-                  style={{ cursor: 'pointer', ...(isRefunded ? { color: '#d93025', textDecoration: 'line-through', background: '#fef7f6' } : r.type === '낙찰' ? { background: '#f3f0ff' } : r.type === '계약' ? { background: '#f0f7ff' } : {}) }}>
+                  style={{ cursor: 'pointer', ...(isRefundAdjustment ? { color: '#d93025', background: '#fef7f6' } : r.type === '낙찰' ? { background: '#f3f0ff' } : r.type === '계약' ? { background: '#f0f7ff' } : {}) }}>
                   {canDeleteAccounting && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} /></td>}
-                  <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{r.contract_date}</td>
+                  <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{reportingDate(r)}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{r.user_name}</td>
                   <td style={{ whiteSpace: 'nowrap', maxWidth: 110 }}>
-                    <div style={{ fontSize: '0.78rem' }}>{r.type}</div>
+                    <div style={{ fontSize: '0.78rem' }}>{reportingType(r)}</div>
                     {(r.type === '기타' || r.type === '낙찰') && r.type_detail && (
                       <div style={{ color: '#9aa0a6', fontSize: '0.7rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.type_detail}>
                         {r.type_detail}
@@ -2403,7 +2536,7 @@ export default function Sales() {
                       </div>
                     )}
                   </td>
-                  <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{formatCurrency(r.amount)}</td>
+                  <td style={{ fontWeight: 600, whiteSpace: 'nowrap', color: reportingAmount(r) < 0 ? '#d93025' : undefined }}>{formatCurrency(displaySalesAmount(reportingAmount(r)))}</td>
                   <td style={{ fontSize: '0.72rem', whiteSpace: 'nowrap', textAlign: 'center' }}>
                     {r.payment_type ? (
                       <span style={{ padding: '1px 6px', borderRadius: 6, fontWeight: 600,
@@ -2676,11 +2809,11 @@ export default function Sales() {
           });
           if (sorted.length === 0) return <div className="empty-state">매출 내역이 없습니다.</div>;
           return sorted.map((r) => {
-            const st = STATUS_LABELS[r.status];
-            const isRefunded = r.status === 'refunded';
+            const st = reportingStatus(r);
+            const isRefundAdjustment = r.period_entry_kind === 'refund' || r.period_entry_kind === 'net';
             const expanded = expandedIds.has(r.id);
             return (
-              <div key={r.id} data-dashboard-focus={`sales-${r.id}`} className={`sales-card${dashboardFocusType === 'sales' && dashboardFocusId === r.id ? ' dashboard-focus-target' : ''}`} style={isRefunded ? { color: '#d93025', background: '#fef7f6', borderLeft: '3px solid #d93025' } : r.type === '낙찰' ? { borderLeft: '3px solid #7c4dff' } : r.type === '계약' ? { borderLeft: '3px solid #1a73e8' } : {}}>
+              <div key={r.id} data-dashboard-focus={`sales-${r.id}`} className={`sales-card${dashboardFocusType === 'sales' && dashboardFocusId === r.id ? ' dashboard-focus-target' : ''}`} style={isRefundAdjustment ? { color: '#d93025', background: '#fef7f6', borderLeft: '3px solid #d93025' } : r.type === '낙찰' ? { borderLeft: '3px solid #7c4dff' } : r.type === '계약' ? { borderLeft: '3px solid #1a73e8' } : {}}>
                 <div className="sales-card-header" onClick={() => toggleExpand(r.id)}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
@@ -2688,11 +2821,11 @@ export default function Sales() {
                       {isDuplicate(r) && <span style={{ fontSize: '0.68rem', padding: '1px 6px', borderRadius: 8, background: '#fce4ec', color: '#d93025', fontWeight: 700 }}>중복</span>}
                       {r.exclude_from_count ? <span style={{ fontSize: '0.68rem', padding: '1px 6px', borderRadius: 8, background: '#f5f5f5', color: '#5f6368' }}>미포함</span> : null}
                       <span style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: 8, background: st.bg, color: st.color, fontWeight: 600 }}>{st.label}</span>
-                      <span style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: 8, background: '#f3f4f6', color: '#5f6368' }}>{r.type}</span>
+                      <span style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: 8, background: '#f3f4f6', color: '#5f6368' }}>{reportingType(r)}</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: '0.78rem', color: '#5f6368' }}>
-                      <span style={{ fontWeight: 700, color: '#1a2744', fontSize: '0.88rem' }}>{formatCurrency(r.amount)}</span>
-                      <span>{r.contract_date}</span>
+                      <span style={{ fontWeight: 700, color: reportingAmount(r) < 0 ? '#d93025' : '#1a2744', fontSize: '0.88rem' }}>{formatCurrency(displaySalesAmount(reportingAmount(r)))}</span>
+                      <span>{reportingDate(r)}</span>
                       <span>{r.user_name}</span>
                     </div>
                   </div>
@@ -2821,9 +2954,9 @@ export default function Sales() {
                   <div style={{ fontWeight: 500, fontFamily: 'monospace' }}>{detailRecord.client_phone || <span style={{ color: '#9aa0a6' }}>-</span>}</div>
                 </div>
                 <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>담당자</span><div>{detailRecord.user_name}</div></div>
-                <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>금액</span><div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{formatCurrency(detailRecord.amount)}</div></div>
+                <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>금액{excludeVatView ? ' (VAT 제외)' : ''}</span><div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{formatCurrency(displaySalesAmount(detailRecord.amount))}</div></div>
                 {Number(detailRecord.refund_amount || 0) > 0 && detailRecord.status !== 'refunded' && (
-                  <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>부분환불</span><div style={{ fontWeight: 700, color: '#e65100' }}>-{formatCurrency(Number(detailRecord.refund_amount || 0))}<span style={{ fontSize: '0.72rem', color: '#9aa0a6', fontWeight: 400 }}> · 순액 {formatCurrency(Number(detailRecord.amount || 0) - Number(detailRecord.refund_amount || 0))}</span></div></div>
+                  <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>부분환불</span><div style={{ fontWeight: 700, color: '#e65100' }}>-{formatCurrency(displaySalesAmount(Number(detailRecord.refund_amount || 0)))}<span style={{ fontSize: '0.72rem', color: '#9aa0a6', fontWeight: 400 }}> · 순액 {formatCurrency(displaySalesAmount(Number(detailRecord.amount || 0) - Number(detailRecord.refund_amount || 0)))}</span></div></div>
                 )}
                 <div><span style={{ color: '#9aa0a6', fontSize: '0.75rem' }}>일자</span><div>{detailRecord.contract_date}</div></div>
                 {/* 중복 계약: 계약 미포함 체크박스 (계약 타입만) */}

@@ -14,6 +14,7 @@ import { refundApprovalMonth, refundRecoveryPayrollUrl } from '../../shared/refu
 import { isNonWorkingDate } from '../../shared/work-calendar';
 import { canDismissDashboardAlertItems } from '../../shared/dashboard-alert-dismiss';
 import { salesMissingAlertScopeTitle } from '../../shared/sales-record-scope';
+import { isSalesIncomeRecord } from '../../shared/sales-recognition';
 import type { AuctionBidResultEntry } from '../components/AuctionBidResultEditor';
 import { EXPENSE_RECEIPT_TEMPLATE_ID } from '../lib/expense-receipt';
 import { auctionPropertyDetailLabel } from '../../shared/auction-property-label';
@@ -234,7 +235,8 @@ function FreelancerDashboard() {
       if (noticeRes) setNotices(noticeRes.notes || []);
       if (accountantLeavesRes) setAccountantLeaves(accountantLeavesRes.leaves || []);
       if (salesRes) {
-        const visibleSales = salesRes.records || [];
+        // 지출(대리입찰 비용 등)은 매출 통계에서 제외한다.
+        const visibleSales = (salesRes.records || []).filter(isSalesIncomeRecord);
         setMySales(isSupervisor ? visibleSales : visibleSales.filter((r: SalesRecord) => r.user_id === user?.id));
       }
       if (newsRes) {

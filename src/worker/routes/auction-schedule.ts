@@ -56,6 +56,7 @@ import {
 } from '../../shared/auction-bid-result-access.ts';
 import {
   canCreateAuctionSchedule,
+  canEditResolvedAuctionBid,
   canManageAuctionSchedule,
   getRequiredInspectionBidDateError,
   isValidAuctionScheduleDate,
@@ -252,12 +253,17 @@ type AuctionBidResultRow = {
   updated_at: string;
 };
 
+// 경매스케줄에서 등록한 대리입찰 비용(대리 원가)은 담당자 매출이 아니라 회사 지출이다.
+// direction='expense'로 저장해 업무성과·급여·랭킹 집계에서 제외하고, 회계장부 지출(매수신청대리)로 잡는다.
+// 지출은 회계장부 직접 지출과 같이 입찰일 기준으로 즉시 확정 처리한다.
+// (업무성과에서 직접 등록하는 매수신청대리 매출은 이 함수와 무관하며 기존대로 수입이다.)
 function auctionProxySaleStatements(
   db: D1Database,
   input: {
     schedule: AuctionBidResultRow;
     clientName: string;
     proxyAgent: string;
+    actorId: string;
   },
 ): D1PreparedStatement[] {
   const externalId = auctionScheduleProxySalesExternalId(input.schedule.id);
@@ -265,22 +271,25 @@ function auctionProxySaleStatements(
     db.prepare(`
       INSERT OR IGNORE INTO sales_records (
         id, user_id, type, type_detail, client_name, depositor_name, depositor_different,
-        amount, contract_date, status, direction, branch, department, payment_type,
+        amount, contract_date, deposit_date, status, confirmed_at, confirmed_by,
+        direction, branch, department, payment_type,
         proxy_agent, proxy_date, proxy_undecided, memo, external_id
-      ) VALUES (?, ?, '매수신청대리', ?, ?, ?, 0, ?, ?, 'pending', 'income', ?, ?, '이체', ?, ?, 0, ?, ?)
+      ) VALUES (?, ?, '매수신청대리', ?, ?, ?, 0, ?, ?, ?, 'confirmed', datetime('now', '+9 hours'), ?, 'expense', ?, ?, '이체', ?, ?, 0, ?, ?)
     `).bind(
       crypto.randomUUID(),
       input.schedule.user_id,
-      '경매 스케줄 대리입찰 자동등록 / 기본금액 90,000원',
+      '경매 스케줄 대리입찰 비용(회사 지출) / 90,000원',
       input.clientName,
       input.clientName,
       AUCTION_PROXY_DEFAULT_AMOUNT,
       input.schedule.target_date,
+      input.schedule.target_date,
+      input.actorId,
       input.schedule.branch || '',
       input.schedule.department || '',
       input.proxyAgent,
       input.schedule.target_date,
-      '경매 스케줄 입찰결과에서 대리입찰 자동 등록',
+      '경매 스케줄 입찰결과에서 대리입찰 비용 자동 지출 등록',
       externalId,
     ),
     db.prepare(`
@@ -313,15 +322,23 @@ const GENERAL_EDIT_PROTECTED_DATA_FIELDS = [
   'bidWon', 'bidFailed', 'bidCancelled', 'bidResultCancelled',
   'bidResultCancelledAutomatically', 'bidResultCancelledAt',
   'clientPhone', 'inspectionSourceId', 'materializedBidGroup', 'materializedBidItem',
-  'bidProxy', 'proxyAgent',
+  'proxyAgent',
 ] as const;
+
+// 결과가 처리된 입찰 일정을 마스터가 정정할 때 추가로 보호하는 필드.
+// 대리입찰 여부가 바뀌면 이미 생성된 대리입찰 레코드와 어긋나므로 결과 전용 기능에서만 변경한다.
+const RESOLVED_BID_EDIT_PROTECTED_DATA_FIELDS = ['bidProxy'] as const;
 
 function mergeGeneralScheduleEditData(
   existingData: Record<string, unknown>,
   incomingData: Record<string, unknown>,
+  options: { resolvedBid?: boolean } = {},
 ): Record<string, unknown> {
   const merged = sanitizeAuctionScheduleData({ ...existingData, ...incomingData });
-  for (const field of GENERAL_EDIT_PROTECTED_DATA_FIELDS) {
+  const protectedFields: readonly string[] = options.resolvedBid
+    ? [...GENERAL_EDIT_PROTECTED_DATA_FIELDS, ...RESOLVED_BID_EDIT_PROTECTED_DATA_FIELDS]
+    : GENERAL_EDIT_PROTECTED_DATA_FIELDS;
+  for (const field of protectedFields) {
     if (Object.prototype.hasOwnProperty.call(existingData, field)) merged[field] = existingData[field];
     else delete merged[field];
   }
@@ -782,7 +799,8 @@ auctionSchedule.put('/:id', async (c) => {
     return c.json({ error: '경매 스케줄 수정 권한이 없습니다.' }, 403);
   }
   const existingData = parseJsonObject(existing.data);
-  if (existing.activity_type === '입찰' && auctionScheduleBidResult(existingData) !== 'pending') {
+  const resolvedBid = existing.activity_type === '입찰' && auctionScheduleBidResult(existingData) !== 'pending';
+  if (resolvedBid && !canEditResolvedAuctionBid(user)) {
     return c.json({ error: '입찰 결과가 처리된 일정은 일반 정보를 수정할 수 없습니다. 입찰 결과 전용 기능을 이용해 주세요.' }, 409);
   }
   const existingExternalId = auctionScheduleSalesExternalId(id);
@@ -814,7 +832,7 @@ auctionSchedule.put('/:id', async (c) => {
   }
   const incomingData = body.data === undefined
     ? existingData
-    : mergeGeneralScheduleEditData(existingData, sanitizeClientAuctionScheduleData(body.data));
+    : mergeGeneralScheduleEditData(existingData, sanitizeClientAuctionScheduleData(body.data), { resolvedBid });
   const parsedData = normalizeAuctionKindData(activityType, incomingData);
   const data = JSON.stringify(parsedData);
   const validationError = getRequiredInspectionBidDateError(activityType, parsedData)
@@ -1128,7 +1146,7 @@ auctionSchedule.post('/:id/bid-result', async (c) => {
     requireUnlockedLawitgo: result === 'pending',
   });
   const proxySaleStatements = bidProxy && result !== 'pending'
-    ? auctionProxySaleStatements(db, { schedule: existing, clientName, proxyAgent })
+    ? auctionProxySaleStatements(db, { schedule: existing, clientName, proxyAgent, actorId: user.sub })
     : [];
 
   if (result === 'won' || result === 'failed') {

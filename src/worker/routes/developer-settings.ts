@@ -49,7 +49,33 @@ async function ensureDeveloperSettingsSchema(db: D1Database): Promise<void> {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS codex_sync_settings (
+        id TEXT PRIMARY KEY,
+        retention_days INTEGER NOT NULL DEFAULT 180 CHECK (retention_days BETWEEN 30 AND 3650),
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `),
+    db.prepare(`
+      INSERT OR IGNORE INTO codex_sync_settings (id, retention_days)
+      VALUES ('default', 180)
+    `),
   ]);
+}
+
+async function codexRetentionDays(db: D1Database): Promise<number> {
+  const row = await db.prepare("SELECT retention_days FROM codex_sync_settings WHERE id = 'default'")
+    .first<{ retention_days: number }>();
+  return Math.max(30, Math.min(3650, Number(row?.retention_days) || 180));
+}
+
+async function cleanupExpiredCodexConversations(db: D1Database): Promise<void> {
+  const retentionDays = await codexRetentionDays(db);
+  await db.prepare(`
+    DELETE FROM codex_conversations
+    WHERE datetime(last_message_at) < datetime('now', ?)
+  `).bind(`-${retentionDays} days`).run();
 }
 
 export function redactCodexLogText(value: unknown): string {
@@ -166,8 +192,61 @@ developerSettings.get('/codex-conversations/:id', requireHumanMasterOrNotFound, 
   return c.json({ conversation: { ...row, messages } });
 });
 
+developerSettings.delete('/codex-conversations/:id', requireHumanMasterOrNotFound, async (c) => {
+  await ensureDeveloperSettingsSchema(c.env.DB);
+  const result = await c.env.DB.prepare('DELETE FROM codex_conversations WHERE id = ?')
+    .bind(c.req.param('id')).run();
+  if (Number(result.meta?.changes || 0) === 0) return c.json({ error: 'Not found.' }, 404);
+  return c.json({ success: true });
+});
+
+developerSettings.get('/codex-sync-status', requireHumanMasterOrNotFound, async (c) => {
+  await ensureDeveloperSettingsSchema(c.env.DB);
+  const [conversation, token, retentionDays] = await Promise.all([
+    c.env.DB.prepare(`
+      SELECT COUNT(*) AS conversation_count, MAX(updated_at) AS latest_sync_at,
+             MAX(last_message_at) AS latest_message_at
+      FROM codex_conversations
+    `).first<{ conversation_count: number; latest_sync_at: string | null; latest_message_at: string | null }>(),
+    c.env.DB.prepare(`
+      SELECT COUNT(*) AS active_token_count, MAX(last_used_at) AS latest_token_use_at
+      FROM codex_sync_tokens WHERE active = 1
+    `).first<{ active_token_count: number; latest_token_use_at: string | null }>(),
+    codexRetentionDays(c.env.DB),
+  ]);
+  return c.json({
+    conversation_count: Number(conversation?.conversation_count) || 0,
+    latest_sync_at: conversation?.latest_sync_at || null,
+    latest_message_at: conversation?.latest_message_at || null,
+    active_token_count: Number(token?.active_token_count) || 0,
+    latest_token_use_at: token?.latest_token_use_at || null,
+    retention_days: retentionDays,
+  });
+});
+
+developerSettings.put('/codex-sync-settings', requireHumanMasterOrNotFound, async (c) => {
+  await ensureDeveloperSettingsSchema(c.env.DB);
+  const body: { retention_days?: number } = await c.req.json<{ retention_days?: number }>().catch(() => ({}));
+  const retentionDays = Math.trunc(Number(body.retention_days));
+  if (!Number.isFinite(retentionDays) || retentionDays < 30 || retentionDays > 3650) {
+    return c.json({ error: '보존 기간은 30일 이상 3,650일 이하로 입력해 주세요.' }, 400);
+  }
+  const user = c.get('user');
+  await c.env.DB.prepare(`
+    INSERT INTO codex_sync_settings (id, retention_days, updated_by, updated_at)
+    VALUES ('default', ?, ?, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      retention_days = excluded.retention_days,
+      updated_by = excluded.updated_by,
+      updated_at = datetime('now')
+  `).bind(retentionDays, user.sub).run();
+  await cleanupExpiredCodexConversations(c.env.DB);
+  return c.json({ success: true, retention_days: retentionDays });
+});
+
 developerSettings.post('/codex-conversations', async (c) => {
   await ensureDeveloperSettingsSchema(c.env.DB);
+  await cleanupExpiredCodexConversations(c.env.DB);
   const body: Record<string, unknown> = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   const sourceSessionId = String(body.source_session_id || '').trim().slice(0, 200);
   const messages = normalizeCodexMessages(body.messages);

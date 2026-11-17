@@ -75,8 +75,9 @@ function setup() {
     CREATE TABLE sales_records (
       id TEXT PRIMARY KEY, user_id TEXT, type TEXT, type_detail TEXT,
       client_name TEXT, depositor_name TEXT, depositor_different INTEGER NOT NULL DEFAULT 0,
-      amount INTEGER NOT NULL DEFAULT 0, contract_date TEXT,
-      status TEXT NOT NULL DEFAULT 'pending', direction TEXT, branch TEXT, department TEXT,
+      amount INTEGER NOT NULL DEFAULT 0, contract_date TEXT, deposit_date TEXT,
+      status TEXT NOT NULL DEFAULT 'pending', confirmed_at TEXT, confirmed_by TEXT,
+      direction TEXT, branch TEXT, department TEXT,
       payment_type TEXT, winning_price INTEGER NOT NULL DEFAULT 0,
       client_phone TEXT, customer_id TEXT, memo TEXT, external_id TEXT
     );
@@ -266,7 +267,7 @@ test('대리입찰 결과는 입찰일 기준 9만원 매수신청대리를 한 
   sqlite.close();
 });
 
-test('대리입찰 낙찰은 낙찰과 매수신청대리 업무성과를 각각 생성한다', async () => {
+test('대리입찰 낙찰은 낙찰 매출과 대리입찰 비용 지출을 각각 생성한다', async () => {
   const { sqlite, request } = setup();
   const response = await request('owner', '/bid-1/bid-result', 'POST', {
     ...wonResult,
@@ -274,14 +275,14 @@ test('대리입찰 낙찰은 낙찰과 매수신청대리 업무성과를 각각
     proxy_agent: '입찰대리인',
   });
   assert.equal(response.status, 200, await response.clone().text());
-  assert.deepEqual(sqlite.prepare('SELECT type, COUNT(*) AS count FROM sales_records GROUP BY type ORDER BY type').all(), [
-    { type: '낙찰', count: 1 },
-    { type: '매수신청대리', count: 1 },
+  assert.deepEqual(sqlite.prepare('SELECT type, direction, COUNT(*) AS count FROM sales_records GROUP BY type, direction ORDER BY type').all(), [
+    { type: '낙찰', direction: 'income', count: 1 },
+    { type: '매수신청대리', direction: 'expense', count: 1 },
   ]);
   sqlite.close();
 });
 
-test('취소 결과도 대리입찰이면 매수신청대리 업무성과를 생성한다', async () => {
+test('취소 결과도 대리입찰이면 대리입찰 비용을 회사 지출로 확정 등록한다', async () => {
   const { sqlite, request } = setup();
   const response = await request('owner', '/bid-1/bid-result', 'POST', {
     result: 'cancelled',
@@ -289,11 +290,23 @@ test('취소 결과도 대리입찰이면 매수신청대리 업무성과를 생
     proxy_agent: '취소건 대리인',
   });
   assert.equal(response.status, 200, await response.clone().text());
-  assert.deepEqual(sqlite.prepare('SELECT type, amount, proxy_agent FROM sales_records').get(), {
+  const proxy = sqlite.prepare(`
+    SELECT type, amount, proxy_agent, direction, status, contract_date, deposit_date, confirmed_by, user_id
+    FROM sales_records
+  `).get() as Record<string, unknown>;
+  assert.deepEqual({ ...proxy, contract_date: undefined, deposit_date: undefined }, {
     type: '매수신청대리',
     amount: 90_000,
     proxy_agent: '취소건 대리인',
+    direction: 'expense',
+    status: 'confirmed',
+    contract_date: undefined,
+    deposit_date: undefined,
+    confirmed_by: 'owner',
+    user_id: 'owner',
   });
+  assert.ok(proxy.contract_date, '지출일(입찰일)이 있어야 한다');
+  assert.equal(proxy.deposit_date, proxy.contract_date, '지출 인식일은 입찰일이다');
   sqlite.close();
 });
 

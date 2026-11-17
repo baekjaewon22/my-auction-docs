@@ -9,6 +9,7 @@ import BusinessIncomeTab from '../components/BusinessIncomeTab';
 import EmployeeBonusTab from '../components/EmployeeBonusTab';
 import EmployeePayrollListTab from '../components/EmployeePayrollListTab';
 import { Receipt, Camera } from 'lucide-react';
+import withholdingCalculatorHtml from '../assets/freelancer-withholding-calculator.html?raw';
 import { normalizeBranchName, sameBranchName } from '../lib/branchAliases';
 import { findUserOption, groupUserOptions } from '../lib/userSelectOptions';
 import {
@@ -28,7 +29,7 @@ import {
   type WithholdingSettlementCategory,
   type WithholdingSettlementItem,
 } from '../../shared/withholding-settlement';
-import { calculateFreelancerSettlement } from '../../shared/freelancer-settlement';
+import { calculateFreelancerSalesIncome, calculateFreelancerSettlement } from '../../shared/freelancer-settlement';
 import {
   calculateVideoProductionWithholding,
   isExternalVideoProductionAssignee,
@@ -87,6 +88,53 @@ type WithholdingSettlementDraft = {
   amount: string;
   memo: string;
 };
+
+type WithholdingCalculatorResult = {
+  R: number; C: number; W: number; B: number; T: number;
+  income: number; local: number; T0: number; A: number; F: number; P: number;
+  S: number; E: number; SYS_TAX: number; L: number;
+  payrollDeduction: number; payrollTax: number; payrollExtra: number; payrollCheck: number;
+};
+
+const WITHHOLDING_CALCULATOR_MEMO_START = '[프리랜서 원천세 조정 계산기]';
+const WITHHOLDING_CALCULATOR_MEMO_END = '[/프리랜서 원천세 조정 계산기]';
+
+function buildWithholdingCalculatorMemo(name: string, month: string, result: WithholdingCalculatorResult): string {
+  const money = (value: number) => `${Math.trunc(value).toLocaleString('ko-KR')}원`;
+  return [
+    WITHHOLDING_CALCULATOR_MEMO_START,
+    `대상: ${name} · ${month.replace('-', '년 ')}월`,
+    `추가 정산 항목: tax / 원천징수 면제 ✓ / 비율 면제 ✓ / ${money(result.payrollExtra)} 추가`,
+    `추가 공제 항목: tax 근소세 / 세전 공제(비과세 처리) / ${money(result.payrollDeduction)} 공제`,
+    `전산 산식: R ${money(result.R)} - SYS_TAX ${money(result.SYS_TAX)} + A ${money(result.A)} - S ${money(result.S)}${result.L ? ` - L ${money(result.L)}` : ''} = F ${money(result.F)}`,
+    `급여정산서 검산: R ${money(result.R)} + tax ${money(result.payrollExtra)} - tax 근소세 ${money(result.payrollDeduction)} - 재계산 원천세 ${money(result.payrollTax)} = ${money(result.payrollCheck)}`,
+    `원천세 신고: 지급액 B ${money(result.B)} / 소득세 ${money(result.income)} / 지방소득세 ${money(result.local)} / 합계 T ${money(result.T)}`,
+    `참고: 회사부담 4대보험 C ${money(result.C)} / 급여 실지급 W ${money(result.W)} / 프리랜서분 P ${money(result.P)}`,
+    WITHHOLDING_CALCULATOR_MEMO_END,
+  ].join('\n');
+}
+
+function mergeWithholdingCalculatorMemo(current: string, block: string): string {
+  const start = current.indexOf(WITHHOLDING_CALCULATOR_MEMO_START);
+  const end = current.indexOf(WITHHOLDING_CALCULATOR_MEMO_END);
+  if (start >= 0 && end >= start) {
+    return `${current.slice(0, start)}${block}${current.slice(end + WITHHOLDING_CALCULATOR_MEMO_END.length)}`.trim();
+  }
+  return [current.trim(), block].filter(Boolean).join('\n\n');
+}
+
+function withholdingCalculatorPrefill(data: any, month: string): { revenue: number; systemTax: number } | null {
+  if (!data || data.accounting?.pay_type !== 'commission') return null;
+  const rate = Number(data.accounting?.commission_rate) || 0;
+  const salesIncome = calculateFreelancerSalesIncome(data.records || [], rate, month);
+  // 계산기의 R은 급여정산서 "담당자 정산 > 수입 금액(매출 × 비율)"과 정확히 맞춘다.
+  // 매수신청대리·직급수당·성과금·영상제작비 등 별도 지급 항목은 포함하지 않는다.
+  const revenue = salesIncome.commissionIncome;
+  const settlement = calculateFreelancerSettlement({
+    settlementIncome: revenue,
+  });
+  return { revenue, systemTax: settlement.withholdingTax };
+}
 
 function signedWon(amount: number): string {
   const value = Math.trunc(Number(amount) || 0);
@@ -168,6 +216,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const canUnlockPayroll = !!currentUser && ['master', 'accountant'].includes(currentUser.role);
   const canResolveRefundRecovery = canUnlockPayroll;
   const canViewInternalMemo = canViewPayrollInternalMemo(currentUser);
+  const canUseWithholdingCalculator = !!currentUser && ['master', 'ceo', 'accountant'].includes(currentUser.role);
   const canEditInternalMemo = canEditPayrollInternalMemo(currentUser);
   const [searchParams, setSearchParams] = useSearchParams();
   const { branches: BRANCHES } = useBranches();
@@ -206,6 +255,8 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
   const [internalMemoSaveError, setInternalMemoSaveError] = useState('');
   const [internalMemoNotice, setInternalMemoNotice] = useState('');
   const [internalMemoReloadKey, setInternalMemoReloadKey] = useState(0);
+  const [withholdingCalculatorOpen, setWithholdingCalculatorOpen] = useState(false);
+  const [withholdingCalculatorMinimized, setWithholdingCalculatorMinimized] = useState(false);
   // 안건 수당 (외부 사건 수신 — 2개월 단위 짝수월에만 지급)
   const [caseAllowance, setCaseAllowance] = useState<{ total_fee_raw: number; total_fee_adjusted: number; case_count: number; bonus: number; period_label: string; case_allowance_excluded?: boolean; case_allowance_exclusion_reason?: string | null } | null>(null);
 
@@ -215,6 +266,7 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
 
   const commissionNetRef = useRef(0);
   const internalMemoRequestRef = useRef(0);
+  const withholdingCalculatorFrameRef = useRef<HTMLIFrameElement>(null);
   const printRef = useRef<HTMLDivElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
   const branchRef = useRef<HTMLDivElement>(null);
@@ -461,6 +513,53 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       if (requestId === internalMemoRequestRef.current) setInternalMemoSaving(false);
     }
   };
+
+  useEffect(() => {
+    if (!withholdingCalculatorOpen) return;
+    const handleCalculatorApply = async (event: MessageEvent) => {
+      if (event.source !== withholdingCalculatorFrameRef.current?.contentWindow) return;
+      if (event.data?.type !== 'payroll-withholding-calculator:apply') return;
+      if (!canEditInternalMemo) {
+        alert('현재 권한은 내부 정산메모를 수정할 수 없습니다.');
+        return;
+      }
+      if (!selectedUserId || !loadedPayrollMatchesSelection || !data?.user?.name) {
+        alert('적용할 담당자의 급여정산서를 먼저 불러와 주세요.');
+        return;
+      }
+      if (internalMemoLoading || internalMemoSaving || internalMemoLoadError) {
+        alert('내부 정산메모를 불러온 뒤 다시 적용해 주세요.');
+        return;
+      }
+      const result = event.data.result as WithholdingCalculatorResult;
+      const block = buildWithholdingCalculatorMemo(String(data.user.name), selectedMonth, result);
+      const content = mergeWithholdingCalculatorMemo(internalMemo, block);
+      if (content.length > 2000) {
+        alert('기존 내부 정산메모와 합치면 2,000자를 초과합니다. 기존 메모를 정리한 뒤 다시 적용해 주세요.');
+        return;
+      }
+      setInternalMemoSaving(true);
+      setInternalMemoSaveError('');
+      setInternalMemoNotice('');
+      try {
+        const { memo } = await api.payroll.saveInternalMemo({ user_id: selectedUserId, period: selectedMonth, content });
+        const savedContent = memo?.content || content;
+        setInternalMemo(savedContent);
+        setSavedInternalMemo(savedContent);
+        setInternalMemoMeta(memo ? { updated_at: memo.updated_at, updated_by_name: memo.updated_by_name } : null);
+        setInternalMemoNotice('계산 산식을 내부 정산메모에 적용하고 저장했습니다.');
+        setWithholdingCalculatorOpen(false);
+        setWithholdingCalculatorMinimized(false);
+        setTimeout(() => document.getElementById('payroll-internal-memo-title')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0);
+      } catch (error: unknown) {
+        setInternalMemoSaveError(error instanceof Error ? error.message : '내부 정산메모 적용에 실패했습니다.');
+      } finally {
+        setInternalMemoSaving(false);
+      }
+    };
+    window.addEventListener('message', handleCalculatorApply);
+    return () => window.removeEventListener('message', handleCalculatorApply);
+  }, [canEditInternalMemo, data?.user?.name, internalMemo, internalMemoLoadError, internalMemoLoading, internalMemoSaving, loadedPayrollMatchesSelection, selectedMonth, selectedUserId, withholdingCalculatorOpen]);
 
   const handleLockPayroll = async () => {
     if (!canLockPayroll || !data || !selectedUserId) return;
@@ -2079,6 +2178,58 @@ export default function Payroll({ initialTab = 'payroll', requireBranchSelection
       {tab === 'business_income' && canAccessBusinessIncome && <BusinessIncomeTab month={selectedMonth} />}
       {tab === 'employee_bonus' && <EmployeeBonusTab month={selectedMonth} users={filteredUsers} />}
       {tab === 'employee_payroll_list' && isAllBranchView && canViewAllEmployeePayroll && <EmployeePayrollListTab month={selectedMonth} users={filteredUsers} />}
+
+      {tab === 'payroll' && canUseWithholdingCalculator && (
+        <>
+          <button
+            type="button"
+            className="payroll-withholding-calculator-toggle no-print"
+            onClick={() => {
+              setWithholdingCalculatorOpen(true);
+              setWithholdingCalculatorMinimized(false);
+            }}
+            aria-label="프리랜서 원천세 조정 계산기 열기"
+            title="원천세 조정 계산기"
+          >
+            🧮
+          </button>
+          {withholdingCalculatorOpen && (
+            <div className={`payroll-calculator-backdrop no-print${withholdingCalculatorMinimized ? ' minimized' : ''}`} role="presentation" onMouseDown={() => {
+              if (!withholdingCalculatorMinimized) setWithholdingCalculatorOpen(false);
+            }}>
+              <section className={`payroll-calculator-dialog${withholdingCalculatorMinimized ? ' minimized' : ''}`} role="dialog" aria-modal={!withholdingCalculatorMinimized} aria-label="프리랜서 원천세 조정 계산기" onMouseDown={(event) => event.stopPropagation()}>
+                <div className="payroll-calculator-dialog-header">
+                  <strong>프리랜서 원천세 조정 계산기</strong>
+                  <div className="payroll-calculator-window-actions">
+                    <button
+                      type="button"
+                      onClick={() => setWithholdingCalculatorMinimized(value => !value)}
+                      aria-label={withholdingCalculatorMinimized ? '계산기 창 복원' : '계산기 창 최소화'}
+                      title={withholdingCalculatorMinimized ? '창 복원' : '최소화'}
+                    >
+                      {withholdingCalculatorMinimized ? '□' : '—'}
+                    </button>
+                    <button type="button" onClick={() => {
+                      setWithholdingCalculatorOpen(false);
+                      setWithholdingCalculatorMinimized(false);
+                    }} aria-label="계산기 종료" title="종료">×</button>
+                  </div>
+                </div>
+                <iframe
+                  ref={withholdingCalculatorFrameRef}
+                  title="프리랜서 원천세 조정 계산기"
+                  srcDoc={withholdingCalculatorHtml}
+                  allow="clipboard-write"
+                  onLoad={(event) => {
+                    const prefill = withholdingCalculatorPrefill(data, selectedMonth);
+                    if (prefill) event.currentTarget.contentWindow?.postMessage({ type: 'payroll-withholding-calculator:prefill', ...prefill }, '*');
+                  }}
+                />
+              </section>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

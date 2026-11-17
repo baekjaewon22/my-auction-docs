@@ -59,3 +59,22 @@ export function salesPeriodSql(alias = 'sr'): string {
     OR (NOT ${confirmed} AND ${alias}.contract_date BETWEEN ? AND ?)
   )`;
 }
+
+/** 원매출은 원래 인식월에 유지하고, 환불은 승인월에 별도 차감하기 위한 월별 조회 조건. */
+export function salesMonthlyReportingPeriodSql(alias = 'sr'): string {
+  const confirmed = confirmedSalesSql(alias);
+  const recognizedDate = recognizedSalesDateSql(alias);
+  const originalDate = `CASE
+    WHEN ${alias}.status IN ('refunded', 'refund_requested')
+      THEN COALESCE(${recognizedDate}, ${alias}.contract_date)
+    WHEN ${confirmed} THEN ${recognizedDate}
+    ELSE ${alias}.contract_date
+  END`;
+  return `(
+    (${originalDate} BETWEEN ? AND ?)
+    OR (
+      COALESCE(${alias}.refund_amount, 0) > 0
+      AND substr(COALESCE(${alias}.refund_approved_at, ''), 1, 10) BETWEEN ? AND ?
+    )
+  )`;
+}

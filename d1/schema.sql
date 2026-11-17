@@ -537,6 +537,15 @@ CREATE TABLE IF NOT EXISTS codex_conversations (
 );
 CREATE INDEX IF NOT EXISTS idx_codex_conversations_updated ON codex_conversations(last_message_at DESC);
 
+CREATE TABLE IF NOT EXISTS codex_sync_settings (
+  id TEXT PRIMARY KEY,
+  retention_days INTEGER NOT NULL DEFAULT 180 CHECK (retention_days BETWEEN 30 AND 3650),
+  updated_by TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO codex_sync_settings (id, retention_days) VALUES ('default', 180);
+
 CREATE TABLE IF NOT EXISTS codex_sync_tokens (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

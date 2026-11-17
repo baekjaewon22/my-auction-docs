@@ -190,6 +190,16 @@ export interface SalesRecord {
   refund_approved_by: string | null;
   refund_amount?: number;
   refund_approved_by_name?: string;
+  // 월별 업무성과 집계: 원매출은 인식월, 환불은 승인월에 음수 반영
+  period_sale_amount?: number;
+  period_refund_amount?: number;
+  period_net_amount?: number;
+  period_confirmed_amount?: number;
+  period_card_pending_amount?: number;
+  period_pending_amount?: number;
+  period_sale_status?: string;
+  period_entry_kind?: 'sale' | 'refund' | 'net' | 'none';
+  period_display_date?: string;
   direction: 'income' | 'expense';
   payment_method: string;
   memo: string;

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -26,6 +26,7 @@ const notifiedSessionId = String(
 ).trim();
 
 const endpoint = valueAfter('--endpoint') || process.env.MY_DOCS_CODEX_ENDPOINT || 'https://my-docs.kr/api/developer-settings/codex-conversations';
+const workspaceRoot = path.resolve(valueAfter('--workspace') || process.env.MY_DOCS_CODEX_WORKSPACE || process.cwd());
 const sessionsRoot = process.env.CODEX_HOME
   ? path.join(process.env.CODEX_HOME, 'sessions')
   : path.join(homedir(), '.codex', 'sessions');
@@ -34,6 +35,24 @@ const tokenPath = process.env.MY_DOCS_CODEX_TOKEN_FILE || path.join(
   'my-auction-docs',
   'codex-sync-token',
 );
+const syncStateRoot = process.env.MY_DOCS_CODEX_STATE_DIR || path.join(
+  process.env.LOCALAPPDATA || path.join(homedir(), 'AppData', 'Local'),
+  'my-auction-docs',
+);
+const syncLogPath = path.join(syncStateRoot, 'codex-sync.log');
+const syncStatusPath = path.join(syncStateRoot, 'codex-sync-status.json');
+
+function comparablePath(value) {
+  const normalized = path.resolve(String(value || '')).replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? normalized.toLocaleLowerCase('en-US') : normalized;
+}
+
+async function recordSyncStatus(status, detail = {}) {
+  await mkdir(syncStateRoot, { recursive: true });
+  const entry = { timestamp: new Date().toISOString(), status, workspace: workspaceRoot, ...detail };
+  await writeFile(syncStatusPath, JSON.stringify(entry, null, 2), 'utf8');
+  await appendFile(syncLogPath, `${JSON.stringify(entry)}\n`, 'utf8');
+}
 
 async function walk(dir) {
   const files = [];
@@ -99,21 +118,31 @@ function parseSession(raw, filePath) {
 async function main() {
   const explicitSession = valueAfter('--session');
   let files = explicitSession ? [path.resolve(explicitSession)] : await walk(sessionsRoot);
+  const sessions = await Promise.all(files.map(async (file) => {
+    const [raw, fileStat] = await Promise.all([readFile(file, 'utf8'), stat(file)]);
+    return { file, fileStat, session: parseSession(raw, file) };
+  }));
+  let candidates = explicitSession
+    ? sessions
+    : sessions.filter((entry) => comparablePath(entry.session.working_directory) === comparablePath(workspaceRoot));
   if (!explicitSession && notifiedSessionId) {
-    const matchingFile = files.find((file) => path.basename(file).includes(notifiedSessionId));
-    if (matchingFile) files = [matchingFile];
+    const matching = candidates.filter((entry) => entry.session.source_session_id === notifiedSessionId
+      || path.basename(entry.file).includes(notifiedSessionId));
+    if (!matching.length) {
+      throw new Error(`알림 세션을 현재 작업 폴더에서 찾을 수 없습니다: ${notifiedSessionId}`);
+    }
+    candidates = matching;
   }
-  const stats = await Promise.all(files.map(async (file) => ({ file, stat: await import('node:fs/promises').then((fs) => fs.stat(file)) })));
-  stats.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-  files = (allSessions ? stats : stats.slice(0, 1)).map((entry) => entry.file);
-  if (!files.length) throw new Error(`Codex 세션 로그를 찾을 수 없습니다: ${sessionsRoot}`);
+  candidates.sort((a, b) => b.fileStat.mtimeMs - a.fileStat.mtimeMs);
+  candidates = allSessions ? candidates : candidates.slice(0, 1);
+  if (!candidates.length) throw new Error(`현재 작업 폴더의 Codex 세션 로그를 찾을 수 없습니다: ${workspaceRoot}`);
 
   let token = String(process.env.MY_DOCS_CODEX_SYNC_TOKEN || '').trim();
   if (!token && !dryRun && !payloadFile) token = String(await readFile(tokenPath, 'utf8').catch(() => '')).trim();
   if (!token && !dryRun && !payloadFile) throw new Error(`동기화 토큰이 없습니다: ${tokenPath}`);
 
-  for (const file of files) {
-    const session = parseSession(await readFile(file, 'utf8'), file);
+  let synced = 0;
+  for (const { file, session } of candidates) {
     if (!session.messages.length) continue;
     if (payloadFile) {
       await writeFile(path.resolve(payloadFile), JSON.stringify(session), 'utf8');
@@ -131,13 +160,19 @@ async function main() {
     });
     if (!response.ok) throw new Error(`동기화 실패 (${response.status}): ${await response.text()}`);
     const result = await response.json();
+    synced += 1;
     if (!notifyMode) console.log(`동기화 완료: ${session.title} (${result.message_count}개 메시지)`);
+  }
+  if (!dryRun && !payloadFile) {
+    await recordSyncStatus('success', { synced_sessions: synced, source_session_id: candidates[0]?.session.source_session_id || '' });
   }
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  await recordSyncStatus('failed', { error: message }).catch(() => {});
   if (!notifyMode) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(message);
     process.exitCode = 1;
   }
 });
