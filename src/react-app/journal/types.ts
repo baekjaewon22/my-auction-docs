@@ -71,10 +71,11 @@ export function generateTimeOptions(): string[] {
   return times;
 }
 
-// 연도 선택 (2000 ~ 2026)
-export function generateYears(): number[] {
+// 연도 선택 (2000 ~ 올해). 해가 바뀌어도 새 사건번호 연도를 고를 수 있게 올해까지 자동 확장한다.
+export function generateYears(now: Date = new Date()): number[] {
   const years: number[] = [];
-  for (let y = 2026; y >= 2000; y--) years.push(y);
+  const maxYear = Math.max(2026, now.getFullYear());
+  for (let y = maxYear; y >= 2000; y--) years.push(y);
   return years;
 }
 

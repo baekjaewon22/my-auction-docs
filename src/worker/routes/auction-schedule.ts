@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { winningAuctionDetail } from '../../shared/winning-auction.ts';
 import type { AuthEnv } from '../types.ts';
 import { authMiddleware, requireHumanUser } from '../middleware/auth.ts';
@@ -787,6 +787,119 @@ auctionSchedule.get('/:id/bid-result-entry', async (c) => {
   return c.json({ entry: bidResultEntryDto(existing) });
 });
 
+type AuctionCaseIdentity = { caseNo: string; itemNo: string; court: string };
+
+async function auctionTableExists(db: D1Database, name: string): Promise<boolean> {
+  const row = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").bind(name).first<{ name: string }>();
+  return !!row;
+}
+
+/** 낙찰 매출 설명(type_detail)의 사건 식별정보만 정정한다. 자동 생성 문구면 새로 만들고, 수기 수정 문구면 해당 부분만 치환한다. */
+function correctedWinningDetail(
+  current: string,
+  data: Record<string, unknown>,
+  prev: AuctionCaseIdentity,
+  next: AuctionCaseIdentity,
+): string {
+  const detailFor = (identity: AuctionCaseIdentity) => winningAuctionDetail(
+    { auctionKind: data.auctionKind, court: identity.court, caseNumber: identity.caseNo, propertyType: data.propertyType },
+    identity.itemNo ? `${identity.itemNo}번` : '',
+  );
+  if (!current || current === detailFor(prev)) return detailFor(next);
+  let detail = current;
+  if (prev.caseNo && prev.caseNo !== next.caseNo) {
+    detail = detail.replace(new RegExp(`(사건번호|물건번호): ${prev.caseNo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), `$1: ${next.caseNo}`);
+  }
+  if (prev.court && prev.court !== next.court && next.court) detail = detail.replace(prev.court, next.court);
+  if (prev.itemNo && prev.itemNo !== next.itemNo && next.itemNo) detail = detail.replace(`${prev.itemNo}번`, `${next.itemNo}번`);
+  return detail;
+}
+
+async function correctLinkedBidIdentity(
+  c: Context<AuthEnv>,
+  input: {
+    schedule: any;
+    existingData: Record<string, unknown>;
+    correctedData: Record<string, unknown>;
+    prevIdentity: AuctionCaseIdentity;
+    nextIdentity: AuctionCaseIdentity;
+    linkedSaleId: string;
+  },
+): Promise<Response> {
+  const user = c.get('user');
+  const db = c.env.DB;
+  const { schedule, existingData, correctedData, prevIdentity, nextIdentity } = input;
+  const sale = await db.prepare(`
+    SELECT id, type_detail, status, amount, customer_id FROM sales_records WHERE id = ?
+  `).bind(input.linkedSaleId).first<{ id: string; type_detail: string | null; status: string; amount: number; customer_id: string | null }>();
+  if (!sale) return c.json({ error: '연결된 입금신청을 찾을 수 없습니다. 새로고침 후 다시 시도해 주세요.' }, 409);
+  const nextDetail = correctedWinningDetail(String(sale.type_detail || ''), existingData, prevIdentity, nextIdentity);
+  const nextData = JSON.stringify(correctedData);
+  const commissionKeys = auctionScheduleSalesExternalIds(schedule.id);
+  const hasCustomerCases = !!sale.customer_id && await auctionTableExists(db, 'sales_customer_cases');
+  const hasLawitgoOverrides = await auctionTableExists(db, 'lawitgo_winning_overrides');
+
+  const claim = await acquireAuctionScheduleMutationClaim(db, schedule as AuctionScheduleMutationSnapshot, 'identity_correction', user.sub);
+  if (!claim) return c.json({ error: '일정이 변경되었거나 다른 처리가 진행 중입니다. 새로고침 후 다시 시도해 주세요.' }, 409);
+  try {
+    const statements: D1PreparedStatement[] = [
+      db.prepare(`
+        UPDATE freelancer_auction_schedules SET data = ?, updated_at = datetime('now', '+9 hours')
+        WHERE id = ? AND data = ?
+          AND EXISTS (SELECT 1 FROM auction_schedule_mutation_claims WHERE schedule_id = ? AND claim_token = ?)
+          AND EXISTS (SELECT 1 FROM sales_records WHERE id = ? AND status = ? AND amount = ?)
+      `).bind(nextData, schedule.id, schedule.data, schedule.id, claim, sale.id, sale.status, sale.amount),
+      db.prepare(`
+        UPDATE sales_records SET type_detail = ?, updated_at = datetime('now', '+9 hours')
+        WHERE id = ? AND status = ? AND amount = ?
+          AND EXISTS (SELECT 1 FROM freelancer_auction_schedules WHERE id = ? AND data = ?)
+      `).bind(nextDetail, sale.id, sale.status, sale.amount, schedule.id, nextData),
+      db.prepare(`
+        UPDATE commissions SET case_no = ?
+        WHERE journal_entry_id IN (?, ?) AND COALESCE(case_no, '') = ?
+          AND EXISTS (SELECT 1 FROM freelancer_auction_schedules WHERE id = ? AND data = ?)
+      `).bind(nextIdentity.caseNo, commissionKeys[0], commissionKeys[1], prevIdentity.caseNo, schedule.id, nextData),
+    ];
+    if (hasCustomerCases) {
+      statements.push(db.prepare(`
+        UPDATE OR IGNORE sales_customer_cases SET court = ?, case_number = ?, item_number = ?
+        WHERE customer_id = ? AND case_number = ? AND item_number = ?
+          AND EXISTS (SELECT 1 FROM freelancer_auction_schedules WHERE id = ? AND data = ?)
+      `).bind(
+        nextIdentity.court, nextIdentity.caseNo, nextIdentity.itemNo,
+        sale.customer_id, prevIdentity.caseNo, prevIdentity.itemNo, schedule.id, nextData,
+      ));
+    }
+    if (hasLawitgoOverrides) {
+      statements.push(db.prepare(`
+        UPDATE lawitgo_winning_overrides SET case_number = ?
+        WHERE sales_record_id = ? AND case_number = ?
+          AND EXISTS (SELECT 1 FROM freelancer_auction_schedules WHERE id = ? AND data = ?)
+      `).bind(nextIdentity.caseNo, sale.id, prevIdentity.caseNo, schedule.id, nextData));
+    }
+    statements.push(db.prepare(`
+      INSERT INTO accounting_activity_logs (
+        id, actor_id, actor_name, actor_role, action, target_type, target_id,
+        target_label, diff_summary, before_snapshot, after_snapshot, source_page, created_at
+      )
+      SELECT ?, ?, ?, ?, 'update', 'auction_schedule', ?, ?, ?, ?, ?, 'auction_schedule', datetime('now', '+9 hours')
+      WHERE EXISTS (SELECT 1 FROM freelancer_auction_schedules WHERE id = ? AND data = ?)
+    `).bind(
+      crypto.randomUUID(), user.sub, user.name || '', user.role, schedule.id,
+      `auction_schedule:${schedule.id}`,
+      `마스터 사건정보 정정: ${prevIdentity.court} ${prevIdentity.caseNo}${prevIdentity.itemNo ? ` (${prevIdentity.itemNo})` : ''} → ${nextIdentity.court} ${nextIdentity.caseNo}${nextIdentity.itemNo ? ` (${nextIdentity.itemNo})` : ''}`,
+      schedule.data, nextData, schedule.id, nextData,
+    ));
+    const results = await db.batch(statements);
+    if (Number((results[0] as { meta?: { changes?: number } })?.meta?.changes || 0) !== 1) {
+      return c.json({ error: '일정 또는 연결된 입금신청이 변경되어 정정하지 못했습니다. 새로고침 후 다시 시도해 주세요.' }, 409);
+    }
+    return c.json({ success: true, identity_corrected: true });
+  } finally {
+    await releaseAuctionScheduleMutationClaim(db, claim);
+  }
+}
+
 auctionSchedule.put('/:id', async (c) => {
   const user = c.get('user');
   const db = c.env.DB;
@@ -812,6 +925,43 @@ auctionSchedule.put('/:id', async (c) => {
       String(existingData.court || ''),
     )
     : null;
+  if (linkedSale && linkedSale.source === 'schedule' && canEditResolvedAuctionBid(user)) {
+    // 마스터 전용: 입금신청(확정 포함)이 연결된 낙찰 일정의 사건 식별정보(사건번호·물건번호·법원) 오기 정정.
+    // 금액·상태·날짜는 바꾸지 않고, 연결된 매출 설명·수수료·고객 사건 정보에 같은 정정을 반영한다.
+    const body = await c.req.json<{ target_date?: string; activity_type?: string; data?: Record<string, unknown> }>();
+    if (body.target_date !== undefined && String(body.target_date) !== existing.target_date) {
+      return c.json({ error: '입금신청이 연결된 낙찰 일정은 날짜를 변경할 수 없습니다. 사건번호·물건번호·법원만 정정할 수 있습니다.' }, 409);
+    }
+    if (body.activity_type !== undefined && String(body.activity_type) !== existing.activity_type) {
+      return c.json({ error: '기존 일정의 활동유형은 변경할 수 없습니다.' }, 409);
+    }
+    const incoming = sanitizeClientAuctionScheduleData(body.data || {});
+    const pick = (key: 'caseNo' | 'itemNo' | 'court') => (
+      Object.prototype.hasOwnProperty.call(incoming, key)
+        ? String(incoming[key] ?? '').trim().slice(0, 100)
+        : String(existingData[key] ?? '').trim()
+    );
+    const nextIdentity = { caseNo: pick('caseNo'), itemNo: pick('itemNo'), court: pick('court') };
+    const prevIdentity = {
+      caseNo: String(existingData.caseNo ?? '').trim(),
+      itemNo: String(existingData.itemNo ?? '').trim(),
+      court: String(existingData.court ?? '').trim(),
+    };
+    if (nextIdentity.caseNo === prevIdentity.caseNo && nextIdentity.itemNo === prevIdentity.itemNo && nextIdentity.court === prevIdentity.court) {
+      return c.json({ success: true, identity_corrected: false });
+    }
+    const correctedData = { ...existingData, ...nextIdentity };
+    const correctionError = getAuctionScheduleValidationError(existing.activity_type, correctedData);
+    if (correctionError) return c.json({ error: correctionError }, 400);
+    return correctLinkedBidIdentity(c, {
+      schedule: existing,
+      existingData,
+      correctedData,
+      prevIdentity,
+      nextIdentity,
+      linkedSaleId: linkedSale.id,
+    });
+  }
   if (linkedSale) {
     return c.json({ error: '입금신청이 연결된 낙찰 일정은 수정할 수 없습니다. 먼저 업무성과에서 입금신청 상태를 확인해 주세요.' }, 409);
   }

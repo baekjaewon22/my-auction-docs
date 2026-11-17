@@ -66,7 +66,13 @@ function setup() {
     CREATE TABLE sales_records (
       id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
       external_id TEXT, amount INTEGER NOT NULL DEFAULT 0,
-      winning_price INTEGER NOT NULL DEFAULT 0
+      winning_price INTEGER NOT NULL DEFAULT 0,
+      type_detail TEXT, customer_id TEXT, updated_at TEXT
+    );
+    CREATE TABLE accounting_activity_logs (
+      id TEXT PRIMARY KEY, actor_id TEXT, actor_name TEXT, actor_role TEXT, action TEXT,
+      target_type TEXT, target_id TEXT, target_label TEXT, diff_summary TEXT,
+      before_snapshot TEXT, after_snapshot TEXT, source_page TEXT, created_at TEXT
     );
     CREATE TABLE commissions (
       id TEXT PRIMARY KEY, journal_entry_id TEXT, status TEXT NOT NULL DEFAULT 'pending', win_price TEXT
@@ -311,6 +317,45 @@ test('마스터는 결과가 처리된 지난 입찰 일정의 사건번호를 �
     assert.equal(stored.bidProxy, true, `${label}.bidProxy`);
     assert.equal(stored.proxyAgent, '대리인', `${label}.proxyAgent`);
   }
+  sqlite.close();
+});
+
+test('마스터는 확정 입금신청이 연결된 낙찰 일정의 사건번호·물건번호를 정정하고 연결 정보에 반영한다', async () => {
+  const { sqlite, insertSchedule, request } = setup();
+  insertSchedule('linked-won', '2026-11-10');
+  const wonData = { ...VALID_BID_DATA, caseNo: '2026타경21910', itemNo: '21', bidWon: true, bidPrice: '100000000', winPrice: '100000000' };
+  sqlite.prepare("UPDATE freelancer_auction_schedules SET data = ? WHERE id = 'linked-won'").run(JSON.stringify(wonData));
+  const oldDetail = '[경매] · 의정부지방법원 · 사건번호: 2026타경21910 · 물건종류: 아파트 · 21번';
+  sqlite.prepare(`INSERT INTO sales_records (id, status, external_id, amount, type_detail)
+    VALUES ('sale-1', 'confirmed', 'auction-schedule:linked-won', 2200000, ?)`).run(oldDetail);
+  sqlite.prepare(`INSERT INTO commissions (id, journal_entry_id, status, win_price)
+    VALUES ('comm-1', 'auction-schedule:linked-won', 'pending', '100000000')`).run();
+  sqlite.exec("ALTER TABLE commissions ADD COLUMN case_no TEXT");
+  sqlite.prepare("UPDATE commissions SET case_no = '2026타경21910' WHERE id = 'comm-1'").run();
+
+  const denied = await request('accountant', '/linked-won', 'PUT', { data: { ...wonData, caseNo: '2024타경2190' } });
+  assert.equal(denied.status, 409, await denied.clone().text());
+
+  const moveDate = await request('master', '/linked-won', 'PUT', { target_date: '2026-11-11', data: { ...wonData, caseNo: '2024타경2190' } });
+  assert.equal(moveDate.status, 409, await moveDate.clone().text());
+
+  const response = await request('master', '/linked-won', 'PUT', {
+    target_date: '2026-11-10',
+    data: { ...wonData, caseNo: '2024타경2190', itemNo: '21', propertyType: '단독주택', bidWon: false, winPrice: '1' },
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  const stored = JSON.parse(sqlite.prepare("SELECT data FROM freelancer_auction_schedules WHERE id = 'linked-won'").pluck().get() as string);
+  assert.equal(stored.caseNo, '2024타경2190');
+  assert.equal(stored.itemNo, '21');
+  assert.equal(stored.propertyType, '아파트', '사건 식별정보 외 필드는 바뀌지 않는다');
+  assert.equal(stored.bidWon, true);
+  assert.equal(stored.winPrice, '100000000');
+  assert.deepEqual(sqlite.prepare("SELECT status, amount, type_detail FROM sales_records WHERE id = 'sale-1'").get(), {
+    status: 'confirmed', amount: 2200000,
+    type_detail: '[경매] · 의정부지방법원 · 사건번호: 2024타경2190 · 물건종류: 아파트 · 21번',
+  });
+  assert.equal(sqlite.prepare("SELECT case_no FROM commissions WHERE id = 'comm-1'").pluck().get(), '2024타경2190');
+  assert.match(String(sqlite.prepare("SELECT diff_summary FROM accounting_activity_logs").pluck().get()), /2026타경21910 \(21\) → 의정부지방법원 2024타경2190 \(21\)/);
   sqlite.close();
 });
 
